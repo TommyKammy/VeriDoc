@@ -31,6 +31,34 @@ class EvaluateDatasetTest(unittest.TestCase):
     def evaluate_valid_cases(self, data: dict[str, object]) -> object:
         return evaluate_dataset.evaluate_cases(data, manifest_root=REPO_ROOT)
 
+    def evaluate_with_fixture(self, data: dict[str, object], fixture: dict[str, object]) -> object:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            fixture_dir = temp_root / "datasets" / "fixtures"
+            fixture_dir.mkdir(parents=True)
+            fixture_path = fixture_dir / "fixture.json"
+            manifest_path = fixture_dir / "manifest.json"
+            fixture_path.write_text(json.dumps(fixture), encoding="utf-8")
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": evaluate_dataset.FIXTURE_MANIFEST_SCHEMA_VERSION,
+                        "policy": {"allowed_fixture_root": "datasets/fixtures"},
+                        "fixtures": [
+                            {
+                                "id": data["cases"][0]["fixture_id"],
+                                "public_review_safe": True,
+                                "path": "datasets/fixtures/fixture.json",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            data["dataset_manifest"] = "datasets/fixtures/manifest.json"
+
+            return evaluate_dataset.evaluate_cases(data, manifest_root=temp_root)
+
     def test_public_fixture_metrics_cover_phase0_acceptance_criteria(self) -> None:
         data = evaluate_dataset.load_json(CASES_PATH)
 
@@ -88,6 +116,40 @@ class EvaluateDatasetTest(unittest.TestCase):
         with self.assertRaisesRegex(
             evaluate_dataset.EvaluationCaseError, "matching fixture_table_id"
         ):
+            self.evaluate_valid_cases(data)
+
+    def test_rejects_unsupported_fixture_schema_version(self) -> None:
+        data = self.valid_cases_data()
+        fixture = evaluate_dataset.load_json(
+            REPO_ROOT / "datasets" / "fixtures" / "sample-document-ir-v0.json"
+        )
+        fixture["schema_version"] = "veridoc-evaluation-fixture/v999"
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError, "unsupported fixture schema_version"
+        ):
+            self.evaluate_with_fixture(data, fixture)
+
+    def test_rejects_case_document_id_drift_from_fixture(self) -> None:
+        data = self.valid_cases_data()
+        data["cases"][0]["document_id"] = "other-document"
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "document_id"):
+            self.evaluate_valid_cases(data)
+
+    def test_rejects_expected_cell_text_or_source_drift_from_fixture(self) -> None:
+        data = self.valid_cases_data()
+        cell = data["cases"][0]["expected"]["tables"][0]["cells"][1]
+        cell["text"] = "SAMPLE-LOT-999"
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "text does not match"):
+            self.evaluate_valid_cases(data)
+
+        data = self.valid_cases_data()
+        cell = data["cases"][0]["expected"]["tables"][0]["cells"][1]
+        cell["source"]["bbox"]["x"] = 999.0
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "source does not match"):
             self.evaluate_valid_cases(data)
 
     def test_direct_evaluation_uses_explicit_manifest_root_from_any_cwd(self) -> None:

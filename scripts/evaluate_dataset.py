@@ -14,6 +14,7 @@ from typing import Any
 DEFAULT_EVALUATION_CASES = Path("datasets/gold/evaluation_cases_v0.json")
 EVALUATION_CASES_SCHEMA_VERSION = "veridoc-evaluation-cases/v0"
 FIXTURE_MANIFEST_SCHEMA_VERSION = "veridoc-eval-fixtures/v0"
+FIXTURE_SCHEMA_VERSION = "veridoc-evaluation-fixture/v0"
 
 
 @dataclass(frozen=True)
@@ -190,6 +191,19 @@ def fixture_paths_from_manifest(
 def validate_expected_tables_against_fixture(
     case: dict[str, Any], fixture: dict[str, Any], fixture_id: str
 ) -> None:
+    if fixture.get("schema_version") != FIXTURE_SCHEMA_VERSION:
+        raise EvaluationCaseError(
+            f"unsupported fixture schema_version {fixture.get('schema_version')!r}"
+        )
+
+    fixture_document = fixture.get("document")
+    if not isinstance(fixture_document, dict) or not isinstance(fixture_document.get("id"), str):
+        raise EvaluationCaseError(f"fixture {fixture_id!r}: document.id must be a string")
+    if case.get("document_id") != fixture_document["id"]:
+        raise EvaluationCaseError(
+            f"case {case.get('id')!r}: document_id must match fixture {fixture_id!r}"
+        )
+
     fixture_tables = tables_by_id(fixture)
     expected_tables = tables_by_id(case.get("expected", {}))
 
@@ -209,11 +223,24 @@ def validate_expected_tables_against_fixture(
             )
 
         fixture_cells = cells_by_id(fixture_table)
-        for cell_id in cells_by_id(expected_table):
-            if cell_id not in fixture_cells:
+        for cell_id, expected_cell in cells_by_id(expected_table).items():
+            fixture_cell = fixture_cells.get(cell_id)
+            if fixture_cell is None:
                 raise EvaluationCaseError(
                     f"case {case.get('id')!r}: expected cell {cell_id!r} "
                     f"is not present in fixture {fixture_id!r} table {table_id!r}"
+                )
+            if normalized_text(expected_cell.get("text", "")) != normalized_text(
+                fixture_cell.get("text", "")
+            ):
+                raise EvaluationCaseError(
+                    f"case {case.get('id')!r}: expected cell {cell_id!r} "
+                    f"text does not match fixture {fixture_id!r}"
+                )
+            if expected_cell.get("source") != fixture_cell.get("source"):
+                raise EvaluationCaseError(
+                    f"case {case.get('id')!r}: expected cell {cell_id!r} "
+                    f"source does not match fixture {fixture_id!r}"
                 )
 
 
