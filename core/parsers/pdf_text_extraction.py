@@ -73,7 +73,7 @@ def extract_pdf_text(pdf_path: str | Path) -> PdfTextExtraction:
         for page_index, page in enumerate(document, start=1):
             page_rect = page.cropbox
             fragments: list[TextFragment] = []
-            text_page = page.get_text("dict")
+            text_page = page.get_text("dict", flags=_text_dict_flags(fitz))
             for block in text_page.get("blocks", []):
                 for line in block.get("lines", []):
                     for span in line.get("spans", []):
@@ -230,3 +230,8 @@ def _load_fitz() -> Any:
             "dependencies with `python3 -m pip install -r requirements-pdf-eval.txt`."
         ) from exc
     return fitz
+
+
+def _text_dict_flags(fitz: Any) -> int:
+    flags = int(fitz.TEXTFLAGS_DICT)
+    return flags & ~int(fitz.TEXT_PRESERVE_IMAGES)

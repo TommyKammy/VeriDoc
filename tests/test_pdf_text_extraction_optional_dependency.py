@@ -28,13 +28,37 @@ def _requirement_names(path: Path) -> set[str]:
     return names
 
 
+def _requirement_specs(path: Path) -> dict[str, str]:
+    specs: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        requirement = line.strip()
+        if not requirement or requirement.startswith("#") or requirement.startswith("-"):
+            continue
+        name = (
+            requirement.split(";", 1)[0]
+            .split("[", 1)[0]
+            .split("=", 1)[0]
+            .split("<", 1)[0]
+            .split(">", 1)[0]
+            .split("~", 1)[0]
+            .split("!", 1)[0]
+            .strip()
+            .lower()
+        )
+        specs[name] = requirement
+    return specs
+
+
 def test_pdf_eval_requirements_include_all_comparison_candidates() -> None:
     default_requirements = _requirement_names(REPO_ROOT / "requirements.txt")
     eval_requirements = _requirement_names(REPO_ROOT / "requirements-pdf-eval.txt")
+    eval_specs = _requirement_specs(REPO_ROOT / "requirements-pdf-eval.txt")
 
     assert "pypdf" not in default_requirements
     assert "pymupdf" not in default_requirements
     assert {"pypdf", "pymupdf"} <= eval_requirements
+    assert eval_specs["pypdf"].startswith("pypdf==")
+    assert eval_specs["pymupdf"].startswith("pymupdf==")
 
 
 def test_compare_pdf_text_extractors_reports_missing_pymupdf(

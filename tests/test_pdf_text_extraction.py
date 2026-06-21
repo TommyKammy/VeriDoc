@@ -110,6 +110,43 @@ def test_extract_pdf_text_preserves_span_whitespace(monkeypatch: pytest.MonkeyPa
     assert [fragment.text for fragment in fragments] == ["Approved ", "By"]
 
 
+def test_extract_pdf_text_disables_image_payload_extraction(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pdf_path = tmp_path / "text-only-flags.pdf"
+    _write_pdf(pdf_path, [[("Text only", (36, 48))]])
+    captured_flags: list[int] = []
+    original_get_text = fitz.Page.get_text
+
+    def get_text_with_flag_capture(page: fitz.Page, option: str, *args: object, **kwargs: object) -> object:
+        if option == "dict":
+            captured_flags.append(kwargs["flags"])
+            return {
+                "blocks": [
+                    {
+                        "lines": [
+                            {
+                                "spans": [
+                                    {"text": "Text only", "bbox": (36, 40, 86, 52)},
+                                ]
+                            }
+                        ]
+                    }
+                ]
+            }
+        return original_get_text(page, option, *args, **kwargs)
+
+    monkeypatch.setattr(fitz.Page, "get_text", get_text_with_flag_capture)
+
+    result = extract_pdf_text(pdf_path)
+
+    assert [fragment.text for fragment in result.pages[0].fragments] == ["Text only"]
+    assert captured_flags
+    assert all(flags & fitz.TEXT_PRESERVE_IMAGES == 0 for flags in captured_flags)
+    assert all(flags & fitz.TEXT_PRESERVE_WHITESPACE for flags in captured_flags)
+
+
 def test_extract_pdf_text_clips_bboxes_to_crop_box_dimensions(tmp_path: Path) -> None:
     pdf_path = tmp_path / "cropped.pdf"
     document = fitz.open()
