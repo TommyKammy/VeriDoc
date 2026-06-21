@@ -15,6 +15,7 @@ DEFAULT_EVALUATION_CASES = Path("datasets/gold/evaluation_cases_v0.json")
 EVALUATION_CASES_SCHEMA_VERSION = "veridoc-evaluation-cases/v0"
 FIXTURE_MANIFEST_SCHEMA_VERSION = "veridoc-eval-fixtures/v0"
 FIXTURE_SCHEMA_VERSION = "veridoc-evaluation-fixture/v0"
+EXPECTED_ALLOWED_FIXTURE_ROOT = Path("datasets/fixtures")
 
 
 @dataclass(frozen=True)
@@ -223,9 +224,12 @@ def fixture_paths_from_manifest(
     allowed_root_path = Path(allowed_root_value)
     if allowed_root_path.is_absolute():
         raise EvaluationCaseError("allowed_fixture_root must be repo-relative")
+    if ".." in allowed_root_path.parts:
+        raise EvaluationCaseError("allowed_fixture_root must be datasets/fixtures")
     allowed_root = (manifest_root / allowed_root_path).resolve()
-    if not allowed_root.is_relative_to(manifest_root.resolve()):
-        raise EvaluationCaseError("allowed_fixture_root must stay under the manifest root")
+    expected_allowed_root = (manifest_root / EXPECTED_ALLOWED_FIXTURE_ROOT).resolve()
+    if allowed_root != expected_allowed_root:
+        raise EvaluationCaseError("allowed_fixture_root must be datasets/fixtures")
 
     fixtures = manifest.get("fixtures")
     if not isinstance(fixtures, list):

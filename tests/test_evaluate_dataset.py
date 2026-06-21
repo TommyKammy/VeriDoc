@@ -37,19 +37,21 @@ class EvaluateDatasetTest(unittest.TestCase):
         fixture: dict[str, object],
         fixture_metadata: dict[str, object] | None = None,
         manifest_policy: dict[str, object] | None = None,
+        fixture_relpath: str = "datasets/fixtures/fixture.json",
     ) -> object:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_root = Path(temp_dir)
             fixture_dir = temp_root / "datasets" / "fixtures"
             fixture_dir.mkdir(parents=True)
-            fixture_path = fixture_dir / "fixture.json"
+            fixture_path = temp_root / fixture_relpath
+            fixture_path.parent.mkdir(parents=True, exist_ok=True)
             manifest_path = fixture_dir / "manifest.json"
             fixture_path.write_text(json.dumps(fixture), encoding="utf-8")
             manifest_fixture = {
                 "id": data["cases"][0]["fixture_id"],
                 "public_review_safe": True,
                 "confidentiality": "public",
-                "path": "datasets/fixtures/fixture.json",
+                "path": fixture_relpath,
             }
             if fixture_metadata is not None:
                 manifest_fixture.update(fixture_metadata)
@@ -127,19 +129,25 @@ class EvaluateDatasetTest(unittest.TestCase):
             )
 
     def test_rejects_fixture_root_policy_traversal_before_scoring(self) -> None:
-        data = self.valid_cases_data()
-        fixture = evaluate_dataset.load_json(
-            REPO_ROOT / "datasets" / "fixtures" / "sample-document-ir-v0.json"
-        )
-
-        with self.assertRaisesRegex(
-            evaluate_dataset.EvaluationCaseError, "allowed_fixture_root"
+        for allowed_root, fixture_relpath in (
+            ("../fixtures", "datasets/fixtures/fixture.json"),
+            ("datasets/..", "secret/fixture.json"),
+            ("fixtures", "fixtures/fixture.json"),
         ):
-            self.evaluate_with_fixture(
-                data,
-                fixture,
-                manifest_policy={"allowed_fixture_root": "../fixtures"},
+            data = self.valid_cases_data()
+            fixture = evaluate_dataset.load_json(
+                REPO_ROOT / "datasets" / "fixtures" / "sample-document-ir-v0.json"
             )
+
+            with self.subTest(allowed_root=allowed_root), self.assertRaisesRegex(
+                evaluate_dataset.EvaluationCaseError, "allowed_fixture_root"
+            ):
+                self.evaluate_with_fixture(
+                    data,
+                    fixture,
+                    manifest_policy={"allowed_fixture_root": allowed_root},
+                    fixture_relpath=fixture_relpath,
+                )
 
     def test_rejects_expected_table_missing_from_declared_fixture(self) -> None:
         data = self.valid_cases_data()
