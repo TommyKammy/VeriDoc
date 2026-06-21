@@ -165,6 +165,21 @@ class EvaluateDatasetTest(unittest.TestCase):
                     fixture_relpath=fixture_relpath,
                 )
 
+    def test_rejects_non_canonical_dataset_manifest_before_scoring(self) -> None:
+        for manifest_path in (
+            str(REPO_ROOT / "datasets" / "fixtures" / "manifest.json"),
+            "datasets/fixtures/side-manifest.json",
+            "datasets/fixtures/../fixtures/manifest.json",
+        ):
+            data = self.valid_cases_data()
+            data["dataset_manifest"] = manifest_path
+
+            with self.subTest(manifest_path=manifest_path), self.assertRaisesRegex(
+                evaluate_dataset.EvaluationCaseError,
+                "dataset_manifest must be datasets/fixtures/manifest.json",
+            ):
+                self.evaluate_valid_cases(data)
+
     def test_rejects_expected_table_missing_from_declared_fixture(self) -> None:
         data = self.valid_cases_data()
         expected_table = data["cases"][0]["expected"]["tables"][0]
@@ -250,6 +265,27 @@ class EvaluateDatasetTest(unittest.TestCase):
         with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "source must define"):
             self.evaluate_with_fixture(data, fixture)
 
+    def test_rejects_non_finite_fixture_geometry_before_scoring(self) -> None:
+        for update_fixture in (
+            lambda fixture: fixture["pages"][0].update({"width": float("inf")}),
+            lambda fixture: fixture["tables"][0]["cells"][1]["source"]["bbox"].update(
+                {"x": float("nan")}
+            ),
+        ):
+            data = self.valid_cases_data()
+            fixture = evaluate_dataset.load_json(
+                REPO_ROOT / "datasets" / "fixtures" / "sample-document-ir-v0.json"
+            )
+            update_fixture(fixture)
+            data["cases"][0]["expected"]["tables"][0]["cells"][1]["source"] = copy.deepcopy(
+                fixture["tables"][0]["cells"][1]["source"]
+            )
+
+            with self.assertRaisesRegex(
+                evaluate_dataset.EvaluationCaseError, "non-finite JSON number"
+            ):
+                self.evaluate_with_fixture(data, fixture)
+
     def test_rejects_missing_or_non_string_expected_cell_text_before_scoring(self) -> None:
         for text_value in (None, 123, "   "):
             data = self.valid_cases_data()
@@ -291,6 +327,16 @@ class EvaluateDatasetTest(unittest.TestCase):
                 {"source": {}},
             )
         )
+
+    def test_actual_source_anchor_must_be_valid_before_credit(self) -> None:
+        data = self.valid_cases_data()
+        actual_source = data["cases"][0]["actual"]["tables"][0]["cells"][0]["source"]
+        actual_source["source_page"] = True
+
+        metrics = self.evaluate_valid_cases(data)
+
+        self.assertEqual(0, metrics.matched_source_link_count)
+        self.assertEqual(0.0, metrics.source_linkage_rate)
 
     def test_rejects_source_anchor_outside_declared_page_geometry_before_scoring(self) -> None:
         data = self.valid_cases_data()
@@ -355,6 +401,25 @@ class EvaluateDatasetTest(unittest.TestCase):
         cells.append(copy.deepcopy(cells[0]))
 
         with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "duplicate cell id"):
+            self.evaluate_valid_cases(data)
+
+    def test_rejects_empty_evaluation_case_list_before_scoring(self) -> None:
+        data = self.valid_cases_data()
+        data["cases"] = []
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError, "at least one evaluation case"
+        ):
+            self.evaluate_valid_cases(data)
+
+    def test_rejects_non_string_actual_cell_text_before_scoring(self) -> None:
+        data = self.valid_cases_data()
+        actual_cell = data["cases"][0]["actual"]["tables"][0]["cells"][0]
+        actual_cell["text"] = None
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError, "actual cell 'table-001-r1-c1': text"
+        ):
             self.evaluate_valid_cases(data)
 
     def test_cli_emits_json_metrics_for_local_or_ci_verification(self) -> None:

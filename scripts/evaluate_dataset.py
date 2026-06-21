@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +17,7 @@ EVALUATION_CASES_SCHEMA_VERSION = "veridoc-evaluation-cases/v0"
 FIXTURE_MANIFEST_SCHEMA_VERSION = "veridoc-eval-fixtures/v0"
 FIXTURE_SCHEMA_VERSION = "veridoc-evaluation-fixture/v0"
 EXPECTED_ALLOWED_FIXTURE_ROOT = Path("datasets/fixtures")
+EXPECTED_DATASET_MANIFEST = EXPECTED_ALLOWED_FIXTURE_ROOT / "manifest.json"
 EXPECTED_SCOPE_PHASE = "phase0"
 PUBLIC_FIXTURE_ANONYMIZATION_VALUES = {"anonymized", "synthetic"}
 
@@ -54,7 +56,12 @@ class EvaluationCaseError(ValueError):
 
 def load_json(path: Path) -> dict[str, Any]:
     with path.open(encoding="utf-8") as file:
-        data = json.load(file)
+        data = json.load(
+            file,
+            parse_constant=lambda constant: (_ for _ in ()).throw(
+                EvaluationCaseError(f"{path}: non-finite JSON number is not allowed: {constant}")
+            ),
+        )
     if not isinstance(data, dict):
         raise EvaluationCaseError(f"{path}: expected top-level JSON object")
     return data
@@ -73,11 +80,15 @@ def normalized_text(value: object) -> str:
 def source_matches(expected: dict[str, Any], actual: dict[str, Any]) -> bool:
     expected_source = expected.get("source")
     actual_source = actual.get("source")
-    return is_valid_source_anchor(expected_source) and expected_source == actual_source
+    return (
+        is_valid_source_anchor(expected_source)
+        and is_valid_source_anchor(actual_source)
+        and expected_source == actual_source
+    )
 
 
 def is_number(value: object) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
 def is_valid_source_anchor(source: object) -> bool:
@@ -202,7 +213,9 @@ def manifest_path_from_cases(data: dict[str, Any], manifest_root: Path | None = 
     if not isinstance(manifest_path, str) or not manifest_path:
         raise EvaluationCaseError("dataset_manifest must be a non-empty string")
     path = Path(manifest_path)
-    if manifest_root is not None and not path.is_absolute():
+    if path.is_absolute() or path != EXPECTED_DATASET_MANIFEST:
+        raise EvaluationCaseError("dataset_manifest must be datasets/fixtures/manifest.json")
+    if manifest_root is not None:
         return manifest_root / path
     return path
 
@@ -280,6 +293,13 @@ def validated_cell_text(cell: dict[str, Any], context: str) -> str:
     text = cell.get("text")
     if not isinstance(text, str) or not normalized_text(text):
         raise EvaluationCaseError(f"{context}: text must be a non-empty string")
+    return text
+
+
+def actual_cell_text(cell: dict[str, Any], context: str) -> str:
+    text = cell.get("text")
+    if not isinstance(text, str):
+        raise EvaluationCaseError(f"{context}: text must be a string")
     return text
 
 
@@ -399,6 +419,8 @@ def evaluate_cases(data: dict[str, Any], manifest_root: Path | None = None) -> E
     cases = data.get("cases")
     if not isinstance(cases, list):
         raise EvaluationCaseError("cases must be a list")
+    if not cases:
+        raise EvaluationCaseError("cases must contain at least one evaluation case")
     validate_case_fixtures(data, cases, manifest_root)
 
     expected_table_count = 0
@@ -434,7 +456,12 @@ def evaluate_cases(data: dict[str, Any], manifest_root: Path | None = None) -> E
                     continue
 
                 expected_text = normalized_text(expected_cell.get("text", ""))
-                actual_text = normalized_text(actual_cell.get("text", ""))
+                actual_text = normalized_text(
+                    actual_cell_text(
+                        actual_cell,
+                        f"case {case.get('id')!r}: actual cell {cell_id!r}",
+                    )
+                )
                 if expected_text == actual_text:
                     matched_cell_count += 1
 
