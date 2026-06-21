@@ -255,6 +255,24 @@ def test_adapter_rejects_placeholder_api_key() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "api_key",
+    [
+        "sample-secret",
+        "fake_api_key",
+        "example-token",
+        "please-change-me",
+    ],
+)
+def test_adapter_rejects_placeholder_api_key_variants(api_key: str) -> None:
+    with pytest.raises(LocalLLMConfigurationError, match="placeholder"):
+        LocalLLMConversionPlanAdapter(
+            base_url="http://localhost:8000/v1",
+            model="local-json-model",
+            api_key=api_key,
+        )
+
+
 def test_urllib_transport_bypasses_ambient_proxies(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 

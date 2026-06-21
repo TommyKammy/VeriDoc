@@ -67,6 +67,7 @@ _PLACEHOLDER_API_KEYS = {
     "example",
     "local-placeholder-only",
 }
+_PLACEHOLDER_API_KEY_MARKERS = tuple(_PLACEHOLDER_API_KEYS)
 _LOCAL_RUNTIME_NETWORKS = tuple(
     ipaddress.ip_network(network)
     for network in (
@@ -307,7 +308,7 @@ def _is_local_runtime_address(address: ipaddress.IPv4Address | ipaddress.IPv6Add
 
 def _is_placeholder_secret(secret: str) -> bool:
     normalized = secret.strip().lower()
-    return not normalized or normalized in _PLACEHOLDER_API_KEYS or "todo" in normalized
+    return not normalized or any(marker in normalized for marker in _PLACEHOLDER_API_KEY_MARKERS)
 
 
 def _non_empty_string(value: object) -> bool:
