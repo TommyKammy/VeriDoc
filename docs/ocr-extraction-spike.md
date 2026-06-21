@@ -9,7 +9,7 @@ content to an external service.
 | Candidate | Result | bbox support | confidence support | Notes |
 | --- | --- | --- | --- | --- |
 | Tesseract CLI | selected local execution path | yes | yes | Uses a locally installed `tesseract` executable and TSV output. The repository does not vendor the OCR binary or language data. |
-| PaddleOCR | comparison adapter | yes | yes | Uses a locally installed `paddleocr` Python runtime when present. Model installation/cache management remains outside this repository. |
+| PaddleOCR | comparison adapter | yes | yes | Uses a locally installed `paddleocr` Python runtime only when explicit local detection and recognition model directories are configured. Model installation/cache management remains outside this repository. |
 
 ## Intermediate OCR-to-IR shape
 
@@ -60,6 +60,11 @@ text-native PDF extraction.
   successful OCR result.
 - Missing local OCR runtime dependencies are reported as `not-installed` in
   candidate comparison rather than inferred as success.
+- PaddleOCR comparison is blocked unless
+  `VERIDOC_PADDLEOCR_TEXT_DETECTION_MODEL_DIR` and
+  `VERIDOC_PADDLEOCR_TEXT_RECOGNITION_MODEL_DIR` point to existing local model
+  directories, so the adapter does not trigger model downloads during
+  verification.
 - Empty OCR text regions and regions whose clipped bbox has no positive visible
   area are skipped because they cannot satisfy the downstream coordinate
   contract.

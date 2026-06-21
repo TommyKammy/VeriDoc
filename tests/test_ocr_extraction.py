@@ -15,8 +15,12 @@ except ImportError:
 from core.parsers.ocr_extraction import (
     OcrEngineUnavailable,
     OcrRawRegion,
+    PaddleOcrAdapter,
+    TesseractCliAdapter,
     compare_ocr_extractors,
     extract_scanned_pdf_ocr,
+    _parse_paddle_result,
+    _parse_tesseract_tsv,
 )
 
 
@@ -49,6 +53,15 @@ class LowConfidenceAdapter:
                 confidence=41.0,
             )
         ]
+
+
+class NoTextAdapter:
+    name = "no-text"
+    version = "0.test"
+
+    def recognize(self, image_png: bytes, *, page_number: int) -> list[OcrRawRegion]:
+        assert image_png.startswith(b"\x89PNG")
+        return []
 
 
 class MissingAdapter:
@@ -139,3 +152,79 @@ def test_compare_ocr_extractors_reports_engine_failures_without_success(
             "notes": "missing OCR runtime",
         }
     ]
+
+
+def test_compare_ocr_extractors_reports_no_text_without_success(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "blank-ocr.pdf"
+    _write_image_only_pdf(pdf_path)
+
+    candidates = compare_ocr_extractors(pdf_path, adapters=[NoTextAdapter()])
+
+    assert candidates[0]["status"] == "no-text"
+    assert candidates[0]["region_count"] == 0
+
+
+def test_parse_tesseract_tsv_preserves_percent_confidence() -> None:
+    tsv = "\t".join(["left", "top", "width", "height", "conf", "text"])
+    tsv += "\n" + "\t".join(["1", "2", "3", "4", "1", "A"])
+
+    regions = _parse_tesseract_tsv(tsv)
+
+    assert regions[0].confidence == 1.0
+
+
+def test_parse_paddle_result_accepts_version_3_result_objects() -> None:
+    class PaddleResult:
+        json = {
+            "res": {
+                "rec_texts": ["LOT-001"],
+                "rec_scores": [0.88],
+                "rec_polys": [
+                    [
+                        [10, 12],
+                        [70, 12],
+                        [70, 26],
+                        [10, 26],
+                    ]
+                ],
+            }
+        }
+
+    regions = _parse_paddle_result([PaddleResult()])
+
+    assert regions[0].text == "LOT-001"
+    assert regions[0].confidence == 88.0
+    assert regions[0].bbox == (10.0, 12.0, 70.0, 26.0)
+
+
+def test_paddleocr_adapter_requires_local_models(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("VERIDOC_PADDLEOCR_TEXT_DETECTION_MODEL_DIR", raising=False)
+    monkeypatch.delenv("VERIDOC_PADDLEOCR_TEXT_RECOGNITION_MODEL_DIR", raising=False)
+
+    with pytest.raises(OcrEngineUnavailable, match="local model directories"):
+        PaddleOcrAdapter().recognize(b"\x89PNG\r\n", page_number=1)
+
+
+def test_tesseract_adapter_reopens_temp_image_before_subprocess(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(cmd: list[str], **kwargs: object) -> object:
+        image_path = Path(cmd[1])
+        assert image_path.is_file()
+        with image_path.open("ab"):
+            pass
+
+        class Proc:
+            returncode = 0
+            stdout = "left\ttop\twidth\theight\tconf\ttext\n1\t2\t3\t4\t91\tA\n"
+            stderr = ""
+
+        return Proc()
+
+    monkeypatch.setattr("core.parsers.ocr_extraction.shutil.which", lambda name: "tesseract")
+    monkeypatch.setattr("core.parsers.ocr_extraction.subprocess.run", fake_run)
+
+    regions = TesseractCliAdapter().recognize(b"\x89PNG\r\n", page_number=1)
+
+    assert regions[0].text == "A"
+    assert regions[0].confidence == 91.0

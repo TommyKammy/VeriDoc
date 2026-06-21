@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import os
 import shutil
 import subprocess
 import tempfile
@@ -179,11 +180,17 @@ def compare_ocr_extractors(
             region_count = sum(len(page.regions) for page in extraction.pages)
             low_confidence_count = sum(page.low_confidence_count for page in extraction.pages)
             statuses = {page.status for page in extraction.pages}
+            if not extraction.pages or statuses == {"no-text"}:
+                status = "no-text"
+            elif "low-confidence" in statuses:
+                status = "low-confidence"
+            else:
+                status = "ok"
             candidates.append(
                 OcrCandidate(
                     name=adapter.name,
                     version=adapter.version,
-                    status="low-confidence" if "low-confidence" in statuses else "ok",
+                    status=status,
                     region_count=region_count,
                     low_confidence_count=low_confidence_count,
                     supports_bbox=True,
@@ -221,11 +228,11 @@ class TesseractCliAdapter:
         binary = shutil.which("tesseract")
         if binary is None:
             raise OcrEngineUnavailable("tesseract executable is not installed")
-        with tempfile.NamedTemporaryFile(suffix=".png") as image_file:
-            image_file.write(image_png)
-            image_file.flush()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            image_path = Path(temp_dir) / f"page-{page_number}.png"
+            image_path.write_bytes(image_png)
             proc = subprocess.run(
-                [binary, image_file.name, "stdout", "--psm", "6", "tsv"],
+                [binary, str(image_path), "stdout", "--psm", "6", "tsv"],
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -239,6 +246,21 @@ class TesseractCliAdapter:
 class PaddleOcrAdapter:
     name = "paddleocr"
 
+    def __init__(
+        self,
+        *,
+        text_detection_model_dir: str | Path | None = None,
+        text_recognition_model_dir: str | Path | None = None,
+    ) -> None:
+        self.text_detection_model_dir = _optional_path(
+            text_detection_model_dir
+            or os.environ.get("VERIDOC_PADDLEOCR_TEXT_DETECTION_MODEL_DIR")
+        )
+        self.text_recognition_model_dir = _optional_path(
+            text_recognition_model_dir
+            or os.environ.get("VERIDOC_PADDLEOCR_TEXT_RECOGNITION_MODEL_DIR")
+        )
+
     @property
     def version(self) -> str | None:
         try:
@@ -248,17 +270,54 @@ class PaddleOcrAdapter:
         return getattr(paddleocr, "__version__", None)
 
     def recognize(self, image_png: bytes, *, page_number: int) -> list[OcrRawRegion]:
+        self._require_local_models()
         try:
             from paddleocr import PaddleOCR
         except ImportError as exc:
             raise OcrEngineUnavailable("paddleocr package is not installed") from exc
 
-        with tempfile.NamedTemporaryFile(suffix=".png") as image_file:
-            image_file.write(image_png)
-            image_file.flush()
-            engine = PaddleOCR(use_angle_cls=False, lang="en")
-            raw_result = engine.ocr(image_file.name, cls=False)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            image_path = Path(temp_dir) / f"page-{page_number}.png"
+            image_path.write_bytes(image_png)
+            engine = self._create_engine(PaddleOCR)
+            if hasattr(engine, "predict"):
+                raw_result = engine.predict(str(image_path))
+            else:
+                raw_result = engine.ocr(str(image_path), cls=False)
         return _parse_paddle_result(raw_result)
+
+    def _require_local_models(self) -> None:
+        missing = []
+        for env_name, model_dir in (
+            ("VERIDOC_PADDLEOCR_TEXT_DETECTION_MODEL_DIR", self.text_detection_model_dir),
+            ("VERIDOC_PADDLEOCR_TEXT_RECOGNITION_MODEL_DIR", self.text_recognition_model_dir),
+        ):
+            if model_dir is None or not model_dir.is_dir():
+                missing.append(env_name)
+        if missing:
+            joined = ", ".join(missing)
+            raise OcrEngineUnavailable(
+                "paddleocr local model directories are required to avoid model downloads; "
+                f"set {joined}"
+            )
+
+    def _create_engine(self, paddle_ocr: Any) -> Any:
+        try:
+            return paddle_ocr(
+                lang="en",
+                use_doc_orientation_classify=False,
+                use_doc_unwarping=False,
+                use_textline_orientation=False,
+                text_detection_model_dir=str(self.text_detection_model_dir),
+                text_recognition_model_dir=str(self.text_recognition_model_dir),
+            )
+        except TypeError:
+            return paddle_ocr(
+                use_angle_cls=False,
+                lang="en",
+                det_model_dir=str(self.text_detection_model_dir),
+                rec_model_dir=str(self.text_recognition_model_dir),
+            )
 
 
 def _load_fitz() -> Any:
@@ -354,8 +413,12 @@ def _parse_tesseract_tsv(tsv: str) -> list[OcrRawRegion]:
 
 def _parse_paddle_result(raw_result: Any) -> list[OcrRawRegion]:
     regions: list[OcrRawRegion] = []
-    pages = raw_result if isinstance(raw_result, list) else []
+    pages = raw_result if isinstance(raw_result, list) else [raw_result]
     for page_result in pages:
+        result_data = _paddle_result_data(page_result)
+        if result_data is not None:
+            regions.extend(_parse_paddle_result_data(result_data))
+            continue
         lines = page_result if isinstance(page_result, list) else []
         for line in lines:
             if not isinstance(line, (list, tuple)) or len(line) < 2:
@@ -364,7 +427,7 @@ def _parse_paddle_result(raw_result: Any) -> list[OcrRawRegion]:
             if not isinstance(text_score, (list, tuple)) or len(text_score) < 2:
                 continue
             text = str(text_score[0])
-            confidence = _parse_confidence(text_score[1])
+            confidence = _parse_confidence(text_score[1], scale_unit_interval=True)
             try:
                 xs = [float(point[0]) for point in points]
                 ys = [float(point[1]) for point in points]
@@ -380,13 +443,99 @@ def _parse_paddle_result(raw_result: Any) -> list[OcrRawRegion]:
     return regions
 
 
-def _parse_confidence(value: Any) -> float | None:
+def _parse_paddle_result_data(result_data: dict[str, Any]) -> list[OcrRawRegion]:
+    texts = _as_list(result_data.get("rec_texts"))
+    scores = _as_list(result_data.get("rec_scores"))
+    polygons = _as_list(result_data.get("rec_polys")) or _as_list(result_data.get("dt_polys"))
+    boxes = _as_list(result_data.get("rec_boxes")) or _as_list(result_data.get("dt_boxes"))
+    regions: list[OcrRawRegion] = []
+    for index, text_value in enumerate(texts):
+        text = str(text_value)
+        bbox = _paddle_bbox(polygons[index] if index < len(polygons) else None)
+        if bbox is None:
+            bbox = _paddle_bbox(boxes[index] if index < len(boxes) else None)
+        if bbox is None:
+            continue
+        confidence = _parse_confidence(
+            scores[index] if index < len(scores) else None,
+            scale_unit_interval=True,
+        )
+        regions.append(OcrRawRegion(text=text, bbox=bbox, confidence=confidence))
+    return regions
+
+
+def _paddle_result_data(page_result: Any) -> dict[str, Any] | None:
+    candidates: list[Any] = []
+    if isinstance(page_result, dict):
+        candidates.append(page_result)
+    json_value = getattr(page_result, "json", None)
+    if callable(json_value):
+        try:
+            candidates.append(json_value())
+        except TypeError:
+            pass
+    elif json_value is not None:
+        candidates.append(json_value)
+    res_value = getattr(page_result, "res", None)
+    if res_value is not None:
+        candidates.append(res_value)
+
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        result_data = candidate.get("res", candidate)
+        if isinstance(result_data, dict):
+            return result_data
+    return None
+
+
+def _paddle_bbox(value: Any) -> tuple[float, float, float, float] | None:
+    values = _to_plain_list(value)
+    if values is None:
+        return None
+    try:
+        value_count = len(values)
+    except TypeError:
+        return None
+    if value_count == 4 and all(isinstance(item, (int, float)) for item in values):
+        x0, y0, x1, y1 = (float(item) for item in values)
+        return (x0, y0, x1, y1)
+    try:
+        xs = [float(point[0]) for point in values]
+        ys = [float(point[1]) for point in values]
+    except (TypeError, ValueError, IndexError):
+        return None
+    if not xs or not ys:
+        return None
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+def _as_list(value: Any) -> list[Any]:
+    values = _to_plain_list(value)
+    return values if isinstance(values, list) else []
+
+
+def _to_plain_list(value: Any) -> Any:
+    if hasattr(value, "tolist"):
+        return value.tolist()
+    if isinstance(value, tuple):
+        return list(value)
+    return value
+
+
+def _optional_path(value: str | Path | None) -> Path | None:
+    if value is None or str(value).strip() == "":
+        return None
+    return Path(value)
+
+
+def _parse_confidence(value: Any, *, scale_unit_interval: bool = False) -> float | None:
     try:
         confidence = float(value)
     except (TypeError, ValueError):
         return None
     if confidence < 0:
         return None
-    if 0.0 <= confidence <= 1.0:
+    if scale_unit_interval and 0.0 <= confidence <= 1.0:
         return confidence * 100.0
     return confidence
