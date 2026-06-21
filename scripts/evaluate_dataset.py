@@ -201,17 +201,18 @@ def required_tables_by_id(section: dict[str, Any], context: str) -> dict[str, di
     return indexed
 
 
-def validate_unique_case_ids(cases: list[Any]) -> None:
-    seen_case_ids: set[str] = set()
+def cases_by_id(cases: list[Any]) -> dict[str, dict[str, Any]]:
+    indexed: dict[str, dict[str, Any]] = {}
     for case in cases:
         if not isinstance(case, dict):
             raise EvaluationCaseError("each case must be an object")
         case_id = case.get("id")
         if not isinstance(case_id, str) or not case_id:
             raise EvaluationCaseError("each case needs a non-empty string id")
-        if case_id in seen_case_ids:
+        if case_id in indexed:
             raise EvaluationCaseError(f"duplicate case id {case_id!r}")
-        seen_case_ids.add(case_id)
+        indexed[case_id] = case
+    return indexed
 
 
 def validate_schema_version(data: dict[str, Any]) -> None:
@@ -431,15 +432,13 @@ def validate_expected_tables_against_fixture(
 def validate_case_fixtures(
     data: dict[str, Any], cases: list[Any], manifest_root: Path | None = None
 ) -> None:
-    validate_unique_case_ids(cases)
+    indexed_cases = cases_by_id(cases)
 
     root = manifest_root or Path.cwd()
     manifest = load_json(manifest_path_from_cases(data, root))
     fixture_paths = fixture_paths_from_manifest(manifest, root)
 
-    for case in cases:
-        if not isinstance(case, dict):
-            raise EvaluationCaseError("each case must be an object")
+    for case in indexed_cases.values():
         fixture_id = case.get("fixture_id")
         if not isinstance(fixture_id, str) or fixture_id not in fixture_paths:
             raise EvaluationCaseError(f"unknown fixture_id {fixture_id!r}")
