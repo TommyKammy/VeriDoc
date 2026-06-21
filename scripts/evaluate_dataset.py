@@ -431,6 +431,8 @@ def validate_expected_tables_against_fixture(
 def validate_case_fixtures(
     data: dict[str, Any], cases: list[Any], manifest_root: Path | None = None
 ) -> None:
+    validate_unique_case_ids(cases)
+
     root = manifest_root or Path.cwd()
     manifest = load_json(manifest_path_from_cases(data, root))
     fixture_paths = fixture_paths_from_manifest(manifest, root)
@@ -460,7 +462,6 @@ def evaluate_cases(data: dict[str, Any], manifest_root: Path | None = None) -> E
         raise EvaluationCaseError("cases must be a list")
     if not cases:
         raise EvaluationCaseError("cases must contain at least one evaluation case")
-    validate_unique_case_ids(cases)
     validate_case_fixtures(data, cases, manifest_root)
 
     expected_table_count = 0
