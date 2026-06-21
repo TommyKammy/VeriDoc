@@ -47,6 +47,17 @@ def test_extract_docx_structure_returns_headings_paragraphs_and_tables(tmp_path:
         <w:tc><w:p><w:r><w:t>Lot</w:t><w:tab/><w:t>ID</w:t></w:r></w:p></w:tc>
         <w:tc><w:p><w:r><w:t>L-001</w:t></w:r></w:p></w:tc>
       </w:tr>
+      <w:tr>
+        <w:tc>
+          <w:p><w:r><w:t>First paragraph</w:t></w:r></w:p>
+          <w:p><w:r><w:t>Second paragraph</w:t></w:r></w:p>
+        </w:tc>
+        <w:tc><w:p/></w:tc>
+      </w:tr>
+      <w:tr>
+        <w:tc><w:p/></w:tc>
+        <w:tc><w:p/></w:tc>
+      </w:tr>
     </w:tbl>
   </w:body>
 </w:document>
@@ -59,7 +70,12 @@ def test_extract_docx_structure_returns_headings_paragraphs_and_tables(tmp_path:
     assert [(block.kind, block.text) for block in result.blocks] == [
         ("heading", "Batch Summary"),
         ("paragraph", "Reviewed \tdocument\nLine two"),
-        ("table", "Field\tValue\nLot\tID\tL-001"),
+        ("table", "Field\tValue\nLot\tID\tL-001\nFirst paragraph\nSecond paragraph\t\n\t"),
     ]
     assert result.blocks[0].style == "Heading1"
-    assert result.blocks[2].rows == [["Field", "Value"], ["Lot\tID", "L-001"]]
+    assert result.blocks[2].rows == [
+        ["Field", "Value"],
+        ["Lot\tID", "L-001"],
+        ["First paragraph\nSecond paragraph", ""],
+        ["", ""],
+    ]

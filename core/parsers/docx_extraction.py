@@ -87,10 +87,17 @@ def _is_heading_style(style: Optional[str]) -> bool:
 def _table_rows(table: ElementTree.Element) -> List[List[str]]:
     rows: List[List[str]] = []
     for row in table.findall(f"{WORD_NS}tr"):
-        cells = [_text_content(cell) for cell in row.findall(f"{WORD_NS}tc")]
-        if any(cell for cell in cells):
+        cells = [_table_cell_text(cell) for cell in row.findall(f"{WORD_NS}tc")]
+        if cells:
             rows.append(cells)
     return rows
+
+
+def _table_cell_text(cell: ElementTree.Element) -> str:
+    paragraphs = cell.findall(f"{WORD_NS}p")
+    if not paragraphs:
+        return _text_content(cell)
+    return "\n".join(_text_content(paragraph) for paragraph in paragraphs)
 
 
 def _text_content(element: ElementTree.Element) -> str:

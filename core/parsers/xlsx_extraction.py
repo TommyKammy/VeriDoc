@@ -34,7 +34,7 @@ class XlsxStructure:
     sheets: List[XlsxSheet]
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return _json_ready(asdict(self))
 
 
 def extract_xlsx_structure(xlsx_path: Union[str, Path]) -> XlsxStructure:
@@ -145,7 +145,7 @@ def _cell_from_xml(cell: ElementTree.Element, shared_strings: List[str]) -> Xlsx
         value = _joined_text(cell.find(f"{SHEET_NS}is"))
         value_type = "inline_string"
     elif raw_type == "b":
-        value = value_text == "1"
+        value = None if value_text == "" else value_text == "1"
         value_type = "boolean"
     elif raw_type == "str":
         value = value_text
@@ -173,9 +173,12 @@ def _cell_value_text(cell: ElementTree.Element) -> str:
 
 def _shared_string_value(value_text: str, shared_strings: List[str]) -> str:
     try:
-        return shared_strings[int(value_text)]
+        index = int(value_text)
     except (IndexError, ValueError) as exc:
         raise ValueError(f"shared string index is invalid: {value_text}") from exc
+    if index < 0 or index >= len(shared_strings):
+        raise ValueError(f"shared string index is invalid: {value_text}")
+    return shared_strings[index]
 
 
 def _number_value(value_text: str) -> Any:
@@ -191,4 +194,25 @@ def _number_value(value_text: str) -> Any:
 def _joined_text(element: Optional[ElementTree.Element]) -> str:
     if element is None:
         return ""
-    return "".join(text.text or "" for text in element.iter(f"{SHEET_NS}t"))
+    chunks: List[str] = []
+
+    def collect(node: ElementTree.Element) -> None:
+        if node.tag == f"{SHEET_NS}rPh":
+            return
+        if node.tag == f"{SHEET_NS}t":
+            chunks.append(node.text or "")
+        for child in list(node):
+            collect(child)
+
+    collect(element)
+    return "".join(chunks)
+
+
+def _json_ready(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, list):
+        return [_json_ready(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _json_ready(item) for key, item in value.items()}
+    return value
