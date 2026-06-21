@@ -39,6 +39,10 @@ class OssLicenseInventoryTest(unittest.TestCase):
         self.assertIn("evaluation-only", inventory)
         self.assertIn("no longer actively maintained", inventory)
         self.assertIn("Phase1-allowed", inventory)
+        self.assertIn("defusedxml", inventory)
+        self.assertIn("untrusted XLSX parsing is not Phase1-approved", inventory)
+        self.assertIn("pins at 0.5.12 or later", inventory)
+        self.assertIn("PyMuPDF dependency", inventory)
 
 
 if __name__ == "__main__":
