@@ -286,6 +286,16 @@ class EvaluateDatasetTest(unittest.TestCase):
             ):
                 self.evaluate_with_fixture(data, fixture)
 
+    def test_rejects_oversized_integer_fixture_geometry_before_scoring(self) -> None:
+        data = self.valid_cases_data()
+        fixture = evaluate_dataset.load_json(
+            REPO_ROOT / "datasets" / "fixtures" / "sample-document-ir-v0.json"
+        )
+        fixture["pages"][0]["width"] = 10**400
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "page width"):
+            self.evaluate_with_fixture(data, fixture)
+
     def test_rejects_missing_or_non_string_expected_cell_text_before_scoring(self) -> None:
         for text_value in (None, 123, "   "):
             data = self.valid_cases_data()
@@ -404,6 +414,17 @@ class EvaluateDatasetTest(unittest.TestCase):
         ):
             self.evaluate_valid_cases(data)
 
+    def test_rejects_non_object_case_sections_before_indexing(self) -> None:
+        for section in ("expected", "actual"):
+            data = self.valid_cases_data()
+            data["cases"][0][section] = []
+
+            with self.subTest(section=section), self.assertRaisesRegex(
+                evaluate_dataset.EvaluationCaseError,
+                "expected and actual sections must be objects",
+            ):
+                self.evaluate_valid_cases(data)
+
     def test_rejects_duplicate_cell_ids_before_indexing(self) -> None:
         data = self.valid_cases_data()
         cells = data["cases"][0]["expected"]["tables"][0]["cells"]
@@ -447,6 +468,23 @@ class EvaluateDatasetTest(unittest.TestCase):
         ):
             self.evaluate_valid_cases(data)
 
+    def test_rejects_non_string_extra_actual_cell_text_before_scoring(self) -> None:
+        data = self.valid_cases_data()
+        actual_cells = data["cases"][0]["actual"]["tables"][0]["cells"]
+        actual_cells.append(
+            {
+                "id": "table-001-extra",
+                "text": 123,
+                "source": {},
+                "auto_confirmed": False,
+            }
+        )
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError, "actual cell 'table-001-extra': text"
+        ):
+            self.evaluate_valid_cases(data)
+
     def test_rejects_non_boolean_actual_auto_confirmed_before_scoring(self) -> None:
         data = self.valid_cases_data()
         actual_cell = data["cases"][0]["actual"]["tables"][0]["cells"][1]
@@ -455,6 +493,24 @@ class EvaluateDatasetTest(unittest.TestCase):
         with self.assertRaisesRegex(
             evaluate_dataset.EvaluationCaseError,
             "actual cell 'table-001-r1-c2': auto_confirmed must be a boolean",
+        ):
+            self.evaluate_valid_cases(data)
+
+    def test_rejects_non_boolean_extra_actual_auto_confirmed_before_scoring(self) -> None:
+        data = self.valid_cases_data()
+        actual_cells = data["cases"][0]["actual"]["tables"][0]["cells"]
+        actual_cells.append(
+            {
+                "id": "table-001-extra",
+                "text": "extra",
+                "source": {},
+                "auto_confirmed": "yes",
+            }
+        )
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError,
+            "actual cell 'table-001-extra': auto_confirmed must be a boolean",
         ):
             self.evaluate_valid_cases(data)
 

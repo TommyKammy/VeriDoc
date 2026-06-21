@@ -88,7 +88,11 @@ def source_matches(expected: dict[str, Any], actual: dict[str, Any]) -> bool:
 
 
 def is_number(value: object) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return abs(value) <= sys.float_info.max
+    return isinstance(value, float) and math.isfinite(value)
 
 
 def is_valid_source_anchor(source: object) -> bool:
@@ -179,7 +183,9 @@ def required_cells_by_id(table: dict[str, Any], context: str) -> dict[str, dict[
     return indexed
 
 
-def tables_by_id(section: dict[str, Any]) -> dict[str, dict[str, Any]]:
+def tables_by_id(section: object) -> dict[str, dict[str, Any]]:
+    if not isinstance(section, dict):
+        raise EvaluationCaseError("expected and actual sections must be objects")
     tables = section.get("tables")
     if not isinstance(tables, list):
         raise EvaluationCaseError("expected and actual sections must define tables lists")
@@ -194,7 +200,7 @@ def tables_by_id(section: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return indexed
 
 
-def required_tables_by_id(section: dict[str, Any], context: str) -> dict[str, dict[str, Any]]:
+def required_tables_by_id(section: object, context: str) -> dict[str, dict[str, Any]]:
     indexed = tables_by_id(section)
     if not indexed:
         raise EvaluationCaseError(f"{context}: tables must contain at least one table")
@@ -488,6 +494,10 @@ def evaluate_cases(data: dict[str, Any], manifest_root: Path | None = None) -> E
                 expected_table, f"case {case.get('id')!r}: expected table {table_id!r}"
             )
             actual_cells = cells_by_id(actual_table)
+            for actual_cell_id, actual_cell in actual_cells.items():
+                actual_context = f"case {case.get('id')!r}: actual cell {actual_cell_id!r}"
+                actual_cell_text(actual_cell, actual_context)
+                actual_auto_confirmed(actual_cell, actual_context)
             expected_cell_count += len(expected_cells)
 
             for cell_id, expected_cell in expected_cells.items():
