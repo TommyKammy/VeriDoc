@@ -371,14 +371,24 @@ def _local_base_url(base_url: str) -> _LocalBaseUrl | None:
         resolved_address = _resolve_local_runtime_address(hostname, port)
         if resolved_address is None:
             return None
-        return _LocalBaseUrl(
-            request_base_url=_base_url_with_address(parsed, resolved_address),
-            host_header=_host_header(hostname, port),
-            tls_server_name=hostname if parsed.scheme == "https" else None,
-        )
+        return _local_base_url_for_dns_host(parsed, hostname, port, resolved_address)
     if not _is_local_runtime_address(address):
         return None
     return _LocalBaseUrl(base_url)
+
+
+def _local_base_url_for_dns_host(
+    parsed: Any,
+    hostname: str,
+    port: int | None,
+    resolved_address: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> _LocalBaseUrl:
+    tls_server_name = hostname if parsed.scheme == "https" else None
+    return _LocalBaseUrl(
+        request_base_url=_base_url_with_address(parsed, resolved_address),
+        host_header=_host_header(hostname, port),
+        tls_server_name=tls_server_name,
+    )
 
 
 def _resolve_local_runtime_address(hostname: str, port: int | None) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
