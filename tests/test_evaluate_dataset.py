@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import importlib.util
 import json
 import subprocess
@@ -22,6 +23,9 @@ spec.loader.exec_module(evaluate_dataset)
 
 
 class EvaluateDatasetTest(unittest.TestCase):
+    def valid_cases_data(self) -> dict[str, object]:
+        return copy.deepcopy(evaluate_dataset.load_json(CASES_PATH))
+
     def test_public_fixture_metrics_cover_phase0_acceptance_criteria(self) -> None:
         data = evaluate_dataset.load_json(CASES_PATH)
 
@@ -34,6 +38,50 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertEqual(1, metrics.expected_table_count)
         self.assertEqual(2, metrics.expected_cell_count)
         self.assertEqual(2, metrics.expected_source_link_count)
+
+    def test_missing_actual_cell_counts_as_missing_source_link(self) -> None:
+        data = self.valid_cases_data()
+        case = data["cases"][0]
+        actual_table = case["actual"]["tables"][0]
+        actual_table["cells"] = actual_table["cells"][:1]
+
+        metrics = evaluate_dataset.evaluate_cases(data)
+
+        self.assertEqual(2, metrics.expected_source_link_count)
+        self.assertEqual(1, metrics.matched_source_link_count)
+        self.assertEqual(0.5, metrics.source_linkage_rate)
+
+    def test_rejects_unknown_case_fixture_id(self) -> None:
+        data = self.valid_cases_data()
+        data["cases"][0]["fixture_id"] = "missing-fixture"
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "unknown fixture_id"):
+            evaluate_dataset.evaluate_cases(data)
+
+    def test_rejects_unsupported_evaluation_schema_version(self) -> None:
+        data = self.valid_cases_data()
+        data["schema_version"] = "veridoc-evaluation-cases/v999"
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError, "unsupported evaluation schema_version"
+        ):
+            evaluate_dataset.evaluate_cases(data)
+
+    def test_rejects_duplicate_table_ids_before_indexing(self) -> None:
+        data = self.valid_cases_data()
+        expected = data["cases"][0]["expected"]
+        expected["tables"].append(copy.deepcopy(expected["tables"][0]))
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "duplicate table id"):
+            evaluate_dataset.evaluate_cases(data)
+
+    def test_rejects_duplicate_cell_ids_before_indexing(self) -> None:
+        data = self.valid_cases_data()
+        cells = data["cases"][0]["expected"]["tables"][0]["cells"]
+        cells.append(copy.deepcopy(cells[0]))
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "duplicate cell id"):
+            evaluate_dataset.evaluate_cases(data)
 
     def test_cli_emits_json_metrics_for_local_or_ci_verification(self) -> None:
         proc = subprocess.run(

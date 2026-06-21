@@ -12,6 +12,8 @@ from typing import Any
 
 
 DEFAULT_EVALUATION_CASES = Path("datasets/gold/evaluation_cases_v0.json")
+EVALUATION_CASES_SCHEMA_VERSION = "veridoc-evaluation-cases/v0"
+FIXTURE_MANIFEST_SCHEMA_VERSION = "veridoc-eval-fixtures/v0"
 
 
 @dataclass(frozen=True)
@@ -79,6 +81,10 @@ def cells_by_id(table: dict[str, Any]) -> dict[str, dict[str, Any]]:
     for cell in cells:
         if not isinstance(cell, dict) or not isinstance(cell.get("id"), str):
             raise EvaluationCaseError(f"table {table.get('id')!r}: each cell needs a string id")
+        if cell["id"] in indexed:
+            raise EvaluationCaseError(
+                f"table {table.get('id')!r}: duplicate cell id {cell['id']!r}"
+            )
         indexed[cell["id"]] = cell
     return indexed
 
@@ -92,8 +98,17 @@ def tables_by_id(section: dict[str, Any]) -> dict[str, dict[str, Any]]:
     for table in tables:
         if not isinstance(table, dict) or not isinstance(table.get("id"), str):
             raise EvaluationCaseError("each table needs a string id")
+        if table["id"] in indexed:
+            raise EvaluationCaseError(f"duplicate table id {table['id']!r}")
         indexed[table["id"]] = table
     return indexed
+
+
+def validate_schema_version(data: dict[str, Any]) -> None:
+    if data.get("schema_version") != EVALUATION_CASES_SCHEMA_VERSION:
+        raise EvaluationCaseError(
+            f"unsupported evaluation schema_version {data.get('schema_version')!r}"
+        )
 
 
 def validate_scope(data: dict[str, Any]) -> None:
@@ -108,11 +123,66 @@ def validate_scope(data: dict[str, Any]) -> None:
         raise EvaluationCaseError("evaluation cases must not claim production or GMP readiness")
 
 
-def evaluate_cases(data: dict[str, Any]) -> EvaluationMetrics:
+def manifest_path_from_cases(data: dict[str, Any], manifest_root: Path | None = None) -> Path:
+    manifest_path = data.get("dataset_manifest")
+    if not isinstance(manifest_path, str) or not manifest_path:
+        raise EvaluationCaseError("dataset_manifest must be a non-empty string")
+    path = Path(manifest_path)
+    if manifest_root is not None and not path.is_absolute():
+        return manifest_root / path
+    return path
+
+
+def fixture_ids_from_manifest(manifest: dict[str, Any]) -> set[str]:
+    if manifest.get("schema_version") != FIXTURE_MANIFEST_SCHEMA_VERSION:
+        raise EvaluationCaseError(
+            f"unsupported fixture manifest schema_version {manifest.get('schema_version')!r}"
+        )
+
+    fixtures = manifest.get("fixtures")
+    if not isinstance(fixtures, list):
+        raise EvaluationCaseError("fixture manifest must define a fixtures list")
+
+    fixture_ids: set[str] = set()
+    for fixture in fixtures:
+        if not isinstance(fixture, dict) or not isinstance(fixture.get("id"), str):
+            raise EvaluationCaseError("each fixture manifest entry needs a string id")
+        fixture_id = fixture["id"]
+        if fixture_id in fixture_ids:
+            raise EvaluationCaseError(f"duplicate fixture id {fixture_id!r}")
+        if fixture.get("public_review_safe") is not True:
+            raise EvaluationCaseError(f"fixture {fixture_id!r} is not public-review safe")
+        fixture_ids.add(fixture_id)
+    return fixture_ids
+
+
+def validate_case_fixtures(
+    data: dict[str, Any], cases: list[Any], manifest_root: Path | None = None
+) -> None:
+    manifest = load_json(manifest_path_from_cases(data, manifest_root))
+    fixture_ids = fixture_ids_from_manifest(manifest)
+
+    for case in cases:
+        if not isinstance(case, dict):
+            raise EvaluationCaseError("each case must be an object")
+        fixture_id = case.get("fixture_id")
+        if not isinstance(fixture_id, str) or fixture_id not in fixture_ids:
+            raise EvaluationCaseError(f"unknown fixture_id {fixture_id!r}")
+
+
+def manifest_root_for_cases_path(cases_path: Path) -> Path:
+    if cases_path.parent.name == "gold" and cases_path.parent.parent.name == "datasets":
+        return cases_path.parent.parent.parent
+    return Path.cwd()
+
+
+def evaluate_cases(data: dict[str, Any], manifest_root: Path | None = None) -> EvaluationMetrics:
+    validate_schema_version(data)
     validate_scope(data)
     cases = data.get("cases")
     if not isinstance(cases, list):
         raise EvaluationCaseError("cases must be a list")
+    validate_case_fixtures(data, cases, manifest_root)
 
     expected_table_count = 0
     matched_table_count = 0
@@ -138,6 +208,9 @@ def evaluate_cases(data: dict[str, Any]) -> EvaluationMetrics:
             expected_cell_count += len(expected_cells)
 
             for cell_id, expected_cell in expected_cells.items():
+                if isinstance(expected_cell.get("source"), dict):
+                    expected_source_link_count += 1
+
                 actual_cell = actual_cells.get(cell_id)
                 if actual_cell is None:
                     continue
@@ -147,12 +220,15 @@ def evaluate_cases(data: dict[str, Any]) -> EvaluationMetrics:
                 if expected_text == actual_text:
                     matched_cell_count += 1
 
-                if isinstance(expected_cell.get("source"), dict):
-                    expected_source_link_count += 1
-                    if source_matches(expected_cell, actual_cell):
-                        matched_source_link_count += 1
+                if isinstance(expected_cell.get("source"), dict) and source_matches(
+                    expected_cell, actual_cell
+                ):
+                    matched_source_link_count += 1
 
-                if expected_cell.get("requires_review") is True and actual_cell.get("auto_confirmed") is True:
+                if (
+                    expected_cell.get("requires_review") is True
+                    and actual_cell.get("auto_confirmed") is True
+                ):
                     false_auto_confirmed_count += 1
 
     return EvaluationMetrics(
@@ -175,7 +251,11 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        metrics = evaluate_cases(load_json(args.cases))
+        cases_path = args.cases.resolve()
+        metrics = evaluate_cases(
+            load_json(cases_path),
+            manifest_root=manifest_root_for_cases_path(cases_path),
+        )
     except (OSError, json.JSONDecodeError, EvaluationCaseError) as exc:
         print(f"Evaluation failed: {exc}", file=sys.stderr)
         return 1
