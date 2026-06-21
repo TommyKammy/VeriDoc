@@ -169,6 +169,63 @@ class DocumentIrSchemaTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, msg="validator unexpectedly accepted undeclared source_page")
         self.assertIn("$.blocks[0].value_metadata.source_page: references undeclared page 99", result.stderr)
 
+    def test_validator_rejects_duplicate_page_numbers(self) -> None:
+        document = json.loads(SAMPLE_PATH.read_text(encoding="utf-8"))
+        document["pages"].append({**document["pages"][0], "width": 612.0})
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            document_path = Path(temp_dir) / "duplicate-page-number-document-ir.json"
+            document_path.write_text(json.dumps(document), encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(VALIDATOR_PATH),
+                    "--schema",
+                    str(SCHEMA_PATH),
+                    "--document",
+                    str(document_path),
+                ],
+                cwd=REPO_ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+        self.assertNotEqual(result.returncode, 0, msg="validator unexpectedly accepted duplicate page_number")
+        self.assertIn("$.pages[1].page_number: duplicates page number 1", result.stderr)
+
+    def test_validator_rejects_bbox_outside_referenced_page(self) -> None:
+        document = json.loads(SAMPLE_PATH.read_text(encoding="utf-8"))
+        page = document["pages"][0]
+        bbox = document["blocks"][0]["value_metadata"]["bbox"]
+        bbox["x"] = page["width"] - 5
+        bbox["width"] = 20
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            document_path = Path(temp_dir) / "out-of-page-bbox-document-ir.json"
+            document_path.write_text(json.dumps(document), encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(VALIDATOR_PATH),
+                    "--schema",
+                    str(SCHEMA_PATH),
+                    "--document",
+                    str(document_path),
+                ],
+                cwd=REPO_ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+        self.assertNotEqual(result.returncode, 0, msg="validator unexpectedly accepted bbox outside page")
+        self.assertIn("$.blocks[0].value_metadata.bbox: extends past page 1 width 595.0", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

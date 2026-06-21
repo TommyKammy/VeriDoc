@@ -120,18 +120,46 @@ def validate(schema: dict[str, Any], value: Any, path: tuple[str, ...] = ()) -> 
 
 
 def validate_document_ir_consistency(document: dict[str, Any]) -> None:
-    declared_pages = {page["page_number"] for page in document["pages"]}
-    declared_pages_text = ", ".join(str(page) for page in sorted(declared_pages))
+    pages_by_number: dict[int | float, dict[str, Any]] = {}
+    for index, page in enumerate(document["pages"]):
+        page_number = page["page_number"]
+        if page_number in pages_by_number:
+            raise ValidationError(
+                "$.pages"
+                f"[{index}]"
+                ".page_number: "
+                f"duplicates page number {page_number!r}"
+            )
+        pages_by_number[page_number] = page
+
+    declared_pages_text = ", ".join(str(page) for page in sorted(pages_by_number))
 
     for index, block in enumerate(document["blocks"]):
-        source_page = block["value_metadata"]["source_page"]
-        if source_page not in declared_pages:
+        value_metadata = block["value_metadata"]
+        source_page = value_metadata["source_page"]
+        if source_page not in pages_by_number:
             raise ValidationError(
                 "$.blocks"
                 f"[{index}]"
                 ".value_metadata.source_page: "
                 f"references undeclared page {source_page!r}"
                 f" (declared pages: {declared_pages_text})"
+            )
+        page = pages_by_number[source_page]
+        bbox = value_metadata["bbox"]
+        if bbox["x"] + bbox["width"] > page["width"]:
+            raise ValidationError(
+                "$.blocks"
+                f"[{index}]"
+                ".value_metadata.bbox: "
+                f"extends past page {source_page!r} width {page['width']!r}"
+            )
+        if bbox["y"] + bbox["height"] > page["height"]:
+            raise ValidationError(
+                "$.blocks"
+                f"[{index}]"
+                ".value_metadata.bbox: "
+                f"extends past page {source_page!r} height {page['height']!r}"
             )
 
 
