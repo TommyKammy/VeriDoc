@@ -148,36 +148,36 @@ def build_table_extraction_report(
                 )
             )
 
-    if expected_shape is not None:
-        for candidate in ok_candidates:
-            table = first_tables[candidate.name]
-            if table is None:
-                continue
-            if table.row_count != expected_shape.rows:
-                mismatches.append(
-                    TableExtractionMismatch(
-                        kind="row-count",
-                        candidate=candidate.name,
-                        expected=str(expected_shape.rows),
-                        actual=str(table.row_count),
-                        notes="Extracted row count does not match the ruled-table sample.",
-                    )
+    shape_candidates = ok_candidates if expected_shape is not None else ()
+    for candidate in shape_candidates:
+        table = first_tables[candidate.name]
+        if table is None:
+            continue
+        if table.row_count != expected_shape.rows:
+            mismatches.append(
+                TableExtractionMismatch(
+                    kind="row-count",
+                    candidate=candidate.name,
+                    expected=str(expected_shape.rows),
+                    actual=str(table.row_count),
+                    notes="Extracted row count does not match the ruled-table sample.",
                 )
-            row_widths = table.row_widths
-            if not table.is_rectangular or table.column_count != expected_shape.columns:
-                mismatches.append(
-                    TableExtractionMismatch(
-                        kind="column-count",
-                        candidate=candidate.name,
-                        expected=str(expected_shape.columns),
-                        actual=(
-                            f"row widths {row_widths}"
-                            if not table.is_rectangular
-                            else str(table.column_count)
-                        ),
-                        notes="Extracted column count does not match the ruled-table sample.",
-                    )
+            )
+        row_widths = table.row_widths
+        if not table.is_rectangular or table.column_count != expected_shape.columns:
+            mismatches.append(
+                TableExtractionMismatch(
+                    kind="column-count",
+                    candidate=candidate.name,
+                    expected=str(expected_shape.columns),
+                    actual=(
+                        f"row widths {row_widths}"
+                        if not table.is_rectangular
+                        else str(table.column_count)
+                    ),
+                    notes="Extracted column count does not match the ruled-table sample.",
                 )
+            )
     if require_cell_bboxes:
         for candidate in ok_candidates:
             table = first_tables[candidate.name]
