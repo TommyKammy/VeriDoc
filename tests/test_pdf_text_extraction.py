@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-fitz = pytest.importorskip("fitz")
+fitz = pytest.importorskip("pymupdf")
 
 from core.parsers.pdf_text_extraction import extract_pdf_text
 
@@ -77,3 +77,59 @@ def test_extract_pdf_text_uses_unrotated_text_coordinate_space_for_rotated_pages
     assert fragment.text == "Rotated text"
     assert fragment.bbox.x + fragment.bbox.width <= page.width_pt
     assert fragment.bbox.y + fragment.bbox.height <= page.height_pt
+
+
+def test_extract_pdf_text_preserves_span_whitespace(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    pdf_path = tmp_path / "styled-boundary.pdf"
+    _write_pdf(pdf_path, [[("placeholder", (36, 48))]])
+    original_get_text = fitz.Page.get_text
+
+    def get_text_with_boundary_space(page: fitz.Page, option: str, *args: object, **kwargs: object) -> object:
+        if option == "dict":
+            return {
+                "blocks": [
+                    {
+                        "lines": [
+                            {
+                                "spans": [
+                                    {"text": "Approved ", "bbox": (36, 40, 86, 52)},
+                                    {"text": "By", "bbox": (86, 40, 100, 52)},
+                                ]
+                            }
+                        ]
+                    }
+                ]
+            }
+        return original_get_text(page, option, *args, **kwargs)
+
+    monkeypatch.setattr(fitz.Page, "get_text", get_text_with_boundary_space)
+
+    result = extract_pdf_text(pdf_path)
+
+    fragments = result.pages[0].fragments
+    assert [fragment.text for fragment in fragments] == ["Approved ", "By"]
+
+
+def test_extract_pdf_text_clips_bboxes_to_crop_box_dimensions(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "cropped.pdf"
+    document = fitz.open()
+    page = document.new_page(width=300, height=200)
+    page.insert_text((45, 80), "Left", fontsize=12)
+    page.insert_text((240, 80), "RightEdge", fontsize=12)
+    page.set_cropbox(fitz.Rect(50, 40, 250, 180))
+    document.save(pdf_path)
+    document.close()
+
+    result = extract_pdf_text(pdf_path)
+
+    page_result = result.pages[0]
+    assert page_result.width_pt == 200
+    assert page_result.height_pt == 140
+    assert page_result.fragments
+    for fragment in page_result.fragments:
+        assert fragment.bbox.x >= 0
+        assert fragment.bbox.y >= 0
+        assert fragment.bbox.width > 0
+        assert fragment.bbox.height > 0
+        assert fragment.bbox.x + fragment.bbox.width <= page_result.width_pt
+        assert fragment.bbox.y + fragment.bbox.height <= page_result.height_pt

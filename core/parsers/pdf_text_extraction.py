@@ -77,21 +77,22 @@ def extract_pdf_text(pdf_path: str | Path) -> PdfTextExtraction:
             for block in text_page.get("blocks", []):
                 for line in block.get("lines", []):
                     for span in line.get("spans", []):
-                        text = span.get("text", "").strip()
+                        text = span.get("text", "")
                         bbox_values = span.get("bbox")
-                        if not text or bbox_values is None:
+                        if not text.strip() or bbox_values is None:
                             continue
-                        x0, y0, x1, y1 = (float(value) for value in bbox_values)
+                        bbox = _normalize_bbox(
+                            bbox_values,
+                            page_width=float(page_rect.width),
+                            page_height=float(page_rect.height),
+                        )
+                        if bbox is None:
+                            continue
                         fragments.append(
                             TextFragment(
                                 text=text,
                                 page_number=page_index,
-                                bbox=TextBBox(
-                                    x=x0,
-                                    y=y0,
-                                    width=max(0.0, x1 - x0),
-                                    height=max(0.0, y1 - y0),
-                                ),
+                                bbox=bbox,
                                 extractor="pymupdf",
                             )
                         )
@@ -197,9 +198,32 @@ def _package_version(package_name: str) -> str | None:
         return None
 
 
+def _normalize_bbox(
+    bbox_values: Any,
+    *,
+    page_width: float,
+    page_height: float,
+) -> TextBBox | None:
+    x0, y0, x1, y1 = (float(value) for value in bbox_values)
+    clipped_x0 = min(max(x0, 0.0), page_width)
+    clipped_y0 = min(max(y0, 0.0), page_height)
+    clipped_x1 = min(max(x1, 0.0), page_width)
+    clipped_y1 = min(max(y1, 0.0), page_height)
+    width = clipped_x1 - clipped_x0
+    height = clipped_y1 - clipped_y0
+    if width <= 0 or height <= 0:
+        return None
+    return TextBBox(
+        x=clipped_x0,
+        y=clipped_y0,
+        width=width,
+        height=height,
+    )
+
+
 def _load_fitz() -> Any:
     try:
-        import fitz
+        import pymupdf as fitz
     except ImportError as exc:
         raise MissingPdfExtractorDependency(
             "PyMuPDF is required for PDF bbox extraction; install evaluation "

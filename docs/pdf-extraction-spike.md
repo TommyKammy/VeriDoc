@@ -8,7 +8,7 @@ coordinates from sanitized or synthetic samples only.
 | Candidate | Result | bbox support | Notes |
 | --- | --- | --- | --- |
 | PyMuPDF | selected for the spike | yes | Provides unrotated page geometry and span-level text bboxes in PDF point coordinates. Install only with `python3 -m pip install -r requirements-pdf-eval.txt` for isolated evaluation. |
-| pypdf | comparison candidate only | no | Useful for text-only fallback checks, but this spike does not treat it as satisfying bbox requirements. |
+| pypdf | comparison candidate only | no | Installed by the evaluation requirements for reproducible text-only fallback checks, but this spike does not treat it as satisfying bbox requirements. |
 
 ## Intermediate data contract
 
@@ -17,6 +17,9 @@ coordinates from sanitized or synthetic samples only.
 - Each text fragment carries its own 1-based `page_number` and `bbox`.
 - `bbox` values are normalized as PDF points (`pt`) with a top-left origin:
   `x`, `y`, `width`, and `height`.
+- Bboxes are clipped to the reported unrotated crop-box dimensions so cropped
+  PDFs do not emit negative coordinates or coordinates beyond `width_pt` and
+  `height_pt`.
 - Page dimensions and span bboxes use PyMuPDF's unrotated text coordinate
   space. For PDFs with `/Rotate`, do not combine these bboxes with
   `page.rect` rotated display dimensions without an explicit transform.
@@ -31,8 +34,9 @@ coordinates from sanitized or synthetic samples only.
   approved.
 - A PDF that cannot be opened raises `ValueError` and must not be silently
   converted into a successful extraction.
-- Empty text spans and spans without bbox data are skipped because they cannot
-  satisfy the downstream coordinate contract.
+- Empty text spans, spans without bbox data, and spans whose clipped bbox has
+  no positive visible area are skipped because they cannot satisfy the
+  downstream coordinate contract.
 - If a candidate can extract text but cannot provide fragment-level bboxes, it
   remains a comparison result only and must not be promoted to a passing parser
   without an explicit coordinate source.

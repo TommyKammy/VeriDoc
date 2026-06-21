@@ -15,12 +15,12 @@ def test_compare_pdf_text_extractors_reports_missing_pymupdf(
     pdf_path.write_bytes(b"%PDF-1.4\n%%EOF\n")
     original_import = builtins.__import__
 
-    def import_without_fitz(name: str, *args: Any, **kwargs: Any) -> Any:
-        if name == "fitz":
-            raise ImportError("fitz unavailable")
+    def import_without_pymupdf(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name == "pymupdf":
+            raise ImportError("pymupdf unavailable")
         return original_import(name, *args, **kwargs)
 
-    monkeypatch.setattr(builtins, "__import__", import_without_fitz)
+    monkeypatch.setattr(builtins, "__import__", import_without_pymupdf)
 
     candidates = pdf_text_extraction.compare_pdf_text_extractors(pdf_path)
 
