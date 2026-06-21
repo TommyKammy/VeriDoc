@@ -100,15 +100,116 @@ def test_same_ir_renders_deterministic_docx_and_xlsx_with_typed_cells(tmp_path: 
     typed_cells = {
         cell.ref: (cell.value, cell.value_type)
         for cell in xlsx.sheets[0].cells
-        if cell.ref in {"A4", "B4", "C4", "D4", "A5", "B5", "C5", "D5"}
+        if cell.ref in {
+            "A4",
+            "B4",
+            "C4",
+            "D4",
+            "A5",
+            "B5",
+            "C5",
+            "D5",
+            "A6",
+            "B6",
+            "C6",
+            "D6",
+        }
     }
     assert typed_cells == {
-        "A4": ("block-002", "inline_string"),
-        "B4": ("Lot Number", "inline_string"),
-        "C4": ("SAMPLE-LOT-001", "inline_string"),
+        "A4": ("block-001", "inline_string"),
+        "B4": ("heading", "inline_string"),
+        "C4": ("Manufacturing Record", "inline_string"),
         "D4": ("text", "inline_string"),
-        "A5": ("block-003", "inline_string"),
-        "B5": ("Assay Result", "inline_string"),
-        "C5": ("12.5", "number"),
-        "D5": ("number", "inline_string"),
+        "A5": ("block-002", "inline_string"),
+        "B5": ("Lot Number", "inline_string"),
+        "C5": ("SAMPLE-LOT-001", "inline_string"),
+        "D5": ("text", "inline_string"),
+        "A6": ("block-003", "inline_string"),
+        "B6": ("Assay Result", "inline_string"),
+        "C6": ("12.5", "number"),
+        "D6": ("number", "inline_string"),
     }
+
+
+def test_xlsx_renders_non_field_blocks_as_document_content_rows(tmp_path: Path) -> None:
+    document_ir = {
+        "document": {"title": "Mixed content"},
+        "blocks": [
+            {"id": "heading-1", "type": "heading", "text": "Section 1"},
+            {"id": "paragraph-1", "type": "paragraph", "text": "Observed value summary"},
+            {"id": "list-item-1", "type": "list_item", "text": "First check"},
+            {"id": "table-1", "type": "table", "text": "A\tB\n1\t2"},
+        ],
+    }
+    output_path = tmp_path / "mixed.xlsx"
+
+    render_xlsx_from_ir(document_ir, output_path)
+
+    xlsx = extract_xlsx_structure(output_path)
+    cells = {(cell.ref, cell.value, cell.value_type) for cell in xlsx.sheets[0].cells}
+    assert ("A4", "heading-1", "inline_string") in cells
+    assert ("B4", "heading", "inline_string") in cells
+    assert ("C4", "Section 1", "inline_string") in cells
+    assert ("A5", "paragraph-1", "inline_string") in cells
+    assert ("B5", "paragraph", "inline_string") in cells
+    assert ("C5", "Observed value summary", "inline_string") in cells
+    assert ("A6", "list-item-1", "inline_string") in cells
+    assert ("B6", "list_item", "inline_string") in cells
+    assert ("C6", "First check", "inline_string") in cells
+    assert ("A7", "table-1", "inline_string") in cells
+    assert ("B7", "table", "inline_string") in cells
+    assert ("C7", "A\tB\n1\t2", "inline_string") in cells
+
+
+def test_renderer_sanitizes_xml_invalid_text_before_writing_ooxml(tmp_path: Path) -> None:
+    document_ir = {
+        "document": {"title": "Control\fTitle"},
+        "blocks": [
+            {"id": "block\v1", "type": "paragraph", "text": "Alpha\vBeta"},
+            {"id": "block-2", "type": "field", "text": "Code: A\f01"},
+        ],
+    }
+    docx_path = tmp_path / "sanitized.docx"
+    xlsx_path = tmp_path / "sanitized.xlsx"
+
+    render_docx_from_ir(document_ir, docx_path)
+    render_xlsx_from_ir(document_ir, xlsx_path)
+
+    docx = extract_docx_structure(docx_path)
+    xlsx = extract_xlsx_structure(xlsx_path)
+
+    assert [(block.kind, block.text) for block in docx.blocks] == [
+        ("heading", "Control Title"),
+        ("paragraph", "Alpha Beta"),
+        ("paragraph", "Code: A 01"),
+    ]
+    cells = {cell.ref: cell.value for cell in xlsx.sheets[0].cells}
+    assert cells["A4"] == "block 1"
+    assert cells["C4"] == "Alpha Beta"
+    assert cells["C5"] == "A 01"
+
+
+def test_xlsx_numeric_detection_preserves_code_like_values_as_text(tmp_path: Path) -> None:
+    document_ir = {
+        "document": {"title": "Numeric boundaries"},
+        "blocks": [
+            {"id": "safe-integer", "type": "field", "text": "Safe Integer: 1000"},
+            {"id": "safe-decimal", "type": "field", "text": "Safe Decimal: -12.50"},
+            {"id": "underscore", "type": "field", "text": "Code: 1_000"},
+            {"id": "full-width", "type": "field", "text": "Code: １２３"},
+            {"id": "nan-prefix", "type": "field", "text": "Code: NaN123"},
+            {"id": "negative-leading-zero", "type": "field", "text": "Code: -01"},
+        ],
+    }
+    output_path = tmp_path / "numeric-boundaries.xlsx"
+
+    render_xlsx_from_ir(document_ir, output_path)
+
+    xlsx = extract_xlsx_structure(output_path)
+    cells = {cell.ref: (cell.value, cell.value_type) for cell in xlsx.sheets[0].cells}
+    assert cells["C4"] == (1000, "number")
+    assert cells["C5"] == ("-12.50", "number")
+    assert cells["C6"] == ("1_000", "inline_string")
+    assert cells["C7"] == ("１２３", "inline_string")
+    assert cells["C8"] == ("NaN123", "inline_string")
+    assert cells["C9"] == ("-01", "inline_string")

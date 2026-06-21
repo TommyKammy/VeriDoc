@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from decimal import Decimal, InvalidOperation
 from html import escape
 from pathlib import Path
@@ -8,6 +9,7 @@ from zipfile import ZIP_STORED, ZipFile, ZipInfo
 
 
 FIXED_ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
+ASCII_NUMBER_RE = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?\Z")
 
 
 def render_docx_from_ir(document_ir: Mapping[str, Any], output_path: str | Path) -> None:
@@ -68,9 +70,9 @@ def render_xlsx_from_ir(document_ir: Mapping[str, Any], output_path: str | Path)
     ]
     current_row = 4
     for block in _blocks(document_ir):
-        if _text(block.get("type")) != "field":
-            continue
-        label, value = _split_field(_text(block.get("text")))
+        kind = _text(block.get("type"))
+        text = _text(block.get("text"))
+        label, value = _split_field(text) if kind == "field" else (kind, text)
         rendered_value, value_type = _typed_xlsx_value(value)
         rows.append(
             [
@@ -161,8 +163,8 @@ def _docx_block(block: Mapping[str, Any]) -> str:
 
 
 def _docx_paragraph(text: str, *, style: str | None = None) -> str:
-    style_xml = "" if style is None else f'<w:pPr><w:pStyle w:val="{escape(style)}"/></w:pPr>'
-    return f"<w:p>{style_xml}<w:r><w:t>{escape(text)}</w:t></w:r></w:p>"
+    style_xml = "" if style is None else f'<w:pPr><w:pStyle w:val="{_xml_escape(style)}"/></w:pPr>'
+    return f"<w:p>{style_xml}<w:r><w:t>{_xml_escape(text)}</w:t></w:r></w:p>"
 
 
 def _split_field(text: str) -> tuple[str, str]:
@@ -179,17 +181,13 @@ def _typed_xlsx_value(value: str) -> tuple[Any, str]:
 
 
 def _is_plain_number(value: str) -> bool:
-    if not value or value.strip() != value:
-        return False
-    if value.startswith("+"):
-        return False
-    if len(value) > 1 and value.startswith("0") and not value.startswith("0."):
+    if not ASCII_NUMBER_RE.fullmatch(value):
         return False
     try:
-        Decimal(value)
+        numeric_value = Decimal(value)
     except InvalidOperation:
         return False
-    return any(character.isdigit() for character in value)
+    return numeric_value.is_finite()
 
 
 def _xlsx_row(row_index: int, cells: Sequence[str]) -> str:
@@ -197,15 +195,33 @@ def _xlsx_row(row_index: int, cells: Sequence[str]) -> str:
 
 
 def _text_cell(ref: str, value: str) -> str:
-    return f'<c r="{ref}" t="inlineStr"><is><t>{escape(value)}</t></is></c>'
+    return f'<c r="{ref}" t="inlineStr"><is><t>{_xml_escape(value)}</t></is></c>'
 
 
 def _number_cell(ref: str, value: str) -> str:
-    return f'<c r="{ref}"><v>{escape(value)}</v></c>'
+    return f'<c r="{ref}"><v>{_xml_escape(value)}</v></c>'
 
 
 def _text(value: Any) -> str:
     return "" if value is None else str(value)
+
+
+def _xml_escape(value: str) -> str:
+    return escape(_sanitize_xml_text(value))
+
+
+def _sanitize_xml_text(value: str) -> str:
+    return "".join(character if _is_xml_char(character) else " " for character in value)
+
+
+def _is_xml_char(character: str) -> bool:
+    codepoint = ord(character)
+    return (
+        codepoint in {0x09, 0x0A, 0x0D}
+        or 0x20 <= codepoint <= 0xD7FF
+        or 0xE000 <= codepoint <= 0xFFFD
+        or 0x10000 <= codepoint <= 0x10FFFF
+    )
 
 
 def _write_zip(output_path: str | Path, parts: Iterable[tuple[str, str]]) -> None:
