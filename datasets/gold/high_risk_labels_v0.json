@@ -1,0 +1,64 @@
+{
+  "schema_version": "veridoc-high-risk-labels/v0",
+  "dataset_manifest": "datasets/fixtures/manifest.json",
+  "scope": {
+    "phase": "phase0",
+    "public_only": true,
+    "confidential_source_documents_allowed": false,
+    "production_or_gmp_claim": false
+  },
+  "label_taxonomy": [
+    {
+      "id": "lot_number",
+      "description": "Batch or lot identifier that affects record traceability.",
+      "risk_level": "high"
+    },
+    {
+      "id": "requires_human_review",
+      "description": "Extracted value has confidence or context requiring reviewer confirmation.",
+      "risk_level": "high"
+    }
+  ],
+  "items": [
+    {
+      "id": "gold-001",
+      "fixture_id": "sample-document-ir-v0",
+      "document_id": "sample-document-001",
+      "block_id": "block-002",
+      "label_id": "lot_number",
+      "expected_text": "Lot Number: SAMPLE-LOT-001",
+      "expected_value": "SAMPLE-LOT-001",
+      "risk_level": "high",
+      "requires_review": true,
+      "evidence": {
+        "source_page": 1,
+        "bbox": {
+          "x": 72.0,
+          "y": 112.0,
+          "width": 180.0,
+          "height": 18.0
+        }
+      }
+    },
+    {
+      "id": "gold-002",
+      "fixture_id": "sample-document-ir-v0",
+      "document_id": "sample-document-001",
+      "block_id": "block-002",
+      "label_id": "requires_human_review",
+      "expected_text": "Lot Number: SAMPLE-LOT-001",
+      "expected_value": true,
+      "risk_level": "high",
+      "requires_review": true,
+      "evidence": {
+        "source_page": 1,
+        "bbox": {
+          "x": 72.0,
+          "y": 112.0,
+          "width": 180.0,
+          "height": 18.0
+        }
+      }
+    }
+  ]
+}
