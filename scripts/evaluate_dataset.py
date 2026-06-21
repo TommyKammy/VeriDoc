@@ -16,6 +16,8 @@ EVALUATION_CASES_SCHEMA_VERSION = "veridoc-evaluation-cases/v0"
 FIXTURE_MANIFEST_SCHEMA_VERSION = "veridoc-eval-fixtures/v0"
 FIXTURE_SCHEMA_VERSION = "veridoc-evaluation-fixture/v0"
 EXPECTED_ALLOWED_FIXTURE_ROOT = Path("datasets/fixtures")
+EXPECTED_SCOPE_PHASE = "phase0"
+PUBLIC_FIXTURE_ANONYMIZATION_VALUES = {"anonymized", "synthetic"}
 
 
 @dataclass(frozen=True)
@@ -185,6 +187,8 @@ def validate_scope(data: dict[str, Any]) -> None:
     scope = data.get("scope")
     if not isinstance(scope, dict):
         raise EvaluationCaseError("missing scope")
+    if scope.get("phase") != EXPECTED_SCOPE_PHASE:
+        raise EvaluationCaseError("evaluation cases must target phase0")
     if scope.get("public_only") is not True:
         raise EvaluationCaseError("evaluation cases must be public-only")
     if scope.get("confidential_source_documents_allowed") is not False:
@@ -252,6 +256,10 @@ def fixture_paths_from_manifest(
         fixture_path_value = fixture.get("path")
         if fixture_path_value is None:
             continue
+        if fixture.get("anonymization") not in PUBLIC_FIXTURE_ANONYMIZATION_VALUES:
+            raise EvaluationCaseError(
+                f"fixture {fixture_id!r} must be synthetic or anonymized before scoring"
+            )
         if not isinstance(fixture_path_value, str) or not fixture_path_value:
             raise EvaluationCaseError(f"fixture {fixture_id!r} path must be a non-empty string")
         fixture_path = Path(fixture_path_value)
@@ -266,6 +274,13 @@ def fixture_paths_from_manifest(
             raise EvaluationCaseError(f"fixture {fixture_id!r} path does not exist")
         fixture_paths[fixture_id] = resolved_fixture_path
     return fixture_paths
+
+
+def validated_cell_text(cell: dict[str, Any], context: str) -> str:
+    text = cell.get("text")
+    if not isinstance(text, str) or not normalized_text(text):
+        raise EvaluationCaseError(f"{context}: text must be a non-empty string")
+    return text
 
 
 def validate_expected_tables_against_fixture(
@@ -311,9 +326,13 @@ def validate_expected_tables_against_fixture(
                     f"case {case.get('id')!r}: expected cell {cell_id!r} "
                     f"is not present in fixture {fixture_id!r} table {table_id!r}"
                 )
-            if normalized_text(expected_cell.get("text", "")) != normalized_text(
-                fixture_cell.get("text", "")
-            ):
+            expected_text = validated_cell_text(
+                expected_cell, f"case {case.get('id')!r}: expected cell {cell_id!r}"
+            )
+            fixture_text = validated_cell_text(
+                fixture_cell, f"fixture {fixture_id!r} table {table_id!r} cell {cell_id!r}"
+            )
+            if normalized_text(expected_text) != normalized_text(fixture_text):
                 raise EvaluationCaseError(
                     f"case {case.get('id')!r}: expected cell {cell_id!r} "
                     f"text does not match fixture {fixture_id!r}"

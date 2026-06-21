@@ -49,6 +49,7 @@ class EvaluateDatasetTest(unittest.TestCase):
             fixture_path.write_text(json.dumps(fixture), encoding="utf-8")
             manifest_fixture = {
                 "id": data["cases"][0]["fixture_id"],
+                "anonymization": "synthetic",
                 "public_review_safe": True,
                 "confidentiality": "public",
                 "path": fixture_relpath,
@@ -126,6 +127,21 @@ class EvaluateDatasetTest(unittest.TestCase):
                 data,
                 fixture,
                 fixture_metadata={"confidentiality": "confidential"},
+            )
+
+    def test_rejects_pending_anonymization_fixture_with_path_before_scoring(self) -> None:
+        data = self.valid_cases_data()
+        fixture = evaluate_dataset.load_json(
+            REPO_ROOT / "datasets" / "fixtures" / "sample-document-ir-v0.json"
+        )
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError, "synthetic or anonymized"
+        ):
+            self.evaluate_with_fixture(
+                data,
+                fixture,
+                fixture_metadata={"anonymization": "pending_synthetic_fixture"},
             )
 
     def test_rejects_fixture_root_policy_traversal_before_scoring(self) -> None:
@@ -234,6 +250,40 @@ class EvaluateDatasetTest(unittest.TestCase):
         with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "source must define"):
             self.evaluate_with_fixture(data, fixture)
 
+    def test_rejects_missing_or_non_string_expected_cell_text_before_scoring(self) -> None:
+        for text_value in (None, 123, "   "):
+            data = self.valid_cases_data()
+            expected_cell = data["cases"][0]["expected"]["tables"][0]["cells"][1]
+            if text_value is None:
+                del expected_cell["text"]
+            else:
+                expected_cell["text"] = text_value
+
+            with self.subTest(text_value=text_value), self.assertRaisesRegex(
+                evaluate_dataset.EvaluationCaseError, "text must be a non-empty string"
+            ):
+                self.evaluate_valid_cases(data)
+
+    def test_rejects_missing_or_non_string_fixture_cell_text_before_scoring(self) -> None:
+        for text_value in (None, 123, "   "):
+            data = self.valid_cases_data()
+            fixture = evaluate_dataset.load_json(
+                REPO_ROOT / "datasets" / "fixtures" / "sample-document-ir-v0.json"
+            )
+            fixture_cell = fixture["tables"][0]["cells"][1]
+            expected_cell = data["cases"][0]["expected"]["tables"][0]["cells"][1]
+            if text_value is None:
+                del fixture_cell["text"]
+                del expected_cell["text"]
+            else:
+                fixture_cell["text"] = text_value
+                expected_cell["text"] = text_value
+
+            with self.subTest(text_value=text_value), self.assertRaisesRegex(
+                evaluate_dataset.EvaluationCaseError, "text must be a non-empty string"
+            ):
+                self.evaluate_with_fixture(data, fixture)
+
     def test_source_matching_requires_concrete_anchor(self) -> None:
         self.assertFalse(
             evaluate_dataset.source_matches(
@@ -282,6 +332,13 @@ class EvaluateDatasetTest(unittest.TestCase):
         with self.assertRaisesRegex(
             evaluate_dataset.EvaluationCaseError, "unsupported evaluation schema_version"
         ):
+            self.evaluate_valid_cases(data)
+
+    def test_rejects_non_phase0_scope_before_scoring(self) -> None:
+        data = self.valid_cases_data()
+        data["scope"]["phase"] = "phase1"
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "phase0"):
             self.evaluate_valid_cases(data)
 
     def test_rejects_duplicate_table_ids_before_indexing(self) -> None:
