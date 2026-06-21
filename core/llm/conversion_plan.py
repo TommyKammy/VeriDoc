@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import socket
 import urllib.error
 import urllib.request
 from collections.abc import Callable
@@ -66,6 +67,16 @@ _PLACEHOLDER_API_KEYS = {
     "example",
     "local-placeholder-only",
 }
+_LOCAL_RUNTIME_NETWORKS = tuple(
+    ipaddress.ip_network(network)
+    for network in (
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "fc00::/7",
+    )
+)
+_SUPPORTED_ACTIONS = {"extract_field", "extract_table", "normalize_value", "flag_review"}
 
 
 class ConversionPlanValidationError(ValueError):
@@ -146,7 +157,8 @@ def validate_conversion_plan(plan: object) -> None:
         raise ConversionPlanValidationError("conversion plan must be a JSON object")
 
     _require_exact_keys(plan, {"schema_version", "source_kind", "operations", "constraints"}, "$")
-    if plan["schema_version"] != 1:
+    schema_version = plan["schema_version"]
+    if not isinstance(schema_version, int) or isinstance(schema_version, bool) or schema_version != 1:
         raise ConversionPlanValidationError("$.schema_version must be 1")
     if not _non_empty_string(plan["source_kind"]):
         raise ConversionPlanValidationError("$.source_kind must be a non-empty string")
@@ -171,7 +183,7 @@ def _validate_operation(operation: object, path: str) -> None:
     _require_exact_keys(operation, {"id", "action", "inputs", "output", "rationale"}, path)
     if not _non_empty_string(operation["id"]):
         raise ConversionPlanValidationError(f"{path}.id must be a non-empty string")
-    if operation["action"] not in {"extract_field", "extract_table", "normalize_value", "flag_review"}:
+    if not isinstance(operation["action"], str) or operation["action"] not in _SUPPORTED_ACTIONS:
         raise ConversionPlanValidationError(f"{path}.action is not supported")
     inputs = operation["inputs"]
     if not isinstance(inputs, list) or not inputs or not all(_non_empty_string(item) for item in inputs):
@@ -209,7 +221,7 @@ def _urllib_transport(url: str, payload: JsonObject, headers: dict[str, str], ti
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+        with _local_only_url_opener().open(request, timeout=timeout_seconds) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.URLError as exc:
         raise RuntimeError(f"local LLM request failed: {exc}") from exc
@@ -219,19 +231,74 @@ def _chat_completions_url(base_url: str) -> str:
     return base_url.rstrip("/") + "/chat/completions"
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> None:
+        raise urllib.error.HTTPError(
+            req.full_url,
+            code,
+            f"local LLM redirects are disabled: {msg}",
+            headers,
+            fp,
+        )
+
+
+def _local_only_url_opener() -> urllib.request.OpenerDirector:
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirectHandler())
+
+
 def _is_local_base_url(base_url: str) -> bool:
     parsed = urlparse(base_url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         return False
 
     hostname = parsed.hostname.lower()
-    if hostname == "localhost" or hostname.endswith(".localhost") or hostname.endswith(".local"):
+    if hostname == "localhost" or hostname.endswith(".localhost"):
         return True
     try:
         address = ipaddress.ip_address(hostname)
     except ValueError:
+        try:
+            port = parsed.port
+        except ValueError:
+            return False
+        return _hostname_resolves_to_local_runtime(hostname, port)
+    return _is_local_runtime_address(address)
+
+
+def _hostname_resolves_to_local_runtime(hostname: str, port: int | None) -> bool:
+    try:
+        address_info = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
+    except socket.gaierror:
         return False
-    return address.is_loopback or address.is_private or address.is_link_local
+
+    resolved_addresses: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
+    for info in address_info:
+        sockaddr = info[4]
+        if not sockaddr:
+            return False
+        raw_address = str(sockaddr[0]).split("%", maxsplit=1)[0]
+        try:
+            resolved_addresses.append(ipaddress.ip_address(raw_address))
+        except ValueError:
+            return False
+
+    return bool(resolved_addresses) and all(_is_local_runtime_address(address) for address in resolved_addresses)
+
+
+def _is_local_runtime_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    if address.is_link_local:
+        return False
+    if address.is_loopback:
+        return True
+    return any(address in network for network in _LOCAL_RUNTIME_NETWORKS)
 
 
 def _is_placeholder_secret(secret: str) -> bool:
