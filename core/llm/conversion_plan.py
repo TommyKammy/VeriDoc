@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import http.client
 import socket
+import ssl
 import urllib.error
 import urllib.request
 from collections.abc import Callable
@@ -92,6 +94,7 @@ class LocalLLMConfigurationError(ValueError):
 class _LocalBaseUrl:
     request_base_url: str
     host_header: str | None = None
+    tls_server_name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -157,8 +160,17 @@ class LocalLLMConversionPlanAdapter:
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
-        transport = self.transport or _urllib_transport
-        response = transport(_chat_completions_url(local_base_url.request_base_url), payload, headers, self.timeout_seconds)
+        request_url = _chat_completions_url(local_base_url.request_base_url)
+        if self.transport is None:
+            response = _urllib_transport(
+                request_url,
+                payload,
+                headers,
+                self.timeout_seconds,
+                tls_server_name=local_base_url.tls_server_name,
+            )
+        else:
+            response = self.transport(request_url, payload, headers, self.timeout_seconds)
         plan = _extract_json_content(response)
         validate_conversion_plan(plan)
         return plan
@@ -208,9 +220,14 @@ def _validate_operation(operation: object, path: str) -> None:
 
 def _extract_json_content(response: JsonObject) -> JsonObject:
     try:
-        content = response["choices"][0]["message"]["content"]
+        choice = response["choices"][0]
+        finish_reason = choice.get("finish_reason")
+        content = choice["message"]["content"]
     except (KeyError, IndexError, TypeError) as exc:
         raise ConversionPlanValidationError("LLM response did not contain choices[0].message.content") from exc
+
+    if finish_reason not in (None, "stop"):
+        raise ConversionPlanValidationError(f"LLM response did not finish cleanly: finish_reason={finish_reason}")
 
     if isinstance(content, dict):
         return content
@@ -225,7 +242,17 @@ def _extract_json_content(response: JsonObject) -> JsonObject:
     return parsed
 
 
-def _urllib_transport(url: str, payload: JsonObject, headers: dict[str, str], timeout_seconds: float) -> JsonObject:
+def _urllib_transport(
+    url: str,
+    payload: JsonObject,
+    headers: dict[str, str],
+    timeout_seconds: float,
+    *,
+    tls_server_name: str | None = None,
+) -> JsonObject:
+    if tls_server_name is not None:
+        return _pinned_https_transport(url, payload, headers, timeout_seconds, tls_server_name)
+
     request = urllib.request.Request(
         url,
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -237,6 +264,64 @@ def _urllib_transport(url: str, payload: JsonObject, headers: dict[str, str], ti
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.URLError as exc:
         raise RuntimeError(f"local LLM request failed: {exc}") from exc
+
+
+def _pinned_https_transport(
+    url: str,
+    payload: JsonObject,
+    headers: dict[str, str],
+    timeout_seconds: float,
+    tls_server_name: str,
+) -> JsonObject:
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise LocalLLMConfigurationError("TLS server name pinning requires an https URL")
+
+    path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    connection = _PinnedHTTPSConnection(
+        connect_host=parsed.hostname,
+        port=parsed.port or 443,
+        tls_server_name=tls_server_name,
+        timeout=timeout_seconds,
+    )
+    try:
+        connection.request("POST", path, body=body, headers=headers)
+        response = connection.getresponse()
+        response_body = response.read().decode("utf-8")
+        if 300 <= response.status < 400:
+            raise urllib.error.HTTPError(
+                url,
+                response.status,
+                f"local LLM redirects are disabled: {response.reason}",
+                response.msg,
+                None,
+            )
+        if response.status >= 400:
+            raise urllib.error.HTTPError(url, response.status, response.reason, response.msg, None)
+        return json.loads(response_body)
+    except (OSError, http.client.HTTPException, urllib.error.URLError) as exc:
+        raise RuntimeError(f"local LLM request failed: {exc}") from exc
+    finally:
+        connection.close()
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, connect_host: str, port: int, tls_server_name: str, timeout: float) -> None:
+        super().__init__(
+            tls_server_name,
+            port=port,
+            timeout=timeout,
+            context=ssl.create_default_context(),
+        )
+        self._connect_host = connect_host
+        self._tls_server_name = tls_server_name
+
+    def connect(self) -> None:
+        sock = socket.create_connection((self._connect_host, self.port), self.timeout, self.source_address)
+        self.sock = self._context.wrap_socket(sock, server_hostname=self._tls_server_name)
 
 
 def _chat_completions_url(base_url: str) -> str:
@@ -289,6 +374,7 @@ def _local_base_url(base_url: str) -> _LocalBaseUrl | None:
         return _LocalBaseUrl(
             request_base_url=_base_url_with_address(parsed, resolved_address),
             host_header=_host_header(hostname, port),
+            tls_server_name=hostname if parsed.scheme == "https" else None,
         )
     if not _is_local_runtime_address(address):
         return None

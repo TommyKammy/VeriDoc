@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import socket
 import urllib.error
 import urllib.request
@@ -95,6 +96,33 @@ def test_schema_incompatible_conversion_plan_fails_closed() -> None:
 
     with pytest.raises(ConversionPlanValidationError, match="external_transmission must be false"):
         validate_conversion_plan(invalid_plan)
+
+
+@pytest.mark.parametrize("finish_reason", ["length", "content_filter"])
+def test_adapter_rejects_unclean_llm_finish_reasons(finish_reason: str) -> None:
+    def transport(
+        url: str,
+        payload: dict[str, object],
+        headers: dict[str, str],
+        timeout_seconds: float,
+    ) -> dict[str, object]:
+        return {
+            "choices": [
+                {
+                    "finish_reason": finish_reason,
+                    "message": {"content": _valid_plan()},
+                }
+            ]
+        }
+
+    adapter = LocalLLMConversionPlanAdapter(
+        base_url="http://127.0.0.1:8000/v1",
+        model="local-json-model",
+        transport=transport,
+    )
+
+    with pytest.raises(ConversionPlanValidationError, match=f"finish_reason={finish_reason}"):
+        adapter.create_conversion_plan("Lot: ABC-123")
 
 
 def test_boolean_schema_version_fails_closed() -> None:
@@ -262,6 +290,83 @@ def test_adapter_pins_dns_hostname_to_validated_local_address_for_request(monkey
         "Content-Type": "application/json",
         "Host": "dwarfstar:8000",
     }
+
+
+def test_adapter_preserves_tls_server_name_when_pinning_https_dns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def getaddrinfo(
+        host: str,
+        port: int | None,
+        *args: object,
+        **kwargs: object,
+    ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
+        assert host == "dwarfstar"
+        assert port == 8000
+        assert kwargs == {"type": socket.SOCK_STREAM}
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.25", 8000))]
+
+    class FakeResponse:
+        status = 200
+        reason = "OK"
+        msg: dict[str, str] = {}
+
+        def read(self) -> bytes:
+            return json.dumps(
+                {
+                    "choices": [
+                        {
+                            "finish_reason": "stop",
+                            "message": {"content": _valid_plan()},
+                        }
+                    ]
+                }
+            ).encode("utf-8")
+
+    class FakePinnedHTTPSConnection:
+        def __init__(self, connect_host: str, port: int, tls_server_name: str, timeout: float) -> None:
+            captured["connect_host"] = connect_host
+            captured["port"] = port
+            captured["tls_server_name"] = tls_server_name
+            captured["timeout"] = timeout
+
+        def request(self, method: str, path: str, body: bytes, headers: dict[str, str]) -> None:
+            captured["method"] = method
+            captured["path"] = path
+            captured["body"] = body
+            captured["headers"] = headers
+
+        def getresponse(self) -> FakeResponse:
+            return FakeResponse()
+
+        def close(self) -> None:
+            captured["closed"] = True
+
+    monkeypatch.setattr("core.llm.conversion_plan.socket.getaddrinfo", getaddrinfo)
+    monkeypatch.setattr("core.llm.conversion_plan._PinnedHTTPSConnection", FakePinnedHTTPSConnection)
+
+    adapter = LocalLLMConversionPlanAdapter(
+        base_url="https://dwarfstar:8000/v1",
+        model="local-json-model",
+        timeout_seconds=10,
+    )
+
+    plan = adapter.create_conversion_plan("Lot: ABC-123")
+
+    assert plan == _valid_plan()
+    assert captured["connect_host"] == "10.0.0.25"
+    assert captured["port"] == 8000
+    assert captured["tls_server_name"] == "dwarfstar"
+    assert captured["timeout"] == 10
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/v1/chat/completions"
+    assert captured["headers"] == {
+        "Content-Type": "application/json",
+        "Host": "dwarfstar:8000",
+    }
+    assert captured["closed"] is True
 
 
 def test_adapter_rejects_dns_hostname_with_public_resolved_address(monkeypatch: pytest.MonkeyPatch) -> None:
