@@ -209,15 +209,17 @@ class EvaluateDatasetTest(unittest.TestCase):
         for run in data["runs"]:
             run["confirmed_values"] = []
 
-        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "at least one value"):
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError, "at least one public confirmed value"
+        ):
             evaluate_dataset.evaluate_llm_stability(data)
 
     def test_llm_stability_rejects_non_public_source_kind_before_scoring(self) -> None:
         data = self.valid_llm_stability_data()
-        data["runs"][0]["conversion_plan"]["source_kind"] = "confidential_record"
+        data["runs"][0]["conversion_plan"]["source_kind"] = "real_confidential_record"
 
         with self.assertRaisesRegex(
-            evaluate_dataset.EvaluationCaseError, "public synthetic or anonymized"
+            evaluate_dataset.EvaluationCaseError, "public-only synthetic or anonymized"
         ):
             evaluate_dataset.evaluate_llm_stability(data)
 

@@ -601,8 +601,10 @@ def evaluate_cases(data: dict[str, Any], manifest_root: Path | None = None) -> E
 def confirmed_values_fingerprint(values: object, run_context: str) -> str:
     if not isinstance(values, list):
         raise EvaluationCaseError(f"{run_context}: confirmed_values must be a list")
-    if not values:
-        raise EvaluationCaseError(f"{run_context}: confirmed_values must contain at least one value")
+    if len(values) == 0:
+        raise EvaluationCaseError(
+            f"{run_context}: confirmed_values must contain at least one public confirmed value"
+        )
 
     indexed: dict[str, str] = {}
     for index, value in enumerate(values):
@@ -667,9 +669,12 @@ def reference_run_metadata(
 
 def validate_llm_stability_source_kind(conversion_plan: dict[str, Any], run_context: str) -> None:
     source_kind = conversion_plan.get("source_kind")
-    if source_kind not in PUBLIC_LLM_STABILITY_SOURCE_KINDS:
+    if (
+        not isinstance(source_kind, str)
+        or source_kind not in PUBLIC_LLM_STABILITY_SOURCE_KINDS
+    ):
         raise EvaluationCaseError(
-            f"{run_context}.conversion_plan.source_kind must be public synthetic or anonymized text"
+            f"{run_context}.conversion_plan.source_kind must be public-only synthetic or anonymized text"
         )
 
 
