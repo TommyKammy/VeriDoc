@@ -1,0 +1,129 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.example.json
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+secrets/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.python-version
+.venv/
+venv/
+env/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.pyre/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+dist/
+build/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Node / web
+node_modules/
+.npm/
+.pnpm-store/
+.yarn/
+!.yarn/releases/
+!.yarn/plugins/
+!.yarn/sdks/
+!.yarn/versions/
+apps/web/.next/
+apps/web/out/
+apps/web/dist/
+apps/web/coverage/
+*.tsbuildinfo
+
+# Desktop / app packaging
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/gen/
+apps/desktop/dist/
+apps/desktop/build/
+
+# Test and runtime caches
+.cache/
+.tmp/
+tmp/
+temp/
+logs/
+*.log
+*.sqlite
+*.sqlite3
+*.db
+*.db-shm
+*.db-wal
+
+# Local supervisor / agent state
+.codex-supervisor/
+.hermes/
+.local/
+worktree/
+
+# Document conversion outputs
+outputs/
+exports/
+artifacts/
+reports/generated/
+converted/
+rendered/
+*.tmp.docx
+*.tmp.xlsx
+*.tmp.pdf
+~$*.docx
+~$*.xlsx
+~$*.pptx
+
+# Large or sensitive source documents.
+# Keep curated, anonymized fixtures under datasets/fixtures or tests/fixtures.
+datasets/raw/
+datasets/private/
+datasets/confidential/
+datasets/incoming/
+datasets/output/
+datasets/cache/
+*.ocr.json
+*.pages.json
+
+# Local LLM / OCR model artifacts
+models/
+*.gguf
+*.safetensors
+*.onnx
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.mlmodel
+*.mlpackage/
+
+# Python document / OCR tooling byproducts
+.camelot/
+.ocrmypdf/
+*.hocr
+*.alto.xml
+
+# Keep placeholder files for otherwise ignored directories
+!.gitkeep
