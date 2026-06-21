@@ -144,6 +144,66 @@ class EvaluateDatasetTest(unittest.TestCase):
             metrics.unstable_examples,
         )
 
+    def test_llm_stability_reference_run_matches_plan_and_value_majorities(self) -> None:
+        data = self.valid_llm_stability_data()
+        data["runs"][2]["confirmed_values"] = copy.deepcopy(data["runs"][1]["confirmed_values"])
+
+        metrics = evaluate_dataset.evaluate_llm_stability(data)
+
+        self.assertEqual(
+            (
+                {
+                    "reference_run_id": "run-002",
+                    "run_id": "run-001",
+                    "changed": "confirmed_values",
+                },
+                {
+                    "reference_run_id": "run-002",
+                    "run_id": "run-003",
+                    "changed": "conversion_plan",
+                },
+            ),
+            metrics.unstable_examples,
+        )
+
+    def test_llm_stability_reports_separate_references_without_joint_majority(self) -> None:
+        data = self.valid_llm_stability_data()
+        run_004 = copy.deepcopy(data["runs"][2])
+        run_004["run_id"] = "run-004"
+        run_004["conversion_plan"]["operations"][0]["rationale"] = (
+            "The alternate synthetic record wording labels the release date directly."
+        )
+        data["runs"].append(run_004)
+        data["n"] = 4
+        data["runs"][0]["confirmed_values"][1]["value"] = "2026-01-17"
+
+        metrics = evaluate_dataset.evaluate_llm_stability(data)
+
+        self.assertEqual(4, metrics.unstable_example_count)
+        self.assertEqual(
+            (
+                {
+                    "reference_plan_run_id": "run-001",
+                    "reference_confirmed_values_run_id": "run-003",
+                    "run_id": "run-001",
+                    "changed": "confirmed_values",
+                },
+                {
+                    "reference_plan_run_id": "run-001",
+                    "reference_confirmed_values_run_id": "run-003",
+                    "run_id": "run-002",
+                    "changed": "confirmed_values",
+                },
+                {
+                    "reference_plan_run_id": "run-001",
+                    "reference_confirmed_values_run_id": "run-003",
+                    "run_id": "run-003",
+                    "changed": "conversion_plan",
+                },
+            ),
+            metrics.unstable_examples,
+        )
+
     def test_llm_stability_rejects_empty_confirmed_values_before_scoring(self) -> None:
         data = self.valid_llm_stability_data()
         for run in data["runs"]:

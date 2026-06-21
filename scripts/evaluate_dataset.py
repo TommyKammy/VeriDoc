@@ -628,6 +628,43 @@ def most_common_fingerprint(fingerprints: list[str]) -> str:
     return sorted(counts, key=lambda fingerprint: (-counts[fingerprint], fingerprint))[0]
 
 
+def reference_run_metadata(
+    runs: list[object],
+    plan_fingerprints: list[str],
+    value_fingerprints: list[str],
+    reference_plan: str,
+    reference_values: str,
+) -> dict[str, str]:
+    joint_reference_run_ids = [
+        str(run["run_id"])
+        for run, plan_fingerprint, value_fingerprint in zip(
+            runs, plan_fingerprints, value_fingerprints
+        )
+        if (
+            isinstance(run, dict)
+            and plan_fingerprint == reference_plan
+            and value_fingerprint == reference_values
+        )
+    ]
+    if joint_reference_run_ids:
+        return {"reference_run_id": min(joint_reference_run_ids)}
+
+    plan_reference_run_ids = [
+        str(run["run_id"])
+        for run, plan_fingerprint in zip(runs, plan_fingerprints)
+        if isinstance(run, dict) and plan_fingerprint == reference_plan
+    ]
+    value_reference_run_ids = [
+        str(run["run_id"])
+        for run, value_fingerprint in zip(runs, value_fingerprints)
+        if isinstance(run, dict) and value_fingerprint == reference_values
+    ]
+    return {
+        "reference_plan_run_id": min(plan_reference_run_ids),
+        "reference_confirmed_values_run_id": min(value_reference_run_ids),
+    }
+
+
 def validate_llm_stability_source_kind(conversion_plan: dict[str, Any], run_context: str) -> None:
     source_kind = conversion_plan.get("source_kind")
     if source_kind not in PUBLIC_LLM_STABILITY_SOURCE_KINDS:
@@ -685,10 +722,12 @@ def evaluate_llm_stability(data: dict[str, Any]) -> LLMStabilityMetrics:
     reference_values = most_common_fingerprint(value_fingerprints)
     plan_matches = sum(fingerprint == reference_plan for fingerprint in plan_fingerprints)
     value_matches = sum(fingerprint == reference_values for fingerprint in value_fingerprints)
-    reference_run_id = min(
-        str(run["run_id"])
-        for run, plan_fingerprint in zip(runs, plan_fingerprints)
-        if plan_fingerprint == reference_plan
+    reference_metadata = reference_run_metadata(
+        runs,
+        plan_fingerprints,
+        value_fingerprints,
+        reference_plan,
+        reference_values,
     )
 
     unstable_examples: list[dict[str, str]] = []
@@ -705,7 +744,7 @@ def evaluate_llm_stability(data: dict[str, Any]) -> LLMStabilityMetrics:
         if changes:
             unstable_examples.append(
                 {
-                    "reference_run_id": reference_run_id,
+                    **reference_metadata,
                     "run_id": str(run["run_id"]),
                     "changed": ",".join(changes),
                 }
