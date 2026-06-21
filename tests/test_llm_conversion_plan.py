@@ -201,6 +201,7 @@ def test_adapter_rejects_ipv6_ec2_metadata_base_url_before_transport_call() -> N
         "http://127.0.0.1:70000/v1",
         "http://127.0.0.1:0/v1",
         "http://localhost:not-a-port/v1",
+        "http://[::1/v1",
     ],
 )
 def test_adapter_rejects_invalid_local_base_url_ports(base_url: str) -> None:
@@ -498,28 +499,28 @@ def test_adapter_preserves_tls_server_name_when_pinning_https_dns(
     assert captured["closed"] is True
 
 
-def test_adapter_rejects_dns_hostname_with_public_resolved_address(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_adapter_rejects_public_dns_hostname_before_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
+    called = False
+
     def getaddrinfo(
         host: str,
         port: int | None,
         *args: object,
         **kwargs: object,
     ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
-        assert host == "llm.example.test"
-        assert port == 8000
-        assert kwargs == {"type": socket.SOCK_STREAM}
-        return [
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.25", 8000)),
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 8000)),
-        ]
+        nonlocal called
+        called = True
+        raise AssertionError("public DNS hostnames must fail before resolution")
 
     monkeypatch.setattr("core.llm.conversion_plan.socket.getaddrinfo", getaddrinfo)
 
     with pytest.raises(LocalLLMConfigurationError, match="local-only"):
         LocalLLMConversionPlanAdapter(
-            base_url="http://llm.example.test:8000/v1",
+            base_url="https://api.openai.com/v1",
             model="local-json-model",
         )
+
+    assert called is False
 
 
 def test_adapter_rejects_placeholder_api_key() -> None:
@@ -598,6 +599,67 @@ def test_urllib_transport_bypasses_ambient_proxies(monkeypatch: pytest.MonkeyPat
     assert len(proxy_handlers) == 1
     assert proxy_handlers[0].proxies == {}
     assert any(isinstance(handler, _NoRedirectHandler) for handler in handlers)
+
+
+@pytest.mark.parametrize("response_body", ["not-json", '{"choices": ['])
+def test_urllib_transport_wraps_malformed_json_response_body(
+    monkeypatch: pytest.MonkeyPatch,
+    response_body: str,
+) -> None:
+    class FakeResponse:
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return response_body.encode("utf-8")
+
+    class FakeOpener:
+        def open(self, request: urllib.request.Request, timeout: float) -> FakeResponse:
+            return FakeResponse()
+
+    monkeypatch.setattr("core.llm.conversion_plan.urllib.request.build_opener", lambda *handlers: FakeOpener())
+
+    with pytest.raises(ConversionPlanValidationError, match="response body is not valid JSON"):
+        _urllib_transport("http://127.0.0.1:8000/v1/chat/completions", {"model": "local"}, {}, 5)
+
+
+def test_pinned_https_transport_wraps_malformed_json_response_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeResponse:
+        status = 200
+        reason = "OK"
+        msg: dict[str, str] = {}
+
+        def read(self) -> bytes:
+            return b"not-json"
+
+    class FakePinnedHTTPSConnection:
+        def __init__(self, connect_host: str, port: int, tls_server_name: str, timeout: float) -> None:
+            pass
+
+        def request(self, method: str, path: str, body: bytes, headers: dict[str, str]) -> None:
+            pass
+
+        def getresponse(self) -> FakeResponse:
+            return FakeResponse()
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("core.llm.conversion_plan._PinnedHTTPSConnection", FakePinnedHTTPSConnection)
+
+    with pytest.raises(ConversionPlanValidationError, match="response body is not valid JSON"):
+        _urllib_transport(
+            "https://127.0.0.1:8000/v1/chat/completions",
+            {"model": "local"},
+            {},
+            5,
+            tls_server_name="localhost",
+        )
 
 
 def test_no_redirect_handler_rejects_redirects() -> None:

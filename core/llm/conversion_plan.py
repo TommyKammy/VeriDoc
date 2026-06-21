@@ -294,7 +294,7 @@ def _urllib_transport(
     )
     try:
         with _local_only_url_opener().open(request, timeout=timeout_seconds) as response:
-            return json.loads(response.read().decode("utf-8"))
+            return _decode_local_llm_response_body(response.read().decode("utf-8"))
     except urllib.error.URLError as exc:
         raise RuntimeError(f"local LLM request failed: {exc}") from exc
 
@@ -334,11 +334,21 @@ def _pinned_https_transport(
             )
         if response.status >= 400:
             raise urllib.error.HTTPError(url, response.status, response.reason, response.msg, None)
-        return json.loads(response_body)
+        return _decode_local_llm_response_body(response_body)
     except (OSError, http.client.HTTPException, urllib.error.URLError) as exc:
         raise RuntimeError(f"local LLM request failed: {exc}") from exc
     finally:
         connection.close()
+
+
+def _decode_local_llm_response_body(response_body: str) -> JsonObject:
+    try:
+        response = json.loads(response_body)
+    except json.JSONDecodeError as exc:
+        raise ConversionPlanValidationError(f"local LLM response body is not valid JSON: {exc.msg}") from exc
+    if not isinstance(response, dict):
+        raise ConversionPlanValidationError("local LLM response body must decode to a JSON object")
+    return response
 
 
 class _PinnedHTTPSConnection(http.client.HTTPSConnection):
@@ -385,8 +395,12 @@ def _local_only_url_opener() -> urllib.request.OpenerDirector:
 
 
 def _local_base_url(base_url: str) -> _LocalBaseUrl | None:
-    parsed = urlparse(base_url)
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+    try:
+        parsed = urlparse(base_url)
+        hostname = parsed.hostname
+    except ValueError:
+        return None
+    if parsed.scheme not in {"http", "https"} or not hostname:
         return None
     try:
         port = parsed.port
@@ -395,7 +409,7 @@ def _local_base_url(base_url: str) -> _LocalBaseUrl | None:
     if port == 0:
         return None
 
-    hostname = parsed.hostname.lower()
+    hostname = hostname.lower()
     if _is_localhost_name(hostname):
         resolved_addresses = _resolve_localhost_runtime_addresses(hostname, port)
         if resolved_addresses is None:
@@ -404,6 +418,8 @@ def _local_base_url(base_url: str) -> _LocalBaseUrl | None:
     try:
         address = ipaddress.ip_address(hostname)
     except ValueError:
+        if not _is_allowed_local_dns_name(hostname):
+            return None
         resolved_addresses = _resolve_local_runtime_addresses(hostname, port)
         if resolved_addresses is None:
             return None
@@ -503,6 +519,10 @@ def _is_local_runtime_address(address: ipaddress.IPv4Address | ipaddress.IPv6Add
 
 def _is_localhost_name(hostname: str) -> bool:
     return hostname == "localhost" or hostname.endswith(".localhost")
+
+
+def _is_allowed_local_dns_name(hostname: str) -> bool:
+    return "." not in hostname
 
 
 def _is_placeholder_secret(secret: str) -> bool:
