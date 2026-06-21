@@ -89,6 +89,12 @@ class LocalLLMConfigurationError(ValueError):
 
 
 @dataclass(frozen=True)
+class _LocalBaseUrl:
+    request_base_url: str
+    host_header: str | None = None
+
+
+@dataclass(frozen=True)
 class LocalLLMConversionPlanAdapter:
     """Minimal OpenAI-compatible local LLM adapter for JSON Schema plans."""
 
@@ -106,7 +112,7 @@ class LocalLLMConversionPlanAdapter:
             raise LocalLLMConfigurationError("timeout_seconds must be positive")
         if self.max_tokens <= 0:
             raise LocalLLMConfigurationError("max_tokens must be positive")
-        if not _is_local_base_url(self.base_url):
+        if _local_base_url(self.base_url) is None:
             raise LocalLLMConfigurationError("base_url must target a local-only OpenAI-compatible endpoint")
         if self.api_key is not None and _is_placeholder_secret(self.api_key):
             raise LocalLLMConfigurationError("placeholder API keys are not valid local LLM credentials")
@@ -114,7 +120,8 @@ class LocalLLMConversionPlanAdapter:
     def create_conversion_plan(self, synthetic_text: str) -> JsonObject:
         if not synthetic_text.strip():
             raise ValueError("synthetic_text is required")
-        if not _is_local_base_url(self.base_url):
+        local_base_url = _local_base_url(self.base_url)
+        if local_base_url is None:
             raise LocalLLMConfigurationError("base_url must target a local-only OpenAI-compatible endpoint")
 
         payload: JsonObject = {
@@ -145,11 +152,13 @@ class LocalLLMConversionPlanAdapter:
             ],
         }
         headers = {"Content-Type": "application/json"}
+        if local_base_url.host_header:
+            headers["Host"] = local_base_url.host_header
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
         transport = self.transport or _urllib_transport
-        response = transport(_chat_completions_url(self.base_url), payload, headers, self.timeout_seconds)
+        response = transport(_chat_completions_url(local_base_url.request_base_url), payload, headers, self.timeout_seconds)
         plan = _extract_json_content(response)
         validate_conversion_plan(plan)
         return plan
@@ -257,45 +266,67 @@ def _local_only_url_opener() -> urllib.request.OpenerDirector:
     return urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirectHandler())
 
 
-def _is_local_base_url(base_url: str) -> bool:
+def _local_base_url(base_url: str) -> _LocalBaseUrl | None:
     parsed = urlparse(base_url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-        return False
+        return None
     try:
         port = parsed.port
     except ValueError:
-        return False
+        return None
     if port == 0:
-        return False
+        return None
 
     hostname = parsed.hostname.lower()
     if hostname == "localhost" or hostname.endswith(".localhost"):
-        return True
+        return _LocalBaseUrl(base_url)
     try:
         address = ipaddress.ip_address(hostname)
     except ValueError:
-        return _hostname_resolves_to_local_runtime(hostname, port)
-    return _is_local_runtime_address(address)
+        resolved_address = _resolve_local_runtime_address(hostname, port)
+        if resolved_address is None:
+            return None
+        return _LocalBaseUrl(
+            request_base_url=_base_url_with_address(parsed, resolved_address),
+            host_header=_host_header(hostname, port),
+        )
+    if not _is_local_runtime_address(address):
+        return None
+    return _LocalBaseUrl(base_url)
 
 
-def _hostname_resolves_to_local_runtime(hostname: str, port: int | None) -> bool:
+def _resolve_local_runtime_address(hostname: str, port: int | None) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
     try:
         address_info = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
     except socket.gaierror:
-        return False
+        return None
 
     resolved_addresses: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
     for info in address_info:
         sockaddr = info[4]
         if not sockaddr:
-            return False
+            return None
         raw_address = str(sockaddr[0]).split("%", maxsplit=1)[0]
         try:
             resolved_addresses.append(ipaddress.ip_address(raw_address))
         except ValueError:
-            return False
+            return None
 
-    return bool(resolved_addresses) and all(_is_local_runtime_address(address) for address in resolved_addresses)
+    if not resolved_addresses or not all(_is_local_runtime_address(address) for address in resolved_addresses):
+        return None
+    return resolved_addresses[0]
+
+
+def _base_url_with_address(parsed: Any, address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> str:
+    host = f"[{address.compressed}]" if address.version == 6 else address.compressed
+    netloc = f"{host}:{parsed.port}" if parsed.port is not None else host
+    return parsed._replace(netloc=netloc).geturl()
+
+
+def _host_header(hostname: str, port: int | None) -> str:
+    if port is None:
+        return hostname
+    return f"{hostname}:{port}"
 
 
 def _is_local_runtime_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:

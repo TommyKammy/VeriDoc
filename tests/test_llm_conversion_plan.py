@@ -222,6 +222,48 @@ def test_adapter_revalidates_dns_hostname_before_transport_call(monkeypatch: pyt
     assert resolved_addresses == []
 
 
+def test_adapter_pins_dns_hostname_to_validated_local_address_for_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def getaddrinfo(
+        host: str,
+        port: int | None,
+        *args: object,
+        **kwargs: object,
+    ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
+        assert host == "dwarfstar"
+        assert port == 8000
+        assert kwargs == {"type": socket.SOCK_STREAM}
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.25", 8000))]
+
+    def transport(
+        url: str,
+        payload: dict[str, object],
+        headers: dict[str, str],
+        timeout_seconds: float,
+    ) -> dict[str, object]:
+        captured["url"] = url
+        captured["headers"] = headers
+        return {"choices": [{"message": {"content": _valid_plan()}}]}
+
+    monkeypatch.setattr("core.llm.conversion_plan.socket.getaddrinfo", getaddrinfo)
+
+    adapter = LocalLLMConversionPlanAdapter(
+        base_url="http://dwarfstar:8000/v1",
+        model="local-json-model",
+        transport=transport,
+    )
+
+    plan = adapter.create_conversion_plan("Lot: ABC-123")
+
+    assert plan == _valid_plan()
+    assert captured["url"] == "http://10.0.0.25:8000/v1/chat/completions"
+    assert captured["headers"] == {
+        "Content-Type": "application/json",
+        "Host": "dwarfstar:8000",
+    }
+
+
 def test_adapter_rejects_dns_hostname_with_public_resolved_address(monkeypatch: pytest.MonkeyPatch) -> None:
     def getaddrinfo(
         host: str,
