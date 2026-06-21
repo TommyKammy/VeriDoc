@@ -1,0 +1,82 @@
+{
+  "schema_version": "veridoc-evaluation-cases/v0",
+  "dataset_manifest": "datasets/fixtures/manifest.json",
+  "scope": {
+    "phase": "phase0",
+    "public_only": true,
+    "confidential_source_documents_allowed": false,
+    "production_or_gmp_claim": false
+  },
+  "cases": [
+    {
+      "id": "eval-case-001",
+      "fixture_id": "sample-document-ir-v0",
+      "document_id": "sample-document-001",
+      "expected": {
+        "tables": [
+          {
+            "id": "table-001",
+            "cells": [
+              {
+                "id": "table-001-r1-c1",
+                "text": "Lot Number",
+                "source": {
+                  "source_page": 1,
+                  "bbox": {
+                    "x": 72.0,
+                    "y": 112.0,
+                    "width": 88.0,
+                    "height": 18.0
+                  }
+                },
+                "requires_review": true
+              },
+              {
+                "id": "table-001-r1-c2",
+                "text": "SAMPLE-LOT-001",
+                "source": {
+                  "source_page": 1,
+                  "bbox": {
+                    "x": 162.0,
+                    "y": 112.0,
+                    "width": 90.0,
+                    "height": 18.0
+                  }
+                },
+                "requires_review": true
+              }
+            ]
+          }
+        ]
+      },
+      "actual": {
+        "tables": [
+          {
+            "id": "table-001",
+            "cells": [
+              {
+                "id": "table-001-r1-c1",
+                "text": "Lot Number",
+                "source": {
+                  "source_page": 1,
+                  "bbox": {
+                    "x": 72.0,
+                    "y": 112.0,
+                    "width": 88.0,
+                    "height": 18.0
+                  }
+                },
+                "auto_confirmed": false
+              },
+              {
+                "id": "table-001-r1-c2",
+                "text": "SAMPLE-LOT-002",
+                "auto_confirmed": true
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

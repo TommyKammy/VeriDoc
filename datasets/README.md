@@ -30,5 +30,14 @@ Fixture placement rules:
 - High-risk gold labels live under `datasets/gold/` and must point to explicit
   fixture records and block ids. Missing fixture linkage is treated as invalid.
 
+Evaluation harness:
+
+```sh
+python3 scripts/evaluate_dataset.py --cases datasets/gold/evaluation_cases_v0.json
+```
+
+The harness emits JSON metrics for table extraction rate, cell match rate,
+source linkage rate, and false auto-confirmed count.
+
 This dataset is only a Phase 0 evaluation fixture set. It does not claim GMP
 fitness, production readiness, or suitability for business use.
