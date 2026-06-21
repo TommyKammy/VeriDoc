@@ -72,10 +72,21 @@ class EvaluateDatasetTest(unittest.TestCase):
 
     def test_rejects_expected_table_missing_from_declared_fixture(self) -> None:
         data = self.valid_cases_data()
-        data["cases"][0]["expected"]["tables"][0]["id"] = "missing-table"
+        expected_table = data["cases"][0]["expected"]["tables"][0]
+        expected_table["id"] = "missing-table"
+        expected_table["fixture_table_id"] = "missing-table"
 
         with self.assertRaisesRegex(
             evaluate_dataset.EvaluationCaseError, "is not present in fixture"
+        ):
+            self.evaluate_valid_cases(data)
+
+    def test_rejects_expected_table_with_mismatched_fixture_anchor(self) -> None:
+        data = self.valid_cases_data()
+        data["cases"][0]["expected"]["tables"][0]["fixture_table_id"] = "other-table"
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError, "matching fixture_table_id"
         ):
             self.evaluate_valid_cases(data)
 

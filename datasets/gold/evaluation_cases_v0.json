@@ -16,6 +16,7 @@
         "tables": [
           {
             "id": "table-001",
+            "fixture_table_id": "table-001",
             "cells": [
               {
                 "id": "table-001-r1-c1",

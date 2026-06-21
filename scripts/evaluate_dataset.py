@@ -194,7 +194,14 @@ def validate_expected_tables_against_fixture(
     expected_tables = tables_by_id(case.get("expected", {}))
 
     for table_id, expected_table in expected_tables.items():
-        fixture_table = fixture_tables.get(table_id)
+        fixture_table_id = expected_table.get("fixture_table_id")
+        if fixture_table_id != table_id:
+            raise EvaluationCaseError(
+                f"case {case.get('id')!r}: expected table {table_id!r} "
+                "must declare a matching fixture_table_id"
+            )
+
+        fixture_table = fixture_tables.get(fixture_table_id)
         if fixture_table is None:
             raise EvaluationCaseError(
                 f"case {case.get('id')!r}: expected table {table_id!r} "
