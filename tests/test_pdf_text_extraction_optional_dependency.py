@@ -56,7 +56,9 @@ def test_pdf_eval_requirements_include_all_comparison_candidates() -> None:
 
     assert "pypdf" not in default_requirements
     assert "pymupdf" not in default_requirements
-    assert {"pypdf", "pymupdf"} <= eval_requirements
+    assert {"camelot-py", "pdfplumber", "pypdf", "pymupdf"} <= eval_requirements
+    assert eval_specs["camelot-py"].startswith("camelot-py")
+    assert eval_specs["pdfplumber"].startswith("pdfplumber==")
     assert eval_specs["pypdf"].startswith("pypdf==")
     assert eval_specs["pymupdf"].startswith("pymupdf==")
 
