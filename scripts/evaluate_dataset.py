@@ -186,7 +186,7 @@ def required_cells_by_id(table: dict[str, Any], context: str) -> dict[str, dict[
 def tables_by_id(section: object) -> dict[str, dict[str, Any]]:
     if not isinstance(section, dict):
         raise EvaluationCaseError("expected and actual sections must be objects")
-    tables = section.get("tables")
+    tables = section["tables"] if "tables" in section else None
     if not isinstance(tables, list):
         raise EvaluationCaseError("expected and actual sections must define tables lists")
 
@@ -344,6 +344,13 @@ def actual_auto_confirmed(cell: dict[str, Any], context: str) -> bool:
     return value
 
 
+def validate_actual_cells(cells: dict[str, dict[str, Any]], case_id: object) -> None:
+    for actual_cell_id, actual_cell in cells.items():
+        actual_context = f"case {case_id!r}: actual cell {actual_cell_id!r}"
+        actual_cell_text(actual_cell, actual_context)
+        actual_auto_confirmed(actual_cell, actual_context)
+
+
 def validate_expected_tables_against_fixture(
     case: dict[str, Any], fixture: dict[str, Any], fixture_id: str
 ) -> None:
@@ -494,13 +501,11 @@ def evaluate_cases(data: dict[str, Any], manifest_root: Path | None = None) -> E
                 expected_table, f"case {case.get('id')!r}: expected table {table_id!r}"
             )
             actual_cells = cells_by_id(actual_table)
-            for actual_cell_id, actual_cell in actual_cells.items():
-                actual_context = f"case {case.get('id')!r}: actual cell {actual_cell_id!r}"
-                actual_cell_text(actual_cell, actual_context)
-                actual_auto_confirmed(actual_cell, actual_context)
+            validate_actual_cells(actual_cells, case.get("id"))
             expected_cell_count += len(expected_cells)
 
-            for cell_id, expected_cell in expected_cells.items():
+            for cell_id in expected_cells:
+                expected_cell = expected_cells[cell_id]
                 expected_has_source_anchor = is_valid_source_anchor(expected_cell.get("source"))
                 if expected_has_source_anchor:
                     expected_source_link_count += 1
