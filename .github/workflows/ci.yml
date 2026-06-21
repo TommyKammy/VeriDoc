@@ -27,6 +27,8 @@ jobs:
           python-version: "3.12"
 
       - name: Run Python checks when present
+        env:
+          VERIDOC_REQUIRE_PDF_EVAL_DEPS: "1"
         run: |
           if [ -f pyproject.toml ]; then
             python -m pip install --upgrade pip

@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
 
-fitz = pytest.importorskip("pymupdf")
+try:
+    import pymupdf as fitz
+except ImportError:
+    if os.environ.get("VERIDOC_REQUIRE_PDF_EVAL_DEPS") == "1":
+        raise
+    pytest.skip("PyMuPDF eval dependency is not installed", allow_module_level=True)
 
 from core.parsers.pdf_text_extraction import extract_pdf_text
 
