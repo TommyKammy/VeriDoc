@@ -79,6 +79,11 @@ _LOCAL_RUNTIME_NETWORKS = tuple(
         "fc00::/7",
     )
 )
+_BLOCKED_LOCAL_RUNTIME_ADDRESSES = frozenset(
+    {
+        ipaddress.ip_address("fd00:ec2::254"),
+    }
+)
 _SUPPORTED_ACTIONS = {"extract_field", "extract_table", "normalize_value", "flag_review"}
 
 
@@ -484,13 +489,16 @@ def _host_header(hostname: str, port: int | None) -> str:
 
 
 def _is_local_runtime_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    if address == ipaddress.ip_address("fd00:ec2::254"):
+    if address in _BLOCKED_LOCAL_RUNTIME_ADDRESSES:
         return False
     if address.is_link_local:
         return False
     if address.is_loopback:
         return True
-    return any(address in network for network in _LOCAL_RUNTIME_NETWORKS)
+    for network in _LOCAL_RUNTIME_NETWORKS:
+        if address in network:
+            return True
+    return False
 
 
 def _is_localhost_name(hostname: str) -> bool:
