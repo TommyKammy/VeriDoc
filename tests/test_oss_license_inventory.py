@@ -30,6 +30,7 @@ class OssLicenseInventoryTest(unittest.TestCase):
             "pypdf",
             "pdfminer.six",
             "pdfplumber",
+            "camelot-py",
             "python-docx",
             "openpyxl",
         ):

@@ -14,6 +14,7 @@ out of the repository.
 | pypdf | PDF structure inspection, metadata, split/merge, light text extraction | BSD-3-Clause | Active public package and docs | Phase1-allowed for PoC evaluation with pinned versions |
 | pdfminer.six | PDF text and layout extraction foundation | MIT | Community-maintained fork with current package metadata | Phase1-allowed for PoC evaluation with pinned versions |
 | pdfplumber | PDF layout/table exploration on top of pdfminer.six | MIT | Current package metadata; depends on pdfminer.six | Phase1-allowed for PoC evaluation with pinned versions |
+| camelot-py | Ruled and stream PDF table extraction comparison | MIT | Current package metadata; requires transitive PDF/image processing stack review | Phase1-allowed only for public-fixture evaluation with pinned versions |
 | python-docx | DOCX read/write experiments | MIT | Public package and source license available | Phase1-allowed for PoC evaluation with pinned versions |
 | openpyxl | XLSX read/write experiments | MIT | Public package metadata and docs available; security docs require `defusedxml` to guard against XML expansion attacks | Phase1-allowed only for fully synthetic/trusted XLSX fixtures unless `defusedxml` is pinned and enforced before parsing |
 | pandas | Tabular analysis for evaluation reports only | BSD-3-Clause | Public package metadata available | Phase1-allowed only for evaluation/reporting helpers, not document authority |
@@ -23,9 +24,10 @@ out of the repository.
 ## Phase1 Provisional Decision
 
 Phase1 may use permissive-license libraries for public-fixture-only PoC work:
-`pypdf`, `pdfminer.six`, `pdfplumber`, `python-docx`, and evaluation helpers
-such as `pandas`. These candidates must still be pinned before use, covered by
-focused tests, and rechecked before any Phase2/MVP adoption decision.
+`pypdf`, `pdfminer.six`, `pdfplumber`, `camelot-py`, `python-docx`, and
+evaluation helpers such as `pandas`. These candidates must still be pinned
+before use, covered by focused tests, and rechecked before any Phase2/MVP
+adoption decision.
 
 `openpyxl` is Phase1-allowed only for fully synthetic or otherwise trusted XLSX
 fixtures. Any Phase1 parsing of external, operator-supplied, or untrusted XLSX
@@ -62,6 +64,10 @@ PyMuPDF AGPL-3.0 or commercial-license decision separately.
   `defusedxml` for protection against quadratic blowup and billion laughs XML
   attacks. Fail closed: untrusted XLSX parsing is not Phase1-approved unless
   that dependency is pinned and verified at the parsing boundary.
+- camelot-py: the table-extraction spike may install Camelot only through
+  `requirements-pdf-eval.txt` for public synthetic fixtures. Its transitive
+  PDF/image processing dependencies still need resolved-lockfile review before
+  any Phase2/MVP or confidential-document workflow can depend on it.
 - Transitive dependencies: every candidate above still needs lockfile-level
   review when it is added to an installable environment. This Phase0 inventory
   records candidate posture, not a complete resolved dependency graph.
@@ -79,6 +85,8 @@ PyMuPDF AGPL-3.0 or commercial-license decision separately.
 - pypdf license FAQ: https://pypdf.readthedocs.io/en/stable/meta/faq.html
 - pdfminer.six PyPI project metadata: https://pypi.org/project/pdfminer.six/
 - pdfplumber PyPI project metadata: https://pypi.org/project/pdfplumber/
+- Camelot PyPI project metadata: https://pypi.org/project/camelot-py/
+- Camelot documentation: https://camelot-py.readthedocs.io/
 - python-docx upstream license: https://github.com/python-openxml/python-docx/blob/master/LICENSE
 - openpyxl PyPI project metadata: https://pypi.org/project/openpyxl/
 - openpyxl security note: https://openpyxl.readthedocs.io/
