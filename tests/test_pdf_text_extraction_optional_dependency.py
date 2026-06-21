@@ -7,6 +7,36 @@ from typing import Any
 from core.parsers import pdf_text_extraction
 
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _requirement_names(path: Path) -> set[str]:
+    names: set[str] = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        requirement = line.strip()
+        if not requirement or requirement.startswith("#") or requirement.startswith("-"):
+            continue
+        names.add(
+            requirement.split(";", 1)[0]
+            .split("[", 1)[0]
+            .split("<", 1)[0]
+            .split(">", 1)[0]
+            .split("=", 1)[0]
+            .strip()
+            .lower()
+        )
+    return names
+
+
+def test_pdf_eval_requirements_include_all_comparison_candidates() -> None:
+    default_requirements = _requirement_names(REPO_ROOT / "requirements.txt")
+    eval_requirements = _requirement_names(REPO_ROOT / "requirements-pdf-eval.txt")
+
+    assert "pypdf" not in default_requirements
+    assert "pymupdf" not in default_requirements
+    assert {"pypdf", "pymupdf"} <= eval_requirements
+
+
 def test_compare_pdf_text_extractors_reports_missing_pymupdf(
     monkeypatch: Any,
     tmp_path: Path,
