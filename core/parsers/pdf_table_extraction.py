@@ -127,6 +127,9 @@ def build_table_extraction_report(
     mismatches: list[TableExtractionMismatch] = []
     ok_candidates = [candidate for candidate in candidates if candidate.status == "ok"]
     first_tables = {candidate.name: _first_table(candidate) for candidate in ok_candidates}
+    require_cell_bboxes = (
+        expected_shape.require_cell_bboxes if expected_shape is not None else True
+    )
 
     for candidate in ok_candidates:
         table = first_tables[candidate.name]
@@ -175,7 +178,12 @@ def build_table_extraction_report(
                         notes="Extracted column count does not match the ruled-table sample.",
                     )
                 )
-            if expected_shape.require_cell_bboxes and not table.has_cell_bboxes:
+    if require_cell_bboxes:
+        for candidate in ok_candidates:
+            table = first_tables[candidate.name]
+            if table is None:
+                continue
+            if not table.has_cell_bboxes:
                 mismatches.append(
                     TableExtractionMismatch(
                         kind="cell-boundary",
@@ -194,21 +202,22 @@ def build_table_extraction_report(
             right_table = first_tables[right_candidate.name]
             if right_table is None:
                 continue
-            if (left_table.row_count, left_table.column_count) != (
-                right_table.row_count,
-                right_table.column_count,
-            ):
+            if left_table.row_widths != right_table.row_widths:
                 mismatches.append(
                     TableExtractionMismatch(
                         kind="candidate-shape",
                         candidate=f"{left_candidate.name} vs {right_candidate.name}",
-                        expected=f"{left_table.row_count}x{left_table.column_count}",
-                        actual=f"{right_table.row_count}x{right_table.column_count}",
+                        expected=_shape_label(left_table),
+                        actual=_shape_label(right_table),
                         notes="Candidate extractors disagree on table shape.",
                     )
                 )
 
-    selected_candidate = _select_candidate(ok_candidates, mismatches)
+    selected_candidate = _select_candidate(
+        ok_candidates,
+        mismatches,
+        require_shape_consensus=expected_shape is None,
+    )
     notes = (
         "Camelot lattice is the provisional candidate when it matches the expected "
         "ruled-table shape and provides cell boundaries; unresolved risks remain "
@@ -373,8 +382,14 @@ def _first_table(candidate: TableExtractionCandidate) -> ExtractedTable | None:
 def _select_candidate(
     candidates: Iterable[TableExtractionCandidate],
     mismatches: Sequence[TableExtractionMismatch],
+    *,
+    require_shape_consensus: bool = False,
 ) -> str | None:
     blocked = {mismatch.candidate for mismatch in mismatches if " vs " not in mismatch.candidate}
+    if require_shape_consensus:
+        for mismatch in mismatches:
+            if mismatch.kind == "candidate-shape":
+                blocked.update(mismatch.candidate.split(" vs "))
     for preferred in ("camelot:lattice", "pdfplumber:table", "camelot:stream"):
         for candidate in candidates:
             if (
@@ -384,6 +399,12 @@ def _select_candidate(
             ):
                 return candidate.name
     return None
+
+
+def _shape_label(table: ExtractedTable) -> str:
+    if table.is_rectangular:
+        return f"{table.row_count}x{table.column_count}"
+    return f"row widths {table.row_widths}"
 
 
 def _package_version(package_name: str) -> str | None:

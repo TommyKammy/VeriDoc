@@ -145,6 +145,51 @@ def test_build_table_extraction_report_rejects_empty_candidates_without_expected
     }
 
 
+def test_build_table_extraction_report_rejects_missing_bboxes_without_expected_shape(
+    tmp_path: Path,
+) -> None:
+    report = build_table_extraction_report(
+        source_path=tmp_path / "ruled-table.pdf",
+        candidates=[
+            _candidate("camelot", "lattice", [["A", "B"], ["C", "D"]], has_bboxes=False),
+        ],
+    )
+
+    assert report.selected_candidate is None
+    assert [
+        (mismatch.kind, mismatch.candidate, mismatch.expected, mismatch.actual)
+        for mismatch in report.mismatches
+    ] == [
+        (
+            "cell-boundary",
+            "camelot:lattice",
+            "all cells have bboxes",
+            "missing one or more cell bboxes",
+        )
+    ]
+
+
+def test_build_table_extraction_report_preserves_ragged_widths_without_expected_shape(
+    tmp_path: Path,
+) -> None:
+    report = build_table_extraction_report(
+        source_path=tmp_path / "ruled-table.pdf",
+        candidates=[
+            _candidate("camelot", "lattice", [["A"], ["B", "C"]]),
+            _candidate("camelot", "stream", [["A", "B", "C"], ["D"]]),
+        ],
+    )
+
+    assert report.selected_candidate is None
+    assert any(
+        mismatch.kind == "candidate-shape"
+        and mismatch.candidate == "camelot:lattice vs camelot:stream"
+        and mismatch.expected == "row widths [1, 2]"
+        and mismatch.actual == "row widths [3, 1]"
+        for mismatch in report.mismatches
+    )
+
+
 def test_pdfplumber_bbox_preserves_top_left_origin() -> None:
     class Row:
         cells = [(10.0, 20.0, 40.0, 50.0)]
