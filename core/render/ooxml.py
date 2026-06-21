@@ -214,10 +214,10 @@ def _docx_table_rows(block: Mapping[str, Any]) -> Sequence[Sequence[str]]:
         ]
         if normalized_rows:
             return normalized_rows
-    text = _sanitize_xml_text(_text(block.get("text")))
-    if not text:
+    sanitized_text = _sanitize_xml_text(_text(block.get("text")))
+    if not sanitized_text:
         return [[""]]
-    return [line.split("\t") for line in text.splitlines()]
+    return [line.split("\t") for line in sanitized_text.splitlines()]
 
 
 def _split_field(text: str) -> tuple[str, str]:

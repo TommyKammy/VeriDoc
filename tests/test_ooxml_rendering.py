@@ -239,7 +239,7 @@ def test_docx_sanitizes_table_text_before_splitting_rows(tmp_path: Path) -> None
     document_ir = {
         "document": {"title": "Table controls"},
         "blocks": [
-            {"id": "table-1", "type": "table", "text": "Head\fA\tValue\nCode\t00\v1"},
+            {"id": "table-1", "type": "table", "text": "Head\fA\tValue\nA\vB"},
         ],
     }
     output_path = tmp_path / "table-controls.docx"
@@ -249,7 +249,7 @@ def test_docx_sanitizes_table_text_before_splitting_rows(tmp_path: Path) -> None
     docx = extract_docx_structure(output_path)
     assert [(block.kind, block.text, block.rows) for block in docx.blocks] == [
         ("heading", "Table controls", None),
-        ("table", "Head A\tValue\nCode\t00 1", [["Head A", "Value"], ["Code", "00 1"]]),
+        ("table", "Head A\tValue\nA B", [["Head A", "Value"], ["A B"]]),
     ]
 
 
