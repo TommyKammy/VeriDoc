@@ -118,6 +118,7 @@
             ],
             "properties": {
               "source_page": {
+                "description": "1-based page number that must match an entry in pages[*].page_number.",
                 "type": "integer",
                 "minimum": 1
               },
