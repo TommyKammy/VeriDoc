@@ -194,6 +194,26 @@ def tables_by_id(section: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return indexed
 
 
+def required_tables_by_id(section: dict[str, Any], context: str) -> dict[str, dict[str, Any]]:
+    indexed = tables_by_id(section)
+    if not indexed:
+        raise EvaluationCaseError(f"{context}: tables must contain at least one table")
+    return indexed
+
+
+def validate_unique_case_ids(cases: list[Any]) -> None:
+    seen_case_ids: set[str] = set()
+    for case in cases:
+        if not isinstance(case, dict):
+            raise EvaluationCaseError("each case must be an object")
+        case_id = case.get("id")
+        if not isinstance(case_id, str) or not case_id:
+            raise EvaluationCaseError("each case needs a non-empty string id")
+        if case_id in seen_case_ids:
+            raise EvaluationCaseError(f"duplicate case id {case_id!r}")
+        seen_case_ids.add(case_id)
+
+
 def validate_schema_version(data: dict[str, Any]) -> None:
     if data.get("schema_version") != EVALUATION_CASES_SCHEMA_VERSION:
         raise EvaluationCaseError(
@@ -334,7 +354,9 @@ def validate_expected_tables_against_fixture(
         )
 
     fixture_tables = tables_by_id(fixture)
-    expected_tables = tables_by_id(case.get("expected", {}))
+    expected_tables = required_tables_by_id(
+        case.get("expected", {}), f"case {case.get('id')!r}: expected"
+    )
     fixture_pages = pages_by_number(fixture, fixture_id)
 
     for table_id, expected_table in expected_tables.items():
@@ -438,6 +460,7 @@ def evaluate_cases(data: dict[str, Any], manifest_root: Path | None = None) -> E
         raise EvaluationCaseError("cases must be a list")
     if not cases:
         raise EvaluationCaseError("cases must contain at least one evaluation case")
+    validate_unique_case_ids(cases)
     validate_case_fixtures(data, cases, manifest_root)
 
     expected_table_count = 0
@@ -451,7 +474,9 @@ def evaluate_cases(data: dict[str, Any], manifest_root: Path | None = None) -> E
     for case in cases:
         if not isinstance(case, dict):
             raise EvaluationCaseError("each case must be an object")
-        expected_tables = tables_by_id(case.get("expected", {}))
+        expected_tables = required_tables_by_id(
+            case.get("expected", {}), f"case {case.get('id')!r}: expected"
+        )
         actual_tables = tables_by_id(case.get("actual", {}))
 
         expected_table_count += len(expected_tables)

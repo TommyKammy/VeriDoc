@@ -395,6 +395,15 @@ class EvaluateDatasetTest(unittest.TestCase):
         with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "duplicate table id"):
             self.evaluate_valid_cases(data)
 
+    def test_rejects_empty_expected_tables_before_scoring(self) -> None:
+        data = self.valid_cases_data()
+        data["cases"][0]["expected"]["tables"] = []
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError, "tables must contain at least one table"
+        ):
+            self.evaluate_valid_cases(data)
+
     def test_rejects_duplicate_cell_ids_before_indexing(self) -> None:
         data = self.valid_cases_data()
         cells = data["cases"][0]["expected"]["tables"][0]["cells"]
@@ -419,6 +428,13 @@ class EvaluateDatasetTest(unittest.TestCase):
         with self.assertRaisesRegex(
             evaluate_dataset.EvaluationCaseError, "at least one evaluation case"
         ):
+            self.evaluate_valid_cases(data)
+
+    def test_rejects_duplicate_case_ids_before_scoring(self) -> None:
+        data = self.valid_cases_data()
+        data["cases"].append(copy.deepcopy(data["cases"][0]))
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "duplicate case id"):
             self.evaluate_valid_cases(data)
 
     def test_rejects_non_string_actual_cell_text_before_scoring(self) -> None:
