@@ -22,9 +22,9 @@
     {
       "id": "sample-document-ir-v0",
       "title": "Synthetic batch record excerpt Document IR",
-      "path": "core/ir/examples/sample-document-ir-v0.json",
+      "path": "datasets/fixtures/sample-document-ir-v0.json",
       "source_type": "record_excerpt",
-      "format": "document_ir_json",
+      "format": "evaluation_fixture_json",
       "anonymization": "synthetic",
       "confidentiality": "public",
       "public_review_safe": true,

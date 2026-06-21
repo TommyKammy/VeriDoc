@@ -23,8 +23,10 @@ Fixture placement rules:
 
 - Text PDFs, scanned PDFs, Word files, Excel files, and record excerpts must be
   listed in `datasets/fixtures/manifest.json` before use in evaluation.
-- The initial public dataset may reference existing synthetic Document IR JSON
-  samples instead of binary documents until converter fixtures are added.
+- Evaluation cases may only reference manifest entries with an explicit
+  repo-relative fixture path under `datasets/fixtures/`.
+- Placeholder slots document required future source types, but they are not
+  scorable fixtures until a synthetic or anonymized file path is added.
 - Each fixture entry must declare its source type, anonymization status,
   confidentiality class, and whether it is safe for public repository review.
 - High-risk gold labels live under `datasets/gold/` and must point to explicit

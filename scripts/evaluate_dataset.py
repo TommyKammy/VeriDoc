@@ -133,41 +133,99 @@ def manifest_path_from_cases(data: dict[str, Any], manifest_root: Path | None = 
     return path
 
 
-def fixture_ids_from_manifest(manifest: dict[str, Any]) -> set[str]:
+def fixture_paths_from_manifest(
+    manifest: dict[str, Any], manifest_root: Path
+) -> dict[str, Path]:
     if manifest.get("schema_version") != FIXTURE_MANIFEST_SCHEMA_VERSION:
         raise EvaluationCaseError(
             f"unsupported fixture manifest schema_version {manifest.get('schema_version')!r}"
         )
 
+    policy = manifest.get("policy")
+    if not isinstance(policy, dict):
+        raise EvaluationCaseError("fixture manifest must define a policy")
+    allowed_root_value = policy.get("allowed_fixture_root")
+    if not isinstance(allowed_root_value, str) or not allowed_root_value:
+        raise EvaluationCaseError("fixture manifest policy must define allowed_fixture_root")
+    allowed_root_path = Path(allowed_root_value)
+    if allowed_root_path.is_absolute():
+        raise EvaluationCaseError("allowed_fixture_root must be repo-relative")
+    allowed_root = (manifest_root / allowed_root_path).resolve()
+
     fixtures = manifest.get("fixtures")
     if not isinstance(fixtures, list):
         raise EvaluationCaseError("fixture manifest must define a fixtures list")
 
-    fixture_ids: set[str] = set()
+    fixture_paths: dict[str, Path] = {}
+    seen_fixture_ids: set[str] = set()
     for fixture in fixtures:
         if not isinstance(fixture, dict) or not isinstance(fixture.get("id"), str):
             raise EvaluationCaseError("each fixture manifest entry needs a string id")
         fixture_id = fixture["id"]
-        if fixture_id in fixture_ids:
+        if fixture_id in seen_fixture_ids:
             raise EvaluationCaseError(f"duplicate fixture id {fixture_id!r}")
+        seen_fixture_ids.add(fixture_id)
         if fixture.get("public_review_safe") is not True:
             raise EvaluationCaseError(f"fixture {fixture_id!r} is not public-review safe")
-        fixture_ids.add(fixture_id)
-    return fixture_ids
+
+        fixture_path_value = fixture.get("path")
+        if fixture_path_value is None:
+            continue
+        if not isinstance(fixture_path_value, str) or not fixture_path_value:
+            raise EvaluationCaseError(f"fixture {fixture_id!r} path must be a non-empty string")
+        fixture_path = Path(fixture_path_value)
+        if fixture_path.is_absolute():
+            raise EvaluationCaseError(f"fixture {fixture_id!r} path must be repo-relative")
+        resolved_fixture_path = (manifest_root / fixture_path).resolve()
+        if not resolved_fixture_path.is_relative_to(allowed_root):
+            raise EvaluationCaseError(
+                f"fixture {fixture_id!r} path must stay under {allowed_root_value!r}"
+            )
+        if not resolved_fixture_path.is_file():
+            raise EvaluationCaseError(f"fixture {fixture_id!r} path does not exist")
+        fixture_paths[fixture_id] = resolved_fixture_path
+    return fixture_paths
+
+
+def validate_expected_tables_against_fixture(
+    case: dict[str, Any], fixture: dict[str, Any], fixture_id: str
+) -> None:
+    fixture_tables = tables_by_id(fixture)
+    expected_tables = tables_by_id(case.get("expected", {}))
+
+    for table_id, expected_table in expected_tables.items():
+        fixture_table = fixture_tables.get(table_id)
+        if fixture_table is None:
+            raise EvaluationCaseError(
+                f"case {case.get('id')!r}: expected table {table_id!r} "
+                f"is not present in fixture {fixture_id!r}"
+            )
+
+        fixture_cells = cells_by_id(fixture_table)
+        for cell_id in cells_by_id(expected_table):
+            if cell_id not in fixture_cells:
+                raise EvaluationCaseError(
+                    f"case {case.get('id')!r}: expected cell {cell_id!r} "
+                    f"is not present in fixture {fixture_id!r} table {table_id!r}"
+                )
 
 
 def validate_case_fixtures(
     data: dict[str, Any], cases: list[Any], manifest_root: Path | None = None
 ) -> None:
-    manifest = load_json(manifest_path_from_cases(data, manifest_root))
-    fixture_ids = fixture_ids_from_manifest(manifest)
+    root = manifest_root or Path.cwd()
+    manifest = load_json(manifest_path_from_cases(data, root))
+    fixture_paths = fixture_paths_from_manifest(manifest, root)
 
     for case in cases:
         if not isinstance(case, dict):
             raise EvaluationCaseError("each case must be an object")
         fixture_id = case.get("fixture_id")
-        if not isinstance(fixture_id, str) or fixture_id not in fixture_ids:
+        if not isinstance(fixture_id, str) or fixture_id not in fixture_paths:
             raise EvaluationCaseError(f"unknown fixture_id {fixture_id!r}")
+        validate_expected_tables_against_fixture(
+            case, load_json(fixture_paths[fixture_id]), fixture_id
+        )
 
 
 def manifest_root_for_cases_path(cases_path: Path) -> Path:

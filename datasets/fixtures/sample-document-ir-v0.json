@@ -1,0 +1,83 @@
+{
+  "schema_version": "veridoc-evaluation-fixture/v0",
+  "document": {
+    "id": "sample-document-001",
+    "title": "Synthetic batch record excerpt",
+    "source_type": "record_excerpt"
+  },
+  "pages": [
+    {
+      "page_number": 1,
+      "width": 595.0,
+      "height": 842.0,
+      "unit": "pt"
+    }
+  ],
+  "blocks": [
+    {
+      "id": "block-001",
+      "type": "heading",
+      "text": "Manufacturing Record",
+      "source": {
+        "source_page": 1,
+        "bbox": {
+          "x": 72.0,
+          "y": 64.0,
+          "width": 240.0,
+          "height": 24.0
+        }
+      },
+      "requires_review": false
+    },
+    {
+      "id": "block-002",
+      "type": "field",
+      "text": "Lot Number: SAMPLE-LOT-001",
+      "source": {
+        "source_page": 1,
+        "bbox": {
+          "x": 72.0,
+          "y": 112.0,
+          "width": 180.0,
+          "height": 18.0
+        }
+      },
+      "requires_review": true
+    }
+  ],
+  "tables": [
+    {
+      "id": "table-001",
+      "cells": [
+        {
+          "id": "table-001-r1-c1",
+          "text": "Lot Number",
+          "source": {
+            "source_page": 1,
+            "bbox": {
+              "x": 72.0,
+              "y": 112.0,
+              "width": 88.0,
+              "height": 18.0
+            }
+          },
+          "requires_review": true
+        },
+        {
+          "id": "table-001-r1-c2",
+          "text": "SAMPLE-LOT-001",
+          "source": {
+            "source_page": 1,
+            "bbox": {
+              "x": 162.0,
+              "y": 112.0,
+              "width": 90.0,
+              "height": 18.0
+            }
+          },
+          "requires_review": true
+        }
+      ]
+    }
+  ]
+}

@@ -3,8 +3,10 @@ from __future__ import annotations
 import copy
 import importlib.util
 import json
+import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -26,10 +28,13 @@ class EvaluateDatasetTest(unittest.TestCase):
     def valid_cases_data(self) -> dict[str, object]:
         return copy.deepcopy(evaluate_dataset.load_json(CASES_PATH))
 
+    def evaluate_valid_cases(self, data: dict[str, object]) -> object:
+        return evaluate_dataset.evaluate_cases(data, manifest_root=REPO_ROOT)
+
     def test_public_fixture_metrics_cover_phase0_acceptance_criteria(self) -> None:
         data = evaluate_dataset.load_json(CASES_PATH)
 
-        metrics = evaluate_dataset.evaluate_cases(data)
+        metrics = self.evaluate_valid_cases(data)
 
         self.assertEqual(1.0, metrics.table_extraction_rate)
         self.assertEqual(0.5, metrics.cell_match_rate)
@@ -45,7 +50,7 @@ class EvaluateDatasetTest(unittest.TestCase):
         actual_table = case["actual"]["tables"][0]
         actual_table["cells"] = actual_table["cells"][:1]
 
-        metrics = evaluate_dataset.evaluate_cases(data)
+        metrics = self.evaluate_valid_cases(data)
 
         self.assertEqual(2, metrics.expected_source_link_count)
         self.assertEqual(1, metrics.matched_source_link_count)
@@ -56,7 +61,35 @@ class EvaluateDatasetTest(unittest.TestCase):
         data["cases"][0]["fixture_id"] = "missing-fixture"
 
         with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "unknown fixture_id"):
-            evaluate_dataset.evaluate_cases(data)
+            self.evaluate_valid_cases(data)
+
+    def test_rejects_placeholder_fixture_without_path(self) -> None:
+        data = self.valid_cases_data()
+        data["cases"][0]["fixture_id"] = "placeholder-text-pdf"
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "unknown fixture_id"):
+            self.evaluate_valid_cases(data)
+
+    def test_rejects_expected_table_missing_from_declared_fixture(self) -> None:
+        data = self.valid_cases_data()
+        data["cases"][0]["expected"]["tables"][0]["id"] = "missing-table"
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError, "is not present in fixture"
+        ):
+            self.evaluate_valid_cases(data)
+
+    def test_direct_evaluation_uses_explicit_manifest_root_from_any_cwd(self) -> None:
+        data = self.valid_cases_data()
+        original_cwd = Path.cwd()
+        with tempfile.TemporaryDirectory() as other_dir:
+            try:
+                os.chdir(other_dir)
+                metrics = self.evaluate_valid_cases(data)
+            finally:
+                os.chdir(original_cwd)
+
+        self.assertEqual(1.0, metrics.table_extraction_rate)
 
     def test_rejects_unsupported_evaluation_schema_version(self) -> None:
         data = self.valid_cases_data()
@@ -65,7 +98,7 @@ class EvaluateDatasetTest(unittest.TestCase):
         with self.assertRaisesRegex(
             evaluate_dataset.EvaluationCaseError, "unsupported evaluation schema_version"
         ):
-            evaluate_dataset.evaluate_cases(data)
+            self.evaluate_valid_cases(data)
 
     def test_rejects_duplicate_table_ids_before_indexing(self) -> None:
         data = self.valid_cases_data()
@@ -73,7 +106,7 @@ class EvaluateDatasetTest(unittest.TestCase):
         expected["tables"].append(copy.deepcopy(expected["tables"][0]))
 
         with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "duplicate table id"):
-            evaluate_dataset.evaluate_cases(data)
+            self.evaluate_valid_cases(data)
 
     def test_rejects_duplicate_cell_ids_before_indexing(self) -> None:
         data = self.valid_cases_data()
@@ -81,7 +114,7 @@ class EvaluateDatasetTest(unittest.TestCase):
         cells.append(copy.deepcopy(cells[0]))
 
         with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "duplicate cell id"):
-            evaluate_dataset.evaluate_cases(data)
+            self.evaluate_valid_cases(data)
 
     def test_cli_emits_json_metrics_for_local_or_ci_verification(self) -> None:
         proc = subprocess.run(
