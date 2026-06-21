@@ -14,6 +14,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "evaluate_dataset.py"
 CASES_PATH = REPO_ROOT / "datasets" / "gold" / "evaluation_cases_v0.json"
+LLM_STABILITY_RUNS_PATH = REPO_ROOT / "datasets" / "gold" / "llm_stability_runs_v0.json"
 
 
 spec = importlib.util.spec_from_file_location("evaluate_dataset", SCRIPT_PATH)
@@ -27,6 +28,9 @@ spec.loader.exec_module(evaluate_dataset)
 class EvaluateDatasetTest(unittest.TestCase):
     def valid_cases_data(self) -> dict[str, object]:
         return copy.deepcopy(evaluate_dataset.load_json(CASES_PATH))
+
+    def valid_llm_stability_data(self) -> dict[str, object]:
+        return copy.deepcopy(evaluate_dataset.load_json(LLM_STABILITY_RUNS_PATH))
 
     def evaluate_valid_cases(self, data: dict[str, object]) -> object:
         return evaluate_dataset.evaluate_cases(data, manifest_root=REPO_ROOT)
@@ -89,6 +93,149 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertEqual(1, metrics.expected_table_count)
         self.assertEqual(2, metrics.expected_cell_count)
         self.assertEqual(2, metrics.expected_source_link_count)
+
+    def test_llm_stability_metrics_quantify_repeated_output_drift(self) -> None:
+        metrics = evaluate_dataset.evaluate_llm_stability(self.valid_llm_stability_data())
+
+        self.assertEqual("synthetic-batch-record-001", metrics.input_id)
+        self.assertEqual(3, metrics.run_count)
+        self.assertEqual(2 / 3, metrics.plan_agreement_rate)
+        self.assertEqual(2 / 3, metrics.confirmed_value_agreement_rate)
+        self.assertEqual(2, metrics.distinct_plan_count)
+        self.assertEqual(2, metrics.distinct_confirmed_value_count)
+        self.assertEqual(2, metrics.unstable_example_count)
+        self.assertEqual(
+            (
+                {
+                    "reference_run_id": "run-001",
+                    "run_id": "run-002",
+                    "changed": "confirmed_values",
+                },
+                {
+                    "reference_run_id": "run-001",
+                    "run_id": "run-003",
+                    "changed": "conversion_plan",
+                },
+            ),
+            metrics.unstable_examples,
+        )
+
+    def test_llm_stability_agreement_rates_do_not_depend_on_run_order(self) -> None:
+        data = self.valid_llm_stability_data()
+        data["runs"] = [data["runs"][2], data["runs"][1], data["runs"][0]]
+
+        metrics = evaluate_dataset.evaluate_llm_stability(data)
+
+        self.assertEqual(2 / 3, metrics.plan_agreement_rate)
+        self.assertEqual(2 / 3, metrics.confirmed_value_agreement_rate)
+        self.assertEqual(
+            (
+                {
+                    "reference_run_id": "run-001",
+                    "run_id": "run-002",
+                    "changed": "confirmed_values",
+                },
+                {
+                    "reference_run_id": "run-001",
+                    "run_id": "run-003",
+                    "changed": "conversion_plan",
+                },
+            ),
+            metrics.unstable_examples,
+        )
+
+    def test_llm_stability_reference_run_matches_plan_and_value_majorities(self) -> None:
+        data = self.valid_llm_stability_data()
+        data["runs"][2]["confirmed_values"] = copy.deepcopy(data["runs"][1]["confirmed_values"])
+
+        metrics = evaluate_dataset.evaluate_llm_stability(data)
+
+        self.assertEqual(
+            (
+                {
+                    "reference_run_id": "run-002",
+                    "run_id": "run-001",
+                    "changed": "confirmed_values",
+                },
+                {
+                    "reference_run_id": "run-002",
+                    "run_id": "run-003",
+                    "changed": "conversion_plan",
+                },
+            ),
+            metrics.unstable_examples,
+        )
+
+    def test_llm_stability_reports_separate_references_without_joint_majority(self) -> None:
+        data = self.valid_llm_stability_data()
+        run_004 = copy.deepcopy(data["runs"][2])
+        run_004["run_id"] = "run-004"
+        run_004["conversion_plan"]["operations"][0]["rationale"] = (
+            "The alternate synthetic record wording labels the release date directly."
+        )
+        data["runs"].append(run_004)
+        data["n"] = 4
+        data["runs"][0]["confirmed_values"][1]["value"] = "2026-01-17"
+
+        metrics = evaluate_dataset.evaluate_llm_stability(data)
+
+        self.assertEqual(4, metrics.unstable_example_count)
+        self.assertEqual(
+            (
+                {
+                    "reference_plan_run_id": "run-001",
+                    "reference_confirmed_values_run_id": "run-003",
+                    "run_id": "run-001",
+                    "changed": "confirmed_values",
+                },
+                {
+                    "reference_plan_run_id": "run-001",
+                    "reference_confirmed_values_run_id": "run-003",
+                    "run_id": "run-002",
+                    "changed": "confirmed_values",
+                },
+                {
+                    "reference_plan_run_id": "run-001",
+                    "reference_confirmed_values_run_id": "run-003",
+                    "run_id": "run-003",
+                    "changed": "conversion_plan",
+                },
+            ),
+            metrics.unstable_examples,
+        )
+
+    def test_llm_stability_rejects_empty_confirmed_values_before_scoring(self) -> None:
+        data = self.valid_llm_stability_data()
+        for run in data["runs"]:
+            run["confirmed_values"] = []
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError, "at least one public confirmed value"
+        ):
+            evaluate_dataset.evaluate_llm_stability(data)
+
+    def test_llm_stability_rejects_non_public_source_kind_before_scoring(self) -> None:
+        data = self.valid_llm_stability_data()
+        data["runs"][0]["conversion_plan"]["source_kind"] = "real_confidential_record"
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError, "public-only synthetic or anonymized"
+        ):
+            evaluate_dataset.evaluate_llm_stability(data)
+
+    def test_llm_stability_rejects_invalid_run_count_before_scoring(self) -> None:
+        data = self.valid_llm_stability_data()
+        data["n"] = 4
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "runs length"):
+            evaluate_dataset.evaluate_llm_stability(data)
+
+    def test_llm_stability_rejects_invalid_conversion_plan_before_scoring(self) -> None:
+        data = self.valid_llm_stability_data()
+        data["runs"][0]["conversion_plan"]["constraints"]["external_transmission"] = True
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "conversion_plan"):
+            evaluate_dataset.evaluate_llm_stability(data)
 
     def test_missing_actual_cell_counts_as_missing_source_link(self) -> None:
         data = self.valid_cases_data()
@@ -531,6 +678,29 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertEqual(0.5, metrics["cell_match_rate"])
         self.assertEqual(0.5, metrics["source_linkage_rate"])
         self.assertEqual(1, metrics["false_auto_confirmed_count"])
+
+    def test_cli_emits_llm_stability_metrics_for_phase1_scope_decision(self) -> None:
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT_PATH),
+                "--llm-stability-runs",
+                str(LLM_STABILITY_RUNS_PATH),
+            ],
+            cwd=REPO_ROOT,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        self.assertEqual("", proc.stderr)
+        self.assertEqual(0, proc.returncode)
+        metrics = json.loads(proc.stdout)
+        self.assertEqual(3, metrics["run_count"])
+        self.assertEqual(2 / 3, metrics["plan_agreement_rate"])
+        self.assertEqual(2 / 3, metrics["confirmed_value_agreement_rate"])
+        self.assertEqual(2, metrics["unstable_example_count"])
 
 
 if __name__ == "__main__":
