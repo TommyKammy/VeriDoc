@@ -100,6 +100,47 @@ def validate_source_anchor(source: object, context: str) -> None:
         )
 
 
+def pages_by_number(fixture: dict[str, Any], fixture_id: str) -> dict[int, dict[str, Any]]:
+    pages = fixture.get("pages")
+    if not isinstance(pages, list):
+        raise EvaluationCaseError(f"fixture {fixture_id!r}: pages must be a list")
+
+    indexed: dict[int, dict[str, Any]] = {}
+    for page in pages:
+        if not isinstance(page, dict):
+            raise EvaluationCaseError(f"fixture {fixture_id!r}: each page must be an object")
+        page_number = page.get("page_number")
+        if not isinstance(page_number, int) or isinstance(page_number, bool):
+            raise EvaluationCaseError(f"fixture {fixture_id!r}: page_number must be an integer")
+        if page_number in indexed:
+            raise EvaluationCaseError(f"fixture {fixture_id!r}: duplicate page {page_number}")
+        if not is_number(page.get("width")) or not is_number(page.get("height")):
+            raise EvaluationCaseError(f"fixture {fixture_id!r}: page width and height are required")
+        if page["width"] <= 0 or page["height"] <= 0:
+            raise EvaluationCaseError(f"fixture {fixture_id!r}: page dimensions must be positive")
+        indexed[page_number] = page
+    return indexed
+
+
+def validate_source_anchor_on_page(
+    source: object, pages: dict[int, dict[str, Any]], context: str
+) -> None:
+    validate_source_anchor(source, context)
+    assert isinstance(source, dict)
+    page = pages.get(source["source_page"])
+    if page is None:
+        raise EvaluationCaseError(f"{context}: source_page is not declared in fixture pages")
+
+    bbox = source["bbox"]
+    if (
+        bbox["x"] < 0
+        or bbox["y"] < 0
+        or bbox["x"] + bbox["width"] > page["width"]
+        or bbox["y"] + bbox["height"] > page["height"]
+    ):
+        raise EvaluationCaseError(f"{context}: source bbox must fit within declared page geometry")
+
+
 def cells_by_id(table: dict[str, Any]) -> dict[str, dict[str, Any]]:
     cells = table.get("cells")
     if not isinstance(cells, list):
@@ -183,6 +224,8 @@ def fixture_paths_from_manifest(
     if allowed_root_path.is_absolute():
         raise EvaluationCaseError("allowed_fixture_root must be repo-relative")
     allowed_root = (manifest_root / allowed_root_path).resolve()
+    if not allowed_root.is_relative_to(manifest_root.resolve()):
+        raise EvaluationCaseError("allowed_fixture_root must stay under the manifest root")
 
     fixtures = manifest.get("fixtures")
     if not isinstance(fixtures, list):
@@ -239,6 +282,7 @@ def validate_expected_tables_against_fixture(
 
     fixture_tables = tables_by_id(fixture)
     expected_tables = tables_by_id(case.get("expected", {}))
+    fixture_pages = pages_by_number(fixture, fixture_id)
 
     for table_id, expected_table in expected_tables.items():
         fixture_table_id = expected_table.get("fixture_table_id")
@@ -275,17 +319,24 @@ def validate_expected_tables_against_fixture(
                     f"case {case.get('id')!r}: expected cell {cell_id!r} "
                     f"source does not match fixture {fixture_id!r}"
                 )
-            validate_source_anchor(
+            validate_source_anchor_on_page(
                 fixture_cell.get("source"),
+                fixture_pages,
                 f"fixture {fixture_id!r} table {table_id!r} cell {cell_id!r}",
             )
-            validate_source_anchor(
+            validate_source_anchor_on_page(
                 expected_cell.get("source"),
+                fixture_pages,
                 f"case {case.get('id')!r}: expected cell {cell_id!r}",
             )
             if not isinstance(fixture_cell.get("requires_review"), bool):
                 raise EvaluationCaseError(
                     f"fixture {fixture_id!r} table {table_id!r} cell {cell_id!r}: "
+                    "requires_review must be a boolean"
+                )
+            if not isinstance(expected_cell.get("requires_review"), bool):
+                raise EvaluationCaseError(
+                    f"case {case.get('id')!r}: expected cell {cell_id!r} "
                     "requires_review must be a boolean"
                 )
             if expected_cell.get("requires_review") != fixture_cell.get("requires_review"):

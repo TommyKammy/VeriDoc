@@ -36,6 +36,7 @@ class EvaluateDatasetTest(unittest.TestCase):
         data: dict[str, object],
         fixture: dict[str, object],
         fixture_metadata: dict[str, object] | None = None,
+        manifest_policy: dict[str, object] | None = None,
     ) -> object:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_root = Path(temp_dir)
@@ -52,15 +53,18 @@ class EvaluateDatasetTest(unittest.TestCase):
             }
             if fixture_metadata is not None:
                 manifest_fixture.update(fixture_metadata)
+            policy = {
+                "allowed_fixture_root": "datasets/fixtures",
+                "public_only": True,
+                "confidential_source_documents_allowed": False,
+            }
+            if manifest_policy is not None:
+                policy.update(manifest_policy)
             manifest_path.write_text(
                 json.dumps(
                     {
                         "schema_version": evaluate_dataset.FIXTURE_MANIFEST_SCHEMA_VERSION,
-                        "policy": {
-                            "allowed_fixture_root": "datasets/fixtures",
-                            "public_only": True,
-                            "confidential_source_documents_allowed": False,
-                        },
+                        "policy": policy,
                         "fixtures": [manifest_fixture],
                     }
                 ),
@@ -120,6 +124,21 @@ class EvaluateDatasetTest(unittest.TestCase):
                 data,
                 fixture,
                 fixture_metadata={"confidentiality": "confidential"},
+            )
+
+    def test_rejects_fixture_root_policy_traversal_before_scoring(self) -> None:
+        data = self.valid_cases_data()
+        fixture = evaluate_dataset.load_json(
+            REPO_ROOT / "datasets" / "fixtures" / "sample-document-ir-v0.json"
+        )
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError, "allowed_fixture_root"
+        ):
+            self.evaluate_with_fixture(
+                data,
+                fixture,
+                manifest_policy={"allowed_fixture_root": "../fixtures"},
             )
 
     def test_rejects_expected_table_missing_from_declared_fixture(self) -> None:
@@ -183,6 +202,19 @@ class EvaluateDatasetTest(unittest.TestCase):
         with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "requires_review"):
             self.evaluate_valid_cases(data)
 
+    def test_rejects_expected_cell_requires_review_non_boolean_before_scoring(self) -> None:
+        data = self.valid_cases_data()
+        fixture = evaluate_dataset.load_json(
+            REPO_ROOT / "datasets" / "fixtures" / "sample-document-ir-v0.json"
+        )
+        fixture["tables"][0]["cells"][1]["requires_review"] = False
+        data["cases"][0]["expected"]["tables"][0]["cells"][1]["requires_review"] = 0
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError, "requires_review must be a boolean"
+        ):
+            self.evaluate_with_fixture(data, fixture)
+
     def test_rejects_malformed_fixture_source_anchor_before_scoring(self) -> None:
         data = self.valid_cases_data()
         fixture = evaluate_dataset.load_json(
@@ -192,6 +224,27 @@ class EvaluateDatasetTest(unittest.TestCase):
         data["cases"][0]["expected"]["tables"][0]["cells"][1]["source"] = {}
 
         with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "source must define"):
+            self.evaluate_with_fixture(data, fixture)
+
+    def test_rejects_source_anchor_outside_declared_page_geometry_before_scoring(self) -> None:
+        data = self.valid_cases_data()
+        fixture = evaluate_dataset.load_json(
+            REPO_ROOT / "datasets" / "fixtures" / "sample-document-ir-v0.json"
+        )
+        fixture["tables"][0]["cells"][1]["source"]["source_page"] = 99
+        data["cases"][0]["expected"]["tables"][0]["cells"][1]["source"]["source_page"] = 99
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "source_page"):
+            self.evaluate_with_fixture(data, fixture)
+
+        data = self.valid_cases_data()
+        fixture = evaluate_dataset.load_json(
+            REPO_ROOT / "datasets" / "fixtures" / "sample-document-ir-v0.json"
+        )
+        fixture["tables"][0]["cells"][1]["source"]["bbox"]["x"] = 580.0
+        data["cases"][0]["expected"]["tables"][0]["cells"][1]["source"]["bbox"]["x"] = 580.0
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "page geometry"):
             self.evaluate_with_fixture(data, fixture)
 
     def test_direct_evaluation_uses_explicit_manifest_root_from_any_cwd(self) -> None:
