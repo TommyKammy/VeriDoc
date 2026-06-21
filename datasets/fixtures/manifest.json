@@ -1,0 +1,78 @@
+{
+  "schema_version": "veridoc-eval-fixtures/v0",
+  "policy": {
+    "allowed_fixture_root": "datasets/fixtures",
+    "gold_root": "datasets/gold",
+    "public_only": true,
+    "confidential_source_documents_allowed": false,
+    "notes": [
+      "Only synthetic or anonymized samples may be tracked.",
+      "Real confidential documents, operator exports, and generated OCR outputs stay outside the repository.",
+      "Phase 0 fixtures do not imply GMP fitness or production readiness."
+    ]
+  },
+  "required_source_types": [
+    "text_pdf",
+    "scanned_pdf",
+    "word",
+    "excel",
+    "record_excerpt"
+  ],
+  "fixtures": [
+    {
+      "id": "sample-document-ir-v0",
+      "title": "Synthetic batch record excerpt Document IR",
+      "path": "core/ir/examples/sample-document-ir-v0.json",
+      "source_type": "record_excerpt",
+      "format": "document_ir_json",
+      "anonymization": "synthetic",
+      "confidentiality": "public",
+      "public_review_safe": true,
+      "notes": "Synthetic baseline fixture used until binary document fixtures are added."
+    },
+    {
+      "id": "placeholder-text-pdf",
+      "title": "Text PDF fixture slot",
+      "path": null,
+      "source_type": "text_pdf",
+      "format": "pdf",
+      "anonymization": "pending_synthetic_fixture",
+      "confidentiality": "public",
+      "public_review_safe": true,
+      "notes": "Placement rule reserved; add only synthetic or anonymized PDFs."
+    },
+    {
+      "id": "placeholder-scanned-pdf",
+      "title": "Scanned PDF fixture slot",
+      "path": null,
+      "source_type": "scanned_pdf",
+      "format": "pdf",
+      "anonymization": "pending_synthetic_fixture",
+      "confidentiality": "public",
+      "public_review_safe": true,
+      "notes": "Placement rule reserved; add only synthetic or anonymized scans."
+    },
+    {
+      "id": "placeholder-word",
+      "title": "Word fixture slot",
+      "path": null,
+      "source_type": "word",
+      "format": "docx",
+      "anonymization": "pending_synthetic_fixture",
+      "confidentiality": "public",
+      "public_review_safe": true,
+      "notes": "Placement rule reserved; add only synthetic or anonymized Word files."
+    },
+    {
+      "id": "placeholder-excel",
+      "title": "Excel fixture slot",
+      "path": null,
+      "source_type": "excel",
+      "format": "xlsx",
+      "anonymization": "pending_synthetic_fixture",
+      "confidentiality": "public",
+      "public_review_safe": true,
+      "notes": "Placement rule reserved; add only synthetic or anonymized Excel files."
+    }
+  ]
+}
