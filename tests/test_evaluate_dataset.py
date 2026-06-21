@@ -403,6 +403,15 @@ class EvaluateDatasetTest(unittest.TestCase):
         with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "duplicate cell id"):
             self.evaluate_valid_cases(data)
 
+    def test_rejects_empty_expected_table_cells_before_scoring(self) -> None:
+        data = self.valid_cases_data()
+        data["cases"][0]["expected"]["tables"][0]["cells"] = []
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError, "cells must contain at least one cell"
+        ):
+            self.evaluate_valid_cases(data)
+
     def test_rejects_empty_evaluation_case_list_before_scoring(self) -> None:
         data = self.valid_cases_data()
         data["cases"] = []
@@ -419,6 +428,17 @@ class EvaluateDatasetTest(unittest.TestCase):
 
         with self.assertRaisesRegex(
             evaluate_dataset.EvaluationCaseError, "actual cell 'table-001-r1-c1': text"
+        ):
+            self.evaluate_valid_cases(data)
+
+    def test_rejects_non_boolean_actual_auto_confirmed_before_scoring(self) -> None:
+        data = self.valid_cases_data()
+        actual_cell = data["cases"][0]["actual"]["tables"][0]["cells"][1]
+        actual_cell["auto_confirmed"] = "true"
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError,
+            "actual cell 'table-001-r1-c2': auto_confirmed must be a boolean",
         ):
             self.evaluate_valid_cases(data)
 

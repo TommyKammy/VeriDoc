@@ -172,6 +172,13 @@ def cells_by_id(table: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return indexed
 
 
+def required_cells_by_id(table: dict[str, Any], context: str) -> dict[str, dict[str, Any]]:
+    indexed = cells_by_id(table)
+    if not indexed:
+        raise EvaluationCaseError(f"{context}: cells must contain at least one cell")
+    return indexed
+
+
 def tables_by_id(section: dict[str, Any]) -> dict[str, dict[str, Any]]:
     tables = section.get("tables")
     if not isinstance(tables, list):
@@ -303,6 +310,13 @@ def actual_cell_text(cell: dict[str, Any], context: str) -> str:
     return text
 
 
+def actual_auto_confirmed(cell: dict[str, Any], context: str) -> bool:
+    value = cell.get("auto_confirmed", False)
+    if not isinstance(value, bool):
+        raise EvaluationCaseError(f"{context}: auto_confirmed must be a boolean")
+    return value
+
+
 def validate_expected_tables_against_fixture(
     case: dict[str, Any], fixture: dict[str, Any], fixture_id: str
 ) -> None:
@@ -339,7 +353,10 @@ def validate_expected_tables_against_fixture(
             )
 
         fixture_cells = cells_by_id(fixture_table)
-        for cell_id, expected_cell in cells_by_id(expected_table).items():
+        expected_cells = required_cells_by_id(
+            expected_table, f"case {case.get('id')!r}: expected table {table_id!r}"
+        )
+        for cell_id, expected_cell in expected_cells.items():
             fixture_cell = fixture_cells.get(cell_id)
             if fixture_cell is None:
                 raise EvaluationCaseError(
@@ -442,7 +459,9 @@ def evaluate_cases(data: dict[str, Any], manifest_root: Path | None = None) -> E
 
         for table_id, expected_table in expected_tables.items():
             actual_table = actual_tables.get(table_id, {"cells": []})
-            expected_cells = cells_by_id(expected_table)
+            expected_cells = required_cells_by_id(
+                expected_table, f"case {case.get('id')!r}: expected table {table_id!r}"
+            )
             actual_cells = cells_by_id(actual_table)
             expected_cell_count += len(expected_cells)
 
@@ -470,7 +489,9 @@ def evaluate_cases(data: dict[str, Any], manifest_root: Path | None = None) -> E
 
                 if (
                     expected_cell.get("requires_review") is True
-                    and actual_cell.get("auto_confirmed") is True
+                    and actual_auto_confirmed(
+                        actual_cell, f"case {case.get('id')!r}: actual cell {cell_id!r}"
+                    )
                 ):
                     false_auto_confirmed_count += 1
 
