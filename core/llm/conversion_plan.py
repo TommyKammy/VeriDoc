@@ -92,7 +92,7 @@ class LocalLLMConfigurationError(ValueError):
 
 @dataclass(frozen=True)
 class _LocalBaseUrl:
-    request_base_url: str
+    request_base_urls: tuple[str, ...]
     host_header: str | None = None
     tls_server_name: str | None = None
 
@@ -160,16 +160,10 @@ class LocalLLMConversionPlanAdapter:
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
-        request_url = _chat_completions_url(local_base_url.request_base_url)
         if self.transport is None:
-            response = _urllib_transport(
-                request_url,
-                payload,
-                headers,
-                self.timeout_seconds,
-                tls_server_name=local_base_url.tls_server_name,
-            )
+            response = _send_local_llm_request(local_base_url, payload, headers, self.timeout_seconds)
         else:
+            request_url = _chat_completions_url(local_base_url.request_base_urls[0])
             response = self.transport(request_url, payload, headers, self.timeout_seconds)
         plan = _extract_json_content(response)
         validate_conversion_plan(plan)
@@ -220,11 +214,22 @@ def _validate_operation(operation: object, path: str) -> None:
 
 def _extract_json_content(response: JsonObject) -> JsonObject:
     try:
-        choice = response["choices"][0]
-        finish_reason = choice.get("finish_reason")
-        content = choice["message"]["content"]
+        choices = response["choices"]
     except (KeyError, IndexError, TypeError) as exc:
         raise ConversionPlanValidationError("LLM response did not contain choices[0].message.content") from exc
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        raise ConversionPlanValidationError("LLM response did not contain choices[0].message.content")
+
+    choice = choices[0]
+    try:
+        message = choice["message"]
+    except KeyError as exc:
+        raise ConversionPlanValidationError("LLM response did not contain choices[0].message.content") from exc
+    if not isinstance(message, dict) or "content" not in message:
+        raise ConversionPlanValidationError("LLM response did not contain choices[0].message.content")
+
+    finish_reason = choice.get("finish_reason")
+    content = message["content"]
 
     if finish_reason not in (None, "stop"):
         raise ConversionPlanValidationError(f"LLM response did not finish cleanly: finish_reason={finish_reason}")
@@ -240,6 +245,29 @@ def _extract_json_content(response: JsonObject) -> JsonObject:
     if not isinstance(parsed, dict):
         raise ConversionPlanValidationError("LLM message content must decode to a JSON object")
     return parsed
+
+
+def _send_local_llm_request(
+    local_base_url: _LocalBaseUrl,
+    payload: JsonObject,
+    headers: dict[str, str],
+    timeout_seconds: float,
+) -> JsonObject:
+    last_error: RuntimeError | None = None
+    for request_base_url in local_base_url.request_base_urls:
+        request_url = _chat_completions_url(request_base_url)
+        try:
+            return _urllib_transport(
+                request_url,
+                payload,
+                headers,
+                timeout_seconds,
+                tls_server_name=local_base_url.tls_server_name,
+            )
+        except RuntimeError as exc:
+            last_error = exc
+    assert last_error is not None
+    raise last_error
 
 
 def _urllib_transport(
@@ -363,54 +391,84 @@ def _local_base_url(base_url: str) -> _LocalBaseUrl | None:
         return None
 
     hostname = parsed.hostname.lower()
-    if hostname == "localhost" or hostname.endswith(".localhost"):
-        return _LocalBaseUrl(base_url)
+    if _is_localhost_name(hostname):
+        resolved_addresses = _resolve_localhost_runtime_addresses(hostname, port)
+        if resolved_addresses is None:
+            return None
+        return _local_base_url_for_dns_host(parsed, hostname, port, resolved_addresses)
     try:
         address = ipaddress.ip_address(hostname)
     except ValueError:
-        resolved_address = _resolve_local_runtime_address(hostname, port)
-        if resolved_address is None:
+        resolved_addresses = _resolve_local_runtime_addresses(hostname, port)
+        if resolved_addresses is None:
             return None
-        return _local_base_url_for_dns_host(parsed, hostname, port, resolved_address)
+        return _local_base_url_for_dns_host(parsed, hostname, port, resolved_addresses)
     if not _is_local_runtime_address(address):
         return None
-    return _LocalBaseUrl(base_url)
+    return _LocalBaseUrl((base_url,))
 
 
 def _local_base_url_for_dns_host(
     parsed: Any,
     hostname: str,
     port: int | None,
-    resolved_address: ipaddress.IPv4Address | ipaddress.IPv6Address,
+    resolved_addresses: tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, ...],
 ) -> _LocalBaseUrl:
     tls_server_name = hostname if parsed.scheme == "https" else None
     return _LocalBaseUrl(
-        request_base_url=_base_url_with_address(parsed, resolved_address),
+        request_base_urls=tuple(_base_url_with_address(parsed, address) for address in resolved_addresses),
         host_header=_host_header(hostname, port),
         tls_server_name=tls_server_name,
     )
 
 
-def _resolve_local_runtime_address(hostname: str, port: int | None) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+def _resolve_localhost_runtime_addresses(
+    hostname: str,
+    port: int | None,
+) -> tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, ...] | None:
+    resolved_addresses = _resolve_runtime_addresses(hostname, port)
+    if resolved_addresses is None or not all(address.is_loopback for address in resolved_addresses):
+        return None
+    return resolved_addresses
+
+
+def _resolve_local_runtime_addresses(
+    hostname: str,
+    port: int | None,
+) -> tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, ...] | None:
+    resolved_addresses = _resolve_runtime_addresses(hostname, port)
+    if resolved_addresses is None or not all(_is_local_runtime_address(address) for address in resolved_addresses):
+        return None
+    return resolved_addresses
+
+
+def _resolve_runtime_addresses(
+    hostname: str,
+    port: int | None,
+) -> tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, ...] | None:
     try:
         address_info = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
     except socket.gaierror:
         return None
 
     resolved_addresses: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
+    seen_addresses: set[ipaddress.IPv4Address | ipaddress.IPv6Address] = set()
     for info in address_info:
         sockaddr = info[4]
         if not sockaddr:
             return None
         raw_address = str(sockaddr[0]).split("%", maxsplit=1)[0]
         try:
-            resolved_addresses.append(ipaddress.ip_address(raw_address))
+            address = ipaddress.ip_address(raw_address)
         except ValueError:
             return None
+        if address not in seen_addresses:
+            resolved_addresses.append(address)
+            seen_addresses.add(address)
 
-    if not resolved_addresses or not all(_is_local_runtime_address(address) for address in resolved_addresses):
+    if not resolved_addresses:
         return None
-    return resolved_addresses[0]
+    return tuple(resolved_addresses)
 
 
 def _base_url_with_address(parsed: Any, address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> str:
@@ -426,11 +484,17 @@ def _host_header(hostname: str, port: int | None) -> str:
 
 
 def _is_local_runtime_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    if address == ipaddress.ip_address("fd00:ec2::254"):
+        return False
     if address.is_link_local:
         return False
     if address.is_loopback:
         return True
     return any(address in network for network in _LOCAL_RUNTIME_NETWORKS)
+
+
+def _is_localhost_name(hostname: str) -> bool:
+    return hostname == "localhost" or hostname.endswith(".localhost")
 
 
 def _is_placeholder_secret(secret: str) -> bool:

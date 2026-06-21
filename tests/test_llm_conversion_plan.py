@@ -125,6 +125,17 @@ def test_adapter_rejects_unclean_llm_finish_reasons(finish_reason: str) -> None:
         adapter.create_conversion_plan("Lot: ABC-123")
 
 
+def test_adapter_wraps_malformed_choice_entries_as_validation_errors() -> None:
+    adapter = LocalLLMConversionPlanAdapter(
+        base_url="http://127.0.0.1:8000/v1",
+        model="local-json-model",
+        transport=lambda _url, _payload, _headers, _timeout: {"choices": [None]},
+    )
+
+    with pytest.raises(ConversionPlanValidationError, match=r"choices\[0\]\.message\.content"):
+        adapter.create_conversion_plan("Lot: ABC-123")
+
+
 def test_boolean_schema_version_fails_closed() -> None:
     invalid_plan = _valid_plan()
     invalid_plan["schema_version"] = True
@@ -176,6 +187,14 @@ def test_adapter_rejects_link_local_base_url_before_transport_call() -> None:
         )
 
 
+def test_adapter_rejects_ipv6_ec2_metadata_base_url_before_transport_call() -> None:
+    with pytest.raises(LocalLLMConfigurationError, match="local-only"):
+        LocalLLMConversionPlanAdapter(
+            base_url="http://[fd00:ec2::254]/v1",
+            model="local-json-model",
+        )
+
+
 @pytest.mark.parametrize(
     "base_url",
     [
@@ -188,6 +207,69 @@ def test_adapter_rejects_invalid_local_base_url_ports(base_url: str) -> None:
     with pytest.raises(LocalLLMConfigurationError, match="local-only"):
         LocalLLMConversionPlanAdapter(
             base_url=base_url,
+            model="local-json-model",
+        )
+
+
+def test_adapter_resolves_and_pins_localhost_names(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def getaddrinfo(
+        host: str,
+        port: int | None,
+        *args: object,
+        **kwargs: object,
+    ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
+        assert host == "localhost"
+        assert port == 8000
+        assert kwargs == {"type": socket.SOCK_STREAM}
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 8000))]
+
+    def transport(
+        url: str,
+        payload: dict[str, object],
+        headers: dict[str, str],
+        timeout_seconds: float,
+    ) -> dict[str, object]:
+        captured["url"] = url
+        captured["headers"] = headers
+        return {"choices": [{"message": {"content": _valid_plan()}}]}
+
+    monkeypatch.setattr("core.llm.conversion_plan.socket.getaddrinfo", getaddrinfo)
+
+    adapter = LocalLLMConversionPlanAdapter(
+        base_url="http://localhost:8000/v1",
+        model="local-json-model",
+        transport=transport,
+    )
+
+    plan = adapter.create_conversion_plan("Lot: ABC-123")
+
+    assert plan == _valid_plan()
+    assert captured["url"] == "http://127.0.0.1:8000/v1/chat/completions"
+    assert captured["headers"] == {
+        "Content-Type": "application/json",
+        "Host": "localhost:8000",
+    }
+
+
+def test_adapter_rejects_localhost_names_resolving_outside_loopback(monkeypatch: pytest.MonkeyPatch) -> None:
+    def getaddrinfo(
+        host: str,
+        port: int | None,
+        *args: object,
+        **kwargs: object,
+    ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
+        assert host == "localhost"
+        assert port == 8000
+        assert kwargs == {"type": socket.SOCK_STREAM}
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.25", 8000))]
+
+    monkeypatch.setattr("core.llm.conversion_plan.socket.getaddrinfo", getaddrinfo)
+
+    with pytest.raises(LocalLLMConfigurationError, match="local-only"):
+        LocalLLMConversionPlanAdapter(
+            base_url="http://localhost:8000/v1",
             model="local-json-model",
         )
 
@@ -290,6 +372,53 @@ def test_adapter_pins_dns_hostname_to_validated_local_address_for_request(monkey
         "Content-Type": "application/json",
         "Host": "dwarfstar:8000",
     }
+
+
+def test_adapter_tries_all_validated_dns_addresses(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured_urls: list[str] = []
+
+    def getaddrinfo(
+        host: str,
+        port: int | None,
+        *args: object,
+        **kwargs: object,
+    ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
+        assert host == "dwarfstar"
+        assert port == 8000
+        assert kwargs == {"type": socket.SOCK_STREAM}
+        return [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("fc00::25", 8000, 0, 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.25", 8000)),
+        ]
+
+    def urllib_transport(
+        url: str,
+        payload: dict[str, object],
+        headers: dict[str, str],
+        timeout_seconds: float,
+        *,
+        tls_server_name: str | None = None,
+    ) -> dict[str, object]:
+        captured_urls.append(url)
+        if len(captured_urls) == 1:
+            raise RuntimeError("local LLM request failed: connection refused")
+        return {"choices": [{"message": {"content": _valid_plan()}}]}
+
+    monkeypatch.setattr("core.llm.conversion_plan.socket.getaddrinfo", getaddrinfo)
+    monkeypatch.setattr("core.llm.conversion_plan._urllib_transport", urllib_transport)
+
+    adapter = LocalLLMConversionPlanAdapter(
+        base_url="http://dwarfstar:8000/v1",
+        model="local-json-model",
+    )
+
+    plan = adapter.create_conversion_plan("Lot: ABC-123")
+
+    assert plan == _valid_plan()
+    assert captured_urls == [
+        "http://[fc00::25]:8000/v1/chat/completions",
+        "http://10.0.0.25:8000/v1/chat/completions",
+    ]
 
 
 def test_adapter_preserves_tls_server_name_when_pinning_https_dns(
@@ -396,7 +525,7 @@ def test_adapter_rejects_dns_hostname_with_public_resolved_address(monkeypatch: 
 def test_adapter_rejects_placeholder_api_key() -> None:
     with pytest.raises(LocalLLMConfigurationError, match="placeholder"):
         LocalLLMConversionPlanAdapter(
-            base_url="http://localhost:8000/v1",
+            base_url="http://127.0.0.1:8000/v1",
             model="local-json-model",
             api_key="TODO",
         )
@@ -414,7 +543,7 @@ def test_adapter_rejects_placeholder_api_key() -> None:
 def test_adapter_rejects_placeholder_api_key_variants(api_key: str) -> None:
     with pytest.raises(LocalLLMConfigurationError, match="placeholder"):
         LocalLLMConversionPlanAdapter(
-            base_url="http://localhost:8000/v1",
+            base_url="http://127.0.0.1:8000/v1",
             model="local-json-model",
             api_key=api_key,
         )
