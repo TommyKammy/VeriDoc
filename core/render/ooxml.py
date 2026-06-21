@@ -158,13 +158,65 @@ def _mapping(value: Any, label: str) -> Mapping[str, Any]:
 
 def _docx_block(block: Mapping[str, Any]) -> str:
     kind = _text(block.get("type"))
+    if kind == "table":
+        return _docx_table(_docx_table_rows(block))
     style = "Heading1" if kind == "heading" else None
     return _docx_paragraph(_text(block.get("text")), style=style)
 
 
 def _docx_paragraph(text: str, *, style: str | None = None) -> str:
     style_xml = "" if style is None else f'<w:pPr><w:pStyle w:val="{_xml_escape(style)}"/></w:pPr>'
-    return f"<w:p>{style_xml}<w:r><w:t>{_xml_escape(text)}</w:t></w:r></w:p>"
+    return f"<w:p>{style_xml}{_docx_runs(text)}</w:p>"
+
+
+def _docx_runs(text: str) -> str:
+    runs: list[str] = []
+    index = 0
+    text_start = 0
+    while index < len(text):
+        character = text[index]
+        if character in {"\t", "\n", "\r"}:
+            if text_start < index:
+                runs.append(_docx_text_run(text[text_start:index]))
+            if character == "\t":
+                runs.append("<w:r><w:tab/></w:r>")
+            else:
+                runs.append("<w:r><w:br/></w:r>")
+                if character == "\r" and index + 1 < len(text) and text[index + 1] == "\n":
+                    index += 1
+            text_start = index + 1
+        index += 1
+    if text_start < len(text):
+        runs.append(_docx_text_run(text[text_start:]))
+    return "".join(runs)
+
+
+def _docx_text_run(text: str) -> str:
+    return f"<w:r><w:t>{_xml_escape(text)}</w:t></w:r>"
+
+
+def _docx_table(rows: Sequence[Sequence[str]]) -> str:
+    row_xml = "".join(
+        f"<w:tr>{''.join(f'<w:tc>{_docx_paragraph(cell)}</w:tc>' for cell in row)}</w:tr>"
+        for row in rows
+    )
+    return f"<w:tbl>{row_xml}</w:tbl>"
+
+
+def _docx_table_rows(block: Mapping[str, Any]) -> Sequence[Sequence[str]]:
+    rows = block.get("rows")
+    if isinstance(rows, Sequence) and not isinstance(rows, (str, bytes)):
+        normalized_rows = [
+            [_text(cell) for cell in row]
+            for row in rows
+            if isinstance(row, Sequence) and not isinstance(row, (str, bytes))
+        ]
+        if normalized_rows:
+            return normalized_rows
+    text = _text(block.get("text"))
+    if not text:
+        return [[""]]
+    return [line.split("\t") for line in text.splitlines()]
 
 
 def _split_field(text: str) -> tuple[str, str]:
@@ -207,7 +259,10 @@ def _text(value: Any) -> str:
 
 
 def _xml_escape(value: str) -> str:
-    return escape(_sanitize_xml_text(value))
+    return "".join(
+        "&#13;" if character == "\r" else escape(character)
+        for character in _sanitize_xml_text(value)
+    )
 
 
 def _sanitize_xml_text(value: str) -> str:
@@ -230,6 +285,7 @@ def _write_zip(output_path: str | Path, parts: Iterable[tuple[str, str]]) -> Non
     with ZipFile(destination, "w", ZIP_STORED) as archive:
         for name, content in parts:
             info = ZipInfo(filename=name, date_time=FIXED_ZIP_TIMESTAMP)
+            info.create_system = 0
             info.compress_type = ZIP_STORED
             info.external_attr = 0o644 << 16
             archive.writestr(info, content.encode("utf-8"))

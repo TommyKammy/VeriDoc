@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+from zipfile import ZipFile
 
 from core.parsers.docx_extraction import extract_docx_structure
 from core.parsers.xlsx_extraction import extract_xlsx_structure
@@ -187,6 +188,83 @@ def test_renderer_sanitizes_xml_invalid_text_before_writing_ooxml(tmp_path: Path
     assert cells["A4"] == "block 1"
     assert cells["C4"] == "Alpha Beta"
     assert cells["C5"] == "A 01"
+
+
+def test_docx_renders_table_blocks_as_tables(tmp_path: Path) -> None:
+    document_ir = {
+        "document": {"title": "Tables"},
+        "blocks": [
+            {"id": "table-1", "type": "table", "text": "Header\tValue\nCode\t001"},
+        ],
+    }
+    output_path = tmp_path / "table.docx"
+
+    render_docx_from_ir(document_ir, output_path)
+
+    docx = extract_docx_structure(output_path)
+    assert [(block.kind, block.text, block.rows) for block in docx.blocks] == [
+        ("heading", "Tables", None),
+        ("table", "Header\tValue\nCode\t001", [["Header", "Value"], ["Code", "001"]]),
+    ]
+
+
+def test_docx_encodes_tabs_and_line_breaks_as_run_elements(tmp_path: Path) -> None:
+    document_ir = {
+        "document": {"title": "Run elements"},
+        "blocks": [
+            {"id": "paragraph-1", "type": "paragraph", "text": "Alpha\tBeta\nGamma\r\nDelta"},
+        ],
+    }
+    output_path = tmp_path / "runs.docx"
+
+    render_docx_from_ir(document_ir, output_path)
+
+    with ZipFile(output_path) as archive:
+        document_xml = archive.read("word/document.xml").decode("utf-8")
+    assert "<w:tab/>" in document_xml
+    assert document_xml.count("<w:br/>") == 2
+    assert "Alpha\tBeta" not in document_xml
+    assert "Beta\nGamma" not in document_xml
+
+    docx = extract_docx_structure(output_path)
+    assert docx.blocks[1].text == "Alpha\tBeta\nGamma\nDelta"
+
+
+def test_renderer_escapes_carriage_returns_before_xml_normalization(tmp_path: Path) -> None:
+    document_ir = {
+        "document": {"title": "Carriage\rTitle"},
+        "blocks": [
+            {"id": "block\r1", "type": "field", "text": "Code: A\r01"},
+        ],
+    }
+    output_path = tmp_path / "carriage.xlsx"
+
+    render_xlsx_from_ir(document_ir, output_path)
+
+    with ZipFile(output_path) as archive:
+        sheet_xml = archive.read("xl/worksheets/sheet1.xml").decode("utf-8")
+    assert "Carriage&#13;Title" in sheet_xml
+    assert "block&#13;1" in sheet_xml
+    assert "A&#13;01" in sheet_xml
+
+    xlsx = extract_xlsx_structure(output_path)
+    cells = {cell.ref: cell.value for cell in xlsx.sheets[0].cells}
+    assert cells["A1"] == "Carriage\rTitle"
+    assert cells["A4"] == "block\r1"
+    assert cells["C4"] == "A\r01"
+
+
+def test_ooxml_zip_entries_use_stable_host_system(tmp_path: Path) -> None:
+    document_ir = _sample_ir()
+    docx_path = tmp_path / "stable.docx"
+    xlsx_path = tmp_path / "stable.xlsx"
+
+    render_docx_from_ir(document_ir, docx_path)
+    render_xlsx_from_ir(document_ir, xlsx_path)
+
+    for package_path in (docx_path, xlsx_path):
+        with ZipFile(package_path) as archive:
+            assert {info.create_system for info in archive.infolist()} == {0}
 
 
 def test_xlsx_numeric_detection_preserves_code_like_values_as_text(tmp_path: Path) -> None:
