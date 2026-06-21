@@ -208,6 +208,51 @@ def test_docx_renders_table_blocks_as_tables(tmp_path: Path) -> None:
     ]
 
 
+def test_docx_preserves_boundary_spaces_in_text_runs(tmp_path: Path) -> None:
+    document_ir = {
+        "document": {"title": "  Boundary title  "},
+        "blocks": [
+            {"id": "paragraph-1", "type": "paragraph", "text": " leading paragraph "},
+            {"id": "table-1", "type": "table", "text": " Left \tRight \n  Code\t001 "},
+        ],
+    }
+    output_path = tmp_path / "boundary-spaces.docx"
+
+    render_docx_from_ir(document_ir, output_path)
+
+    with ZipFile(output_path) as archive:
+        document_xml = archive.read("word/document.xml").decode("utf-8")
+    assert '<w:t xml:space="preserve">  Boundary title  </w:t>' in document_xml
+    assert '<w:t xml:space="preserve"> leading paragraph </w:t>' in document_xml
+    assert '<w:t xml:space="preserve"> Left </w:t>' in document_xml
+    assert '<w:t xml:space="preserve">Right </w:t>' in document_xml
+
+    docx = extract_docx_structure(output_path)
+    assert [(block.kind, block.text, block.rows) for block in docx.blocks] == [
+        ("heading", "  Boundary title  ", None),
+        ("paragraph", " leading paragraph ", None),
+        ("table", " Left \tRight \n  Code\t001 ", [[" Left ", "Right "], ["  Code", "001 "]]),
+    ]
+
+
+def test_docx_sanitizes_table_text_before_splitting_rows(tmp_path: Path) -> None:
+    document_ir = {
+        "document": {"title": "Table controls"},
+        "blocks": [
+            {"id": "table-1", "type": "table", "text": "Head\fA\tValue\nCode\t00\v1"},
+        ],
+    }
+    output_path = tmp_path / "table-controls.docx"
+
+    render_docx_from_ir(document_ir, output_path)
+
+    docx = extract_docx_structure(output_path)
+    assert [(block.kind, block.text, block.rows) for block in docx.blocks] == [
+        ("heading", "Table controls", None),
+        ("table", "Head A\tValue\nCode\t00 1", [["Head A", "Value"], ["Code", "00 1"]]),
+    ]
+
+
 def test_docx_encodes_tabs_and_line_breaks_as_run_elements(tmp_path: Path) -> None:
     document_ir = {
         "document": {"title": "Run elements"},

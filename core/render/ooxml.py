@@ -192,7 +192,8 @@ def _docx_runs(text: str) -> str:
 
 
 def _docx_text_run(text: str) -> str:
-    return f"<w:r><w:t>{_xml_escape(text)}</w:t></w:r>"
+    space_attr = ' xml:space="preserve"' if _needs_xml_space_preserve(text) else ""
+    return f"<w:r><w:t{space_attr}>{_xml_escape(text)}</w:t></w:r>"
 
 
 def _docx_table(rows: Sequence[Sequence[str]]) -> str:
@@ -213,7 +214,7 @@ def _docx_table_rows(block: Mapping[str, Any]) -> Sequence[Sequence[str]]:
         ]
         if normalized_rows:
             return normalized_rows
-    text = _text(block.get("text"))
+    text = _sanitize_xml_text(_text(block.get("text")))
     if not text:
         return [[""]]
     return [line.split("\t") for line in text.splitlines()]
@@ -267,6 +268,13 @@ def _xml_escape(value: str) -> str:
 
 def _sanitize_xml_text(value: str) -> str:
     return "".join(character if _is_xml_char(character) else " " for character in value)
+
+
+def _needs_xml_space_preserve(value: str) -> bool:
+    sanitized_value = _sanitize_xml_text(value)
+    return bool(sanitized_value) and (
+        sanitized_value[0].isspace() or sanitized_value[-1].isspace()
+    )
 
 
 def _is_xml_char(character: str) -> bool:
