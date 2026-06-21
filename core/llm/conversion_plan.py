@@ -418,12 +418,7 @@ def _local_base_url(base_url: str) -> _LocalBaseUrl | None:
     try:
         address = ipaddress.ip_address(hostname)
     except ValueError:
-        if not _is_allowed_local_dns_name(hostname):
-            return None
-        resolved_addresses = _resolve_local_runtime_addresses(hostname, port)
-        if resolved_addresses is None:
-            return None
-        return _local_base_url_for_dns_host(parsed, hostname, port, resolved_addresses)
+        return None
     if not _is_local_runtime_address(address):
         return None
     return _LocalBaseUrl((base_url,))
@@ -449,16 +444,6 @@ def _resolve_localhost_runtime_addresses(
 ) -> tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, ...] | None:
     resolved_addresses = _resolve_runtime_addresses(hostname, port)
     if resolved_addresses is None or not all(address.is_loopback for address in resolved_addresses):
-        return None
-    return resolved_addresses
-
-
-def _resolve_local_runtime_addresses(
-    hostname: str,
-    port: int | None,
-) -> tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, ...] | None:
-    resolved_addresses = _resolve_runtime_addresses(hostname, port)
-    if resolved_addresses is None or not all(_is_local_runtime_address(address) for address in resolved_addresses):
         return None
     return resolved_addresses
 
@@ -519,10 +504,6 @@ def _is_local_runtime_address(address: ipaddress.IPv4Address | ipaddress.IPv6Add
 
 def _is_localhost_name(hostname: str) -> bool:
     return hostname == "localhost" or hostname.endswith(".localhost")
-
-
-def _is_allowed_local_dns_name(hostname: str) -> bool:
-    return "." not in hostname
 
 
 def _is_placeholder_secret(secret: str) -> bool:
