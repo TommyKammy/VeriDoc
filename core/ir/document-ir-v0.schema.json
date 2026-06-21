@@ -1,0 +1,183 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://veridoc.local/schemas/document-ir-v0.schema.json",
+  "title": "VeriDoc Document IR v0",
+  "description": "Document IR v0 for Phase0 proof-of-concept validation. This schema models synthetic or sanitized document structure only.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "document",
+    "pages",
+    "blocks"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "document-ir/v0"
+    },
+    "document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "source_type"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "source_type": {
+          "type": "string",
+          "enum": [
+            "pdf",
+            "docx",
+            "xlsx",
+            "unknown"
+          ]
+        }
+      }
+    },
+    "pages": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "page_number",
+          "width",
+          "height",
+          "unit"
+        ],
+        "properties": {
+          "page_number": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "width": {
+            "type": "number",
+            "minimum": 0
+          },
+          "height": {
+            "type": "number",
+            "minimum": 0
+          },
+          "unit": {
+            "type": "string",
+            "enum": [
+              "pt",
+              "px",
+              "mm"
+            ]
+          }
+        }
+      }
+    },
+    "blocks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "type",
+          "text",
+          "value_metadata"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "heading",
+              "paragraph",
+              "table",
+              "field",
+              "list_item"
+            ]
+          },
+          "text": {
+            "type": "string"
+          },
+          "value_metadata": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "source_page",
+              "bbox",
+              "extractor",
+              "confidence",
+              "requires_review"
+            ],
+            "properties": {
+              "source_page": {
+                "description": "1-based page number that must match an entry in pages[*].page_number.",
+                "type": "integer",
+                "minimum": 1
+              },
+              "bbox": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "x",
+                  "y",
+                  "width",
+                  "height"
+                ],
+                "properties": {
+                  "x": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "y": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "width": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "height": {
+                    "type": "number",
+                    "minimum": 0
+                  }
+                }
+              },
+              "extractor": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "name",
+                  "version"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                }
+              },
+              "confidence": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "requires_review": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

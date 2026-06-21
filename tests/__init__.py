@@ -1,0 +1,1 @@
+"""VeriDoc test package."""
