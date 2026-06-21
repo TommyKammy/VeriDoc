@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from decimal import Decimal
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
@@ -108,13 +107,13 @@ def test_extract_xlsx_structure_returns_cell_types_and_merged_ranges(tmp_path: P
         ("B1", "Mass", "shared_string"),
         ("C1", "Status", "inline_string"),
         ("A2", "Sample A", "inline_string"),
-        ("B2", Decimal("12.5"), "number"),
+        ("B2", "12.5", "number"),
         ("C2", True, "boolean"),
         ("A3", "Formula text", "string"),
         ("B3", "#N/A", "error"),
         ("C3", "2026-06-21T00:00:00Z", "date"),
         ("A4", 12345678901234567890, "number"),
-        ("B4", Decimal("0.12345678901234567890"), "number"),
+        ("B4", "0.12345678901234567890", "number"),
         ("C4", None, "boolean"),
     ]
     as_dict = result.to_dict()

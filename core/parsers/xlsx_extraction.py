@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from pathlib import PurePosixPath, Path
 from typing import Any, Dict, List, Optional, Union
 from xml.etree import ElementTree
@@ -185,10 +185,9 @@ def _number_value(value_text: str) -> Any:
     if value_text == "":
         return None
     try:
-        number = Decimal(value_text)
-    except InvalidOperation:
+        return int(value_text)
+    except ValueError:
         return value_text
-    return int(number) if number == number.to_integral_value() else number
 
 
 def _joined_text(element: Optional[ElementTree.Element]) -> str:
