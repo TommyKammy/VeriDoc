@@ -11,9 +11,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from core.llm.conversion_plan import ConversionPlanValidationError, validate_conversion_plan
+
 
 DEFAULT_EVALUATION_CASES = Path("datasets/gold/evaluation_cases_v0.json")
+DEFAULT_LLM_STABILITY_RUNS = Path("datasets/gold/llm_stability_runs_v0.json")
 EVALUATION_CASES_SCHEMA_VERSION = "veridoc-evaluation-cases/v0"
+LLM_STABILITY_RUNS_SCHEMA_VERSION = "veridoc-llm-stability-runs/v0"
 FIXTURE_MANIFEST_SCHEMA_VERSION = "veridoc-eval-fixtures/v0"
 FIXTURE_SCHEMA_VERSION = "veridoc-evaluation-fixture/v0"
 EXPECTED_ALLOWED_FIXTURE_ROOT = Path("datasets/fixtures")
@@ -50,6 +58,30 @@ class EvaluationMetrics:
         }
 
 
+@dataclass(frozen=True)
+class LLMStabilityMetrics:
+    input_id: str
+    run_count: int
+    plan_agreement_rate: float
+    confirmed_value_agreement_rate: float
+    distinct_plan_count: int
+    distinct_confirmed_value_count: int
+    unstable_example_count: int
+    unstable_examples: tuple[dict[str, str], ...]
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "input_id": self.input_id,
+            "run_count": self.run_count,
+            "plan_agreement_rate": self.plan_agreement_rate,
+            "confirmed_value_agreement_rate": self.confirmed_value_agreement_rate,
+            "distinct_plan_count": self.distinct_plan_count,
+            "distinct_confirmed_value_count": self.distinct_confirmed_value_count,
+            "unstable_example_count": self.unstable_example_count,
+            "unstable_examples": list(self.unstable_examples),
+        }
+
+
 class EvaluationCaseError(ValueError):
     """Raised when evaluation cases are malformed or unsafe to score."""
 
@@ -71,6 +103,10 @@ def ratio(numerator: int, denominator: int) -> float:
     if denominator == 0:
         return 0.0
     return numerator / denominator
+
+
+def canonical_json(value: object) -> str:
+    return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
 
 
 def normalized_text(value: object) -> str:
@@ -240,6 +276,17 @@ def validate_scope(data: dict[str, Any]) -> None:
         raise EvaluationCaseError("confidential source documents are not allowed")
     if scope.get("production_or_gmp_claim") is not False:
         raise EvaluationCaseError("evaluation cases must not claim production or GMP readiness")
+
+
+def validate_llm_stability_scope(data: dict[str, Any]) -> None:
+    validate_scope(data)
+    source_policy = data.get("source_policy")
+    if not isinstance(source_policy, dict):
+        raise EvaluationCaseError("LLM stability runs must define source_policy")
+    if source_policy.get("synthetic_or_anonymized_only") is not True:
+        raise EvaluationCaseError("LLM stability runs must use synthetic or anonymized input")
+    if source_policy.get("real_confidential_records_included") is not False:
+        raise EvaluationCaseError("LLM stability runs must not include real confidential records")
 
 
 def manifest_path_from_cases(data: dict[str, Any], manifest_root: Path | None = None) -> Path:
@@ -549,17 +596,127 @@ def evaluate_cases(data: dict[str, Any], manifest_root: Path | None = None) -> E
     )
 
 
+def confirmed_values_fingerprint(values: object, run_context: str) -> str:
+    if not isinstance(values, list):
+        raise EvaluationCaseError(f"{run_context}: confirmed_values must be a list")
+
+    indexed: dict[str, str] = {}
+    for index, value in enumerate(values):
+        context = f"{run_context}: confirmed_values[{index}]"
+        if not isinstance(value, dict):
+            raise EvaluationCaseError(f"{context} must be an object")
+        value_id = value.get("id")
+        if not isinstance(value_id, str) or not value_id.strip():
+            raise EvaluationCaseError(f"{context}.id must be a non-empty string")
+        if value_id in indexed:
+            raise EvaluationCaseError(f"{run_context}: duplicate confirmed value id {value_id!r}")
+        confirmed_value = value.get("value")
+        if not isinstance(confirmed_value, str) or not normalized_text(confirmed_value):
+            raise EvaluationCaseError(f"{context}.value must be a non-empty string")
+        if value.get("auto_confirmed") is not True:
+            raise EvaluationCaseError(f"{context}.auto_confirmed must be true")
+        indexed[value_id] = normalized_text(confirmed_value)
+    return canonical_json(indexed)
+
+
+def evaluate_llm_stability(data: dict[str, Any]) -> LLMStabilityMetrics:
+    if data.get("schema_version") != LLM_STABILITY_RUNS_SCHEMA_VERSION:
+        raise EvaluationCaseError(
+            f"unsupported LLM stability schema_version {data.get('schema_version')!r}"
+        )
+    validate_llm_stability_scope(data)
+
+    input_id = data.get("input_id")
+    if not isinstance(input_id, str) or not input_id.strip():
+        raise EvaluationCaseError("input_id must be a non-empty string")
+    expected_run_count = data.get("n")
+    if not isinstance(expected_run_count, int) or isinstance(expected_run_count, bool):
+        raise EvaluationCaseError("n must be an integer")
+    if expected_run_count < 2:
+        raise EvaluationCaseError("n must be at least 2 to measure stability")
+    runs = data.get("runs")
+    if not isinstance(runs, list) or len(runs) != expected_run_count:
+        raise EvaluationCaseError("runs length must match n")
+
+    seen_run_ids: set[str] = set()
+    plan_fingerprints: list[str] = []
+    value_fingerprints: list[str] = []
+    for index, run in enumerate(runs):
+        run_context = f"run[{index}]"
+        if not isinstance(run, dict):
+            raise EvaluationCaseError(f"{run_context} must be an object")
+        run_id = run.get("run_id")
+        if not isinstance(run_id, str) or not run_id.strip():
+            raise EvaluationCaseError(f"{run_context}.run_id must be a non-empty string")
+        if run_id in seen_run_ids:
+            raise EvaluationCaseError(f"duplicate run_id {run_id!r}")
+        seen_run_ids.add(run_id)
+
+        conversion_plan = run.get("conversion_plan")
+        try:
+            validate_conversion_plan(conversion_plan)
+        except ConversionPlanValidationError as exc:
+            raise EvaluationCaseError(f"{run_context}.conversion_plan is invalid: {exc}") from exc
+        plan_fingerprints.append(canonical_json(conversion_plan))
+        value_fingerprints.append(
+            confirmed_values_fingerprint(run.get("confirmed_values"), run_context)
+        )
+
+    reference_plan = plan_fingerprints[0]
+    reference_values = value_fingerprints[0]
+    plan_matches = sum(fingerprint == reference_plan for fingerprint in plan_fingerprints)
+    value_matches = sum(fingerprint == reference_values for fingerprint in value_fingerprints)
+
+    unstable_examples: list[dict[str, str]] = []
+    for run, plan_fingerprint, value_fingerprint in zip(
+        runs, plan_fingerprints, value_fingerprints
+    ):
+        assert isinstance(run, dict)
+        changes: list[str] = []
+        if plan_fingerprint != reference_plan:
+            changes.append("conversion_plan")
+        if value_fingerprint != reference_values:
+            changes.append("confirmed_values")
+        if changes:
+            unstable_examples.append(
+                {
+                    "reference_run_id": str(runs[0]["run_id"]),
+                    "run_id": str(run["run_id"]),
+                    "changed": ",".join(changes),
+                }
+            )
+
+    return LLMStabilityMetrics(
+        input_id=input_id,
+        run_count=expected_run_count,
+        plan_agreement_rate=ratio(plan_matches, expected_run_count),
+        confirmed_value_agreement_rate=ratio(value_matches, expected_run_count),
+        distinct_plan_count=len(set(plan_fingerprints)),
+        distinct_confirmed_value_count=len(set(value_fingerprints)),
+        unstable_example_count=len(unstable_examples),
+        unstable_examples=tuple(unstable_examples[:3]),
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cases", type=Path, default=DEFAULT_EVALUATION_CASES)
+    parser.add_argument(
+        "--llm-stability-runs",
+        type=Path,
+        help="Measure N-run LLM output stability from a public synthetic run record.",
+    )
     args = parser.parse_args()
 
     try:
-        cases_path = args.cases.resolve()
-        metrics = evaluate_cases(
-            load_json(cases_path),
-            manifest_root=manifest_root_for_cases_path(cases_path),
-        )
+        if args.llm_stability_runs is not None:
+            metrics = evaluate_llm_stability(load_json(args.llm_stability_runs.resolve()))
+        else:
+            cases_path = args.cases.resolve()
+            metrics = evaluate_cases(
+                load_json(cases_path),
+                manifest_root=manifest_root_for_cases_path(cases_path),
+            )
     except (OSError, json.JSONDecodeError, EvaluationCaseError) as exc:
         print(f"Evaluation failed: {exc}", file=sys.stderr)
         return 1

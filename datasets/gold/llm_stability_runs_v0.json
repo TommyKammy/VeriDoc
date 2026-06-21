@@ -1,0 +1,143 @@
+{
+  "schema_version": "veridoc-llm-stability-runs/v0",
+  "input_id": "synthetic-batch-record-001",
+  "n": 3,
+  "scope": {
+    "phase": "phase0",
+    "public_only": true,
+    "confidential_source_documents_allowed": false,
+    "production_or_gmp_claim": false
+  },
+  "source_policy": {
+    "synthetic_or_anonymized_only": true,
+    "real_confidential_records_included": false
+  },
+  "runs": [
+    {
+      "run_id": "run-001",
+      "conversion_plan": {
+        "schema_version": 1,
+        "source_kind": "synthetic_text",
+        "operations": [
+          {
+            "id": "extract-lot-number",
+            "action": "extract_field",
+            "inputs": [
+              "Lot: SAMPLE-LOT-001"
+            ],
+            "output": "lot_number",
+            "rationale": "The synthetic record labels the lot field directly."
+          },
+          {
+            "id": "extract-release-date",
+            "action": "extract_field",
+            "inputs": [
+              "Release date: 2026-01-15"
+            ],
+            "output": "release_date",
+            "rationale": "The synthetic record labels the release date directly."
+          }
+        ],
+        "constraints": {
+          "external_transmission": false
+        }
+      },
+      "confirmed_values": [
+        {
+          "id": "lot_number",
+          "value": "SAMPLE-LOT-001",
+          "auto_confirmed": true
+        },
+        {
+          "id": "release_date",
+          "value": "2026-01-15",
+          "auto_confirmed": true
+        }
+      ]
+    },
+    {
+      "run_id": "run-002",
+      "conversion_plan": {
+        "schema_version": 1,
+        "source_kind": "synthetic_text",
+        "operations": [
+          {
+            "id": "extract-lot-number",
+            "action": "extract_field",
+            "inputs": [
+              "Lot: SAMPLE-LOT-001"
+            ],
+            "output": "lot_number",
+            "rationale": "The synthetic record labels the lot field directly."
+          },
+          {
+            "id": "extract-release-date",
+            "action": "extract_field",
+            "inputs": [
+              "Release date: 2026-01-15"
+            ],
+            "output": "release_date",
+            "rationale": "The synthetic record labels the release date directly."
+          }
+        ],
+        "constraints": {
+          "external_transmission": false
+        }
+      },
+      "confirmed_values": [
+        {
+          "id": "lot_number",
+          "value": "SAMPLE-LOT-001",
+          "auto_confirmed": true
+        },
+        {
+          "id": "release_date",
+          "value": "2026-01-16",
+          "auto_confirmed": true
+        }
+      ]
+    },
+    {
+      "run_id": "run-003",
+      "conversion_plan": {
+        "schema_version": 1,
+        "source_kind": "synthetic_text",
+        "operations": [
+          {
+            "id": "extract-release-date",
+            "action": "extract_field",
+            "inputs": [
+              "Release date: 2026-01-15"
+            ],
+            "output": "release_date",
+            "rationale": "The synthetic record labels the release date directly."
+          },
+          {
+            "id": "extract-lot-number",
+            "action": "extract_field",
+            "inputs": [
+              "Lot: SAMPLE-LOT-001"
+            ],
+            "output": "lot_number",
+            "rationale": "The synthetic record labels the lot field directly."
+          }
+        ],
+        "constraints": {
+          "external_transmission": false
+        }
+      },
+      "confirmed_values": [
+        {
+          "id": "lot_number",
+          "value": "SAMPLE-LOT-001",
+          "auto_confirmed": true
+        },
+        {
+          "id": "release_date",
+          "value": "2026-01-15",
+          "auto_confirmed": true
+        }
+      ]
+    }
+  ]
+}

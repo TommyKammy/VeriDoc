@@ -41,5 +41,15 @@ python3 scripts/evaluate_dataset.py --cases datasets/gold/evaluation_cases_v0.js
 The harness emits JSON metrics for table extraction rate, cell match rate,
 source linkage rate, and false auto-confirmed count.
 
+LLM stability spike harness:
+
+```sh
+python3 scripts/evaluate_dataset.py --llm-stability-runs datasets/gold/llm_stability_runs_v0.json
+```
+
+The stability harness emits JSON metrics for same-input N-run plan agreement,
+confirmed-value agreement, distinct output counts, and anonymized representative
+unstable examples.
+
 This dataset is only a Phase 0 evaluation fixture set. It does not claim GMP
 fitness, production readiness, or suitability for business use.
