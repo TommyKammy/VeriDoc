@@ -103,14 +103,17 @@ def test_build_table_extraction_report_detects_shape_and_boundary_differences(
 def test_build_table_extraction_report_rejects_ragged_expected_shape(
     tmp_path: Path,
 ) -> None:
+    ragged_table = _candidate("camelot", "lattice", [["A", "B"], ["C"], ["E", "F"]])
+
     report = build_table_extraction_report(
         source_path=tmp_path / "ruled-table.pdf",
         expected_shape=ExpectedTableShape(rows=3, columns=2),
-        candidates=[
-            _candidate("camelot", "lattice", [["A", "B"], ["C"], ["E", "F"]]),
-        ],
+        candidates=[ragged_table],
     )
 
+    assert ragged_table.tables[0].row_widths == [2, 1, 2]
+    assert ragged_table.tables[0].is_rectangular is False
+    assert ragged_table.tables[0].column_count == 0
     assert report.selected_candidate is None
     assert any(
         mismatch.kind == "column-count"

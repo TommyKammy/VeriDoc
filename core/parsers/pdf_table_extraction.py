@@ -29,8 +29,18 @@ class ExtractedTable:
         return len(self.rows)
 
     @property
+    def row_widths(self) -> list[int]:
+        return [len(row) for row in self.rows]
+
+    @property
+    def is_rectangular(self) -> bool:
+        return len(set(self.row_widths)) <= 1
+
+    @property
     def column_count(self) -> int:
-        return max((len(row) for row in self.rows), default=0)
+        if not self.rows or not self.is_rectangular:
+            return 0
+        return len(self.rows[0])
 
     @property
     def has_cell_bboxes(self) -> bool:
@@ -150,17 +160,17 @@ def build_table_extraction_report(
                         notes="Extracted row count does not match the ruled-table sample.",
                     )
                 )
-            row_widths = [len(row) for row in table.rows]
-            if any(row_width != expected_shape.columns for row_width in row_widths):
+            row_widths = table.row_widths
+            if not table.is_rectangular or table.column_count != expected_shape.columns:
                 mismatches.append(
                     TableExtractionMismatch(
                         kind="column-count",
                         candidate=candidate.name,
                         expected=str(expected_shape.columns),
                         actual=(
-                            str(table.column_count)
-                            if table.column_count != expected_shape.columns
-                            else f"row widths {row_widths}"
+                            f"row widths {row_widths}"
+                            if not table.is_rectangular
+                            else str(table.column_count)
                         ),
                         notes="Extracted column count does not match the ruled-table sample.",
                     )
