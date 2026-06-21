@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "network_boundary": "local-only",
+  "api_contract": "openai-compatible-chat-completions",
+  "profiles": [
+    {
+      "id": "standard",
+      "label": "Standard local inference",
+      "quality_tier": "standard",
+      "provider": "local OpenAI-compatible runtime",
+      "model_family": "operator-selected standard model",
+      "base_url_env": "VERIDOC_STANDARD_OPENAI_BASE_URL",
+      "model_env": "VERIDOC_STANDARD_MODEL",
+      "api_key_env": "VERIDOC_STANDARD_OPENAI_API_KEY",
+      "required_env": [
+        "VERIDOC_STANDARD_OPENAI_BASE_URL",
+        "VERIDOC_STANDARD_MODEL"
+      ],
+      "optional_env": [
+        "VERIDOC_STANDARD_OPENAI_API_KEY",
+        "VERIDOC_STANDARD_TIMEOUT_SECONDS",
+        "VERIDOC_STANDARD_MAX_TOKENS"
+      ],
+      "egress": "disabled",
+      "credential_source": "local-placeholder-only"
+    },
+    {
+      "id": "high_quality",
+      "label": "High-quality local inference",
+      "quality_tier": "high-quality",
+      "provider": "DwarfStar 4",
+      "model_family": "DeepSeek V4 Flash",
+      "base_url_env": "VERIDOC_HIGH_QUALITY_OPENAI_BASE_URL",
+      "model_env": "VERIDOC_HIGH_QUALITY_MODEL",
+      "api_key_env": "VERIDOC_HIGH_QUALITY_OPENAI_API_KEY",
+      "required_env": [
+        "VERIDOC_HIGH_QUALITY_OPENAI_BASE_URL",
+        "VERIDOC_HIGH_QUALITY_MODEL"
+      ],
+      "optional_env": [
+        "VERIDOC_HIGH_QUALITY_OPENAI_API_KEY",
+        "VERIDOC_HIGH_QUALITY_TIMEOUT_SECONDS",
+        "VERIDOC_HIGH_QUALITY_MAX_TOKENS"
+      ],
+      "egress": "disabled",
+      "credential_source": "local-placeholder-only"
+    }
+  ]
+}
