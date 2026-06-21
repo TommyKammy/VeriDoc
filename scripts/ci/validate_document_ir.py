@@ -45,7 +45,13 @@ def type_matches(expected: str, value: Any) -> bool:
     if expected == "string":
         return isinstance(value, str)
     if expected == "integer":
-        return isinstance(value, int) and not isinstance(value, bool)
+        if isinstance(value, bool):
+            return False
+        if isinstance(value, int):
+            return True
+        if isinstance(value, float):
+            return math.isfinite(value) and value.is_integer()
+        return False
     if expected == "number":
         if isinstance(value, bool):
             return False

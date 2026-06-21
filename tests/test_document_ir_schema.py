@@ -84,6 +84,64 @@ class DocumentIrSchemaTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, msg="validator unexpectedly accepted NaN")
         self.assertIn("non-finite JSON number is not allowed: NaN", result.stderr)
 
+    def test_validator_accepts_integral_json_numbers_for_integer_fields(self) -> None:
+        document = json.loads(SAMPLE_PATH.read_text(encoding="utf-8"))
+        document["pages"][0]["page_number"] = 1.0
+        document["blocks"][0]["value_metadata"]["source_page"] = 1.0
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            document_path = Path(temp_dir) / "integral-number-document-ir.json"
+            document_path.write_text(json.dumps(document), encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(VALIDATOR_PATH),
+                    "--schema",
+                    str(SCHEMA_PATH),
+                    "--document",
+                    str(document_path),
+                ],
+                cwd=REPO_ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+        self.assertEqual(
+            result.returncode,
+            0,
+            msg=f"validator rejected integral JSON numbers\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+        )
+
+    def test_validator_rejects_fractional_json_numbers_for_integer_fields(self) -> None:
+        document = json.loads(SAMPLE_PATH.read_text(encoding="utf-8"))
+        document["blocks"][0]["value_metadata"]["source_page"] = 1.5
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            document_path = Path(temp_dir) / "fractional-source-page-document-ir.json"
+            document_path.write_text(json.dumps(document), encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(VALIDATOR_PATH),
+                    "--schema",
+                    str(SCHEMA_PATH),
+                    "--document",
+                    str(document_path),
+                ],
+                cwd=REPO_ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+        self.assertNotEqual(result.returncode, 0, msg="validator unexpectedly accepted fractional source_page")
+        self.assertIn("$.blocks[0].value_metadata.source_page: expected type 'integer'", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
