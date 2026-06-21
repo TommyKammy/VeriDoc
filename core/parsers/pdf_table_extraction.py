@@ -116,20 +116,29 @@ def build_table_extraction_report(
     """Build a minimal shape and cell-boundary diff report from extractor outputs."""
     mismatches: list[TableExtractionMismatch] = []
     ok_candidates = [candidate for candidate in candidates if candidate.status == "ok"]
+    first_tables = {candidate.name: _first_table(candidate) for candidate in ok_candidates}
+
+    for candidate in ok_candidates:
+        table = first_tables[candidate.name]
+        if table is None:
+            mismatches.append(
+                TableExtractionMismatch(
+                    kind="missing-table",
+                    candidate=candidate.name,
+                    expected=(
+                        f"{expected_shape.rows}x{expected_shape.columns}"
+                        if expected_shape is not None
+                        else "at least one table"
+                    ),
+                    actual="0x0",
+                    notes="No table was extracted from the candidate.",
+                )
+            )
 
     if expected_shape is not None:
         for candidate in ok_candidates:
-            table = _first_table(candidate)
+            table = first_tables[candidate.name]
             if table is None:
-                mismatches.append(
-                    TableExtractionMismatch(
-                        kind="missing-table",
-                        candidate=candidate.name,
-                        expected=f"{expected_shape.rows}x{expected_shape.columns}",
-                        actual="0x0",
-                        notes="No table was extracted from the candidate.",
-                    )
-                )
                 continue
             if table.row_count != expected_shape.rows:
                 mismatches.append(
@@ -141,13 +150,18 @@ def build_table_extraction_report(
                         notes="Extracted row count does not match the ruled-table sample.",
                     )
                 )
-            if table.column_count != expected_shape.columns:
+            row_widths = [len(row) for row in table.rows]
+            if any(row_width != expected_shape.columns for row_width in row_widths):
                 mismatches.append(
                     TableExtractionMismatch(
                         kind="column-count",
                         candidate=candidate.name,
                         expected=str(expected_shape.columns),
-                        actual=str(table.column_count),
+                        actual=(
+                            str(table.column_count)
+                            if table.column_count != expected_shape.columns
+                            else f"row widths {row_widths}"
+                        ),
                         notes="Extracted column count does not match the ruled-table sample.",
                     )
                 )
@@ -163,11 +177,11 @@ def build_table_extraction_report(
                 )
 
     for left_index, left_candidate in enumerate(ok_candidates):
-        left_table = _first_table(left_candidate)
+        left_table = first_tables[left_candidate.name]
         if left_table is None:
             continue
         for right_candidate in ok_candidates[left_index + 1 :]:
-            right_table = _first_table(right_candidate)
+            right_table = first_tables[right_candidate.name]
             if right_table is None:
                 continue
             if (left_table.row_count, left_table.column_count) != (
@@ -315,15 +329,25 @@ def _camelot_bbox(cell: Any) -> TableBBox | None:
 
 
 def _pdfplumber_bbox(row: Any) -> list[TableBBox | None]:
-    return [_bbox_from_coords(*cell) if cell is not None else None for cell in row.cells]
+    return [
+        _bbox_from_coords(*cell, origin="top-left") if cell is not None else None
+        for cell in row.cells
+    ]
 
 
-def _bbox_from_coords(x0: float, y0: float, x1: float, y1: float) -> TableBBox | None:
+def _bbox_from_coords(
+    x0: float,
+    y0: float,
+    x1: float,
+    y1: float,
+    *,
+    origin: str = "bottom-left",
+) -> TableBBox | None:
     width = x1 - x0
     height = y1 - y0
     if width <= 0 or height <= 0:
         return None
-    return TableBBox(x=x0, y=y0, width=width, height=height)
+    return TableBBox(x=x0, y=y0, width=width, height=height, origin=origin)
 
 
 def _cell_text(value: Any) -> str:
@@ -343,7 +367,11 @@ def _select_candidate(
     blocked = {mismatch.candidate for mismatch in mismatches if " vs " not in mismatch.candidate}
     for preferred in ("camelot:lattice", "pdfplumber:table", "camelot:stream"):
         for candidate in candidates:
-            if candidate.name == preferred and candidate.name not in blocked:
+            if (
+                candidate.name == preferred
+                and candidate.name not in blocked
+                and _first_table(candidate) is not None
+            ):
                 return candidate.name
     return None
 

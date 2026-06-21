@@ -9,6 +9,7 @@ from core.parsers.pdf_table_extraction import (
     ExtractedTable,
     TableBBox,
     TableExtractionCandidate,
+    _pdfplumber_bbox,
     build_table_extraction_report,
     compare_pdf_table_extractors,
 )
@@ -44,6 +45,17 @@ def _candidate(
                 cell_bboxes=bboxes,
             )
         ],
+        notes="synthetic candidate",
+    )
+
+
+def _empty_candidate(name: str, flavor: str) -> TableExtractionCandidate:
+    return TableExtractionCandidate(
+        extractor=name,
+        flavor=flavor,
+        version="test",
+        status="ok",
+        tables=[],
         notes="synthetic candidate",
     )
 
@@ -86,6 +98,65 @@ def test_build_table_extraction_report_detects_shape_and_boundary_differences(
         and mismatch.actual == "3x3"
         for mismatch in report.mismatches
     )
+
+
+def test_build_table_extraction_report_rejects_ragged_expected_shape(
+    tmp_path: Path,
+) -> None:
+    report = build_table_extraction_report(
+        source_path=tmp_path / "ruled-table.pdf",
+        expected_shape=ExpectedTableShape(rows=3, columns=2),
+        candidates=[
+            _candidate("camelot", "lattice", [["A", "B"], ["C"], ["E", "F"]]),
+        ],
+    )
+
+    assert report.selected_candidate is None
+    assert any(
+        mismatch.kind == "column-count"
+        and mismatch.candidate == "camelot:lattice"
+        and mismatch.expected == "2"
+        and mismatch.actual == "row widths [2, 1, 2]"
+        for mismatch in report.mismatches
+    )
+
+
+def test_build_table_extraction_report_rejects_empty_candidates_without_expected_shape(
+    tmp_path: Path,
+) -> None:
+    report = build_table_extraction_report(
+        source_path=tmp_path / "no-table.pdf",
+        candidates=[
+            _empty_candidate("camelot", "lattice"),
+            _empty_candidate("pdfplumber", "table"),
+        ],
+    )
+
+    assert report.selected_candidate is None
+    assert {
+        (mismatch.kind, mismatch.candidate, mismatch.expected, mismatch.actual)
+        for mismatch in report.mismatches
+    } == {
+        ("missing-table", "camelot:lattice", "at least one table", "0x0"),
+        ("missing-table", "pdfplumber:table", "at least one table", "0x0"),
+    }
+
+
+def test_pdfplumber_bbox_preserves_top_left_origin() -> None:
+    class Row:
+        cells = [(10.0, 20.0, 40.0, 50.0)]
+
+    bboxes = _pdfplumber_bbox(Row())
+
+    assert bboxes == [
+        TableBBox(
+            x=10.0,
+            y=20.0,
+            width=30.0,
+            height=30.0,
+            origin="top-left",
+        )
+    ]
 
 
 def test_compare_pdf_table_extractors_reports_missing_optional_dependencies(

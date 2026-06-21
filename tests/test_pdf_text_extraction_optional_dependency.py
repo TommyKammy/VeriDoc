@@ -53,6 +53,7 @@ def test_pdf_eval_requirements_include_all_comparison_candidates() -> None:
     default_requirements = _requirement_names(REPO_ROOT / "requirements.txt")
     eval_requirements = _requirement_names(REPO_ROOT / "requirements-pdf-eval.txt")
     eval_specs = _requirement_specs(REPO_ROOT / "requirements-pdf-eval.txt")
+    eval_requirements_text = (REPO_ROOT / "requirements-pdf-eval.txt").read_text(encoding="utf-8")
 
     assert "pypdf" not in default_requirements
     assert "pymupdf" not in default_requirements
@@ -61,6 +62,8 @@ def test_pdf_eval_requirements_include_all_comparison_candidates() -> None:
     assert eval_specs["pdfplumber"].startswith("pdfplumber==")
     assert eval_specs["pypdf"].startswith("pypdf==")
     assert eval_specs["pymupdf"].startswith("pymupdf==")
+    assert 'pypdf==3.17.4; python_version < "3.12"' in eval_requirements_text
+    assert 'pypdf==5.9.0; python_version >= "3.12"' in eval_requirements_text
 
 
 def test_compare_pdf_text_extractors_reports_missing_pymupdf(
