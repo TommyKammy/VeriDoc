@@ -38,6 +38,9 @@ Normalized XLSX value types currently include:
 - `number`
 - `boolean`
 - `blank`
+- `date`
+- `error`
+- `unknown:<raw-type>`
 
 ## Document IR v0 candidate fields
 
@@ -53,7 +56,8 @@ before the IR can faithfully preserve source layout:
 | `sheet.name` | XLSX | Identifies workbook scope for extracted cells and table-like regions. |
 | `sheet.dimension` | XLSX | Records the worksheet extent used by the extractor. |
 | `cell.ref` | XLSX | Anchors values to their workbook coordinates. |
-| `cell.value_type` | XLSX | Separates numbers, booleans, shared strings, inline strings, and blanks. |
+| `cell.value_type` | XLSX | Separates numbers, booleans, shared strings, inline strings, dates, errors, blanks, and unknown explicit cell types without treating every non-string value as numeric. |
+| `cell.value` | XLSX | Preserves exact numeric precision for high-precision identifiers or measurements while keeping nonnumeric explicit cell values as text. |
 | `merged_ranges` | XLSX | Preserves layout signals that affect table reconstruction. |
 
 These fields should be treated as Phase0 IR design inputs, not as a finished

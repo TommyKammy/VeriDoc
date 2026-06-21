@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
@@ -51,7 +52,7 @@ def _write_xlsx(path: Path) -> None:
             "xl/worksheets/sheet1.xml",
             """<?xml version="1.0" encoding="UTF-8"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-  <dimension ref="A1:C3"/>
+  <dimension ref="A1:C4"/>
   <sheetData>
     <row r="1">
       <c r="A1" t="s"><v>0</v></c>
@@ -65,6 +66,12 @@ def _write_xlsx(path: Path) -> None:
     </row>
     <row r="3">
       <c r="A3" t="str"><v>Formula text</v></c>
+      <c r="B3" t="e"><v>#N/A</v></c>
+      <c r="C3" t="d"><v>2026-06-21T00:00:00Z</v></c>
+    </row>
+    <row r="4">
+      <c r="A4"><v>12345678901234567890</v></c>
+      <c r="B4"><v>0.12345678901234567890</v></c>
     </row>
   </sheetData>
   <mergeCells count="1"><mergeCell ref="A3:C3"/></mergeCells>
@@ -83,14 +90,18 @@ def test_extract_xlsx_structure_returns_cell_types_and_merged_ranges(tmp_path: P
     assert len(result.sheets) == 1
     sheet = result.sheets[0]
     assert sheet.name == "Results"
-    assert sheet.dimension == "A1:C3"
+    assert sheet.dimension == "A1:C4"
     assert sheet.merged_ranges == ["A3:C3"]
     assert [(cell.ref, cell.value, cell.value_type) for cell in sheet.cells] == [
         ("A1", "Item", "shared_string"),
         ("B1", "Mass", "shared_string"),
         ("C1", "Status", "inline_string"),
         ("A2", "Sample A", "inline_string"),
-        ("B2", 12.5, "number"),
+        ("B2", Decimal("12.5"), "number"),
         ("C2", True, "boolean"),
         ("A3", "Formula text", "string"),
+        ("B3", "#N/A", "error"),
+        ("C3", "2026-06-21T00:00:00Z", "date"),
+        ("A4", 12345678901234567890, "number"),
+        ("B4", Decimal("0.12345678901234567890"), "number"),
     ]

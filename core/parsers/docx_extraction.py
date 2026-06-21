@@ -94,4 +94,12 @@ def _table_rows(table: ElementTree.Element) -> List[List[str]]:
 
 
 def _text_content(element: ElementTree.Element) -> str:
-    return "".join(text.text or "" for text in element.iter(f"{WORD_NS}t"))
+    chunks: List[str] = []
+    for node in element.iter():
+        if node.tag == f"{WORD_NS}t":
+            chunks.append(node.text or "")
+        elif node.tag == f"{WORD_NS}tab":
+            chunks.append("\t")
+        elif node.tag in {f"{WORD_NS}br", f"{WORD_NS}cr"}:
+            chunks.append("\n")
+    return "".join(chunks)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from decimal import Decimal, InvalidOperation
 from pathlib import PurePosixPath, Path
 from typing import Any, Dict, List, Optional, Union
 from xml.etree import ElementTree
@@ -149,9 +150,18 @@ def _cell_from_xml(cell: ElementTree.Element, shared_strings: List[str]) -> Xlsx
     elif raw_type == "str":
         value = value_text
         value_type = "string"
-    else:
+    elif raw_type is None or raw_type == "n":
         value = _number_value(value_text)
         value_type = "number" if value_text else "blank"
+    elif raw_type == "d":
+        value = value_text
+        value_type = "date"
+    elif raw_type == "e":
+        value = value_text
+        value_type = "error"
+    else:
+        value = value_text
+        value_type = f"unknown:{raw_type}"
 
     return XlsxCell(ref=ref, value=value, value_type=value_type)
 
@@ -172,10 +182,10 @@ def _number_value(value_text: str) -> Any:
     if value_text == "":
         return None
     try:
-        number = float(value_text)
-    except ValueError:
+        number = Decimal(value_text)
+    except InvalidOperation:
         return value_text
-    return int(number) if number.is_integer() else number
+    return int(number) if number == number.to_integral_value() else number
 
 
 def _joined_text(element: Optional[ElementTree.Element]) -> str:
