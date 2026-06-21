@@ -11,9 +11,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 
 ANNOTATION_KEYS = {"$schema", "$id", "title", "description"}
@@ -46,7 +47,13 @@ def type_matches(expected: str, value: Any) -> bool:
     if expected == "integer":
         return isinstance(value, int) and not isinstance(value, bool)
     if expected == "number":
-        return (isinstance(value, int) or isinstance(value, float)) and not isinstance(value, bool)
+        if isinstance(value, bool):
+            return False
+        if isinstance(value, int):
+            return True
+        if isinstance(value, float):
+            return math.isfinite(value)
+        return False
     if expected == "boolean":
         return isinstance(value, bool)
     raise ValidationError(f"unsupported schema type: {expected}")
@@ -108,7 +115,11 @@ def validate(schema: dict[str, Any], value: Any, path: tuple[str, ...] = ()) -> 
 
 def load_json(path: Path) -> Any:
     with path.open(encoding="utf-8") as file:
-        return json.load(file)
+        return json.load(file, parse_constant=reject_json_constant)
+
+
+def reject_json_constant(value: str) -> NoReturn:
+    raise ValueError(f"non-finite JSON number is not allowed: {value}")
 
 
 def main() -> int:
@@ -121,7 +132,7 @@ def main() -> int:
         schema = load_json(args.schema)
         document = load_json(args.document)
         validate(schema, document)
-    except (OSError, json.JSONDecodeError, ValidationError) as exc:
+    except (OSError, ValueError, json.JSONDecodeError, ValidationError) as exc:
         print(f"Document IR validation failed: {exc}", file=sys.stderr)
         return 1
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -55,6 +56,33 @@ class DocumentIrSchemaTest(unittest.TestCase):
             },
             set(block_metadata["required"]),
         )
+
+    def test_validator_rejects_non_finite_json_numbers(self) -> None:
+        document = json.loads(SAMPLE_PATH.read_text(encoding="utf-8"))
+        document["blocks"][0]["value_metadata"]["confidence"] = float("nan")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            document_path = Path(temp_dir) / "non-finite-document-ir.json"
+            document_path.write_text(json.dumps(document), encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(VALIDATOR_PATH),
+                    "--schema",
+                    str(SCHEMA_PATH),
+                    "--document",
+                    str(document_path),
+                ],
+                cwd=REPO_ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+        self.assertNotEqual(result.returncode, 0, msg="validator unexpectedly accepted NaN")
+        self.assertIn("non-finite JSON number is not allowed: NaN", result.stderr)
 
 
 if __name__ == "__main__":
