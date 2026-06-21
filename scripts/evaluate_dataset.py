@@ -402,7 +402,8 @@ def evaluate_cases(data: dict[str, Any], manifest_root: Path | None = None) -> E
             expected_cell_count += len(expected_cells)
 
             for cell_id, expected_cell in expected_cells.items():
-                if isinstance(expected_cell.get("source"), dict):
+                expected_has_source_anchor = is_valid_source_anchor(expected_cell.get("source"))
+                if expected_has_source_anchor:
                     expected_source_link_count += 1
 
                 actual_cell = actual_cells.get(cell_id)
@@ -414,9 +415,7 @@ def evaluate_cases(data: dict[str, Any], manifest_root: Path | None = None) -> E
                 if expected_text == actual_text:
                     matched_cell_count += 1
 
-                if isinstance(expected_cell.get("source"), dict) and source_matches(
-                    expected_cell, actual_cell
-                ):
+                if expected_has_source_anchor and source_matches(expected_cell, actual_cell):
                     matched_source_link_count += 1
 
                 if (

@@ -226,6 +226,14 @@ class EvaluateDatasetTest(unittest.TestCase):
         with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "source must define"):
             self.evaluate_with_fixture(data, fixture)
 
+    def test_source_matching_requires_concrete_anchor(self) -> None:
+        self.assertFalse(
+            evaluate_dataset.source_matches(
+                {"source": {}},
+                {"source": {}},
+            )
+        )
+
     def test_rejects_source_anchor_outside_declared_page_geometry_before_scoring(self) -> None:
         data = self.valid_cases_data()
         fixture = evaluate_dataset.load_json(
