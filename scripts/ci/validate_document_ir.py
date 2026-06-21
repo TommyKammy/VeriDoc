@@ -119,6 +119,22 @@ def validate(schema: dict[str, Any], value: Any, path: tuple[str, ...] = ()) -> 
                 validate(property_schema, value[key], (*path, f".{key}"))
 
 
+def validate_document_ir_consistency(document: dict[str, Any]) -> None:
+    declared_pages = {page["page_number"] for page in document["pages"]}
+    declared_pages_text = ", ".join(str(page) for page in sorted(declared_pages))
+
+    for index, block in enumerate(document["blocks"]):
+        source_page = block["value_metadata"]["source_page"]
+        if source_page not in declared_pages:
+            raise ValidationError(
+                "$.blocks"
+                f"[{index}]"
+                ".value_metadata.source_page: "
+                f"references undeclared page {source_page!r}"
+                f" (declared pages: {declared_pages_text})"
+            )
+
+
 def load_json(path: Path) -> Any:
     with path.open(encoding="utf-8") as file:
         return json.load(file, parse_constant=reject_json_constant)
@@ -138,6 +154,7 @@ def main() -> int:
         schema = load_json(args.schema)
         document = load_json(args.document)
         validate(schema, document)
+        validate_document_ir_consistency(document)
     except (OSError, ValueError, json.JSONDecodeError, ValidationError) as exc:
         print(f"Document IR validation failed: {exc}", file=sys.stderr)
         return 1

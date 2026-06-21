@@ -142,6 +142,33 @@ class DocumentIrSchemaTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, msg="validator unexpectedly accepted fractional source_page")
         self.assertIn("$.blocks[0].value_metadata.source_page: expected type 'integer'", result.stderr)
 
+    def test_validator_rejects_source_page_not_declared_in_pages(self) -> None:
+        document = json.loads(SAMPLE_PATH.read_text(encoding="utf-8"))
+        document["blocks"][0]["value_metadata"]["source_page"] = 99
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            document_path = Path(temp_dir) / "undeclared-source-page-document-ir.json"
+            document_path.write_text(json.dumps(document), encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(VALIDATOR_PATH),
+                    "--schema",
+                    str(SCHEMA_PATH),
+                    "--document",
+                    str(document_path),
+                ],
+                cwd=REPO_ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+        self.assertNotEqual(result.returncode, 0, msg="validator unexpectedly accepted undeclared source_page")
+        self.assertIn("$.blocks[0].value_metadata.source_page: references undeclared page 99", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
