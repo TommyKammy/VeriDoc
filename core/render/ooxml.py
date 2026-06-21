@@ -29,6 +29,7 @@ def render_docx_from_ir(document_ir: Mapping[str, Any], output_path: str | Path)
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
   <Default Extension="xml" ContentType="application/xml"/>
   <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  <Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>
 </Types>
 """,
         ),
@@ -38,6 +39,31 @@ def render_docx_from_ir(document_ir: Mapping[str, Any], output_path: str | Path)
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
 </Relationships>
+""",
+        ),
+        (
+            "word/_rels/document.xml.rels",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>
+</Relationships>
+""",
+        ),
+        (
+            "word/numbering.xml",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:abstractNum w:abstractNumId="0">
+    <w:lvl w:ilvl="0">
+      <w:start w:val="1"/>
+      <w:numFmt w:val="bullet"/>
+      <w:lvlText w:val="&#8226;"/>
+    </w:lvl>
+  </w:abstractNum>
+  <w:num w:numId="1">
+    <w:abstractNumId w:val="0"/>
+  </w:num>
+</w:numbering>
 """,
         ),
         (
@@ -160,13 +186,29 @@ def _docx_block(block: Mapping[str, Any]) -> str:
     kind = _text(block.get("type"))
     if kind == "table":
         return _docx_table(_docx_table_rows(block))
+    if kind == "list_item":
+        return _docx_paragraph(_text(block.get("text")), numbering=True)
     style = "Heading1" if kind == "heading" else None
     return _docx_paragraph(_text(block.get("text")), style=style)
 
 
-def _docx_paragraph(text: str, *, style: str | None = None) -> str:
-    style_xml = "" if style is None else f'<w:pPr><w:pStyle w:val="{_xml_escape(style)}"/></w:pPr>'
-    return f"<w:p>{style_xml}{_docx_runs(text)}</w:p>"
+def _docx_paragraph(
+    text: str,
+    *,
+    style: str | None = None,
+    numbering: bool = False,
+) -> str:
+    paragraph_properties = []
+    if style is not None:
+        paragraph_properties.append(f'<w:pStyle w:val="{_xml_escape(style)}"/>')
+    if numbering:
+        paragraph_properties.append('<w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr>')
+    properties_xml = (
+        ""
+        if not paragraph_properties
+        else f"<w:pPr>{''.join(paragraph_properties)}</w:pPr>"
+    )
+    return f"<w:p>{properties_xml}{_docx_runs(text)}</w:p>"
 
 
 def _docx_runs(text: str) -> str:
@@ -217,19 +259,20 @@ def _docx_table_rows(block: Mapping[str, Any]) -> Sequence[Sequence[str]]:
     sanitized_text = _sanitize_xml_text(_text(block.get("text")))
     if not sanitized_text:
         return [[""]]
-    return [line.split("\t") for line in sanitized_text.splitlines()]
+    return [line.split("\t") for line in sanitized_text.split("\n")]
 
 
 def _split_field(text: str) -> tuple[str, str]:
     label, separator, value = text.partition(":")
     if not separator:
         return "", text
-    return label.strip(), value.strip()
+    return label.strip(), value
 
 
 def _typed_xlsx_value(value: str) -> tuple[Any, str]:
-    if _is_plain_number(value):
-        return (lambda ref: _number_cell(ref, value)), "number"
+    numeric_candidate = value.strip()
+    if _is_plain_number(numeric_candidate):
+        return (lambda ref: _number_cell(ref, numeric_candidate)), "number"
     return (lambda ref: _text_cell(ref, value)), "text"
 
 

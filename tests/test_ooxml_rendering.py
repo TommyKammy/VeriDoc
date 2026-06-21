@@ -123,7 +123,7 @@ def test_same_ir_renders_deterministic_docx_and_xlsx_with_typed_cells(tmp_path: 
         "D4": ("text", "inline_string"),
         "A5": ("block-002", "inline_string"),
         "B5": ("Lot Number", "inline_string"),
-        "C5": ("SAMPLE-LOT-001", "inline_string"),
+        "C5": (" SAMPLE-LOT-001", "inline_string"),
         "D5": ("text", "inline_string"),
         "A6": ("block-003", "inline_string"),
         "B6": ("Assay Result", "inline_string"),
@@ -187,7 +187,7 @@ def test_renderer_sanitizes_xml_invalid_text_before_writing_ooxml(tmp_path: Path
     cells = {cell.ref: cell.value for cell in xlsx.sheets[0].cells}
     assert cells["A4"] == "block 1"
     assert cells["C4"] == "Alpha Beta"
-    assert cells["C5"] == "A 01"
+    assert cells["C5"] == " A 01"
 
 
 def test_docx_renders_table_blocks_as_tables(tmp_path: Path) -> None:
@@ -253,6 +253,54 @@ def test_docx_sanitizes_table_text_before_splitting_rows(tmp_path: Path) -> None
     ]
 
 
+def test_docx_table_splits_only_on_ir_row_delimiters(tmp_path: Path) -> None:
+    document_ir = {
+        "document": {"title": "Table row delimiters"},
+        "blocks": [
+            {"id": "table-1", "type": "table", "text": "A\u2028B\tC\u0085D\nE\tF"},
+        ],
+    }
+    output_path = tmp_path / "table-row-delimiters.docx"
+
+    render_docx_from_ir(document_ir, output_path)
+
+    docx = extract_docx_structure(output_path)
+    assert [(block.kind, block.text, block.rows) for block in docx.blocks] == [
+        (
+            "heading",
+            "Table row delimiters",
+            None,
+        ),
+        (
+            "table",
+            "A\u2028B\tC\u0085D\nE\tF",
+            [["A\u2028B", "C\u0085D"], ["E", "F"]],
+        ),
+    ]
+
+
+def test_docx_renders_list_items_with_list_semantics(tmp_path: Path) -> None:
+    document_ir = {
+        "document": {"title": "Checklist"},
+        "blocks": [
+            {"id": "step-1", "type": "list_item", "text": "Verify batch number"},
+        ],
+    }
+    output_path = tmp_path / "list-item.docx"
+
+    render_docx_from_ir(document_ir, output_path)
+
+    with ZipFile(output_path) as archive:
+        document_xml = archive.read("word/document.xml").decode("utf-8")
+    assert "<w:numPr>" in document_xml
+
+    docx = extract_docx_structure(output_path)
+    assert [(block.kind, block.text, block.rows) for block in docx.blocks] == [
+        ("heading", "Checklist", None),
+        ("list_item", "Verify batch number", None),
+    ]
+
+
 def test_docx_encodes_tabs_and_line_breaks_as_run_elements(tmp_path: Path) -> None:
     document_ir = {
         "document": {"title": "Run elements"},
@@ -296,7 +344,24 @@ def test_renderer_escapes_carriage_returns_before_xml_normalization(tmp_path: Pa
     cells = {cell.ref: cell.value for cell in xlsx.sheets[0].cells}
     assert cells["A1"] == "Carriage\rTitle"
     assert cells["A4"] == "block\r1"
-    assert cells["C4"] == "A\r01"
+    assert cells["C4"] == " A\r01"
+
+
+def test_xlsx_field_values_preserve_boundary_spaces(tmp_path: Path) -> None:
+    document_ir = {
+        "document": {"title": "Field boundary spaces"},
+        "blocks": [
+            {"id": "code", "type": "field", "text": "Code: A "},
+        ],
+    }
+    output_path = tmp_path / "field-boundary-spaces.xlsx"
+
+    render_xlsx_from_ir(document_ir, output_path)
+
+    xlsx = extract_xlsx_structure(output_path)
+    cells = {cell.ref: (cell.value, cell.value_type) for cell in xlsx.sheets[0].cells}
+    assert cells["B4"] == ("Code", "inline_string")
+    assert cells["C4"] == (" A ", "inline_string")
 
 
 def test_ooxml_zip_entries_use_stable_host_system(tmp_path: Path) -> None:
@@ -332,7 +397,7 @@ def test_xlsx_numeric_detection_preserves_code_like_values_as_text(tmp_path: Pat
     cells = {cell.ref: (cell.value, cell.value_type) for cell in xlsx.sheets[0].cells}
     assert cells["C4"] == (1000, "number")
     assert cells["C5"] == ("-12.50", "number")
-    assert cells["C6"] == ("1_000", "inline_string")
-    assert cells["C7"] == ("１２３", "inline_string")
-    assert cells["C8"] == ("NaN123", "inline_string")
-    assert cells["C9"] == ("-01", "inline_string")
+    assert cells["C6"] == (" 1_000", "inline_string")
+    assert cells["C7"] == (" １２３", "inline_string")
+    assert cells["C8"] == (" NaN123", "inline_string")
+    assert cells["C9"] == (" -01", "inline_string")
