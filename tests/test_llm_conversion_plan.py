@@ -148,6 +148,22 @@ def test_adapter_rejects_link_local_base_url_before_transport_call() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://127.0.0.1:70000/v1",
+        "http://127.0.0.1:0/v1",
+        "http://localhost:not-a-port/v1",
+    ],
+)
+def test_adapter_rejects_invalid_local_base_url_ports(base_url: str) -> None:
+    with pytest.raises(LocalLLMConfigurationError, match="local-only"):
+        LocalLLMConversionPlanAdapter(
+            base_url=base_url,
+            model="local-json-model",
+        )
+
+
 def test_adapter_accepts_dns_hostname_after_local_address_validation(monkeypatch: pytest.MonkeyPatch) -> None:
     def getaddrinfo(
         host: str,
@@ -169,6 +185,41 @@ def test_adapter_accepts_dns_hostname_after_local_address_validation(monkeypatch
     )
 
     assert adapter.base_url == "http://dwarfstar:8000/v1"
+
+
+def test_adapter_revalidates_dns_hostname_before_transport_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    resolved_addresses = [("10.0.0.25", 8000), ("8.8.8.8", 8000)]
+
+    def getaddrinfo(
+        host: str,
+        port: int | None,
+        *args: object,
+        **kwargs: object,
+    ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
+        assert host == "dwarfstar"
+        assert port == 8000
+        assert kwargs == {"type": socket.SOCK_STREAM}
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", resolved_addresses.pop(0))]
+
+    def transport(
+        url: str,
+        payload: dict[str, object],
+        headers: dict[str, str],
+        timeout_seconds: float,
+    ) -> dict[str, object]:
+        raise AssertionError("transport should not be called after DNS revalidation fails")
+
+    monkeypatch.setattr("core.llm.conversion_plan.socket.getaddrinfo", getaddrinfo)
+
+    adapter = LocalLLMConversionPlanAdapter(
+        base_url="http://dwarfstar:8000/v1",
+        model="local-json-model",
+        transport=transport,
+    )
+
+    with pytest.raises(LocalLLMConfigurationError, match="local-only"):
+        adapter.create_conversion_plan("Lot: ABC-123")
+    assert resolved_addresses == []
 
 
 def test_adapter_rejects_dns_hostname_with_public_resolved_address(monkeypatch: pytest.MonkeyPatch) -> None:

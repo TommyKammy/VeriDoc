@@ -113,6 +113,8 @@ class LocalLLMConversionPlanAdapter:
     def create_conversion_plan(self, synthetic_text: str) -> JsonObject:
         if not synthetic_text.strip():
             raise ValueError("synthetic_text is required")
+        if not _is_local_base_url(self.base_url):
+            raise LocalLLMConfigurationError("base_url must target a local-only OpenAI-compatible endpoint")
 
         payload: JsonObject = {
             "model": self.model,
@@ -258,6 +260,12 @@ def _is_local_base_url(base_url: str) -> bool:
     parsed = urlparse(base_url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         return False
+    try:
+        port = parsed.port
+    except ValueError:
+        return False
+    if port == 0:
+        return False
 
     hostname = parsed.hostname.lower()
     if hostname == "localhost" or hostname.endswith(".localhost"):
@@ -265,10 +273,6 @@ def _is_local_base_url(base_url: str) -> bool:
     try:
         address = ipaddress.ip_address(hostname)
     except ValueError:
-        try:
-            port = parsed.port
-        except ValueError:
-            return False
         return _hostname_resolves_to_local_runtime(hostname, port)
     return _is_local_runtime_address(address)
 
