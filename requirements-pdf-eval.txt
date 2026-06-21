@@ -1,0 +1,3 @@
+-r requirements.txt
+pymupdf==1.26.5
+pypdf==6.13.3
