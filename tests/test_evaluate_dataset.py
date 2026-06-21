@@ -31,7 +31,12 @@ class EvaluateDatasetTest(unittest.TestCase):
     def evaluate_valid_cases(self, data: dict[str, object]) -> object:
         return evaluate_dataset.evaluate_cases(data, manifest_root=REPO_ROOT)
 
-    def evaluate_with_fixture(self, data: dict[str, object], fixture: dict[str, object]) -> object:
+    def evaluate_with_fixture(
+        self,
+        data: dict[str, object],
+        fixture: dict[str, object],
+        fixture_metadata: dict[str, object] | None = None,
+    ) -> object:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_root = Path(temp_dir)
             fixture_dir = temp_root / "datasets" / "fixtures"
@@ -39,18 +44,24 @@ class EvaluateDatasetTest(unittest.TestCase):
             fixture_path = fixture_dir / "fixture.json"
             manifest_path = fixture_dir / "manifest.json"
             fixture_path.write_text(json.dumps(fixture), encoding="utf-8")
+            manifest_fixture = {
+                "id": data["cases"][0]["fixture_id"],
+                "public_review_safe": True,
+                "confidentiality": "public",
+                "path": "datasets/fixtures/fixture.json",
+            }
+            if fixture_metadata is not None:
+                manifest_fixture.update(fixture_metadata)
             manifest_path.write_text(
                 json.dumps(
                     {
                         "schema_version": evaluate_dataset.FIXTURE_MANIFEST_SCHEMA_VERSION,
-                        "policy": {"allowed_fixture_root": "datasets/fixtures"},
-                        "fixtures": [
-                            {
-                                "id": data["cases"][0]["fixture_id"],
-                                "public_review_safe": True,
-                                "path": "datasets/fixtures/fixture.json",
-                            }
-                        ],
+                        "policy": {
+                            "allowed_fixture_root": "datasets/fixtures",
+                            "public_only": True,
+                            "confidential_source_documents_allowed": False,
+                        },
+                        "fixtures": [manifest_fixture],
                     }
                 ),
                 encoding="utf-8",
@@ -97,6 +108,19 @@ class EvaluateDatasetTest(unittest.TestCase):
 
         with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "unknown fixture_id"):
             self.evaluate_valid_cases(data)
+
+    def test_rejects_non_public_manifest_fixture_before_scoring(self) -> None:
+        data = self.valid_cases_data()
+        fixture = evaluate_dataset.load_json(
+            REPO_ROOT / "datasets" / "fixtures" / "sample-document-ir-v0.json"
+        )
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "public confidentiality"):
+            self.evaluate_with_fixture(
+                data,
+                fixture,
+                fixture_metadata={"confidentiality": "confidential"},
+            )
 
     def test_rejects_expected_table_missing_from_declared_fixture(self) -> None:
         data = self.valid_cases_data()
@@ -151,6 +175,24 @@ class EvaluateDatasetTest(unittest.TestCase):
 
         with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "source does not match"):
             self.evaluate_valid_cases(data)
+
+    def test_rejects_expected_cell_requires_review_drift_from_fixture(self) -> None:
+        data = self.valid_cases_data()
+        data["cases"][0]["expected"]["tables"][0]["cells"][1]["requires_review"] = False
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "requires_review"):
+            self.evaluate_valid_cases(data)
+
+    def test_rejects_malformed_fixture_source_anchor_before_scoring(self) -> None:
+        data = self.valid_cases_data()
+        fixture = evaluate_dataset.load_json(
+            REPO_ROOT / "datasets" / "fixtures" / "sample-document-ir-v0.json"
+        )
+        fixture["tables"][0]["cells"][1]["source"] = {}
+        data["cases"][0]["expected"]["tables"][0]["cells"][1]["source"] = {}
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "source must define"):
+            self.evaluate_with_fixture(data, fixture)
 
     def test_direct_evaluation_uses_explicit_manifest_root_from_any_cwd(self) -> None:
         data = self.valid_cases_data()

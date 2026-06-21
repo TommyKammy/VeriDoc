@@ -70,7 +70,34 @@ def normalized_text(value: object) -> str:
 def source_matches(expected: dict[str, Any], actual: dict[str, Any]) -> bool:
     expected_source = expected.get("source")
     actual_source = actual.get("source")
-    return isinstance(expected_source, dict) and expected_source == actual_source
+    return is_valid_source_anchor(expected_source) and expected_source == actual_source
+
+
+def is_number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def is_valid_source_anchor(source: object) -> bool:
+    if not isinstance(source, dict):
+        return False
+    if not isinstance(source.get("source_page"), int) or isinstance(
+        source.get("source_page"), bool
+    ):
+        return False
+    bbox = source.get("bbox")
+    if not isinstance(bbox, dict):
+        return False
+    required_bbox_keys = ("x", "y", "width", "height")
+    if any(not is_number(bbox.get(key)) for key in required_bbox_keys):
+        return False
+    return source["source_page"] > 0 and bbox["width"] > 0 and bbox["height"] > 0
+
+
+def validate_source_anchor(source: object, context: str) -> None:
+    if not is_valid_source_anchor(source):
+        raise EvaluationCaseError(
+            f"{context}: source must define source_page and bbox x/y/width/height"
+        )
 
 
 def cells_by_id(table: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -148,6 +175,10 @@ def fixture_paths_from_manifest(
     allowed_root_value = policy.get("allowed_fixture_root")
     if not isinstance(allowed_root_value, str) or not allowed_root_value:
         raise EvaluationCaseError("fixture manifest policy must define allowed_fixture_root")
+    if policy.get("public_only") is not True:
+        raise EvaluationCaseError("fixture manifest policy must be public-only")
+    if policy.get("confidential_source_documents_allowed") is not False:
+        raise EvaluationCaseError("fixture manifest must disallow confidential source documents")
     allowed_root_path = Path(allowed_root_value)
     if allowed_root_path.is_absolute():
         raise EvaluationCaseError("allowed_fixture_root must be repo-relative")
@@ -168,6 +199,8 @@ def fixture_paths_from_manifest(
         seen_fixture_ids.add(fixture_id)
         if fixture.get("public_review_safe") is not True:
             raise EvaluationCaseError(f"fixture {fixture_id!r} is not public-review safe")
+        if fixture.get("confidentiality") != "public":
+            raise EvaluationCaseError(f"fixture {fixture_id!r} must declare public confidentiality")
 
         fixture_path_value = fixture.get("path")
         if fixture_path_value is None:
@@ -241,6 +274,24 @@ def validate_expected_tables_against_fixture(
                 raise EvaluationCaseError(
                     f"case {case.get('id')!r}: expected cell {cell_id!r} "
                     f"source does not match fixture {fixture_id!r}"
+                )
+            validate_source_anchor(
+                fixture_cell.get("source"),
+                f"fixture {fixture_id!r} table {table_id!r} cell {cell_id!r}",
+            )
+            validate_source_anchor(
+                expected_cell.get("source"),
+                f"case {case.get('id')!r}: expected cell {cell_id!r}",
+            )
+            if not isinstance(fixture_cell.get("requires_review"), bool):
+                raise EvaluationCaseError(
+                    f"fixture {fixture_id!r} table {table_id!r} cell {cell_id!r}: "
+                    "requires_review must be a boolean"
+                )
+            if expected_cell.get("requires_review") != fixture_cell.get("requires_review"):
+                raise EvaluationCaseError(
+                    f"case {case.get('id')!r}: expected cell {cell_id!r} "
+                    f"requires_review does not match fixture {fixture_id!r}"
                 )
 
 
