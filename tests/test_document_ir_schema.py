@@ -1,0 +1,61 @@
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+import unittest
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SCHEMA_PATH = REPO_ROOT / "core" / "ir" / "document-ir-v0.schema.json"
+SAMPLE_PATH = REPO_ROOT / "core" / "ir" / "examples" / "sample-document-ir-v0.json"
+VALIDATOR_PATH = REPO_ROOT / "scripts" / "ci" / "validate_document_ir.py"
+
+
+class DocumentIrSchemaTest(unittest.TestCase):
+    def test_sample_document_ir_v0_validates_against_schema(self) -> None:
+        self.assertTrue(SCHEMA_PATH.is_file(), f"missing schema: {SCHEMA_PATH.relative_to(REPO_ROOT)}")
+        self.assertTrue(SAMPLE_PATH.is_file(), f"missing sample: {SAMPLE_PATH.relative_to(REPO_ROOT)}")
+        self.assertTrue(VALIDATOR_PATH.is_file(), f"missing validator: {VALIDATOR_PATH.relative_to(REPO_ROOT)}")
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(VALIDATOR_PATH),
+                "--schema",
+                str(SCHEMA_PATH),
+                "--document",
+                str(SAMPLE_PATH),
+            ],
+            cwd=REPO_ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+        self.assertEqual(
+            result.returncode,
+            0,
+            msg=f"validator failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+        )
+
+    def test_value_metadata_fields_are_required_on_blocks(self) -> None:
+        schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+        block_metadata = schema["properties"]["blocks"]["items"]["properties"]["value_metadata"]
+
+        self.assertEqual(
+            {
+                "source_page",
+                "bbox",
+                "extractor",
+                "confidence",
+                "requires_review",
+            },
+            set(block_metadata["required"]),
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
