@@ -120,6 +120,47 @@ class EvaluateDatasetTest(unittest.TestCase):
             metrics.unstable_examples,
         )
 
+    def test_llm_stability_agreement_rates_do_not_depend_on_run_order(self) -> None:
+        data = self.valid_llm_stability_data()
+        data["runs"] = [data["runs"][2], data["runs"][1], data["runs"][0]]
+
+        metrics = evaluate_dataset.evaluate_llm_stability(data)
+
+        self.assertEqual(2 / 3, metrics.plan_agreement_rate)
+        self.assertEqual(2 / 3, metrics.confirmed_value_agreement_rate)
+        self.assertEqual(
+            (
+                {
+                    "reference_run_id": "run-001",
+                    "run_id": "run-002",
+                    "changed": "confirmed_values",
+                },
+                {
+                    "reference_run_id": "run-001",
+                    "run_id": "run-003",
+                    "changed": "conversion_plan",
+                },
+            ),
+            metrics.unstable_examples,
+        )
+
+    def test_llm_stability_rejects_empty_confirmed_values_before_scoring(self) -> None:
+        data = self.valid_llm_stability_data()
+        for run in data["runs"]:
+            run["confirmed_values"] = []
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "at least one value"):
+            evaluate_dataset.evaluate_llm_stability(data)
+
+    def test_llm_stability_rejects_non_public_source_kind_before_scoring(self) -> None:
+        data = self.valid_llm_stability_data()
+        data["runs"][0]["conversion_plan"]["source_kind"] = "confidential_record"
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError, "public synthetic or anonymized"
+        ):
+            evaluate_dataset.evaluate_llm_stability(data)
+
     def test_llm_stability_rejects_invalid_run_count_before_scoring(self) -> None:
         data = self.valid_llm_stability_data()
         data["n"] = 4

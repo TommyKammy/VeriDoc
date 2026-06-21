@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import json
 import math
 import sys
@@ -28,6 +29,7 @@ EXPECTED_ALLOWED_FIXTURE_ROOT = Path("datasets/fixtures")
 EXPECTED_DATASET_MANIFEST = EXPECTED_ALLOWED_FIXTURE_ROOT / "manifest.json"
 EXPECTED_SCOPE_PHASE = "phase0"
 PUBLIC_FIXTURE_ANONYMIZATION_VALUES = {"anonymized", "synthetic"}
+PUBLIC_LLM_STABILITY_SOURCE_KINDS = {"anonymized_text", "synthetic_text"}
 
 
 @dataclass(frozen=True)
@@ -599,6 +601,8 @@ def evaluate_cases(data: dict[str, Any], manifest_root: Path | None = None) -> E
 def confirmed_values_fingerprint(values: object, run_context: str) -> str:
     if not isinstance(values, list):
         raise EvaluationCaseError(f"{run_context}: confirmed_values must be a list")
+    if not values:
+        raise EvaluationCaseError(f"{run_context}: confirmed_values must contain at least one value")
 
     indexed: dict[str, str] = {}
     for index, value in enumerate(values):
@@ -617,6 +621,19 @@ def confirmed_values_fingerprint(values: object, run_context: str) -> str:
             raise EvaluationCaseError(f"{context}.auto_confirmed must be true")
         indexed[value_id] = normalized_text(confirmed_value)
     return canonical_json(indexed)
+
+
+def most_common_fingerprint(fingerprints: list[str]) -> str:
+    counts = Counter(fingerprints)
+    return sorted(counts, key=lambda fingerprint: (-counts[fingerprint], fingerprint))[0]
+
+
+def validate_llm_stability_source_kind(conversion_plan: dict[str, Any], run_context: str) -> None:
+    source_kind = conversion_plan.get("source_kind")
+    if source_kind not in PUBLIC_LLM_STABILITY_SOURCE_KINDS:
+        raise EvaluationCaseError(
+            f"{run_context}.conversion_plan.source_kind must be public synthetic or anonymized text"
+        )
 
 
 def evaluate_llm_stability(data: dict[str, Any]) -> LLMStabilityMetrics:
@@ -657,19 +674,27 @@ def evaluate_llm_stability(data: dict[str, Any]) -> LLMStabilityMetrics:
             validate_conversion_plan(conversion_plan)
         except ConversionPlanValidationError as exc:
             raise EvaluationCaseError(f"{run_context}.conversion_plan is invalid: {exc}") from exc
+        assert isinstance(conversion_plan, dict)
+        validate_llm_stability_source_kind(conversion_plan, run_context)
         plan_fingerprints.append(canonical_json(conversion_plan))
         value_fingerprints.append(
             confirmed_values_fingerprint(run.get("confirmed_values"), run_context)
         )
 
-    reference_plan = plan_fingerprints[0]
-    reference_values = value_fingerprints[0]
+    reference_plan = most_common_fingerprint(plan_fingerprints)
+    reference_values = most_common_fingerprint(value_fingerprints)
     plan_matches = sum(fingerprint == reference_plan for fingerprint in plan_fingerprints)
     value_matches = sum(fingerprint == reference_values for fingerprint in value_fingerprints)
+    reference_run_id = min(
+        str(run["run_id"])
+        for run, plan_fingerprint in zip(runs, plan_fingerprints)
+        if plan_fingerprint == reference_plan
+    )
 
     unstable_examples: list[dict[str, str]] = []
-    for run, plan_fingerprint, value_fingerprint in zip(
-        runs, plan_fingerprints, value_fingerprints
+    for run, plan_fingerprint, value_fingerprint in sorted(
+        zip(runs, plan_fingerprints, value_fingerprints),
+        key=lambda item: str(item[0]["run_id"]),
     ):
         assert isinstance(run, dict)
         changes: list[str] = []
@@ -680,7 +705,7 @@ def evaluate_llm_stability(data: dict[str, Any]) -> LLMStabilityMetrics:
         if changes:
             unstable_examples.append(
                 {
-                    "reference_run_id": str(runs[0]["run_id"]),
+                    "reference_run_id": reference_run_id,
                     "run_id": str(run["run_id"]),
                     "changed": ",".join(changes),
                 }
