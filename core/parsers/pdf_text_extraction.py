@@ -5,8 +5,6 @@ from importlib import metadata
 from pathlib import Path
 from typing import Any
 
-import fitz
-
 
 @dataclass(frozen=True)
 class TextBBox:
@@ -54,11 +52,16 @@ class ExtractorCandidate:
     notes: str
 
 
+class MissingPdfExtractorDependency(RuntimeError):
+    """Raised when an optional PDF extraction dependency is unavailable."""
+
+
 def extract_pdf_text(pdf_path: str | Path) -> PdfTextExtraction:
     """Extract text spans with page numbers and top-left-origin point bboxes."""
     source = Path(pdf_path)
     if not source.is_file():
         raise FileNotFoundError(f"PDF file not found: {source}")
+    fitz = _load_fitz()
 
     pages: list[PdfPageText] = []
     try:
@@ -68,7 +71,7 @@ def extract_pdf_text(pdf_path: str | Path) -> PdfTextExtraction:
 
     try:
         for page_index, page in enumerate(document, start=1):
-            page_rect = page.rect
+            page_rect = page.cropbox
             fragments: list[TextFragment] = []
             text_page = page.get_text("dict")
             for block in text_page.get("blocks", []):
@@ -119,7 +122,21 @@ def compare_pdf_text_extractors(pdf_path: str | Path) -> list[ExtractorCandidate
                 supports_bbox=True,
                 status="ok",
                 fragment_count=sum(len(page.fragments) for page in result.pages),
-                notes="Provides text spans with page geometry and bbox coordinates in PDF points.",
+                notes=(
+                    "Provides text spans with page geometry and bbox coordinates "
+                    "in unrotated PDF text coordinates."
+                ),
+            )
+        )
+    except MissingPdfExtractorDependency as exc:
+        candidates.append(
+            ExtractorCandidate(
+                name="pymupdf",
+                version=None,
+                supports_bbox=True,
+                status="not-installed",
+                fragment_count=0,
+                notes=str(exc),
             )
         )
     except Exception as exc:
@@ -178,3 +195,14 @@ def _package_version(package_name: str) -> str | None:
         return metadata.version(package_name)
     except metadata.PackageNotFoundError:
         return None
+
+
+def _load_fitz() -> Any:
+    try:
+        import fitz
+    except ImportError as exc:
+        raise MissingPdfExtractorDependency(
+            "PyMuPDF is required for PDF bbox extraction; install evaluation "
+            "dependencies with `python3 -m pip install -r requirements-pdf-eval.txt`."
+        ) from exc
+    return fitz

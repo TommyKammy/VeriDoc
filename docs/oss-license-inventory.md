@@ -35,7 +35,9 @@ dependency; otherwise the XLSX path remains blocked.
 `PyMuPDF` is not Phase1-allowed as a default dependency because its open-source
 license path is AGPL-3.0. It may be used only in isolated evaluation notes or
 throwaway local experiments until the project explicitly accepts AGPL obligations
-or records an approved commercial-license path.
+or records an approved commercial-license path. The Phase0 PDF extraction spike
+therefore keeps PyMuPDF out of default `requirements.txt`; local evaluation must
+opt in with `python3 -m pip install -r requirements-pdf-eval.txt`.
 
 `pdf2docx` is not Phase1-allowed as a core dependency because the upstream
 repository states that it is no longer actively maintained. It may be used only
