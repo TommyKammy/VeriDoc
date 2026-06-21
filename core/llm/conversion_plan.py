@@ -8,7 +8,7 @@ import ssl
 import urllib.error
 import urllib.request
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse
 
@@ -108,7 +108,7 @@ class LocalLLMConversionPlanAdapter:
 
     base_url: str
     model: str
-    api_key: str | None = None
+    api_key: str | None = field(default=None, repr=False)
     timeout_seconds: float = 30
     max_tokens: int = 1024
     transport: Transport | None = None

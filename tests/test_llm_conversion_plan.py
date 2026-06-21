@@ -549,6 +549,19 @@ def test_adapter_rejects_placeholder_api_key_variants(api_key: str) -> None:
         )
 
 
+def test_adapter_repr_redacts_api_key() -> None:
+    adapter = LocalLLMConversionPlanAdapter(
+        base_url="http://127.0.0.1:8000/v1",
+        model="local-json-model",
+        api_key="operator-runtime-token",
+    )
+
+    rendered = repr(adapter)
+
+    assert "operator-runtime-token" not in rendered
+    assert "api_key" not in rendered
+
+
 def test_urllib_transport_bypasses_ambient_proxies(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
