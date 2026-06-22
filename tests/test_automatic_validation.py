@@ -520,6 +520,94 @@ def test_blank_table_cell_text_blocks_auto_confirm() -> None:
     assert "table_consistency" in decision.failed_rules
 
 
+def test_current_head_review_examples_fail_closed() -> None:
+    source = _evidence()
+    expected_scoped_item = _expected_item(
+        risk_level="medium",
+        requires_review=False,
+        document_id="doc-001",
+        block_id="block-001",
+    )
+
+    cases = [
+        (
+            "document_block_scope",
+            validate_extracted_item(
+                expected=expected_scoped_item,
+                actual=_actual_item(document_id="doc-002", block_id="block-001"),
+            ),
+            "scope_binding",
+        ),
+        (
+            "empty_expected_table_cells",
+            validate_table_consistency(
+                {"id": "table-001", "cells": []},
+                {"id": "table-001", "cells": []},
+            ),
+            "table_consistency",
+        ),
+        (
+            "blank_table_cell_text",
+            validate_table_consistency(
+                {
+                    "id": "table-001",
+                    "cells": [
+                        {
+                            "id": "table-001-r1-c1",
+                            "text": " ",
+                            "source": source,
+                            "requires_review": False,
+                        },
+                    ],
+                },
+                {
+                    "id": "table-001",
+                    "cells": [
+                        {
+                            "id": "table-001-r1-c1",
+                            "text": "",
+                            "source": source,
+                        },
+                    ],
+                },
+            ),
+            "table_consistency",
+        ),
+        (
+            "missing_expected_cell_review_flag",
+            validate_table_consistency(
+                {
+                    "id": "table-001",
+                    "cells": [
+                        {
+                            "id": "table-001-r1-c1",
+                            "text": "SAMPLE-LOT-001",
+                            "source": source,
+                        },
+                    ],
+                },
+                {
+                    "id": "table-001",
+                    "cells": [
+                        {
+                            "id": "table-001-r1-c1",
+                            "text": "SAMPLE-LOT-001",
+                            "source": source,
+                        },
+                    ],
+                },
+            ),
+            "risk_gate",
+        ),
+    ]
+
+    for case_name, decision, failed_rule in cases:
+        assert decision.auto_confirm_allowed is False, case_name
+        assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM, case_name
+        assert decision.requires_review is True, case_name
+        assert failed_rule in decision.failed_rules, case_name
+
+
 def test_missing_expected_table_cell_review_flag_blocks_auto_confirm() -> None:
     source = _evidence()
     expected_table = {
