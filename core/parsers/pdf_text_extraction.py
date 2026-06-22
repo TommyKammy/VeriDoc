@@ -63,6 +63,9 @@ def parse_text_pdf_to_document_ir(
 ) -> dict[str, Any]:
     """Convert a text PDF into the minimal Document IR v0 shape."""
     extraction = extract_pdf_text(pdf_path)
+    if not extraction.pages:
+        raise ValueError("PDF text extraction produced no pages")
+
     source = Path(pdf_path)
     blocks: list[dict[str, Any]] = []
 
@@ -398,7 +401,7 @@ def _are_vertically_adjacent_table_lines(
         return False
     vertical_gap = next_bbox.y - (previous_bbox.y + previous_bbox.height)
     max_height = max(previous_bbox.height, next_bbox.height)
-    return vertical_gap <= max_height
+    return 0 <= vertical_gap <= max_height
 
 
 def _is_table_line(line: list[TextFragment]) -> bool:

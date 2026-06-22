@@ -276,6 +276,19 @@ def test_parse_text_pdf_to_document_ir_preserves_spaces_between_same_line_fragme
     assert [block["text"] for block in document_ir["blocks"]] == ["Approved By"]
 
 
+def test_parse_text_pdf_to_document_ir_rejects_zero_page_extraction(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pdf_path = tmp_path / "zero-pages.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n")
+    extraction = PdfTextExtraction(source_path=str(pdf_path), extractor="pymupdf", pages=[])
+    monkeypatch.setattr(pdf_text_extraction, "extract_pdf_text", lambda _path: extraction)
+
+    with pytest.raises(ValueError, match="produced no pages"):
+        parse_text_pdf_to_document_ir(pdf_path)
+
+
 def test_parse_text_pdf_to_document_ir_does_not_merge_far_same_baseline_fragments(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -400,6 +413,37 @@ def test_parse_text_pdf_to_document_ir_splits_distant_tabular_regions(
     assert [(block["type"], block["text"]) for block in document_ir["blocks"]] == [
         ("table", "Lot\tResult\nA-001\tPass"),
         ("table", "Step\tStatus\nBlend\tDone"),
+    ]
+
+
+def test_parse_text_pdf_to_document_ir_splits_same_baseline_tabular_regions(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pdf_path = tmp_path / "same-baseline-tables.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n")
+    extraction = PdfTextExtraction(
+        source_path=str(pdf_path),
+        extractor="pymupdf",
+        pages=[
+            PdfPageText(
+                page_number=1,
+                width_pt=300.0,
+                height_pt=200.0,
+                fragments=[
+                    _fragment("Lot\tResult", page_number=1, x=36.0, y=40.0, width=80.0),
+                    _fragment("Step\tStatus", page_number=1, x=190.0, y=40.0, width=88.0),
+                ],
+            )
+        ],
+    )
+    monkeypatch.setattr(pdf_text_extraction, "extract_pdf_text", lambda _path: extraction)
+
+    document_ir = parse_text_pdf_to_document_ir(pdf_path)
+
+    assert [(block["type"], block["text"]) for block in document_ir["blocks"]] == [
+        ("table", "Lot\tResult"),
+        ("table", "Step\tStatus"),
     ]
 
 
