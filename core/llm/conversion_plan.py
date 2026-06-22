@@ -95,11 +95,15 @@ _SECRET_PARAMETER_KEYS = frozenset(
         "apikey",
         "auth",
         "authorization",
+        "cookie",
         "credential",
         "credentials",
+        "jwt",
         "password",
         "private_key",
         "secret",
+        "session",
+        "set_cookie",
         "token",
     }
 )
@@ -136,10 +140,13 @@ _SECRET_PARAMETER_KEY_COMPONENTS = frozenset(
     {
         "authorization",
         "auth",
+        "cookie",
         "credential",
         "credentials",
+        "jwt",
         "password",
         "secret",
+        "session",
         "token",
     }
 )
@@ -175,6 +182,12 @@ _CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENTS = frozenset(
         "messages",
         "prompt",
         "text",
+    }
+)
+_CONTENT_BYTE_AUDIT_PARAMETER_ANCESTOR_COMPONENTS = frozenset(
+    {
+        "output",
+        "source",
     }
 )
 CONVERSION_TASK_PROMPTS = {
@@ -381,6 +394,8 @@ def _build_conversion_plan_payload(
 
 
 def _redact_audit_parameters(value: object, *, key_path: str = "") -> object:
+    if key_path and _is_secret_parameter_key(key_path):
+        return _REDACTED_VALUE
     if isinstance(value, Mapping):
         return {
             str(key): _redact_audit_parameters(
@@ -397,8 +412,6 @@ def _redact_audit_parameters(value: object, *, key_path: str = "") -> object:
         return [_redact_audit_parameters(item, key_path=key_path) for item in value]
     if isinstance(value, tuple):
         return [_redact_audit_parameters(item, key_path=key_path) for item in value]
-    if _is_secret_parameter_key(key_path):
-        return _REDACTED_VALUE
     return value
 
 
@@ -422,14 +435,22 @@ def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "
 
 
 def _is_content_bearing_audit_parameter_key(key: str) -> bool:
-    normalized = _normalize_parameter_key(_parameter_key_leaf(key))
-    if normalized in _SAFE_CONTENT_WORD_AUDIT_PARAMETER_KEYS:
+    normalized_leaf = _normalize_parameter_key(_parameter_key_leaf(key))
+    if normalized_leaf in _SAFE_CONTENT_WORD_AUDIT_PARAMETER_KEYS:
         return False
-    components = tuple(normalized.split("_"))
+    leaf_components = tuple(normalized_leaf.split("_"))
+    path_components = tuple(_normalize_parameter_key(key).split("_"))
     return (
-        normalized in _CONTENT_BEARING_AUDIT_PARAMETER_KEYS
-        or "previous_response" in normalized
-        or any(component in _CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENTS for component in components)
+        normalized_leaf in _CONTENT_BEARING_AUDIT_PARAMETER_KEYS
+        or "previous_response" in normalized_leaf
+        or any(component in _CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENTS for component in leaf_components)
+        or (
+            normalized_leaf == "bytes"
+            and any(
+                component in _CONTENT_BYTE_AUDIT_PARAMETER_ANCESTOR_COMPONENTS
+                for component in path_components
+            )
+        )
     )
 
 

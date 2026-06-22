@@ -179,6 +179,10 @@ def test_build_conversion_audit_log_records_hashes_metadata_and_redacts_secrets(
         "awsSecretAccessKey",
         "privateKey",
         "signingPrivateKeyPem",
+        "Cookie",
+        "Set-Cookie",
+        "session",
+        "jwt",
     ],
 )
 def test_build_conversion_audit_log_redacts_review_thread_credential_keys(parameter_key: str) -> None:
@@ -214,6 +218,9 @@ def test_build_conversion_audit_log_redacts_review_thread_credential_keys(parame
         ({"output_bytes": b'{"lot_number":"ABC-123"}\n'}, r"parameters\.output_bytes"),
         ({"sourceBytes": b"Lot: ABC-123\n"}, r"parameters\.sourceBytes"),
         ({"outputBytes": b'{"lot_number":"ABC-123"}\n'}, r"parameters\.outputBytes"),
+        ({"source": {"bytes": b"Lot: ABC-123\n"}}, r"parameters\.source\.bytes"),
+        ({"output": {"bytes": b'{"lot_number":"ABC-123"}\n'}}, r"parameters\.output\.bytes"),
+        ({"source": [("bytes", b"Lot: ABC-123\n")]}, r"parameters\.source\[0\]\.bytes"),
     ],
 )
 def test_build_conversion_audit_log_rejects_content_bearing_parameters(
@@ -266,6 +273,37 @@ def test_build_conversion_audit_log_redacts_tuple_parameter_entries() -> None:
     }
     assert "operator-runtime-token" not in json.dumps(audit_log, sort_keys=True)
     assert "Bearer" not in json.dumps(audit_log, sort_keys=True)
+
+
+def test_build_conversion_audit_log_redacts_sequence_valued_secret_parameters() -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={
+            "token": ["operator-runtime-token", "metadata"],
+            "headers": {
+                "Cookie": "session=operator-runtime-cookie",
+                "Set-Cookie": "session=operator-runtime-set-cookie",
+            },
+        },
+    )
+
+    assert audit_log["parameters"] == {
+        "token": "[REDACTED]",
+        "headers": {
+            "Cookie": "[REDACTED]",
+            "Set-Cookie": "[REDACTED]",
+        },
+    }
+    rendered = json.dumps(audit_log, sort_keys=True)
+    assert "operator-runtime-token" not in rendered
+    assert "operator-runtime-cookie" not in rendered
+    assert "operator-runtime-set-cookie" not in rendered
+    assert "session=" not in rendered
 
 
 def test_build_conversion_audit_log_rejects_tuple_content_parameter_entries() -> None:
