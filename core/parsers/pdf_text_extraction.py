@@ -67,6 +67,15 @@ def parse_text_pdf_to_document_ir(
         raise ValueError("PDF text extraction produced no pages")
 
     source = Path(pdf_path)
+    ir_pages = [
+        {
+            "page_number": page.page_number,
+            "width": page.width_pt,
+            "height": page.height_pt,
+            "unit": "pt",
+        }
+        for page in extraction.pages
+    ]
     blocks: list[dict[str, Any]] = []
 
     for page in extraction.pages:
@@ -105,27 +114,22 @@ def parse_text_pdf_to_document_ir(
                 }
             )
 
+    if not ir_pages:
+        raise ValueError("PDF text extraction produced no pages")
     if not blocks:
         raise ValueError("PDF text extraction produced no document blocks")
 
-    return {
+    document_ir = {
         "schema_version": "document-ir/v0",
         "document": {
             "id": document_id or source.stem,
             "title": source.name,
             "source_type": "pdf",
         },
-        "pages": [
-            {
-                "page_number": page.page_number,
-                "width": page.width_pt,
-                "height": page.height_pt,
-                "unit": "pt",
-            }
-            for page in extraction.pages
-        ],
+        "pages": ir_pages,
         "blocks": blocks,
     }
+    return document_ir
 
 
 def _review_required_empty_page_block(
