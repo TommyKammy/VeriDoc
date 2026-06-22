@@ -58,11 +58,13 @@ def validate_extracted_item(
 
     if _has_malformed_review_flag(expected) or _has_malformed_review_flag(actual):
         failed_rules.append("risk_gate")
+    if _has_malformed_risk_level(expected) or _has_malformed_risk_level(actual):
+        failed_rules.append("risk_gate")
     if not isinstance(expected.get("requires_review"), bool):
         failed_rules.append("risk_gate")
 
     explicit_review_required = _requires_review(expected) or _requires_review(actual)
-    high_risk = expected.get("risk_level") == "high" or actual.get("risk_level") == "high"
+    high_risk = _is_high_risk(expected) or _is_high_risk(actual)
     requires_review = explicit_review_required or high_risk
     if requires_review:
         warnings.append("item requires human review")
@@ -118,6 +120,10 @@ def validate_table_consistency(
                 actual_cell
             ):
                 failed_rules.append("risk_gate")
+            if _has_malformed_risk_level(expected_cell) or _has_malformed_risk_level(
+                actual_cell
+            ):
+                failed_rules.append("risk_gate")
             if not isinstance(expected_cell.get("requires_review"), bool):
                 failed_rules.append("risk_gate")
             if _cell_requires_review(expected_cell) or _cell_requires_review(actual_cell):
@@ -160,7 +166,7 @@ def _decision(
 
 
 def _same_non_empty_string(expected: object, actual: object) -> bool:
-    return isinstance(expected, str) and bool(expected) and expected == actual
+    return isinstance(expected, str) and bool(expected.strip()) and expected == actual
 
 
 def _same_normalized_text(expected: object, actual: object) -> bool:
@@ -235,7 +241,17 @@ def _is_supported_finite_number(value: object) -> bool:
 
 
 def _cell_requires_review(cell: Mapping[str, Any]) -> bool:
-    return _requires_review(cell) or cell.get("risk_level") == "high"
+    return _requires_review(cell) or _is_high_risk(cell)
+
+
+def _is_high_risk(record: Mapping[str, Any]) -> bool:
+    return record.get("risk_level") == "high"
+
+
+def _has_malformed_risk_level(record: Mapping[str, Any]) -> bool:
+    if "risk_level" not in record:
+        return False
+    return record.get("risk_level") not in {"low", "medium", "high"}
 
 
 def _requires_review(record: Mapping[str, Any]) -> bool:

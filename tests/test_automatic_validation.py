@@ -103,6 +103,24 @@ def test_item_scope_binding_requires_matching_document_and_block_ids() -> None:
     assert "scope_binding" in wrong_scope.failed_rules
 
 
+def test_item_scope_binding_rejects_whitespace_only_scope_identifiers() -> None:
+    expected = _expected_item(
+        risk_level="medium",
+        requires_review=False,
+        document_id=" ",
+        block_id="block-001",
+    )
+
+    decision = validate_extracted_item(
+        expected=expected,
+        actual=_actual_item(document_id=" ", block_id="block-001"),
+    )
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert "scope_binding" in decision.failed_rules
+
+
 def test_item_scope_binding_requires_matching_fixture_id() -> None:
     expected = _expected_item(
         risk_level="medium",
@@ -191,6 +209,25 @@ def test_actual_high_risk_item_blocks_auto_confirm() -> None:
     assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
     assert decision.requires_review is True
     assert "risk_gate" in decision.failed_rules
+
+
+def test_malformed_item_risk_level_blocks_auto_confirm() -> None:
+    decision = validate_extracted_item(
+        expected=_expected_item(risk_level="todo", requires_review=False),
+        actual=_actual_item(auto_confirmed=False),
+    )
+    actual_malformed = validate_extracted_item(
+        expected=_expected_item(risk_level="medium", requires_review=False),
+        actual=_actual_item(risk_level=True, auto_confirmed=False),
+    )
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert decision.requires_review is True
+    assert "risk_gate" in decision.failed_rules
+    assert actual_malformed.auto_confirm_allowed is False
+    assert actual_malformed.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert "risk_gate" in actual_malformed.failed_rules
 
 
 def test_malformed_item_review_flag_blocks_auto_confirm() -> None:
@@ -509,6 +546,40 @@ def test_null_actual_table_cell_review_flag_blocks_auto_confirm() -> None:
     assert "risk_gate" in decision.failed_rules
 
 
+def test_malformed_table_cell_risk_level_blocks_auto_confirm() -> None:
+    source = _evidence()
+    expected_table = {
+        "id": "table-001",
+        "cells": [
+            {
+                "id": "table-001-r1-c1",
+                "text": "SAMPLE-LOT-001",
+                "source": source,
+                "requires_review": False,
+                "risk_level": "todo",
+            },
+        ],
+    }
+    actual_table = {
+        "id": "table-001",
+        "cells": [
+            {
+                "id": "table-001-r1-c1",
+                "text": "SAMPLE-LOT-001",
+                "source": source,
+                "auto_confirmed": False,
+            },
+        ],
+    }
+
+    decision = validate_table_consistency(expected_table, actual_table)
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert decision.requires_review is True
+    assert "risk_gate" in decision.failed_rules
+
+
 def test_table_cell_text_rejects_numeric_actual_value() -> None:
     expected_table = {
         "id": "table-001",
@@ -786,6 +857,27 @@ def test_current_head_review_examples_fail_closed() -> None:
                 actual=_actual_item(value=""),
             ),
             "value_non_modification",
+        ),
+        (
+            "malformed_risk_level",
+            validate_extracted_item(
+                expected=_expected_item(risk_level="todo", requires_review=False),
+                actual=_actual_item(),
+            ),
+            "risk_gate",
+        ),
+        (
+            "whitespace_only_scope_identifier",
+            validate_extracted_item(
+                expected=_expected_item(
+                    risk_level="medium",
+                    requires_review=False,
+                    document_id=" ",
+                    block_id="block-001",
+                ),
+                actual=_actual_item(document_id=" ", block_id="block-001"),
+            ),
+            "scope_binding",
         ),
     ]
 
