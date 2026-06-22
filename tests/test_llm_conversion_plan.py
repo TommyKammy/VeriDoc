@@ -353,6 +353,56 @@ def test_build_conversion_audit_log_sanitizes_mapping_key_value_parameter_entrie
     assert "Bearer" not in rendered
 
 
+def test_build_conversion_audit_log_normalizes_mapping_key_value_field_labels() -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={
+            "headers": [{"Name": "Authorization", "Value": "Bearer operator-runtime-token"}],
+            "options": [{"Key": "max_prompt_tokens", "Value": 4096}],
+        },
+    )
+
+    assert audit_log["parameters"] == {
+        "headers": [{"Name": "Authorization", "Value": "[REDACTED]"}],
+        "options": [{"Key": "max_prompt_tokens", "Value": 4096}],
+    }
+    rendered = json.dumps(audit_log, sort_keys=True)
+    assert "operator-runtime-token" not in rendered
+    assert "Bearer" not in rendered
+
+
+def test_build_conversion_audit_log_sanitizes_extra_header_and_cookie_pair_containers() -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={
+            "extra_headers": [("Authorization", "Bearer operator-runtime-token")],
+            "extra_cookies": [("sessionToken", "operator-runtime-session")],
+            "http_headers": [["Ocp-Apim-Subscription-Key", "operator-runtime-subscription"]],
+        },
+    )
+
+    assert audit_log["parameters"] == {
+        "extra_headers": [["Authorization", "[REDACTED]"]],
+        "extra_cookies": [["sessionToken", "[REDACTED]"]],
+        "http_headers": [["Ocp-Apim-Subscription-Key", "[REDACTED]"]],
+    }
+    rendered = json.dumps(audit_log, sort_keys=True)
+    assert "operator-runtime-token" not in rendered
+    assert "operator-runtime-session" not in rendered
+    assert "operator-runtime-subscription" not in rendered
+    assert "Bearer" not in rendered
+
+
 def test_build_conversion_audit_log_rejects_mapping_key_value_content_parameter_entries() -> None:
     with pytest.raises(ValueError, match=r"parameters\.options\[0\]\.prompt"):
         build_conversion_audit_log(
@@ -363,6 +413,19 @@ def test_build_conversion_audit_log_rejects_mapping_key_value_content_parameter_
             prompt_version="poc-08",
             ir_version="document-ir-v1",
             parameters={"options": [{"key": "prompt", "value": "Lot: ABC-123"}]},
+        )
+
+
+def test_build_conversion_audit_log_rejects_normalized_mapping_key_value_content_parameter_entries() -> None:
+    with pytest.raises(ValueError, match=r"parameters\.options\[0\]\.prompt"):
+        build_conversion_audit_log(
+            source_bytes=b"Lot: ABC-123\n",
+            output_bytes=b'{"lot_number":"ABC-123"}\n',
+            model="local-json-model",
+            prompt_id="veridoc_conversion_plan",
+            prompt_version="poc-08",
+            ir_version="document-ir-v1",
+            parameters={"options": [{"Name": "prompt", "Value": "Lot: ABC-123"}]},
         )
 
 

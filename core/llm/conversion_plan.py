@@ -203,10 +203,15 @@ _CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENTS = frozenset(
 )
 _KEY_VALUE_AUDIT_PARAMETER_SEQUENCE_CONTAINER_KEYS = frozenset(
     {
+        "cookies",
+        "extra_cookies",
+        "extra_headers",
         "headers",
+        "http_headers",
         "options",
         "params",
         "query_params",
+        "request_headers",
     }
 )
 _CONTENT_BYTE_AUDIT_PARAMETER_ANCESTOR_COMPONENTS = frozenset(
@@ -553,12 +558,21 @@ def _is_safe_audit_parameter_sequence_key(key: str) -> bool:
 
 
 def _mapping_key_value_parameter_entry(value: Mapping[object, object]) -> tuple[str, str, str] | None:
-    if "value" not in value:
+    normalized_fields: dict[str, object] = {}
+    for field in value:
+        if isinstance(field, str):
+            normalized_fields[_normalize_parameter_key(field)] = field
+
+    value_field = normalized_fields.get("value")
+    if value_field is None:
         return None
     for key_field in ("key", "name"):
-        key = value.get(key_field)
+        original_key_field = normalized_fields.get(key_field)
+        if original_key_field is None:
+            continue
+        key = value.get(original_key_field)
         if isinstance(key, str):
-            return (key_field, key, "value")
+            return (str(original_key_field), key, str(value_field))
     return None
 
 
