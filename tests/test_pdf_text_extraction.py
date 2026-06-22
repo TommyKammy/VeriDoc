@@ -307,6 +307,102 @@ def test_parse_text_pdf_to_document_ir_does_not_merge_far_same_baseline_fragment
     ]
 
 
+def test_parse_text_pdf_to_document_ir_does_not_merge_tightly_spaced_visual_lines(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pdf_path = tmp_path / "tight-leading.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n")
+    extraction = PdfTextExtraction(
+        source_path=str(pdf_path),
+        extractor="pymupdf",
+        pages=[
+            PdfPageText(
+                page_number=1,
+                width_pt=300.0,
+                height_pt=200.0,
+                fragments=[
+                    _fragment("First line", page_number=1, x=36.0, y=40.0, width=54.0),
+                    _fragment("Second line", page_number=1, x=36.0, y=46.0, width=68.0),
+                ],
+            )
+        ],
+    )
+    monkeypatch.setattr(pdf_text_extraction, "extract_pdf_text", lambda _path: extraction)
+
+    document_ir = parse_text_pdf_to_document_ir(pdf_path)
+
+    assert [(block["type"], block["text"]) for block in document_ir["blocks"]] == [
+        ("paragraph", "First line"),
+        ("paragraph", "Second line"),
+    ]
+
+
+def test_parse_text_pdf_to_document_ir_marks_single_tab_delimited_row_as_table(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pdf_path = tmp_path / "single-row-table.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n")
+    extraction = PdfTextExtraction(
+        source_path=str(pdf_path),
+        extractor="pymupdf",
+        pages=[
+            PdfPageText(
+                page_number=1,
+                width_pt=300.0,
+                height_pt=200.0,
+                fragments=[
+                    _fragment("Lot\tResult", page_number=1, x=36.0, y=40.0, width=80.0),
+                ],
+            )
+        ],
+    )
+    monkeypatch.setattr(pdf_text_extraction, "extract_pdf_text", lambda _path: extraction)
+
+    document_ir = parse_text_pdf_to_document_ir(pdf_path)
+
+    assert [(block["type"], block["text"]) for block in document_ir["blocks"]] == [
+        ("table", "Lot\tResult"),
+    ]
+    table_metadata = document_ir["blocks"][0]["value_metadata"]
+    assert table_metadata["extractor"]["name"] == "pymupdf-text-table-heuristic"
+    assert table_metadata["requires_review"] is True
+
+
+def test_parse_text_pdf_to_document_ir_splits_distant_tabular_regions(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pdf_path = tmp_path / "distant-tables.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n")
+    extraction = PdfTextExtraction(
+        source_path=str(pdf_path),
+        extractor="pymupdf",
+        pages=[
+            PdfPageText(
+                page_number=1,
+                width_pt=300.0,
+                height_pt=200.0,
+                fragments=[
+                    _fragment("Lot\tResult", page_number=1, x=36.0, y=40.0, width=80.0),
+                    _fragment("A-001\tPass", page_number=1, x=36.0, y=58.0, width=82.0),
+                    _fragment("Step\tStatus", page_number=1, x=36.0, y=110.0, width=88.0),
+                    _fragment("Blend\tDone", page_number=1, x=36.0, y=128.0, width=82.0),
+                ],
+            )
+        ],
+    )
+    monkeypatch.setattr(pdf_text_extraction, "extract_pdf_text", lambda _path: extraction)
+
+    document_ir = parse_text_pdf_to_document_ir(pdf_path)
+
+    assert [(block["type"], block["text"]) for block in document_ir["blocks"]] == [
+        ("table", "Lot\tResult\nA-001\tPass"),
+        ("table", "Step\tStatus\nBlend\tDone"),
+    ]
+
+
 def test_parse_text_pdf_to_document_ir_marks_empty_text_for_review(tmp_path: Path) -> None:
     pdf_path = tmp_path / "empty-page.pdf"
     document = fitz.open()

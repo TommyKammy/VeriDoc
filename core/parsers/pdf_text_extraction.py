@@ -333,13 +333,17 @@ def _group_fragments_by_line(fragments: list[TextFragment]) -> list[list[TextFra
 
 def _belongs_to_line(fragment: TextFragment, line: list[TextFragment]) -> bool:
     reference = line[0].bbox
-    tolerance = max(reference.height, fragment.bbox.height) * 0.75
-    if abs(fragment.bbox.y - reference.y) > tolerance:
+    max_height = max(reference.height, fragment.bbox.height)
+    if abs(_bbox_center_y(fragment.bbox) - _bbox_center_y(reference)) > max_height * 0.25:
         return False
     return (
         _horizontal_gap_to_line(fragment, line)
-        <= max(reference.height, fragment.bbox.height) * 2.0
+        <= max_height * 2.0
     )
+
+
+def _bbox_center_y(bbox: TextBBox) -> float:
+    return bbox.y + (bbox.height / 2.0)
 
 
 def _horizontal_gap_to_line(fragment: TextFragment, line: list[TextFragment]) -> float:
@@ -366,7 +370,11 @@ def _group_table_lines(lines: list[list[TextFragment]]) -> list[list[list[TextFr
         if _is_table_line(line):
             table_lines = [line]
             index += 1
-            while index < len(lines) and _is_table_line(lines[index]):
+            while (
+                index < len(lines)
+                and _is_table_line(lines[index])
+                and _are_vertically_adjacent_table_lines(table_lines[-1], lines[index])
+            ):
                 table_lines.append(lines[index])
                 index += 1
             groups.append(table_lines)
@@ -377,7 +385,20 @@ def _group_table_lines(lines: list[list[TextFragment]]) -> list[list[list[TextFr
 
 
 def _is_table_line_group(line_group: list[list[TextFragment]]) -> bool:
-    return len(line_group) > 1 and all(_is_table_line(line) for line in line_group)
+    return bool(line_group) and all(_is_table_line(line) for line in line_group)
+
+
+def _are_vertically_adjacent_table_lines(
+    previous_line: list[TextFragment],
+    next_line: list[TextFragment],
+) -> bool:
+    previous_bbox = _union_text_bboxes(previous_line)
+    next_bbox = _union_text_bboxes(next_line)
+    if previous_bbox is None or next_bbox is None:
+        return False
+    vertical_gap = next_bbox.y - (previous_bbox.y + previous_bbox.height)
+    max_height = max(previous_bbox.height, next_bbox.height)
+    return vertical_gap <= max_height
 
 
 def _is_table_line(line: list[TextFragment]) -> bool:
