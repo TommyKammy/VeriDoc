@@ -93,6 +93,19 @@ def test_numeric_rule_rejects_non_finite_or_stringified_numbers() -> None:
     assert "numeric" in non_finite.failed_rules
 
 
+def test_numeric_rule_blocks_oversized_integer_without_crashing() -> None:
+    expected = _expected_item(expected_value=1, risk_level="medium", requires_review=False)
+
+    decision = validate_extracted_item(
+        expected=expected,
+        actual=_actual_item(value=10**400),
+    )
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert "numeric" in decision.failed_rules
+
+
 def test_table_consistency_rejects_missing_cells_and_wrong_text() -> None:
     expected_table = {
         "id": "table-001",
@@ -114,3 +127,37 @@ def test_table_consistency_rejects_missing_cells_and_wrong_text() -> None:
     assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
     assert decision.failed_rules == ("table_consistency",)
     assert decision.requires_review is True
+
+
+def test_table_cells_enforce_provenance_and_review_gates() -> None:
+    source = _evidence()
+    expected_table = {
+        "id": "table-001",
+        "cells": [
+            {
+                "id": "table-001-r1-c1",
+                "text": "SAMPLE-LOT-001",
+                "source": source,
+                "requires_review": True,
+            },
+        ],
+    }
+    actual_table = {
+        "id": "table-001",
+        "cells": [
+            {
+                "id": "table-001-r1-c1",
+                "text": "SAMPLE-LOT-001",
+                "source": {"source_page": 1},
+                "auto_confirmed": True,
+            },
+        ],
+    }
+
+    decision = validate_table_consistency(expected_table, actual_table)
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert decision.requires_review is True
+    assert "provenance" in decision.failed_rules
+    assert "risk_gate" in decision.failed_rules

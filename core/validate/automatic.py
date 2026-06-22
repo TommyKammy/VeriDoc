@@ -77,13 +77,32 @@ def validate_table_consistency(
         failed_rules.append("table_consistency")
     else:
         missing_or_extra = set(expected_cells) != set(actual_cells)
+        matching_cell_ids = set(expected_cells) & set(actual_cells)
         changed_text = any(
             _normalized_text(expected_cells[cell_id].get("text"))
             != _normalized_text(actual_cells[cell_id].get("text"))
-            for cell_id in set(expected_cells) & set(actual_cells)
+            for cell_id in matching_cell_ids
         )
         if missing_or_extra or changed_text:
             failed_rules.append("table_consistency")
+        for cell_id in matching_cell_ids:
+            expected_cell = expected_cells[cell_id]
+            actual_cell = actual_cells[cell_id]
+            expected_source = expected_cell.get("source")
+            actual_source = actual_cell.get("source")
+            if expected_source is not None and not _evidence_matches(
+                expected_source, actual_source
+            ):
+                failed_rules.append("provenance")
+
+            auto_confirmed = actual_cell.get("auto_confirmed", False)
+            if not isinstance(auto_confirmed, bool):
+                failed_rules.append("risk_gate")
+                auto_confirmed = True
+            if _cell_requires_review(expected_cell):
+                warnings.append("table cell requires human review")
+                if auto_confirmed:
+                    failed_rules.append("risk_gate")
 
     if failed_rules:
         warnings.append("table content requires human review")
@@ -139,11 +158,9 @@ def _number_expected(value: object) -> bool:
 
 
 def _same_finite_number(expected: object, actual: object) -> bool:
-    if not _number_expected(expected) or not _number_expected(actual):
+    if not _is_supported_finite_number(expected) or not _is_supported_finite_number(actual):
         return False
-    expected_number = float(expected)
-    actual_number = float(actual)
-    return math.isfinite(expected_number) and math.isfinite(actual_number) and expected == actual
+    return expected == actual
 
 
 def _evidence_matches(expected: object, actual: object) -> bool:
@@ -161,9 +178,23 @@ def _is_source_anchor(value: object) -> bool:
         return False
     for key in ("x", "y", "width", "height"):
         coordinate = bbox.get(key)
-        if not _number_expected(coordinate) or not math.isfinite(float(coordinate)):
+        if not _is_supported_finite_number(coordinate):
             return False
     return bbox["width"] > 0 and bbox["height"] > 0
+
+
+def _is_supported_finite_number(value: object) -> bool:
+    if not _number_expected(value):
+        return False
+    try:
+        number = float(value)
+    except OverflowError:
+        return False
+    return math.isfinite(number)
+
+
+def _cell_requires_review(cell: Mapping[str, Any]) -> bool:
+    return cell.get("requires_review") is True or cell.get("risk_level") == "high"
 
 
 def _cells_by_id(value: object) -> dict[str, Mapping[str, Any]] | None:
