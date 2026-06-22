@@ -8,6 +8,8 @@ from typing import Any, List, Optional
 SCHEMA_VERSION = "document-ir/v1"
 SOURCE_TYPES = {"pdf", "docx", "xlsx", "unknown"}
 BLOCK_TYPES = {"heading", "paragraph", "table", "field", "list_item"}
+DEFAULT_PAGE_WIDTH_PT = 612.0
+DEFAULT_PAGE_HEIGHT_PT = 792.0
 
 
 @dataclass(frozen=True)
@@ -93,7 +95,7 @@ def from_parser_output(
     blocks: List[DocumentBlock] = []
     warnings: List[str] = []
 
-    for page_index, page_data in enumerate(_list_value(data.get("pages")), start=1):
+    for page_index, page_data in enumerate(_parser_pages(data, source_type), start=1):
         page = _to_mapping(page_data)
         page_number = _page_number_value(page.get("page_number"), default=page_index)
         width, height, unit = _page_size(page)
@@ -160,6 +162,10 @@ def validate_document_ir_v1(document_ir: DocumentIRV1) -> ValidationResult:
             continue
         if block.bbox.width < 0 or block.bbox.height < 0:
             errors.append(f"blocks[{index}].bbox dimensions must be non-negative")
+        if not _bbox_values_are_finite(block.bbox):
+            errors.append(f"blocks[{index}].bbox values must be finite numbers")
+        if block.bbox.origin != "top-left":
+            errors.append(f"blocks[{index}].bbox origin must be top-left")
         if _bbox_outside_page(block.bbox, page):
             errors.append(f"blocks[{index}].bbox extends past page {block.source_page}")
         if block.confidence < 0 or block.confidence > 1:
@@ -218,7 +224,7 @@ def _block_from_fragment(
 
     return DocumentBlock(
         id=f"block-{block_index:04d}",
-        type=_block_type(text),
+        type=_block_type(data, text),
         text=text,
         source_page=source_page,
         bbox=bbox,
@@ -246,6 +252,48 @@ def _list_value(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
+def _parser_pages(data: dict[str, Any], source_type: str) -> list[Any]:
+    pages = _list_value(data.get("pages"))
+    if pages:
+        return pages
+    if source_type == "docx":
+        blocks = _list_value(data.get("blocks"))
+        if blocks:
+            return [
+                {
+                    "page_number": 1,
+                    "width": DEFAULT_PAGE_WIDTH_PT,
+                    "height": max(DEFAULT_PAGE_HEIGHT_PT, 72.0 + (24.0 * len(blocks))),
+                    "unit": "pt",
+                    "fragments": blocks,
+                }
+            ]
+    if source_type == "xlsx":
+        sheets = _list_value(data.get("sheets"))
+        return [_xlsx_sheet_page(sheet_data, index) for index, sheet_data in enumerate(sheets, start=1)]
+    return []
+
+
+def _xlsx_sheet_page(sheet_data: Any, page_number: int) -> dict[str, Any]:
+    sheet = _to_mapping(sheet_data)
+    cells = [_to_mapping(cell) for cell in _list_value(sheet.get("cells"))]
+    text_lines = []
+    for cell in cells:
+        value = cell.get("value")
+        if value is None or str(value) == "":
+            continue
+        ref = str(cell.get("ref") or "")
+        text_lines.append(f"{ref}: {value}" if ref else str(value))
+    text = "\n".join(text_lines) or str(sheet.get("name") or f"Sheet {page_number}")
+    return {
+        "page_number": page_number,
+        "width": DEFAULT_PAGE_WIDTH_PT,
+        "height": max(DEFAULT_PAGE_HEIGHT_PT, 72.0 + (18.0 * max(len(text_lines), 1))),
+        "unit": "pt",
+        "fragments": [{"kind": "table", "text": text, "extractor": "xlsx"}],
+    }
+
+
 def _page_number_value(value: Any, *, default: int) -> int:
     if value is None:
         return default
@@ -264,6 +312,14 @@ def _finite_float_value(value: Any, *, default: float) -> float:
     except (TypeError, ValueError):
         return default
     return converted if math.isfinite(converted) else default
+
+
+def _required_finite_float_value(value: Any) -> float:
+    try:
+        converted = float(value)
+    except (TypeError, ValueError):
+        return math.nan
+    return converted if math.isfinite(converted) else math.nan
 
 
 def _page_size(page: dict[str, Any]) -> tuple[float, float, str]:
@@ -304,17 +360,24 @@ def _bbox_value(value: Any) -> Optional[BoundingBox]:
     if not {"x", "y", "width", "height"}.issubset(data):
         return None
     return BoundingBox(
-        x=_finite_float_value(data["x"], default=0.0),
-        y=_finite_float_value(data["y"], default=0.0),
-        width=_finite_float_value(data["width"], default=0.0),
-        height=_finite_float_value(data["height"], default=0.0),
+        x=_required_finite_float_value(data["x"]),
+        y=_required_finite_float_value(data["y"]),
+        width=_required_finite_float_value(data["width"]),
+        height=_required_finite_float_value(data["height"]),
         unit=str(data.get("unit") or "pt"),
         origin=str(data.get("origin") or "top-left"),
     )
 
 
-def _block_type(text: str) -> str:
+def _block_type(data: dict[str, Any], text: str) -> str:
+    raw_type = str(data.get("type") or data.get("kind") or "")
+    if raw_type in BLOCK_TYPES:
+        return raw_type
     return "paragraph"
+
+
+def _bbox_values_are_finite(bbox: BoundingBox) -> bool:
+    return all(math.isfinite(value) for value in (bbox.x, bbox.y, bbox.width, bbox.height))
 
 
 def _bbox_outside_page(bbox: BoundingBox, page: DocumentPage) -> bool:

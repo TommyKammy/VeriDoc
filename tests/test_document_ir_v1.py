@@ -187,6 +187,129 @@ class DocumentIrV1Test(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertIn("blocks[0].bbox dimensions must be non-negative", result.errors)
 
+    def test_validation_fails_closed_for_invalid_bbox_numeric_values(self) -> None:
+        document_ir = from_parser_output(
+            {
+                "source_path": "fixtures/sample.pdf",
+                "extractor": "pymupdf",
+                "pages": [
+                    {
+                        "page_number": 1,
+                        "width_pt": 595.0,
+                        "height_pt": 842.0,
+                        "fragments": [
+                            {
+                                "text": "invalid bbox",
+                                "page_number": 1,
+                                "bbox": {"x": "left", "y": 80.0, "width": 120.0, "height": 18.0},
+                                "extractor": "pymupdf",
+                            }
+                        ],
+                    }
+                ],
+            },
+            document_id="sample-pdf",
+            title="Sample PDF",
+            source_type="pdf",
+        )
+
+        result = validate_document_ir_v1(document_ir)
+
+        self.assertFalse(result.ok)
+        self.assertIn("blocks[0].bbox values must be finite numbers", result.errors)
+
+    def test_validation_fails_closed_for_non_top_left_bbox_origin(self) -> None:
+        document_ir = from_parser_output(
+            {
+                "source_path": "fixtures/sample.pdf",
+                "extractor": "pymupdf",
+                "pages": [
+                    {
+                        "page_number": 1,
+                        "width_pt": 595.0,
+                        "height_pt": 842.0,
+                        "fragments": [
+                            {
+                                "text": "bottom-origin bbox",
+                                "page_number": 1,
+                                "bbox": {
+                                    "x": 72.0,
+                                    "y": 80.0,
+                                    "width": 120.0,
+                                    "height": 18.0,
+                                    "origin": "bottom-left",
+                                },
+                                "extractor": "pymupdf",
+                            }
+                        ],
+                    }
+                ],
+            },
+            document_id="sample-pdf",
+            title="Sample PDF",
+            source_type="pdf",
+        )
+
+        result = validate_document_ir_v1(document_ir)
+
+        self.assertFalse(result.ok)
+        self.assertIn("blocks[0].bbox origin must be top-left", result.errors)
+
+    def test_docx_parser_output_converts_to_document_ir_v1_blocks(self) -> None:
+        document_ir = from_parser_output(
+            {
+                "source_path": "fixtures/sample.docx",
+                "blocks": [
+                    {"kind": "heading", "text": "Batch Summary", "style": "Heading1"},
+                    {"kind": "paragraph", "text": "Reviewed document"},
+                    {"kind": "table", "text": "Field\tValue\nLot\tL-001", "rows": [["Field", "Value"], ["Lot", "L-001"]]},
+                ],
+            },
+            document_id="sample-docx",
+            title="Sample DOCX",
+            source_type="docx",
+        )
+
+        result = validate_document_ir_v1(document_ir)
+
+        self.assertTrue(result.ok, result.errors)
+        self.assertTrue(result.requires_review)
+        self.assertEqual([1], [page.page_number for page in document_ir.pages])
+        self.assertEqual(["heading", "paragraph", "table"], [block.type for block in document_ir.blocks])
+        self.assertIn("blocks[0].bbox missing; block marked requires_review", result.warnings)
+
+    def test_xlsx_parser_output_converts_to_document_ir_v1_blocks(self) -> None:
+        document_ir = from_parser_output(
+            {
+                "source_path": "fixtures/sample.xlsx",
+                "sheets": [
+                    {
+                        "name": "Results",
+                        "dimension": "A1:B2",
+                        "cells": [
+                            {"ref": "A1", "value": "Item", "value_type": "shared_string"},
+                            {"ref": "B1", "value": "Mass", "value_type": "shared_string"},
+                            {"ref": "A2", "value": "Sample A", "value_type": "inline_string"},
+                            {"ref": "B2", "value": "12.5", "value_type": "number"},
+                        ],
+                        "merged_ranges": [],
+                    }
+                ],
+            },
+            document_id="sample-xlsx",
+            title="Sample XLSX",
+            source_type="xlsx",
+        )
+
+        result = validate_document_ir_v1(document_ir)
+
+        self.assertTrue(result.ok, result.errors)
+        self.assertTrue(result.requires_review)
+        self.assertEqual([1], [page.page_number for page in document_ir.pages])
+        self.assertEqual("table", document_ir.blocks[0].type)
+        self.assertIn("A1: Item", document_ir.blocks[0].text)
+        self.assertIn("B2: 12.5", document_ir.blocks[0].text)
+
     def test_ocr_regions_convert_to_document_ir_v1_blocks(self) -> None:
         document_ir = from_parser_output(
             {

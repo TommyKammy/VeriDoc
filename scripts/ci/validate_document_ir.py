@@ -23,6 +23,7 @@ SUPPORTED_KEYS = {
     "additionalProperties",
     "const",
     "enum",
+    "exclusiveMinimum",
     "items",
     "maximum",
     "minimum",
@@ -91,6 +92,10 @@ def validate(schema: dict[str, Any], value: Any, path: tuple[str, ...] = ()) -> 
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         if "minimum" in schema and value < schema["minimum"]:
             raise ValidationError(f"{format_path(path)}: value is below minimum {schema['minimum']}")
+        if "exclusiveMinimum" in schema and value <= schema["exclusiveMinimum"]:
+            raise ValidationError(
+                f"{format_path(path)}: value must be greater than {schema['exclusiveMinimum']}"
+            )
         if "maximum" in schema and value > schema["maximum"]:
             raise ValidationError(f"{format_path(path)}: value is above maximum {schema['maximum']}")
 

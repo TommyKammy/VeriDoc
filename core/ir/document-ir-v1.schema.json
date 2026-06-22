@@ -61,11 +61,11 @@
           },
           "width": {
             "type": "number",
-            "minimum": 0
+            "exclusiveMinimum": 0
           },
           "height": {
             "type": "number",
-            "minimum": 0
+            "exclusiveMinimum": 0
           },
           "unit": {
             "type": "string",

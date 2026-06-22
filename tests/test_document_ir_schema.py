@@ -285,6 +285,34 @@ class DocumentIrSchemaTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, msg="validator unexpectedly accepted undeclared v1 source_page")
         self.assertIn("$.blocks[0].source_page: references undeclared page 99", result.stderr)
 
+    def test_validator_rejects_v1_zero_sized_pages(self) -> None:
+        sample = json.loads(V1_SAMPLE_PATH.read_text(encoding="utf-8"))
+        document = sample["expected_ir"]
+        document["pages"][0]["width"] = 0
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            document_path = Path(temp_dir) / "zero-width-v1-page-document-ir.json"
+            document_path.write_text(json.dumps(document), encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(VALIDATOR_PATH),
+                    "--schema",
+                    str(V1_SCHEMA_PATH),
+                    "--document",
+                    str(document_path),
+                ],
+                cwd=REPO_ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+        self.assertNotEqual(result.returncode, 0, msg="validator unexpectedly accepted zero-width v1 page")
+        self.assertIn("$.pages[0].width: value must be greater than 0", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
