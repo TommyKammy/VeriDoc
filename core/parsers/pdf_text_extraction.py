@@ -105,6 +105,9 @@ def parse_text_pdf_to_document_ir(
                 }
             )
 
+    if not blocks:
+        raise ValueError("PDF text extraction produced no document blocks")
+
     return {
         "schema_version": "document-ir/v0",
         "document": {
