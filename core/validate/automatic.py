@@ -34,7 +34,7 @@ def validate_extracted_item(
         failed_rules.append("scope_binding")
     if not _same_non_empty_string(expected.get("label_id"), actual.get("label_id")):
         failed_rules.append("scope_binding")
-    for scope_key in ("document_id", "block_id"):
+    for scope_key in ("fixture_id", "document_id", "block_id"):
         if scope_key in expected and not _same_non_empty_string(
             expected.get(scope_key), actual.get(scope_key)
         ):
@@ -58,6 +58,8 @@ def validate_extracted_item(
 
     if _has_malformed_review_flag(expected) or _has_malformed_review_flag(actual):
         failed_rules.append("risk_gate")
+    if not isinstance(expected.get("requires_review"), bool):
+        failed_rules.append("risk_gate")
 
     explicit_review_required = _requires_review(expected) or _requires_review(actual)
     high_risk = expected.get("risk_level") == "high" or actual.get("risk_level") == "high"
@@ -77,6 +79,10 @@ def validate_table_consistency(
     warnings: list[str] = []
 
     if not _same_non_empty_string(expected_table.get("id"), actual_table.get("id")):
+        failed_rules.append("table_consistency")
+    if "fixture_table_id" in expected_table and not _same_non_empty_string(
+        expected_table.get("fixture_table_id"), expected_table.get("id")
+    ):
         failed_rules.append("table_consistency")
 
     expected_cells = _cells_by_id(expected_table.get("cells"))
@@ -180,7 +186,7 @@ def _values_match(expected: object, actual: object) -> bool:
         return actual is expected
     if _number_expected(expected):
         return _same_finite_number(expected, actual)
-    return _same_normalized_text(expected, actual)
+    return _same_non_blank_normalized_text(expected, actual)
 
 
 def _number_expected(value: object) -> bool:

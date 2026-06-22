@@ -103,6 +103,29 @@ def test_item_scope_binding_requires_matching_document_and_block_ids() -> None:
     assert "scope_binding" in wrong_scope.failed_rules
 
 
+def test_item_scope_binding_requires_matching_fixture_id() -> None:
+    expected = _expected_item(
+        risk_level="medium",
+        requires_review=False,
+        fixture_id="fixture-001",
+        document_id="doc-001",
+        block_id="block-001",
+    )
+
+    decision = validate_extracted_item(
+        expected=expected,
+        actual=_actual_item(
+            fixture_id="fixture-002",
+            document_id="doc-001",
+            block_id="block-001",
+        ),
+    )
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert "scope_binding" in decision.failed_rules
+
+
 def test_numeric_rule_rejects_non_finite_or_stringified_numbers() -> None:
     expected = _expected_item(expected_value=12.5, risk_level="medium", requires_review=False)
 
@@ -205,6 +228,34 @@ def test_null_item_review_flag_blocks_auto_confirm() -> None:
     assert actual_null.auto_confirm_allowed is False
     assert actual_null.status is ValidationStatus.BLOCK_AUTO_CONFIRM
     assert "risk_gate" in actual_null.failed_rules
+
+
+def test_missing_expected_item_review_flag_blocks_auto_confirm() -> None:
+    expected = _expected_item(risk_level="medium")
+    del expected["requires_review"]
+
+    decision = validate_extracted_item(expected=expected, actual=_actual_item())
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert decision.requires_review is True
+    assert "risk_gate" in decision.failed_rules
+
+
+def test_blank_expected_item_value_blocks_auto_confirm() -> None:
+    decision = validate_extracted_item(
+        expected=_expected_item(
+            expected_value=" ",
+            risk_level="medium",
+            requires_review=False,
+        ),
+        actual=_actual_item(value=""),
+    )
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert decision.requires_review is True
+    assert "value_non_modification" in decision.failed_rules
 
 
 def test_matching_negative_source_coordinates_block_auto_confirm() -> None:
@@ -487,6 +538,40 @@ def test_empty_expected_table_cells_block_auto_confirm() -> None:
     assert "table_consistency" in decision.failed_rules
 
 
+def test_mismatched_expected_table_fixture_binding_blocks_auto_confirm() -> None:
+    source = _evidence()
+    expected_table = {
+        "id": "table-001",
+        "fixture_table_id": "table-002",
+        "cells": [
+            {
+                "id": "table-001-r1-c1",
+                "text": "SAMPLE-LOT-001",
+                "source": source,
+                "requires_review": False,
+            },
+        ],
+    }
+    actual_table = {
+        "id": "table-001",
+        "cells": [
+            {
+                "id": "table-001-r1-c1",
+                "text": "SAMPLE-LOT-001",
+                "source": source,
+                "auto_confirmed": False,
+            },
+        ],
+    }
+
+    decision = validate_table_consistency(expected_table, actual_table)
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert decision.requires_review is True
+    assert "table_consistency" in decision.failed_rules
+
+
 def test_blank_table_cell_text_blocks_auto_confirm() -> None:
     source = _evidence()
     expected_table = {
@@ -598,6 +683,78 @@ def test_current_head_review_examples_fail_closed() -> None:
                 },
             ),
             "risk_gate",
+        ),
+        (
+            "fixture_scope",
+            validate_extracted_item(
+                expected=_expected_item(
+                    risk_level="medium",
+                    requires_review=False,
+                    fixture_id="fixture-001",
+                    document_id="doc-001",
+                    block_id="block-001",
+                ),
+                actual=_actual_item(
+                    fixture_id="fixture-002",
+                    document_id="doc-001",
+                    block_id="block-001",
+                ),
+            ),
+            "scope_binding",
+        ),
+        (
+            "mismatched_fixture_table_id",
+            validate_table_consistency(
+                {
+                    "id": "table-001",
+                    "fixture_table_id": "table-002",
+                    "cells": [
+                        {
+                            "id": "table-001-r1-c1",
+                            "text": "SAMPLE-LOT-001",
+                            "source": source,
+                            "requires_review": False,
+                        },
+                    ],
+                },
+                {
+                    "id": "table-001",
+                    "cells": [
+                        {
+                            "id": "table-001-r1-c1",
+                            "text": "SAMPLE-LOT-001",
+                            "source": source,
+                        },
+                    ],
+                },
+            ),
+            "table_consistency",
+        ),
+        (
+            "missing_expected_item_review_flag",
+            validate_extracted_item(
+                expected={
+                    "id": "gold-001",
+                    "label_id": "lot_number",
+                    "expected_value": "SAMPLE-LOT-001",
+                    "risk_level": "medium",
+                    "evidence": source,
+                },
+                actual=_actual_item(),
+            ),
+            "risk_gate",
+        ),
+        (
+            "blank_expected_item_value",
+            validate_extracted_item(
+                expected=_expected_item(
+                    expected_value=" ",
+                    risk_level="medium",
+                    requires_review=False,
+                ),
+                actual=_actual_item(value=""),
+            ),
+            "value_non_modification",
         ),
     ]
 
