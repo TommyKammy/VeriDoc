@@ -73,14 +73,17 @@ def validate_table_consistency(
 
     expected_cells = _cells_by_id(expected_table.get("cells"))
     actual_cells = _cells_by_id(actual_table.get("cells"))
+    table_requires_review = False
     if expected_cells is None or actual_cells is None:
         failed_rules.append("table_consistency")
     else:
         missing_or_extra = set(expected_cells) != set(actual_cells)
         matching_cell_ids = set(expected_cells) & set(actual_cells)
         changed_text = any(
-            _normalized_text(expected_cells[cell_id].get("text"))
-            != _normalized_text(actual_cells[cell_id].get("text"))
+            not _same_normalized_text(
+                expected_cells[cell_id].get("text"),
+                actual_cells[cell_id].get("text"),
+            )
             for cell_id in matching_cell_ids
         )
         if missing_or_extra or changed_text:
@@ -100,13 +103,14 @@ def validate_table_consistency(
                 failed_rules.append("risk_gate")
                 auto_confirmed = True
             if _cell_requires_review(expected_cell):
+                table_requires_review = True
                 warnings.append("table cell requires human review")
                 if auto_confirmed:
                     failed_rules.append("risk_gate")
 
     if failed_rules:
         warnings.append("table content requires human review")
-    return _decision(failed_rules, warnings, bool(failed_rules))
+    return _decision(failed_rules, warnings, bool(failed_rules) or table_requires_review)
 
 
 def _decision(
@@ -141,8 +145,14 @@ def _same_non_empty_string(expected: object, actual: object) -> bool:
     return isinstance(expected, str) and bool(expected) and expected == actual
 
 
-def _normalized_text(value: object) -> str:
-    return " ".join(str(value).split())
+def _same_normalized_text(expected: object, actual: object) -> bool:
+    if not isinstance(expected, str) or not isinstance(actual, str):
+        return False
+    return _normalized_text(expected) == _normalized_text(actual)
+
+
+def _normalized_text(value: str) -> str:
+    return " ".join(value.split())
 
 
 def _values_match(expected: object, actual: object) -> bool:
@@ -150,7 +160,7 @@ def _values_match(expected: object, actual: object) -> bool:
         return actual is expected
     if _number_expected(expected):
         return _same_finite_number(expected, actual)
-    return _normalized_text(expected) == _normalized_text(actual)
+    return _same_normalized_text(expected, actual)
 
 
 def _number_expected(value: object) -> bool:

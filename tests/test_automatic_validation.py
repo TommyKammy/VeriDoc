@@ -106,6 +106,20 @@ def test_numeric_rule_blocks_oversized_integer_without_crashing() -> None:
     assert "numeric" in decision.failed_rules
 
 
+def test_string_value_rejects_numeric_actual_value() -> None:
+    expected = _expected_item(
+        expected_value="123",
+        risk_level="medium",
+        requires_review=False,
+    )
+
+    decision = validate_extracted_item(expected=expected, actual=_actual_item(value=123))
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert "value_non_modification" in decision.failed_rules
+
+
 def test_table_consistency_rejects_missing_cells_and_wrong_text() -> None:
     expected_table = {
         "id": "table-001",
@@ -161,3 +175,57 @@ def test_table_cells_enforce_provenance_and_review_gates() -> None:
     assert decision.requires_review is True
     assert "provenance" in decision.failed_rules
     assert "risk_gate" in decision.failed_rules
+
+
+def test_table_cell_requires_review_blocks_auto_confirm_even_without_failures() -> None:
+    source = _evidence()
+    expected_table = {
+        "id": "table-001",
+        "cells": [
+            {
+                "id": "table-001-r1-c1",
+                "text": "SAMPLE-LOT-001",
+                "source": source,
+                "requires_review": True,
+            },
+        ],
+    }
+    actual_table = {
+        "id": "table-001",
+        "cells": [
+            {
+                "id": "table-001-r1-c1",
+                "text": "SAMPLE-LOT-001",
+                "source": source,
+                "auto_confirmed": False,
+            },
+        ],
+    }
+
+    decision = validate_table_consistency(expected_table, actual_table)
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.REQUIRES_REVIEW
+    assert decision.requires_review is True
+    assert decision.failed_rules == ()
+
+
+def test_table_cell_text_rejects_numeric_actual_value() -> None:
+    expected_table = {
+        "id": "table-001",
+        "cells": [
+            {"id": "table-001-r1-c1", "text": "123"},
+        ],
+    }
+    actual_table = {
+        "id": "table-001",
+        "cells": [
+            {"id": "table-001-r1-c1", "text": 123},
+        ],
+    }
+
+    decision = validate_table_consistency(expected_table, actual_table)
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert "table_consistency" in decision.failed_rules
