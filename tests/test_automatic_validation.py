@@ -156,6 +156,22 @@ def test_missing_expected_item_fixture_id_blocks_auto_confirm() -> None:
     assert "scope_binding" in decision.failed_rules
 
 
+def test_missing_expected_item_document_or_block_scope_blocks_auto_confirm() -> None:
+    decision = validate_extracted_item(
+        expected=_expected_item(
+            risk_level="medium",
+            requires_review=False,
+            fixture_id="fixture-001",
+        ),
+        actual=_actual_item(fixture_id="fixture-001"),
+    )
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert decision.requires_review is True
+    assert "scope_binding" in decision.failed_rules
+
+
 def test_numeric_rule_rejects_non_finite_or_stringified_numbers() -> None:
     expected = _expected_item(expected_value=12.5, risk_level="medium", requires_review=False)
 
@@ -386,9 +402,16 @@ def test_documented_top_left_source_origin_allows_auto_confirm() -> None:
             risk_level="medium",
             requires_review=False,
             fixture_id="fixture-001",
+            document_id="doc-001",
+            block_id="block-001",
             evidence=top_left_source,
         ),
-        actual=_actual_item(fixture_id="fixture-001", evidence=top_left_source),
+        actual=_actual_item(
+            fixture_id="fixture-001",
+            document_id="doc-001",
+            block_id="block-001",
+            evidence=top_left_source,
+        ),
     )
 
     assert decision.auto_confirm_allowed is True
@@ -954,6 +977,18 @@ def test_current_head_review_examples_fail_closed() -> None:
             validate_extracted_item(
                 expected=_expected_item(risk_level="medium", requires_review=False),
                 actual=_actual_item(),
+            ),
+            "scope_binding",
+        ),
+        (
+            "missing_document_block_scope",
+            validate_extracted_item(
+                expected=_expected_item(
+                    risk_level="medium",
+                    requires_review=False,
+                    fixture_id="fixture-001",
+                ),
+                actual=_actual_item(fixture_id="fixture-001"),
             ),
             "scope_binding",
         ),

@@ -69,10 +69,10 @@ def validate_extracted_item(
     explicit_review_required = _requires_review(expected) or _requires_review(actual)
     high_risk = _is_high_risk(expected) or _is_high_risk(actual)
     requires_review = explicit_review_required or high_risk
-    if not requires_review and not _same_non_empty_string(
-        expected.get("fixture_id"), actual.get("fixture_id")
-    ):
-        failed_rules.append("scope_binding")
+    if not requires_review:
+        for scope_key in ("fixture_id", "document_id", "block_id"):
+            if not _same_non_empty_string(expected.get(scope_key), actual.get(scope_key)):
+                failed_rules.append("scope_binding")
     if requires_review:
         warnings.append("item requires human review")
     if requires_review and auto_confirmed:
