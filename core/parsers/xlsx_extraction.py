@@ -330,7 +330,7 @@ def _zero_padding_format(format_code: str, value: int) -> Optional[tuple[int, bo
     if section_info is None:
         return None
     section, uses_negative_section = section_info
-    normalized = re.sub(r"\[[^\]]+\]", "", section)
+    normalized = _strip_leading_format_directives(section)
     match = re.fullmatch(r"(-?)(0+)", normalized)
     if match is None:
         return None
@@ -364,16 +364,38 @@ def _format_section(format_code: str, value: int) -> Optional[tuple[str, bool]]:
 
 
 def _section_condition(section: str) -> Optional[tuple[str, Decimal]]:
-    match = re.match(
-        r"\[\s*(<=|>=|<>|=|<|>)\s*(-?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][+-]?\d+)?)\s*\]",
-        section,
-    )
-    if match is None:
-        return None
-    try:
-        return match.group(1), Decimal(match.group(2))
-    except InvalidOperation:
-        return None
+    for directive in _leading_format_directives(section):
+        match = re.fullmatch(
+            r"\s*(<=|>=|<>|=|<|>)\s*(-?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][+-]?\d+)?)\s*",
+            directive,
+        )
+        if match is None:
+            continue
+        try:
+            return match.group(1), Decimal(match.group(2))
+        except InvalidOperation:
+            return None
+    return None
+
+
+def _leading_format_directives(section: str) -> List[str]:
+    directives: List[str] = []
+    remainder = section
+    while True:
+        match = re.match(r"\s*\[([^\]]+)\]", remainder)
+        if match is None:
+            return directives
+        directives.append(match.group(1))
+        remainder = remainder[match.end() :]
+
+
+def _strip_leading_format_directives(section: str) -> str:
+    remainder = section
+    while True:
+        match = re.match(r"\s*\[[^\]]+\]", remainder)
+        if match is None:
+            return remainder.strip()
+        remainder = remainder[match.end() :]
 
 
 def _condition_matches(condition: tuple[str, Decimal], value: int) -> bool:
