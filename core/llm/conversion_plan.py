@@ -444,6 +444,15 @@ def _redact_audit_parameters(value: object, *, key_path: str = "") -> object:
         entry_key = str(value[0])
         entry_path = _join_parameter_key_path(key_path, entry_key)
         return [entry_key, _redact_audit_parameters(value[1], key_path=entry_path)]
+    if isinstance(value, str):
+        raw_entry = _raw_key_value_parameter_line(value, key_path)
+        if raw_entry is not None:
+            entry_key, separator, entry_value = raw_entry
+            entry_path = _join_parameter_key_path(key_path, entry_key)
+            redacted_value = _redact_audit_parameters(entry_value, key_path=entry_path)
+            if redacted_value == _REDACTED_VALUE:
+                redacted_separator = ": " if separator == ":" else separator
+                return f"{entry_key}{redacted_separator}{_REDACTED_VALUE}"
     if isinstance(value, list):
         return [_redact_audit_parameters(item, key_path=key_path) for item in value]
     if isinstance(value, tuple):
@@ -472,6 +481,13 @@ def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "
         if _is_content_bearing_audit_parameter_key(item_path):
             raise ValueError(f"{item_path} must not include document or request content")
         _reject_content_bearing_audit_parameters(value[1], key_path=item_path)
+    elif isinstance(value, str):
+        raw_entry = _raw_key_value_parameter_line(value, key_path)
+        if raw_entry is not None:
+            entry_key, _separator, _entry_value = raw_entry
+            item_path = f"{key_path}.{entry_key}"
+            if _is_content_bearing_audit_parameter_key(item_path):
+                raise ValueError(f"{item_path} must not include document or request content")
     elif isinstance(value, (list, tuple)):
         for index, item in enumerate(value):
             _reject_content_bearing_audit_parameters(item, key_path=f"{key_path}[{index}]")
@@ -567,6 +583,19 @@ def _is_key_value_parameter_entry(value: object, key_path: str) -> bool:
 
 def _is_safe_audit_parameter_sequence_key(key: str) -> bool:
     return _normalize_parameter_key(_parameter_key_leaf(key)) in _SAFE_AUDIT_PARAMETER_SEQUENCE_KEYS
+
+
+def _raw_key_value_parameter_line(value: str, key_path: str) -> tuple[str, str, str] | None:
+    if (
+        _normalize_parameter_key(_parameter_key_leaf(key_path))
+        not in _KEY_VALUE_AUDIT_PARAMETER_SEQUENCE_CONTAINER_KEYS
+    ):
+        return None
+    for separator in (":", "="):
+        entry_key, found, entry_value = value.partition(separator)
+        if found and entry_key.strip() and entry_value.strip():
+            return (entry_key.strip(), found, entry_value.strip())
+    return None
 
 
 def _mapping_key_value_parameter_entry(value: Mapping[object, object]) -> tuple[str, str, str] | None:

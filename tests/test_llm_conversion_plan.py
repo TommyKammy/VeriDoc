@@ -403,6 +403,33 @@ def test_build_conversion_audit_log_sanitizes_extra_header_and_cookie_pair_conta
     assert "Bearer" not in rendered
 
 
+def test_build_conversion_audit_log_redacts_raw_header_line_parameter_values() -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={
+            "headers": ["Authorization: Bearer operator-runtime-token"],
+            "extra_headers": ["Ocp-Apim-Subscription-Key: operator-runtime-subscription"],
+            "request_headers": ["X-Api-Key=operator-runtime-api-key"],
+        },
+    )
+
+    assert audit_log["parameters"] == {
+        "headers": ["Authorization: [REDACTED]"],
+        "extra_headers": ["Ocp-Apim-Subscription-Key: [REDACTED]"],
+        "request_headers": ["X-Api-Key=[REDACTED]"],
+    }
+    rendered = json.dumps(audit_log, sort_keys=True)
+    assert "operator-runtime-token" not in rendered
+    assert "operator-runtime-subscription" not in rendered
+    assert "operator-runtime-api-key" not in rendered
+    assert "Bearer" not in rendered
+
+
 def test_build_conversion_audit_log_allows_content_type_header_metadata() -> None:
     audit_log = build_conversion_audit_log(
         source_bytes=b"Lot: ABC-123\n",
@@ -417,6 +444,7 @@ def test_build_conversion_audit_log_allows_content_type_header_metadata() -> Non
             },
             "extra_headers": [
                 ("Content-Type", "application/json"),
+                "Content-Type: application/json",
             ],
         },
     )
@@ -427,6 +455,7 @@ def test_build_conversion_audit_log_allows_content_type_header_metadata() -> Non
         },
         "extra_headers": [
             ["Content-Type", "application/json"],
+            "Content-Type: application/json",
         ],
     }
 
@@ -467,6 +496,19 @@ def test_build_conversion_audit_log_rejects_list_key_value_content_parameter_ent
             prompt_version="poc-08",
             ir_version="document-ir-v1",
             parameters={"options": ["prompt", "Lot: ABC-123"]},
+        )
+
+
+def test_build_conversion_audit_log_rejects_raw_key_value_content_parameter_lines() -> None:
+    with pytest.raises(ValueError, match=r"parameters\.headers\[0\]\.Prompt"):
+        build_conversion_audit_log(
+            source_bytes=b"Lot: ABC-123\n",
+            output_bytes=b'{"lot_number":"ABC-123"}\n',
+            model="local-json-model",
+            prompt_id="veridoc_conversion_plan",
+            prompt_version="poc-08",
+            ir_version="document-ir-v1",
+            parameters={"headers": ["Prompt: Lot: ABC-123"]},
         )
 
 
