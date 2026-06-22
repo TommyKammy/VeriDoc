@@ -12,7 +12,7 @@ import urllib.request
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import parse_qsl, urlparse
+from urllib.parse import parse_qsl, unquote_plus, urlparse
 
 
 CONVERSION_PLAN_SCHEMA: dict[str, Any] = {
@@ -238,6 +238,7 @@ _KEY_VALUE_AUDIT_PARAMETER_SEQUENCE_CONTAINER_KEYS = frozenset(
         "request_headers",
     }
 )
+_FILE_AUDIT_PARAMETER_CONTAINER_KEYS = frozenset({"file", "files"})
 _CONTENT_BYTE_AUDIT_PARAMETER_ANCESTOR_COMPONENTS = frozenset(
     {
         "output",
@@ -492,6 +493,11 @@ def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "
         if key_value_entry is not None:
             _key_field, entry_key, value_field = key_value_entry
             item_path = _join_parameter_key_path(key_path, entry_key)
+            if (
+                _normalize_parameter_key(_parameter_key_leaf(key_path))
+                in _FILE_AUDIT_PARAMETER_CONTAINER_KEYS
+            ):
+                raise ValueError(f"{item_path} must not include document or request content")
             if _is_content_bearing_audit_parameter_key(item_path):
                 raise ValueError(f"{item_path} must not include document or request content")
             _reject_content_bearing_audit_parameters(value[value_field], key_path=item_path)
@@ -504,13 +510,18 @@ def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "
     elif _is_key_value_parameter_entry(value, key_path):
         entry_key = str(value[0])
         item_path = f"{key_path}.{entry_key}"
+        if (
+            _normalize_parameter_key(_parameter_key_leaf(key_path))
+            in _FILE_AUDIT_PARAMETER_CONTAINER_KEYS
+        ):
+            raise ValueError(f"{item_path} must not include document or request content")
         if _is_content_bearing_audit_parameter_key(item_path):
             raise ValueError(f"{item_path} must not include document or request content")
         _reject_content_bearing_audit_parameters(value[1], key_path=item_path)
     elif isinstance(value, str):
         for raw_entry in _raw_key_value_parameter_entries(value, key_path):
             entry_key, _separator, _entry_value = raw_entry
-            item_path = f"{key_path}.{entry_key}"
+            item_path = _raw_key_value_parameter_entry_path(key_path, entry_key)
             if _is_content_bearing_audit_parameter_key(item_path):
                 raise ValueError(f"{item_path} must not include document or request content")
     elif isinstance(value, (list, tuple)):
@@ -665,6 +676,8 @@ def _raw_key_value_parameter_chunks(value: str, normalized_leaf: str) -> list[st
         return value.splitlines()
     if normalized_leaf in {"params", "query_params"} and "&" in value:
         return value.split("&")
+    if normalized_leaf in {"cookies", "extra_cookies"} and ";" in value:
+        return [chunk.strip() for chunk in value.split(";")]
     return [value]
 
 
@@ -673,6 +686,8 @@ def _raw_key_value_parameter_joiner(value: str, normalized_leaf: str) -> str:
         return "\n"
     if normalized_leaf in {"params", "query_params"} and "&" in value:
         return "&"
+    if normalized_leaf in {"cookies", "extra_cookies"} and ";" in value:
+        return "; "
     return ""
 
 
@@ -680,13 +695,20 @@ def _redact_raw_key_value_parameter_line(
     raw_entry: tuple[str, str, str], key_path: str
 ) -> str:
     entry_key, separator, entry_value = raw_entry
-    entry_path = _join_parameter_key_path(key_path, entry_key)
+    entry_path = _raw_key_value_parameter_entry_path(key_path, entry_key)
     redacted_value = _redact_audit_parameters(entry_value, key_path=entry_path)
     if redacted_value == _REDACTED_VALUE:
         redacted_separator = ": " if separator == ":" else separator
         return f"{entry_key}{redacted_separator}{_REDACTED_VALUE}"
     separator_text = ": " if separator == ":" else separator
     return f"{entry_key}{separator_text}{entry_value}"
+
+
+def _raw_key_value_parameter_entry_path(key_path: str, entry_key: str) -> str:
+    normalized_leaf = _normalize_parameter_key(_parameter_key_leaf(key_path))
+    if normalized_leaf in {"params", "query_params"}:
+        return _join_parameter_key_path(key_path, unquote_plus(entry_key))
+    return _join_parameter_key_path(key_path, entry_key)
 
 
 def _mapping_key_value_parameter_entry(value: Mapping[object, object]) -> tuple[str, str, str] | None:
@@ -714,9 +736,14 @@ def _is_credential_bearing_url(value: str) -> bool:
         return False
     if parsed_url.username is not None or parsed_url.password is not None:
         return True
-    return any(
+    if any(
         _is_secret_parameter_key(key)
         for key, _value in parse_qsl(parsed_url.query, keep_blank_values=True)
+    ):
+        return True
+    return any(
+        _is_secret_parameter_key(key)
+        for key, _value in parse_qsl(parsed_url.fragment, keep_blank_values=True)
     )
 
 

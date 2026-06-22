@@ -216,6 +216,7 @@ def test_build_conversion_audit_log_redacts_review_thread_credential_keys(parame
         {"sig": "operator-runtime-signature"},
         {"sharedAccessSignature": "operator-runtime-signature"},
         {"endpoint": "https://example.invalid/blob?sv=1&sig=operator-runtime-signature"},
+        {"callback_url": "https://example.invalid/cb#access_token=operator-runtime-token"},
     ],
 )
 def test_build_conversion_audit_log_redacts_signature_credentials(
@@ -231,7 +232,9 @@ def test_build_conversion_audit_log_redacts_signature_credentials(
         parameters=parameters,
     )
 
-    assert "operator-runtime-signature" not in json.dumps(audit_log, sort_keys=True)
+    rendered = json.dumps(audit_log, sort_keys=True)
+    assert "operator-runtime-signature" not in rendered
+    assert "operator-runtime-token" not in rendered
 
 
 @pytest.mark.parametrize(
@@ -266,6 +269,11 @@ def test_build_conversion_audit_log_redacts_signature_credentials(
         ({"source": [("bytes", b"Lot: ABC-123\n")]}, r"parameters\.source"),
         ({"blob": b"Lot: ABC-123\n"}, r"parameters\.blob"),
         ({"files": [("upload", b"Lot: ABC-123\n")]}, r"parameters\.files\[0\]\.upload"),
+        ({"files": [("upload", "Lot: ABC-123")]}, r"parameters\.files\[0\]\.upload"),
+        (
+            {"files": [{"key": "upload", "value": "Lot: ABC-123"}]},
+            r"parameters\.files\[0\]\.upload",
+        ),
     ],
 )
 def test_build_conversion_audit_log_rejects_content_bearing_parameters(
@@ -420,6 +428,7 @@ def test_build_conversion_audit_log_sanitizes_extra_header_and_cookie_pair_conta
         parameters={
             "extra_headers": [("Authorization", "Bearer operator-runtime-token")],
             "extra_cookies": [("sessionToken", "operator-runtime-session")],
+            "cookies": "theme=light; session=operator-runtime-session",
             "http_headers": [["Ocp-Apim-Subscription-Key", "operator-runtime-subscription"]],
         },
     )
@@ -427,6 +436,7 @@ def test_build_conversion_audit_log_sanitizes_extra_header_and_cookie_pair_conta
     assert audit_log["parameters"] == {
         "extra_headers": [["Authorization", "[REDACTED]"]],
         "extra_cookies": [["sessionToken", "[REDACTED]"]],
+        "cookies": "theme=light; session=[REDACTED]",
         "http_headers": [["Ocp-Apim-Subscription-Key", "[REDACTED]"]],
     }
     rendered = json.dumps(audit_log, sort_keys=True)
@@ -472,7 +482,7 @@ def test_build_conversion_audit_log_redacts_multi_entry_raw_parameter_strings() 
         prompt_version="poc-08",
         ir_version="document-ir-v1",
         parameters={
-            "query_params": "version=1&api_key=operator-runtime-api-key",
+            "query_params": "version=1&api%5Fkey=operator-runtime-api-key",
             "params": [
                 "callback=https://example.invalid/callback?sig=operator-runtime-signature"
             ],
@@ -481,7 +491,7 @@ def test_build_conversion_audit_log_redacts_multi_entry_raw_parameter_strings() 
     )
 
     assert audit_log["parameters"] == {
-        "query_params": "version=1&api_key=[REDACTED]",
+        "query_params": "version=1&api%5Fkey=[REDACTED]",
         "params": ["callback=[REDACTED]"],
         "headers": "X-Test: ok\nAuthorization: [REDACTED]",
     }
