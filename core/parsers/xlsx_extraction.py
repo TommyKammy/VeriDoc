@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from decimal import Decimal
 from pathlib import PurePosixPath, Path
+import re
 from typing import Any, Dict, List, Optional, Union
 from xml.etree import ElementTree
 from zipfile import BadZipFile, ZipFile
@@ -45,9 +46,16 @@ def extract_xlsx_structure(xlsx_path: Union[str, Path]) -> XlsxStructure:
 
     with _open_package(source) as archive:
         shared_strings = _read_shared_strings(archive)
+        style_formats = _read_style_formats(archive)
         sheet_parts = _read_workbook_sheet_parts(archive)
         sheets = [
-            _read_sheet(archive, name=name, part_name=part_name, shared_strings=shared_strings)
+            _read_sheet(
+                archive,
+                name=name,
+                part_name=part_name,
+                shared_strings=shared_strings,
+                style_formats=style_formats,
+            )
             for name, part_name in sheet_parts
         ]
     return XlsxStructure(source_path=str(source), sheets=sheets)
@@ -75,6 +83,21 @@ def _read_shared_strings(archive: ZipFile) -> List[str]:
         return []
     root = _read_xml(archive, "xl/sharedStrings.xml", "shared strings")
     return [_joined_text(item) for item in root.findall(f"{SHEET_NS}si")]
+
+
+def _read_style_formats(archive: ZipFile) -> List[Optional[str]]:
+    if "xl/styles.xml" not in archive.namelist():
+        return []
+    root = _read_xml(archive, "xl/styles.xml", "styles")
+    custom_formats = {
+        num_format.attrib["numFmtId"]: num_format.attrib["formatCode"]
+        for num_format in root.findall(f"{SHEET_NS}numFmts/{SHEET_NS}numFmt")
+        if "numFmtId" in num_format.attrib and "formatCode" in num_format.attrib
+    }
+    return [
+        custom_formats.get(cell_format.attrib.get("numFmtId", ""))
+        for cell_format in root.findall(f"{SHEET_NS}cellXfs/{SHEET_NS}xf")
+    ]
 
 
 def _read_workbook_sheet_parts(archive: ZipFile) -> List[tuple[str, str]]:
@@ -113,6 +136,7 @@ def _read_sheet(
     name: str,
     part_name: str,
     shared_strings: List[str],
+    style_formats: List[Optional[str]],
 ) -> XlsxSheet:
     root = _read_xml(archive, part_name, f"worksheet {name}")
     dimension = None
@@ -121,7 +145,7 @@ def _read_sheet(
         dimension = dimension_element.attrib.get("ref")
 
     cells = [
-        _cell_from_xml(cell, shared_strings)
+        _cell_from_xml(cell, shared_strings, style_formats)
         for row in root.findall(f"{SHEET_NS}sheetData/{SHEET_NS}row")
         for cell in row.findall(f"{SHEET_NS}c")
     ]
@@ -133,7 +157,11 @@ def _read_sheet(
     return XlsxSheet(name=name, dimension=dimension, cells=cells, merged_ranges=merged_ranges)
 
 
-def _cell_from_xml(cell: ElementTree.Element, shared_strings: List[str]) -> XlsxCell:
+def _cell_from_xml(
+    cell: ElementTree.Element,
+    shared_strings: List[str],
+    style_formats: List[Optional[str]],
+) -> XlsxCell:
     ref = cell.attrib.get("r", "")
     raw_type = cell.attrib.get("t")
     value_text = _cell_value_text(cell)
@@ -151,8 +179,13 @@ def _cell_from_xml(cell: ElementTree.Element, shared_strings: List[str]) -> Xlsx
         value = value_text
         value_type = "string"
     elif raw_type is None or raw_type == "n":
-        value = _number_value(value_text)
-        value_type = "number" if value_text else "blank"
+        formatted_identifier = _formatted_identifier_value(cell, value_text, style_formats)
+        if formatted_identifier is not None:
+            value = formatted_identifier
+            value_type = "string"
+        else:
+            value = _number_value(value_text)
+            value_type = "number" if value_text else "blank"
     elif raw_type == "d":
         value = value_text
         value_type = "date"
@@ -164,6 +197,30 @@ def _cell_from_xml(cell: ElementTree.Element, shared_strings: List[str]) -> Xlsx
         value_type = f"unknown:{raw_type}"
 
     return XlsxCell(ref=ref, value=value, value_type=value_type)
+
+
+def _formatted_identifier_value(
+    cell: ElementTree.Element,
+    value_text: str,
+    style_formats: List[Optional[str]],
+) -> Optional[str]:
+    if value_text == "" or not re.fullmatch(r"-?\d+", value_text):
+        return None
+    style_index_text = cell.attrib.get("s")
+    if style_index_text is None:
+        return None
+    try:
+        style_index = int(style_index_text)
+    except ValueError:
+        return None
+    if style_index < 0 or style_index >= len(style_formats):
+        return None
+    format_code = style_formats[style_index]
+    if format_code is None or not re.fullmatch(r"0+", format_code):
+        return None
+    if value_text.startswith("-"):
+        return "-" + value_text[1:].zfill(len(format_code))
+    return value_text.zfill(len(format_code))
 
 
 def _cell_value_text(cell: ElementTree.Element) -> str:

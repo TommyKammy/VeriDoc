@@ -137,3 +137,44 @@ def test_extract_xlsx_structure_rejects_negative_shared_string_index(tmp_path: P
 
     with pytest.raises(ValueError, match="shared string index is invalid: -1"):
         extract_xlsx_structure(xlsx_path)
+
+
+def test_extract_xlsx_structure_preserves_zero_padded_identifier_cells(tmp_path: Path) -> None:
+    xlsx_path = tmp_path / "zero-padded-id.xlsx"
+    _write_xlsx(
+        xlsx_path,
+        sheet_xml="""<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <dimension ref="A1:B2"/>
+  <sheetData>
+    <row r="1">
+      <c r="A1" t="inlineStr"><is><t>Sample ID</t></is></c>
+      <c r="B1" t="inlineStr"><is><t>Result</t></is></c>
+    </row>
+    <row r="2">
+      <c r="A2" s="1"><v>123</v></c>
+      <c r="B2"><v>12.5</v></c>
+    </row>
+  </sheetData>
+</worksheet>
+""",
+    )
+    with ZipFile(xlsx_path, "a", ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "xl/styles.xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <numFmts count="1"><numFmt numFmtId="164" formatCode="00000"/></numFmts>
+  <cellXfs count="2">
+    <xf numFmtId="0"/>
+    <xf numFmtId="164" applyNumberFormat="1"/>
+  </cellXfs>
+</styleSheet>
+""",
+        )
+
+    result = extract_xlsx_structure(xlsx_path)
+
+    cells = {cell.ref: (cell.value, cell.value_type) for cell in result.sheets[0].cells}
+    assert cells["A2"] == ("00123", "string")
+    assert cells["B2"] == ("12.5", "number")
