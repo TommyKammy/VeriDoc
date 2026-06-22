@@ -205,13 +205,26 @@ class DocumentIrV1Test(unittest.TestCase):
 
     def test_validation_rejects_direct_non_integer_page_numbers(self) -> None:
         document_ir = self._document_ir_from_dataclasses(
-            pages=[DocumentPage(page_number=1.5, width=595.0, height=842.0)]
+            pages=[DocumentPage(page_number=1.5, width=595.0, height=842.0)],
+            blocks=[
+                DocumentBlock(
+                    id="block-0001",
+                    type="paragraph",
+                    text="Batch Record",
+                    source_page=1.5,
+                    bbox=BoundingBox(x=72.0, y=80.0, width=120.0, height=18.0),
+                    extractor=ExtractorRef(name="unit-test"),
+                    confidence=0.95,
+                    review=ReviewState(requires_review=False, warnings=[]),
+                )
+            ],
         )
 
         result = validate_document_ir_v1(document_ir)
 
         self.assertFalse(result.ok)
         self.assertIn("pages[0].page_number must be an integer", result.errors)
+        self.assertIn("blocks[0].source_page must be an integer", result.errors)
 
     def test_validation_fails_closed_for_negative_bbox_dimensions(self) -> None:
         document_ir = from_parser_output(
