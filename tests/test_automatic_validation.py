@@ -368,6 +368,65 @@ def test_non_top_left_source_origin_blocks_auto_confirm() -> None:
     assert "provenance" in decision.failed_rules
 
 
+def test_documented_top_left_source_origin_allows_auto_confirm() -> None:
+    top_left_source = {
+        "source_page": 1,
+        "bbox": {
+            "origin": "top-left",
+            "unit": "pt",
+            "x": 72.0,
+            "y": 112.0,
+            "width": 180.0,
+            "height": 18.0,
+        },
+    }
+
+    decision = validate_extracted_item(
+        expected=_expected_item(
+            risk_level="medium",
+            requires_review=False,
+            fixture_id="fixture-001",
+            evidence=top_left_source,
+        ),
+        actual=_actual_item(fixture_id="fixture-001", evidence=top_left_source),
+    )
+
+    assert decision.auto_confirm_allowed is True
+    assert decision.status is ValidationStatus.PASS
+    assert "provenance" not in decision.failed_rules
+
+
+def test_unsupported_source_bbox_unit_blocks_auto_confirm() -> None:
+    unsupported_unit_source = {
+        "source_page": 1,
+        "bbox": {
+            "origin": "top-left",
+            "unit": "inch",
+            "x": 72.0,
+            "y": 112.0,
+            "width": 180.0,
+            "height": 18.0,
+        },
+    }
+
+    decision = validate_extracted_item(
+        expected=_expected_item(
+            risk_level="medium",
+            requires_review=False,
+            fixture_id="fixture-001",
+            evidence=unsupported_unit_source,
+        ),
+        actual=_actual_item(
+            fixture_id="fixture-001",
+            evidence=unsupported_unit_source,
+        ),
+    )
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert "provenance" in decision.failed_rules
+
+
 def test_table_consistency_rejects_missing_cells_and_wrong_text() -> None:
     expected_table = {
         "id": "table-001",

@@ -13,6 +13,9 @@ class ValidationStatus(Enum):
     BLOCK_AUTO_CONFIRM = "block_auto_confirm"
 
 
+SUPPORTED_BBOX_UNITS = {"pt", "px", "mm"}
+
+
 @dataclass(frozen=True)
 class ValidationDecision:
     status: ValidationStatus
@@ -222,7 +225,9 @@ def _is_source_anchor(value: object) -> bool:
     bbox = value.get("bbox")
     if not isinstance(bbox, Mapping):
         return False
-    if "origin" in bbox and bbox.get("origin") != "top_left":
+    if "origin" in bbox and bbox.get("origin") != "top-left":
+        return False
+    if "unit" in bbox and bbox.get("unit") not in SUPPORTED_BBOX_UNITS:
         return False
     for key in ("x", "y", "width", "height"):
         coordinate = bbox.get(key)
