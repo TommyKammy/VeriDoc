@@ -38,6 +38,13 @@ class XlsxStructure:
         return _json_ready(asdict(self))
 
 
+@dataclass(frozen=True)
+class _ColumnStyle:
+    min_column: int
+    max_column: int
+    style_index: int
+
+
 def extract_xlsx_structure(xlsx_path: Union[str, Path]) -> XlsxStructure:
     """Extract sheet, cell type, cell value, and merged-cell structure from XLSX."""
     source = Path(xlsx_path)
@@ -94,10 +101,13 @@ def _read_style_formats(archive: ZipFile) -> List[Optional[str]]:
         for num_format in root.findall(f"{SHEET_NS}numFmts/{SHEET_NS}numFmt")
         if "numFmtId" in num_format.attrib and "formatCode" in num_format.attrib
     }
-    return [
-        custom_formats.get(cell_format.attrib.get("numFmtId", ""))
-        for cell_format in root.findall(f"{SHEET_NS}cellXfs/{SHEET_NS}xf")
-    ]
+    style_formats: List[Optional[str]] = []
+    for cell_format in root.findall(f"{SHEET_NS}cellXfs/{SHEET_NS}xf"):
+        if _is_false(cell_format.attrib.get("applyNumberFormat")):
+            style_formats.append(None)
+            continue
+        style_formats.append(custom_formats.get(cell_format.attrib.get("numFmtId", "")))
+    return style_formats
 
 
 def _read_workbook_sheet_parts(archive: ZipFile) -> List[tuple[str, str]]:
@@ -144,8 +154,9 @@ def _read_sheet(
     if dimension_element is not None:
         dimension = dimension_element.attrib.get("ref")
 
+    column_styles = _read_column_styles(root)
     cells = [
-        _cell_from_xml(cell, shared_strings, style_formats)
+        _cell_from_xml(cell, shared_strings, style_formats, column_styles)
         for row in root.findall(f"{SHEET_NS}sheetData/{SHEET_NS}row")
         for cell in row.findall(f"{SHEET_NS}c")
     ]
@@ -161,6 +172,7 @@ def _cell_from_xml(
     cell: ElementTree.Element,
     shared_strings: List[str],
     style_formats: List[Optional[str]],
+    column_styles: List[_ColumnStyle],
 ) -> XlsxCell:
     ref = cell.attrib.get("r", "")
     raw_type = cell.attrib.get("t")
@@ -179,7 +191,12 @@ def _cell_from_xml(
         value = value_text
         value_type = "string"
     elif raw_type is None or raw_type == "n":
-        formatted_identifier = _formatted_identifier_value(cell, value_text, style_formats)
+        formatted_identifier = _formatted_identifier_value(
+            cell,
+            value_text,
+            style_formats,
+            column_styles,
+        )
         if formatted_identifier is not None:
             value = formatted_identifier
             value_type = "string"
@@ -203,24 +220,137 @@ def _formatted_identifier_value(
     cell: ElementTree.Element,
     value_text: str,
     style_formats: List[Optional[str]],
+    column_styles: List[_ColumnStyle],
 ) -> Optional[str]:
     if value_text == "" or not re.fullmatch(r"-?\d+", value_text):
         return None
-    style_index_text = cell.attrib.get("s")
-    if style_index_text is None:
+    format_code = _cell_format_code(cell, style_formats, column_styles)
+    if format_code is None:
         return None
-    try:
-        style_index = int(style_index_text)
-    except ValueError:
+    zero_format = _zero_padding_format(format_code, int(value_text))
+    if zero_format is None:
+        return None
+    width, show_negative_sign = zero_format
+    digits = value_text[1:] if value_text.startswith("-") else value_text
+    padded = digits.zfill(width)
+    if value_text.startswith("-") and show_negative_sign:
+        return "-" + padded
+    return padded
+
+
+def _cell_format_code(
+    cell: ElementTree.Element,
+    style_formats: List[Optional[str]],
+    column_styles: List[_ColumnStyle],
+) -> Optional[str]:
+    style_index_text = cell.attrib.get("s")
+    style_index = _style_index(style_index_text)
+    if style_index is None:
+        style_index = _column_style_index(cell.attrib.get("r", ""), column_styles)
+    if style_index is None:
         return None
     if style_index < 0 or style_index >= len(style_formats):
         return None
-    format_code = style_formats[style_index]
-    if format_code is None or not re.fullmatch(r"0+", format_code):
+    return style_formats[style_index]
+
+
+def _read_column_styles(root: ElementTree.Element) -> List[_ColumnStyle]:
+    column_styles: List[_ColumnStyle] = []
+    for column in root.findall(f"{SHEET_NS}cols/{SHEET_NS}col"):
+        min_column = _positive_int(column.attrib.get("min"))
+        max_column = _positive_int(column.attrib.get("max"))
+        style_index = _style_index(column.attrib.get("style"))
+        if min_column is None or max_column is None or style_index is None:
+            continue
+        if min_column > max_column:
+            continue
+        column_styles.append(
+            _ColumnStyle(
+                min_column=min_column,
+                max_column=max_column,
+                style_index=style_index,
+            )
+        )
+    return column_styles
+
+
+def _column_style_index(ref: str, column_styles: List[_ColumnStyle]) -> Optional[int]:
+    column_number = _column_number(ref)
+    if column_number is None:
         return None
-    if value_text.startswith("-"):
-        return "-" + value_text[1:].zfill(len(format_code))
-    return value_text.zfill(len(format_code))
+    for column_style in column_styles:
+        if column_style.min_column <= column_number <= column_style.max_column:
+            return column_style.style_index
+    return None
+
+
+def _column_number(ref: str) -> Optional[int]:
+    match = re.match(r"\$?([A-Za-z]+)", ref)
+    if match is None:
+        return None
+    column_number = 0
+    for char in match.group(1).upper():
+        column_number = column_number * 26 + ord(char) - ord("A") + 1
+    return column_number
+
+
+def _style_index(value: Optional[str]) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def _positive_int(value: Optional[str]) -> Optional[int]:
+    parsed = _style_index(value)
+    if parsed is None or parsed < 1:
+        return None
+    return parsed
+
+
+def _zero_padding_format(format_code: str, value: int) -> Optional[tuple[int, bool]]:
+    sections = _format_sections(format_code)
+    if not sections:
+        return None
+    uses_negative_section = False
+    if value > 0:
+        section = sections[0]
+    elif value < 0 and len(sections) > 1:
+        uses_negative_section = True
+        section = sections[1]
+    elif value == 0 and len(sections) > 2:
+        section = sections[2]
+    else:
+        section = sections[0]
+    normalized = re.sub(r"\[[^\]]+\]", "", section)
+    match = re.fullmatch(r"(-?)(0+)", normalized)
+    if match is None:
+        return None
+    show_negative_sign = value < 0 and (not uses_negative_section or bool(match.group(1)))
+    return len(match.group(2)), show_negative_sign
+
+
+def _format_sections(format_code: str) -> List[str]:
+    sections: List[str] = []
+    current: List[str] = []
+    in_quote = False
+    for char in format_code:
+        if char == '"':
+            in_quote = not in_quote
+            current.append(char)
+        elif char == ";" and not in_quote:
+            sections.append("".join(current).strip())
+            current = []
+        else:
+            current.append(char)
+    sections.append("".join(current).strip())
+    return sections
+
+
+def _is_false(value: Optional[str]) -> bool:
+    return value is not None and value.lower() in {"0", "false"}
 
 
 def _cell_value_text(cell: ElementTree.Element) -> str:
