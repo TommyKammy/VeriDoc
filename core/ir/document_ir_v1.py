@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, is_dataclass
+import math
 from typing import Any, List, Optional
 
 
@@ -94,12 +95,12 @@ def from_parser_output(
 
     for page_index, page_data in enumerate(_list_value(data.get("pages")), start=1):
         page = _to_mapping(page_data)
-        page_number = _int_value(page.get("page_number"), default=page_index)
-        width = _float_value(page.get("width_pt", page.get("width")), default=0.0)
-        height = _float_value(page.get("height_pt", page.get("height")), default=0.0)
-        pages.append(DocumentPage(page_number=page_number, width=width, height=height))
+        page_number = _page_number_value(page.get("page_number"), default=page_index)
+        width, height, unit = _page_size(page)
+        pages.append(DocumentPage(page_number=page_number, width=width, height=height, unit=unit))
 
-        for fragment in _list_value(page.get("fragments")):
+        page_blocks = [*_list_value(page.get("fragments")), *_list_value(page.get("regions"))]
+        for fragment in page_blocks:
             block = _block_from_fragment(
                 fragment,
                 block_index=len(blocks) + 1,
@@ -157,6 +158,8 @@ def validate_document_ir_v1(document_ir: DocumentIRV1) -> ValidationResult:
         if page is None:
             errors.append(f"blocks[{index}].source_page references undeclared page {block.source_page}")
             continue
+        if block.bbox.width < 0 or block.bbox.height < 0:
+            errors.append(f"blocks[{index}].bbox dimensions must be non-negative")
         if _bbox_outside_page(block.bbox, page):
             errors.append(f"blocks[{index}].bbox extends past page {block.source_page}")
         if block.confidence < 0 or block.confidence > 1:
@@ -184,9 +187,13 @@ def _block_from_fragment(
 ) -> DocumentBlock:
     data = _to_mapping(fragment)
     review_warnings: List[str] = []
-    source_page = _int_value(data.get("page_number"), default=fallback_page_number)
+    source_page = _page_number_value(data.get("page_number"), default=fallback_page_number)
     bbox = _bbox_value(data.get("bbox"))
-    confidence = 0.95
+    confidence = _confidence_value(
+        data.get("confidence"),
+        default=0.95,
+        scale_percent=bool(data.get("engine")),
+    )
     requires_review = False
 
     if bbox is None:
@@ -201,13 +208,21 @@ def _block_from_fragment(
         requires_review = True
         review_warnings.append(f"blocks[{block_index - 1}].text empty; block marked requires_review")
 
+    if data.get("confidence") is None and data.get("engine"):
+        confidence = 0.0
+        requires_review = True
+        review_warnings.append(f"blocks[{block_index - 1}].confidence missing; block marked requires_review")
+    if data.get("low_confidence") is True:
+        requires_review = True
+        review_warnings.append(f"blocks[{block_index - 1}].low confidence; block marked requires_review")
+
     return DocumentBlock(
         id=f"block-{block_index:04d}",
         type=_block_type(text),
         text=text,
         source_page=source_page,
         bbox=bbox,
-        extractor=ExtractorRef(name=str(data.get("extractor") or fallback_extractor)),
+        extractor=ExtractorRef(name=str(data.get("extractor") or data.get("engine") or fallback_extractor)),
         confidence=confidence,
         review=ReviewState(requires_review=requires_review, warnings=review_warnings),
     )
@@ -231,33 +246,71 @@ def _list_value(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
-def _int_value(value: Any, *, default: int) -> int:
-    try:
+def _page_number_value(value: Any, *, default: int) -> int:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and math.isfinite(value) and value.is_integer():
         return int(value)
-    except (TypeError, ValueError):
-        return default
+    return 0
 
 
-def _float_value(value: Any, *, default: float) -> float:
+def _finite_float_value(value: Any, *, default: float) -> float:
     try:
-        return float(value)
+        converted = float(value)
     except (TypeError, ValueError):
         return default
+    return converted if math.isfinite(converted) else default
+
+
+def _page_size(page: dict[str, Any]) -> tuple[float, float, str]:
+    if "width_pt" in page or "height_pt" in page:
+        return (
+            _finite_float_value(page.get("width_pt"), default=0.0),
+            _finite_float_value(page.get("height_pt"), default=0.0),
+            "pt",
+        )
+    if "width_px" in page or "height_px" in page:
+        return (
+            _finite_float_value(page.get("width_px"), default=0.0),
+            _finite_float_value(page.get("height_px"), default=0.0),
+            "px",
+        )
+    return (
+        _finite_float_value(page.get("width"), default=0.0),
+        _finite_float_value(page.get("height"), default=0.0),
+        str(page.get("unit") or "pt"),
+    )
+
+
+def _confidence_value(value: Any, *, default: float, scale_percent: bool) -> float:
+    if value is None:
+        return default
+    confidence = _finite_float_value(value, default=-1.0)
+    if confidence < 0:
+        return 0.0
+    if scale_percent:
+        confidence = confidence / 100.0
+    return confidence
 
 
 def _bbox_value(value: Any) -> Optional[BoundingBox]:
     data = _to_mapping(value)
     if not data:
         return None
-    try:
-        return BoundingBox(
-            x=float(data["x"]),
-            y=float(data["y"]),
-            width=float(data["width"]),
-            height=float(data["height"]),
-        )
-    except (KeyError, TypeError, ValueError):
+    if not {"x", "y", "width", "height"}.issubset(data):
         return None
+    return BoundingBox(
+        x=_finite_float_value(data["x"], default=0.0),
+        y=_finite_float_value(data["y"], default=0.0),
+        width=_finite_float_value(data["width"], default=0.0),
+        height=_finite_float_value(data["height"], default=0.0),
+        unit=str(data.get("unit") or "pt"),
+        origin=str(data.get("origin") or "top-left"),
+    )
 
 
 def _block_type(text: str) -> str:
