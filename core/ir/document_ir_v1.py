@@ -145,11 +145,9 @@ def validate_document_ir_v1(document_ir: DocumentIRV1) -> ValidationResult:
 
     pages_by_number: dict[int, DocumentPage] = {}
     for index, page in enumerate(document_ir.pages):
-        if not _is_integer_value(page.page_number):
-            errors.append(f"pages[{index}].page_number must be an integer")
-            continue
-        if page.page_number < 1:
-            errors.append(f"pages[{index}].page_number must be >= 1")
+        page_number_error = _page_identifier_error(page.page_number)
+        if page_number_error is not None:
+            errors.append(f"pages[{index}].page_number {page_number_error}")
             continue
         if page.page_number in pages_by_number:
             errors.append(f"pages[{index}].page_number duplicates page {page.page_number}")
@@ -162,8 +160,9 @@ def validate_document_ir_v1(document_ir: DocumentIRV1) -> ValidationResult:
     for index, block in enumerate(document_ir.blocks):
         if block.type not in BLOCK_TYPES:
             errors.append(f"blocks[{index}].type is unsupported: {block.type}")
-        if not _is_integer_value(block.source_page):
-            errors.append(f"blocks[{index}].source_page must be an integer")
+        source_page_error = _page_identifier_error(block.source_page)
+        if source_page_error is not None:
+            errors.append(f"blocks[{index}].source_page {source_page_error}")
             continue
         page = pages_by_number.get(block.source_page)
         if page is None:
@@ -425,6 +424,14 @@ def _page_number_value(value: Any, *, default: int) -> int:
 
 def _is_integer_value(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _page_identifier_error(value: Any) -> Optional[str]:
+    if not _is_integer_value(value):
+        return "must be an integer"
+    if value < 1:
+        return "must be >= 1"
+    return None
 
 
 def _finite_float_value(value: Any, *, default: float) -> float:

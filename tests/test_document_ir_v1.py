@@ -160,7 +160,7 @@ class DocumentIrV1Test(unittest.TestCase):
 
         self.assertFalse(result.ok)
         self.assertIn("pages[0].page_number must be >= 1", result.errors)
-        self.assertIn("blocks[0].source_page references undeclared page 0", result.errors)
+        self.assertIn("blocks[0].source_page must be >= 1", result.errors)
 
     def test_validation_fails_closed_for_non_finite_page_dimensions(self) -> None:
         document_ir = from_parser_output(
