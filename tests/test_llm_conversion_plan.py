@@ -182,6 +182,9 @@ def test_build_conversion_audit_log_records_hashes_metadata_and_redacts_secrets(
         "x-functions-key",
         "connectionString",
         "accessToken",
+        "accessTokens",
+        "refresh_tokens",
+        "passwords",
         "githubTokenFile",
         "refreshToken",
         "clientSecret",
@@ -258,6 +261,8 @@ def test_build_conversion_audit_log_redacts_signature_credentials(
         ({"system_prompt": "Lot: ABC-123"}, r"parameters\.system_prompt"),
         ({"inputText": "Lot: ABC-123"}, r"parameters\.inputText"),
         ({"text": "Lot: ABC-123"}, r"parameters\.text"),
+        ({"documents": ["Lot: ABC-123"]}, r"parameters\.documents"),
+        ({"prompts": ["Lot: ABC-123"]}, r"parameters\.prompts"),
         ({"synthetic_text": "Lot: ABC-123"}, r"parameters\.synthetic_text"),
         ({"document": "Lot: ABC-123"}, r"parameters\.document"),
         ({"sourceDocument": "Lot: ABC-123"}, r"parameters\.sourceDocument"),
@@ -270,6 +275,7 @@ def test_build_conversion_audit_log_redacts_signature_credentials(
         ({"output": {"bytes": b'{"lot_number":"ABC-123"}\n'}}, r"parameters\.output"),
         ({"source": [("bytes", b"Lot: ABC-123\n")]}, r"parameters\.source"),
         ({"extra": [["prompt", "Lot: ABC-123"]]}, r"parameters\.extra\[0\]\.prompt"),
+        ({"extra": [["raw%5Fsource", "Lot: ABC-123"]]}, r"parameters\.extra\[0\]\.raw%5Fsource"),
         ({"blob": b"Lot: ABC-123\n"}, r"parameters\.blob"),
         ({"file": "Lot: ABC-123"}, r"parameters\.file"),
         ({"files": ["Lot: ABC-123"]}, r"parameters\.files\[0\]"),
@@ -398,15 +404,21 @@ def test_build_conversion_audit_log_sanitizes_mapping_key_value_parameter_entrie
         parameters={
             "headers": [{"name": "Authorization", "value": "Bearer operator-runtime-token"}],
             "options": [{"key": "max_prompt_tokens", "value": 4096}],
+            "extra_headers": [{"header": "Authorization", "value": "Bearer operator-runtime-token-2"}],
+            "query_params": [{"parameter": "api_key", "value": "operator-runtime-api-key"}],
         },
     )
 
     assert audit_log["parameters"] == {
         "headers": [{"name": "Authorization", "value": "[REDACTED]"}],
         "options": [{"key": "max_prompt_tokens", "value": 4096}],
+        "extra_headers": [{"header": "Authorization", "value": "[REDACTED]"}],
+        "query_params": [{"parameter": "api_key", "value": "[REDACTED]"}],
     }
     rendered = json.dumps(audit_log, sort_keys=True)
     assert "operator-runtime-token" not in rendered
+    assert "operator-runtime-token-2" not in rendered
+    assert "operator-runtime-api-key" not in rendered
     assert "Bearer" not in rendered
 
 
@@ -505,6 +517,10 @@ def test_build_conversion_audit_log_redacts_multi_entry_raw_parameter_strings() 
                 "version=1;api_key=operator-runtime-api-key-2",
             ],
             "headers": "X-Test: ok\nAuthorization: Bearer operator-runtime-token",
+            "extra_headers": [
+                "Authorization=Bearer operator-runtime-token-with:colon",
+            ],
+            "cookies": "theme=light; session=operator-runtime-session:with-colon",
         },
     )
 
@@ -513,13 +529,46 @@ def test_build_conversion_audit_log_redacts_multi_entry_raw_parameter_strings() 
         "params_semicolon": "version=1;token=not-a-container",
         "params": ["callback=[REDACTED]", "version=1;api_key=[REDACTED]"],
         "headers": "X-Test: ok\nAuthorization: [REDACTED]",
+        "extra_headers": ["Authorization=[REDACTED]"],
+        "cookies": "theme=light; session=[REDACTED]",
     }
     rendered = json.dumps(audit_log, sort_keys=True)
     assert "operator-runtime-api-key" not in rendered
     assert "operator-runtime-api-key-2" not in rendered
     assert "operator-runtime-signature" not in rendered
+    assert "operator-runtime-token-with" not in rendered
+    assert "operator-runtime-session" not in rendered
     assert "operator-runtime-token" not in rendered
     assert "Bearer" not in rendered
+
+
+@pytest.mark.parametrize(
+    ("parameters", "message"),
+    [
+        (
+            {"query_params": "callback=https://example.invalid/cb?prompt=Lot%3A+ABC-123"},
+            r"parameters\.query_params\.callback",
+        ),
+        (
+            {"headers": "Referer: https://example.invalid/cb?prompt=Lot%3A+ABC-123"},
+            r"parameters\.headers\.Referer",
+        ),
+    ],
+)
+def test_build_conversion_audit_log_rejects_raw_content_url_parameter_values(
+    parameters: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        build_conversion_audit_log(
+            source_bytes=b"Lot: ABC-123\n",
+            output_bytes=b'{"lot_number":"ABC-123"}\n',
+            model="local-json-model",
+            prompt_id="veridoc_conversion_plan",
+            prompt_version="poc-08",
+            ir_version="document-ir-v1",
+            parameters=parameters,
+        )
 
 
 def test_build_conversion_audit_log_rejects_multi_entry_raw_content_parameters() -> None:
@@ -812,7 +861,50 @@ def test_build_conversion_audit_log_rejects_schema_content_values(
         )
 
 
-def test_build_conversion_audit_log_redacts_schema_secret_defaults() -> None:
+@pytest.mark.parametrize(
+    ("field_name", "schema_key", "schema_value"),
+    [
+        ("lot_number", "const", "ABC-123"),
+        ("patient_name", "examples", ["Jane Doe"]),
+    ],
+)
+def test_build_conversion_audit_log_rejects_domain_schema_values(
+    field_name: str,
+    schema_key: str,
+    schema_value: object,
+) -> None:
+    response_format = {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "veridoc_conversion_plan",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    field_name: {
+                        "type": "string",
+                        schema_key: schema_value,
+                    },
+                },
+            },
+        },
+    }
+
+    with pytest.raises(
+        ValueError,
+        match=rf"parameters\.response_format\.json_schema\.schema\.properties\.{field_name}\.{schema_key}",
+    ):
+        build_conversion_audit_log(
+            source_bytes=b"Lot: ABC-123\n",
+            output_bytes=b'{"lot_number":"ABC-123"}\n',
+            model="local-json-model",
+            prompt_id="veridoc_conversion_plan",
+            prompt_version="poc-08",
+            ir_version="document-ir-v1",
+            parameters={"response_format": response_format},
+        )
+
+
+def test_build_conversion_audit_log_rejects_schema_secret_defaults() -> None:
     response_format = {
         "type": "json_schema",
         "json_schema": {
@@ -829,21 +921,19 @@ def test_build_conversion_audit_log_redacts_schema_secret_defaults() -> None:
         },
     }
 
-    audit_log = build_conversion_audit_log(
-        source_bytes=b"Lot: ABC-123\n",
-        output_bytes=b'{"lot_number":"ABC-123"}\n',
-        model="local-json-model",
-        prompt_id="veridoc_conversion_plan",
-        prompt_version="poc-08",
-        ir_version="document-ir-v1",
-        parameters={"response_format": response_format},
-    )
-
-    default_value = audit_log["parameters"]["response_format"]["json_schema"]["schema"][
-        "properties"
-    ]["token"]["default"]
-    assert default_value == "[REDACTED]"
-    assert "operator-runtime-token" not in json.dumps(audit_log, sort_keys=True)
+    with pytest.raises(
+        ValueError,
+        match=r"parameters\.response_format\.json_schema\.schema\.properties\.token\.default",
+    ):
+        build_conversion_audit_log(
+            source_bytes=b"Lot: ABC-123\n",
+            output_bytes=b'{"lot_number":"ABC-123"}\n',
+            model="local-json-model",
+            prompt_id="veridoc_conversion_plan",
+            prompt_version="poc-08",
+            ir_version="document-ir-v1",
+            parameters={"response_format": response_format},
+        )
 
 
 def test_build_conversion_audit_log_allows_tool_function_schema_property_names() -> None:

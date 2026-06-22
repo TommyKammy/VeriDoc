@@ -201,6 +201,7 @@ _SAFE_CONTENT_WORD_AUDIT_PARAMETER_KEYS = frozenset(
         "content_encoding",
         "content_length",
         "content_md5",
+        "max_tokens",
         "max_prompt_tokens",
         "x_amz_content_sha256",
     }
@@ -559,6 +560,8 @@ def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "
             item_path = _raw_key_value_parameter_entry_path(key_path, entry_key)
             if _is_content_bearing_audit_parameter_key(item_path):
                 raise ValueError(f"{item_path} must not include document or request content")
+            if _is_content_bearing_url(_entry_value):
+                raise ValueError(f"{item_path} must not include document or request content")
     elif isinstance(value, (list, tuple)):
         for index, item in enumerate(value):
             _reject_content_bearing_audit_parameters(item, key_path=f"{key_path}[{index}]")
@@ -571,11 +574,18 @@ def _is_content_bearing_audit_parameter_key(key: str) -> bool:
     if normalized_leaf in _SAFE_CONTENT_WORD_AUDIT_PARAMETER_KEYS:
         return False
     leaf_components = tuple(normalized_leaf.split("_"))
+    singular_leaf_components = tuple(
+        _singular_parameter_component(component) for component in leaf_components
+    )
     path_components = tuple(_normalize_parameter_key(key).split("_"))
     return (
         normalized_leaf in _CONTENT_BEARING_AUDIT_PARAMETER_KEYS
         or "previous_response" in normalized_leaf
         or any(component in _CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENTS for component in leaf_components)
+        or any(
+            component in _CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENTS
+            for component in singular_leaf_components
+        )
         or any(
             _contains_component_sequence(leaf_components, sequence)
             for sequence in _CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENT_SEQUENCES
@@ -637,22 +647,21 @@ def _is_content_bearing_schema_value_path(key: str) -> bool:
     )
     if not _is_json_schema_audit_parameter_path(components):
         return False
-    if components[-1] not in _JSON_SCHEMA_VALUE_AUDIT_PARAMETER_KEYS:
-        return False
-    return any(
-        _is_content_bearing_schema_field_name(components[index + 1])
-        for index, component in enumerate(components[:-1])
-        if component in {"properties", "defs", "definitions"}
-    )
+    return components[-1] in _JSON_SCHEMA_VALUE_AUDIT_PARAMETER_KEYS
 
 
 def _is_content_bearing_schema_field_name(name: str) -> bool:
     if name in _SAFE_CONTENT_WORD_AUDIT_PARAMETER_KEYS:
         return False
     components = tuple(name.split("_"))
+    singular_components = tuple(_singular_parameter_component(component) for component in components)
     return (
         name in _CONTENT_BEARING_AUDIT_PARAMETER_KEYS
         or any(component in _CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENTS for component in components)
+        or any(
+            component in _CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENTS
+            for component in singular_components
+        )
         or any(
             _contains_component_sequence(components, sequence)
             for sequence in _CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENT_SEQUENCES
@@ -662,13 +671,35 @@ def _is_content_bearing_schema_field_name(name: str) -> bool:
 
 def _is_secret_parameter_key(key: str) -> bool:
     normalized = _normalize_parameter_key(key)
-    components = tuple(normalized.split("_"))
+    normalized_leaf = _normalize_parameter_key(_parameter_key_leaf(key))
+    if (
+        normalized in _SAFE_CONTENT_WORD_AUDIT_PARAMETER_KEYS
+        or normalized_leaf in _SAFE_CONTENT_WORD_AUDIT_PARAMETER_KEYS
+        or _is_key_value_audit_parameter_sequence_container_key(key)
+    ):
+        return False
+    key_candidates = (normalized, normalized_leaf)
+    components = tuple(normalized_leaf.split("_"))
+    singular_components = tuple(_singular_parameter_component(component) for component in components)
     return (
-        normalized in _SECRET_PARAMETER_KEYS
-        or any(normalized.endswith(suffix) for suffix in _SECRET_PARAMETER_KEY_SUFFIXES)
-        or any(normalized.startswith(prefix) for prefix in _SECRET_PARAMETER_KEY_PREFIXES)
-        or any(phrase in normalized for phrase in _SECRET_PARAMETER_KEY_PHRASES)
+        any(candidate in _SECRET_PARAMETER_KEYS for candidate in key_candidates)
+        or any(
+            candidate.endswith(suffix)
+            for candidate in key_candidates
+            for suffix in _SECRET_PARAMETER_KEY_SUFFIXES
+        )
+        or any(
+            candidate.startswith(prefix)
+            for candidate in key_candidates
+            for prefix in _SECRET_PARAMETER_KEY_PREFIXES
+        )
+        or any(
+            phrase in candidate
+            for candidate in key_candidates
+            for phrase in _SECRET_PARAMETER_KEY_PHRASES
+        )
         or any(component in _SECRET_PARAMETER_KEY_COMPONENTS for component in components)
+        or any(component in _SECRET_PARAMETER_KEY_COMPONENTS for component in singular_components)
         or any(
             _contains_component_sequence(components, sequence)
             for sequence in _SECRET_PARAMETER_KEY_COMPONENT_SEQUENCES
@@ -677,10 +708,14 @@ def _is_secret_parameter_key(key: str) -> bool:
 
 
 def _normalize_parameter_key(key: str) -> str:
-    normalized = _CAMEL_ACRONYM_BOUNDARY_RE.sub(r"\1_\2", key.strip())
+    normalized = _CAMEL_ACRONYM_BOUNDARY_RE.sub(r"\1_\2", unquote_plus(key.strip()))
     normalized = _CAMEL_CASE_BOUNDARY_RE.sub(r"\1_\2", normalized)
     normalized = _PARAMETER_KEY_SEPARATOR_RE.sub("_", normalized)
     return normalized.strip("_").lower()
+
+
+def _singular_parameter_component(component: str) -> str:
+    return component[:-1] if component.endswith("s") else component
 
 
 def _parameter_key_leaf(key: str) -> str:
@@ -723,15 +758,25 @@ def _is_safe_audit_parameter_sequence_key(key: str) -> bool:
 
 
 def _raw_key_value_parameter_line(value: str, key_path: str) -> tuple[str, str, str] | None:
-    normalized_leaf = _normalize_parameter_key(_parameter_key_leaf(key_path))
     if not _is_key_value_audit_parameter_sequence_container_key(key_path):
         return None
-    separators = ("=", ":") if normalized_leaf in {"params", "query_params"} else (":", "=")
-    for separator in separators:
+    separator = _raw_key_value_parameter_separator(value)
+    if separator is not None:
         entry_key, found, entry_value = value.partition(separator)
         if found and entry_key.strip() and entry_value.strip():
             return (entry_key.strip(), found, entry_value.strip())
     return None
+
+
+def _raw_key_value_parameter_separator(value: str) -> str | None:
+    positions = [
+        (position, separator)
+        for separator in ("=", ":")
+        if (position := value.find(separator)) >= 0
+    ]
+    if not positions:
+        return None
+    return min(positions)[1]
 
 
 def _raw_key_value_parameter_entries(value: str, key_path: str) -> list[tuple[str, str, str]]:
@@ -822,7 +867,7 @@ def _mapping_key_value_parameter_entry(value: Mapping[object, object]) -> tuple[
     value_field = normalized_fields.get("value")
     if value_field is None:
         return None
-    for key_field in ("key", "name"):
+    for key_field in ("key", "name", "header", "parameter"):
         original_key_field = normalized_fields.get(key_field)
         if original_key_field is None:
             continue
