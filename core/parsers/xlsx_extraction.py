@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import PurePosixPath, Path
 import re
 from typing import Any, Dict, List, Optional, Union
@@ -155,11 +155,19 @@ def _read_sheet(
         dimension = dimension_element.attrib.get("ref")
 
     column_styles = _read_column_styles(root)
-    cells = [
-        _cell_from_xml(cell, shared_strings, style_formats, column_styles)
-        for row in root.findall(f"{SHEET_NS}sheetData/{SHEET_NS}row")
-        for cell in row.findall(f"{SHEET_NS}c")
-    ]
+    cells: List[XlsxCell] = []
+    for row in root.findall(f"{SHEET_NS}sheetData/{SHEET_NS}row"):
+        row_style_index = _style_index(row.attrib.get("s"))
+        cells.extend(
+            _cell_from_xml(
+                cell,
+                shared_strings,
+                style_formats,
+                column_styles,
+                row_style_index,
+            )
+            for cell in row.findall(f"{SHEET_NS}c")
+        )
     merged_ranges = [
         merge.attrib["ref"]
         for merge in root.findall(f"{SHEET_NS}mergeCells/{SHEET_NS}mergeCell")
@@ -173,6 +181,7 @@ def _cell_from_xml(
     shared_strings: List[str],
     style_formats: List[Optional[str]],
     column_styles: List[_ColumnStyle],
+    row_style_index: Optional[int],
 ) -> XlsxCell:
     ref = cell.attrib.get("r", "")
     raw_type = cell.attrib.get("t")
@@ -196,6 +205,7 @@ def _cell_from_xml(
             value_text,
             style_formats,
             column_styles,
+            row_style_index,
         )
         if formatted_identifier is not None:
             value = formatted_identifier
@@ -221,19 +231,21 @@ def _formatted_identifier_value(
     value_text: str,
     style_formats: List[Optional[str]],
     column_styles: List[_ColumnStyle],
+    row_style_index: Optional[int],
 ) -> Optional[str]:
-    if value_text == "" or not re.fullmatch(r"-?\d+", value_text):
+    integer_value = _integral_numeric_value(value_text)
+    if integer_value is None:
         return None
-    format_code = _cell_format_code(cell, style_formats, column_styles)
+    format_code = _cell_format_code(cell, style_formats, column_styles, row_style_index)
     if format_code is None:
         return None
-    zero_format = _zero_padding_format(format_code, int(value_text))
+    zero_format = _zero_padding_format(format_code, integer_value)
     if zero_format is None:
         return None
     width, show_negative_sign = zero_format
-    digits = value_text[1:] if value_text.startswith("-") else value_text
+    digits = str(abs(integer_value))
     padded = digits.zfill(width)
-    if value_text.startswith("-") and show_negative_sign:
+    if integer_value < 0 and show_negative_sign:
         return "-" + padded
     return padded
 
@@ -242,13 +254,16 @@ def _cell_format_code(
     cell: ElementTree.Element,
     style_formats: List[Optional[str]],
     column_styles: List[_ColumnStyle],
+    row_style_index: Optional[int],
 ) -> Optional[str]:
     style_index_text = cell.attrib.get("s")
     style_index = _style_index(style_index_text)
     if style_index is None:
+        style_index = row_style_index
+    if style_index is None:
         style_index = _column_style_index(cell.attrib.get("r", ""), column_styles)
     if style_index is None:
-        return None
+        style_index = 0
     if style_index < 0 or style_index >= len(style_formats):
         return None
     return style_formats[style_index]
@@ -311,25 +326,72 @@ def _positive_int(value: Optional[str]) -> Optional[int]:
 
 
 def _zero_padding_format(format_code: str, value: int) -> Optional[tuple[int, bool]]:
-    sections = _format_sections(format_code)
-    if not sections:
+    section_info = _format_section(format_code, value)
+    if section_info is None:
         return None
-    uses_negative_section = False
-    if value > 0:
-        section = sections[0]
-    elif value < 0 and len(sections) > 1:
-        uses_negative_section = True
-        section = sections[1]
-    elif value == 0 and len(sections) > 2:
-        section = sections[2]
-    else:
-        section = sections[0]
+    section, uses_negative_section = section_info
     normalized = re.sub(r"\[[^\]]+\]", "", section)
     match = re.fullmatch(r"(-?)(0+)", normalized)
     if match is None:
         return None
+    width = len(match.group(2))
+    if width <= 1:
+        return None
     show_negative_sign = value < 0 and (not uses_negative_section or bool(match.group(1)))
-    return len(match.group(2)), show_negative_sign
+    return width, show_negative_sign
+
+
+def _format_section(format_code: str, value: int) -> Optional[tuple[str, bool]]:
+    sections = _format_sections(format_code)
+    if not sections:
+        return None
+    conditional_sections = [
+        (section, _section_condition(section)) for section in sections[:3]
+    ]
+    if any(condition is not None for _, condition in conditional_sections):
+        for index, (section, condition) in enumerate(conditional_sections):
+            if condition is None or _condition_matches(condition, value):
+                return section, value < 0 and index == 1
+        return None
+
+    if value > 0:
+        return sections[0], False
+    if value < 0 and len(sections) > 1:
+        return sections[1], True
+    if value == 0 and len(sections) > 2:
+        return sections[2], False
+    return sections[0], False
+
+
+def _section_condition(section: str) -> Optional[tuple[str, Decimal]]:
+    match = re.match(
+        r"\[\s*(<=|>=|<>|=|<|>)\s*(-?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][+-]?\d+)?)\s*\]",
+        section,
+    )
+    if match is None:
+        return None
+    try:
+        return match.group(1), Decimal(match.group(2))
+    except InvalidOperation:
+        return None
+
+
+def _condition_matches(condition: tuple[str, Decimal], value: int) -> bool:
+    operator, operand = condition
+    left = Decimal(value)
+    if operator == "<":
+        return left < operand
+    if operator == "<=":
+        return left <= operand
+    if operator == ">":
+        return left > operand
+    if operator == ">=":
+        return left >= operand
+    if operator == "=":
+        return left == operand
+    if operator == "<>":
+        return left != operand
+    return False
 
 
 def _format_sections(format_code: str) -> List[str]:
@@ -351,6 +413,18 @@ def _format_sections(format_code: str) -> List[str]:
 
 def _is_false(value: Optional[str]) -> bool:
     return value is not None and value.lower() in {"0", "false"}
+
+
+def _integral_numeric_value(value_text: str) -> Optional[int]:
+    if value_text == "":
+        return None
+    try:
+        value = Decimal(value_text)
+    except InvalidOperation:
+        return None
+    if not value.is_finite() or value != value.to_integral_value():
+        return None
+    return int(value)
 
 
 def _cell_value_text(cell: ElementTree.Element) -> str:

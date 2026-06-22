@@ -214,6 +214,69 @@ def test_extract_xlsx_structure_uses_column_style_for_zero_padded_identifier_cel
     assert cells["B1"] == (123, "number")
 
 
+def test_extract_xlsx_structure_uses_row_style_for_zero_padded_identifier_cells(
+    tmp_path: Path,
+) -> None:
+    xlsx_path = tmp_path / "row-zero-padded-id.xlsx"
+    _write_xlsx(
+        xlsx_path,
+        sheet_xml="""<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1" s="1" customFormat="1">
+      <c r="A1"><v>123</v></c>
+    </row>
+  </sheetData>
+</worksheet>
+""",
+        styles_xml="""<?xml version="1.0" encoding="UTF-8"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <numFmts count="1"><numFmt numFmtId="164" formatCode="00000"/></numFmts>
+  <cellXfs count="2">
+    <xf numFmtId="0"/>
+    <xf numFmtId="164" applyNumberFormat="1"/>
+  </cellXfs>
+</styleSheet>
+""",
+    )
+
+    result = extract_xlsx_structure(xlsx_path)
+
+    cells = {cell.ref: (cell.value, cell.value_type) for cell in result.sheets[0].cells}
+    assert cells["A1"] == ("00123", "string")
+
+
+def test_extract_xlsx_structure_uses_default_style_for_zero_padded_identifier_cells(
+    tmp_path: Path,
+) -> None:
+    xlsx_path = tmp_path / "default-zero-padded-id.xlsx"
+    _write_xlsx(
+        xlsx_path,
+        sheet_xml="""<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1">
+      <c r="A1"><v>123</v></c>
+    </row>
+  </sheetData>
+</worksheet>
+""",
+        styles_xml="""<?xml version="1.0" encoding="UTF-8"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <numFmts count="1"><numFmt numFmtId="164" formatCode="00000"/></numFmts>
+  <cellXfs count="1">
+    <xf numFmtId="164" applyNumberFormat="1"/>
+  </cellXfs>
+</styleSheet>
+""",
+    )
+
+    result = extract_xlsx_structure(xlsx_path)
+
+    cells = {cell.ref: (cell.value, cell.value_type) for cell in result.sheets[0].cells}
+    assert cells["A1"] == ("00123", "string")
+
+
 def test_extract_xlsx_structure_ignores_disabled_zero_padding_format(tmp_path: Path) -> None:
     xlsx_path = tmp_path / "disabled-zero-padded-id.xlsx"
     _write_xlsx(
@@ -276,3 +339,111 @@ def test_extract_xlsx_structure_preserves_sectioned_zero_padded_identifiers(
     assert cells["A1"] == ("00123", "string")
     assert cells["A2"] == ("-00007", "string")
     assert cells["A3"] == ("00000", "string")
+
+
+def test_extract_xlsx_structure_preserves_integral_numeric_zero_padded_identifiers(
+    tmp_path: Path,
+) -> None:
+    xlsx_path = tmp_path / "integral-numeric-zero-padded-id.xlsx"
+    _write_xlsx(
+        xlsx_path,
+        sheet_xml="""<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1">
+      <c r="A1" s="1"><v>123.0</v></c>
+      <c r="A2" s="1"><v>1.23E+2</v></c>
+      <c r="A3" s="1"><v>12.5</v></c>
+    </row>
+  </sheetData>
+</worksheet>
+""",
+        styles_xml="""<?xml version="1.0" encoding="UTF-8"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <numFmts count="1"><numFmt numFmtId="164" formatCode="00000"/></numFmts>
+  <cellXfs count="2">
+    <xf numFmtId="0"/>
+    <xf numFmtId="164" applyNumberFormat="1"/>
+  </cellXfs>
+</styleSheet>
+""",
+    )
+
+    result = extract_xlsx_structure(xlsx_path)
+
+    cells = {cell.ref: (cell.value, cell.value_type) for cell in result.sheets[0].cells}
+    assert cells["A1"] == ("00123", "string")
+    assert cells["A2"] == ("00123", "string")
+    assert cells["A3"] == ("12.5", "number")
+
+
+def test_extract_xlsx_structure_respects_conditional_zero_padding_sections(
+    tmp_path: Path,
+) -> None:
+    xlsx_path = tmp_path / "conditional-zero-padded-id.xlsx"
+    _write_xlsx(
+        xlsx_path,
+        sheet_xml="""<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1">
+      <c r="A1" s="1"><v>99</v></c>
+      <c r="A2" s="1"><v>123</v></c>
+    </row>
+  </sheetData>
+</worksheet>
+""",
+        styles_xml="""<?xml version="1.0" encoding="UTF-8"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <numFmts count="1"><numFmt numFmtId="164" formatCode="[&lt;100]00000;0"/></numFmts>
+  <cellXfs count="2">
+    <xf numFmtId="0"/>
+    <xf numFmtId="164" applyNumberFormat="1"/>
+  </cellXfs>
+</styleSheet>
+""",
+    )
+
+    result = extract_xlsx_structure(xlsx_path)
+
+    cells = {cell.ref: (cell.value, cell.value_type) for cell in result.sheets[0].cells}
+    assert cells["A1"] == ("00099", "string")
+    assert cells["A2"] == (123, "number")
+
+
+def test_extract_xlsx_structure_does_not_stringify_unpadded_integer_formats(
+    tmp_path: Path,
+) -> None:
+    xlsx_path = tmp_path / "unpadded-integer-format.xlsx"
+    _write_xlsx(
+        xlsx_path,
+        sheet_xml="""<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1">
+      <c r="A1" s="1"><v>123</v></c>
+      <c r="A2" s="2"><v>7</v></c>
+    </row>
+  </sheetData>
+</worksheet>
+""",
+        styles_xml="""<?xml version="1.0" encoding="UTF-8"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <numFmts count="2">
+    <numFmt numFmtId="164" formatCode="0"/>
+    <numFmt numFmtId="165" formatCode="00"/>
+  </numFmts>
+  <cellXfs count="3">
+    <xf numFmtId="0"/>
+    <xf numFmtId="164" applyNumberFormat="1"/>
+    <xf numFmtId="165" applyNumberFormat="1"/>
+  </cellXfs>
+</styleSheet>
+""",
+    )
+
+    result = extract_xlsx_structure(xlsx_path)
+
+    cells = {cell.ref: (cell.value, cell.value_type) for cell in result.sheets[0].cells}
+    assert cells["A1"] == (123, "number")
+    assert cells["A2"] == ("07", "string")
