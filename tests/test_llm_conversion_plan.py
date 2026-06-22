@@ -171,6 +171,8 @@ def test_build_conversion_audit_log_records_hashes_metadata_and_redacts_secrets(
         "serviceCredentials",
         "googleCredentialsJson",
         "auth",
+        "authentication",
+        "clientAuthentication",
         "basicAuth",
         "accessToken",
         "githubTokenFile",
@@ -207,6 +209,8 @@ def test_build_conversion_audit_log_redacts_review_thread_credential_keys(parame
         ({"generation": {"previous_response": {"choices": []}}}, r"parameters\.generation\.previous_response"),
         ({"tools": [{"content": "Lot: ABC-123"}]}, r"parameters\.tools\[0\]\.content"),
         ({"previousResponse": {"choices": []}}, r"parameters\.previousResponse"),
+        ({"source": "Lot: ABC-123"}, r"parameters\.source"),
+        ({"output": '{"lot_number":"ABC-123"}'}, r"parameters\.output"),
         ({"input": "Lot: ABC-123"}, r"parameters\.input"),
         ({"prompt": "Lot: ABC-123"}, r"parameters\.prompt"),
         ({"userPrompt": "Lot: ABC-123"}, r"parameters\.userPrompt"),
@@ -221,9 +225,9 @@ def test_build_conversion_audit_log_redacts_review_thread_credential_keys(parame
         ({"output_bytes": b'{"lot_number":"ABC-123"}\n'}, r"parameters\.output_bytes"),
         ({"sourceBytes": b"Lot: ABC-123\n"}, r"parameters\.sourceBytes"),
         ({"outputBytes": b'{"lot_number":"ABC-123"}\n'}, r"parameters\.outputBytes"),
-        ({"source": {"bytes": b"Lot: ABC-123\n"}}, r"parameters\.source\.bytes"),
-        ({"output": {"bytes": b'{"lot_number":"ABC-123"}\n'}}, r"parameters\.output\.bytes"),
-        ({"source": [("bytes", b"Lot: ABC-123\n")]}, r"parameters\.source\[0\]\.bytes"),
+        ({"source": {"bytes": b"Lot: ABC-123\n"}}, r"parameters\.source"),
+        ({"output": {"bytes": b'{"lot_number":"ABC-123"}\n'}}, r"parameters\.output"),
+        ({"source": [("bytes", b"Lot: ABC-123\n")]}, r"parameters\.source"),
     ],
 )
 def test_build_conversion_audit_log_rejects_content_bearing_parameters(
@@ -294,6 +298,29 @@ def test_build_conversion_audit_log_preserves_two_string_generation_parameter_li
     assert audit_log["parameters"] == {"stop": ["prompt", "END"]}
 
 
+def test_build_conversion_audit_log_sanitizes_list_key_value_parameter_entries() -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={
+            "headers": [["Authorization", "Bearer operator-runtime-token"]],
+            "options": [["max_prompt_tokens", 4096]],
+        },
+    )
+
+    assert audit_log["parameters"] == {
+        "headers": [["Authorization", "[REDACTED]"]],
+        "options": [["max_prompt_tokens", 4096]],
+    }
+    rendered = json.dumps(audit_log, sort_keys=True)
+    assert "operator-runtime-token" not in rendered
+    assert "Bearer" not in rendered
+
+
 def test_build_conversion_audit_log_sanitizes_mapping_key_value_parameter_entries() -> None:
     audit_log = build_conversion_audit_log(
         source_bytes=b"Lot: ABC-123\n",
@@ -327,6 +354,19 @@ def test_build_conversion_audit_log_rejects_mapping_key_value_content_parameter_
             prompt_version="poc-08",
             ir_version="document-ir-v1",
             parameters={"options": [{"key": "prompt", "value": "Lot: ABC-123"}]},
+        )
+
+
+def test_build_conversion_audit_log_rejects_list_key_value_content_parameter_entries() -> None:
+    with pytest.raises(ValueError, match=r"parameters\.options\.prompt"):
+        build_conversion_audit_log(
+            source_bytes=b"Lot: ABC-123\n",
+            output_bytes=b'{"lot_number":"ABC-123"}\n',
+            model="local-json-model",
+            prompt_id="veridoc_conversion_plan",
+            prompt_version="poc-08",
+            ir_version="document-ir-v1",
+            parameters={"options": ["prompt", "Lot: ABC-123"]},
         )
 
 

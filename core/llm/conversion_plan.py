@@ -94,6 +94,7 @@ _SECRET_PARAMETER_KEYS = frozenset(
         "api_key",
         "apikey",
         "auth",
+        "authentication",
         "authorization",
         "cookie",
         "credential",
@@ -140,6 +141,7 @@ _SECRET_PARAMETER_KEY_COMPONENTS = frozenset(
     {
         "authorization",
         "auth",
+        "authentication",
         "cookie",
         "credential",
         "credentials",
@@ -166,6 +168,8 @@ _CONTENT_BEARING_AUDIT_PARAMETER_KEYS = frozenset(
         "output_bytes",
         "previous_response",
         "prompt",
+        "output",
+        "source",
         "source_bytes",
         "synthetic_text",
         "text",
@@ -174,6 +178,11 @@ _CONTENT_BEARING_AUDIT_PARAMETER_KEYS = frozenset(
 _SAFE_CONTENT_WORD_AUDIT_PARAMETER_KEYS = frozenset(
     {
         "max_prompt_tokens",
+    }
+)
+_SAFE_AUDIT_PARAMETER_SEQUENCE_KEYS = frozenset(
+    {
+        "stop",
     }
 )
 _CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENTS = frozenset(
@@ -411,7 +420,7 @@ def _redact_audit_parameters(value: object, *, key_path: str = "") -> object:
             )
             for key, item in value.items()
         }
-    if _is_key_value_parameter_entry(value):
+    if _is_key_value_parameter_entry(value) and not _is_safe_audit_parameter_sequence_key(key_path):
         entry_key = str(value[0])
         entry_path = _join_parameter_key_path(key_path, entry_key)
         return [entry_key, _redact_audit_parameters(value[1], key_path=entry_path)]
@@ -437,7 +446,7 @@ def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "
             if _is_content_bearing_audit_parameter_key(item_path):
                 raise ValueError(f"{item_path} must not include document or request content")
             _reject_content_bearing_audit_parameters(item, key_path=item_path)
-    elif _is_key_value_parameter_entry(value):
+    elif _is_key_value_parameter_entry(value) and not _is_safe_audit_parameter_sequence_key(key_path):
         entry_key = str(value[0])
         item_path = f"{key_path}.{entry_key}"
         if _is_content_bearing_audit_parameter_key(item_path):
@@ -503,10 +512,14 @@ def _join_parameter_key_path(parent: str, key: str) -> str:
 
 def _is_key_value_parameter_entry(value: object) -> bool:
     return (
-        isinstance(value, tuple)
+        isinstance(value, (list, tuple))
         and len(value) == 2
         and isinstance(value[0], str)
     )
+
+
+def _is_safe_audit_parameter_sequence_key(key: str) -> bool:
+    return _normalize_parameter_key(_parameter_key_leaf(key)) in _SAFE_AUDIT_PARAMETER_SEQUENCE_KEYS
 
 
 def _mapping_key_value_parameter_entry(value: Mapping[object, object]) -> tuple[str, str, str] | None:
