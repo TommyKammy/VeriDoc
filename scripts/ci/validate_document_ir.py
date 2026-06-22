@@ -23,6 +23,7 @@ SUPPORTED_KEYS = {
     "additionalProperties",
     "const",
     "enum",
+    "exclusiveMinimum",
     "items",
     "maximum",
     "minimum",
@@ -91,6 +92,10 @@ def validate(schema: dict[str, Any], value: Any, path: tuple[str, ...] = ()) -> 
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         if "minimum" in schema and value < schema["minimum"]:
             raise ValidationError(f"{format_path(path)}: value is below minimum {schema['minimum']}")
+        if "exclusiveMinimum" in schema and value <= schema["exclusiveMinimum"]:
+            raise ValidationError(
+                f"{format_path(path)}: value must be greater than {schema['exclusiveMinimum']}"
+            )
         if "maximum" in schema and value > schema["maximum"]:
             raise ValidationError(f"{format_path(path)}: value is above maximum {schema['maximum']}")
 
@@ -120,6 +125,14 @@ def validate(schema: dict[str, Any], value: Any, path: tuple[str, ...] = ()) -> 
 
 
 def validate_document_ir_consistency(document: dict[str, Any]) -> None:
+    schema_version = document.get("schema_version")
+    if schema_version == "document-ir/v1":
+        validate_document_ir_v1_consistency(document)
+        return
+    validate_document_ir_v0_consistency(document)
+
+
+def validate_document_ir_v0_consistency(document: dict[str, Any]) -> None:
     pages_by_number: dict[int | float, dict[str, Any]] = {}
     for index, page in enumerate(document["pages"]):
         page_number = page["page_number"]
@@ -159,6 +172,56 @@ def validate_document_ir_consistency(document: dict[str, Any]) -> None:
                 "$.blocks"
                 f"[{index}]"
                 ".value_metadata.bbox: "
+                f"extends past page {source_page!r} height {page['height']!r}"
+            )
+
+
+def validate_document_ir_v1_consistency(document: dict[str, Any]) -> None:
+    pages_by_number: dict[int | float, dict[str, Any]] = {}
+    for index, page in enumerate(document["pages"]):
+        page_number = page["page_number"]
+        if page_number in pages_by_number:
+            raise ValidationError(
+                "$.pages"
+                f"[{index}]"
+                ".page_number: "
+                f"duplicates page number {page_number!r}"
+            )
+        pages_by_number[page_number] = page
+
+    declared_pages_text = ", ".join(str(page) for page in sorted(pages_by_number))
+
+    for index, block in enumerate(document["blocks"]):
+        source_page = block["source_page"]
+        if source_page not in pages_by_number:
+            raise ValidationError(
+                "$.blocks"
+                f"[{index}]"
+                ".source_page: "
+                f"references undeclared page {source_page!r}"
+                f" (declared pages: {declared_pages_text})"
+            )
+        page = pages_by_number[source_page]
+        bbox = block["bbox"]
+        if bbox["unit"] != page["unit"]:
+            raise ValidationError(
+                "$.blocks"
+                f"[{index}]"
+                ".bbox.unit: "
+                f"must match page {source_page!r} unit {page['unit']!r}"
+            )
+        if bbox["x"] + bbox["width"] > page["width"]:
+            raise ValidationError(
+                "$.blocks"
+                f"[{index}]"
+                ".bbox: "
+                f"extends past page {source_page!r} width {page['width']!r}"
+            )
+        if bbox["y"] + bbox["height"] > page["height"]:
+            raise ValidationError(
+                "$.blocks"
+                f"[{index}]"
+                ".bbox: "
                 f"extends past page {source_page!r} height {page['height']!r}"
             )
 
