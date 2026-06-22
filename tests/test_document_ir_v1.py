@@ -255,6 +255,43 @@ class DocumentIrV1Test(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertIn("blocks[0].bbox origin must be top-left", result.errors)
 
+    def test_validation_fails_closed_for_bbox_unit_mismatch(self) -> None:
+        document_ir = from_parser_output(
+            {
+                "source_path": "fixtures/sample.pdf",
+                "extractor": "pymupdf",
+                "pages": [
+                    {
+                        "page_number": 1,
+                        "width_pt": 595.0,
+                        "height_pt": 842.0,
+                        "fragments": [
+                            {
+                                "text": "pixel bbox on point page",
+                                "page_number": 1,
+                                "bbox": {
+                                    "x": 72.0,
+                                    "y": 80.0,
+                                    "width": 120.0,
+                                    "height": 18.0,
+                                    "unit": "px",
+                                },
+                                "extractor": "pymupdf",
+                            }
+                        ],
+                    }
+                ],
+            },
+            document_id="sample-pdf",
+            title="Sample PDF",
+            source_type="pdf",
+        )
+
+        result = validate_document_ir_v1(document_ir)
+
+        self.assertFalse(result.ok)
+        self.assertIn("blocks[0].bbox unit must match page 1 unit", result.errors)
+
     def test_docx_parser_output_converts_to_document_ir_v1_blocks(self) -> None:
         document_ir = from_parser_output(
             {

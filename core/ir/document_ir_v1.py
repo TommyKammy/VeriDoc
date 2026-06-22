@@ -8,6 +8,7 @@ from typing import Any, List, Optional
 SCHEMA_VERSION = "document-ir/v1"
 SOURCE_TYPES = {"pdf", "docx", "xlsx", "unknown"}
 BLOCK_TYPES = {"heading", "paragraph", "table", "field", "list_item"}
+UNITS = {"pt", "px", "mm"}
 DEFAULT_PAGE_WIDTH_PT = 612.0
 DEFAULT_PAGE_HEIGHT_PT = 792.0
 
@@ -152,6 +153,8 @@ def validate_document_ir_v1(document_ir: DocumentIRV1) -> ValidationResult:
         pages_by_number[page.page_number] = page
         if page.width <= 0 or page.height <= 0:
             errors.append(f"pages[{index}] dimensions must be positive")
+        if page.unit not in UNITS:
+            errors.append(f"pages[{index}].unit is unsupported: {page.unit}")
 
     for index, block in enumerate(document_ir.blocks):
         if block.type not in BLOCK_TYPES:
@@ -166,6 +169,10 @@ def validate_document_ir_v1(document_ir: DocumentIRV1) -> ValidationResult:
             errors.append(f"blocks[{index}].bbox values must be finite numbers")
         if block.bbox.origin != "top-left":
             errors.append(f"blocks[{index}].bbox origin must be top-left")
+        if block.bbox.unit not in UNITS:
+            errors.append(f"blocks[{index}].bbox unit is unsupported: {block.bbox.unit}")
+        if block.bbox.unit != page.unit:
+            errors.append(f"blocks[{index}].bbox unit must match page {block.source_page} unit")
         if _bbox_outside_page(block.bbox, page):
             errors.append(f"blocks[{index}].bbox extends past page {block.source_page}")
         if block.confidence < 0 or block.confidence > 1:
