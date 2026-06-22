@@ -12,6 +12,10 @@ from zipfile import BadZipFile, ZipFile
 SHEET_NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 REL_NS = "{http://schemas.openxmlformats.org/package/2006/relationships}"
 OFFICE_REL_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+OFFICE_REL_TYPE_BASE = (
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+)
+STYLES_REL_TYPE = f"{OFFICE_REL_TYPE_BASE}/styles"
 
 
 @dataclass(frozen=True)
@@ -43,6 +47,12 @@ class _ColumnStyle:
     min_column: int
     max_column: int
     style_index: int
+
+
+@dataclass(frozen=True)
+class _WorkbookRelationship:
+    target: str
+    rel_type: Optional[str]
 
 
 def extract_xlsx_structure(xlsx_path: Union[str, Path]) -> XlsxStructure:
@@ -93,26 +103,65 @@ def _read_shared_strings(archive: ZipFile) -> List[str]:
 
 
 def _read_style_formats(archive: ZipFile) -> List[Optional[str]]:
-    if "xl/styles.xml" not in archive.namelist():
+    styles_part = _read_styles_part_name(archive)
+    if styles_part is None:
         return []
-    root = _read_xml(archive, "xl/styles.xml", "styles")
+    root = _read_xml(archive, styles_part, "styles")
     custom_formats = {
         num_format.attrib["numFmtId"]: num_format.attrib["formatCode"]
         for num_format in root.findall(f"{SHEET_NS}numFmts/{SHEET_NS}numFmt")
         if "numFmtId" in num_format.attrib and "formatCode" in num_format.attrib
     }
+    base_style_formats = [
+        _xf_format_code(style_format, custom_formats)
+        for style_format in root.findall(f"{SHEET_NS}cellStyleXfs/{SHEET_NS}xf")
+    ]
     style_formats: List[Optional[str]] = []
     for cell_format in root.findall(f"{SHEET_NS}cellXfs/{SHEET_NS}xf"):
-        if _is_false(cell_format.attrib.get("applyNumberFormat")):
-            style_formats.append(None)
-            continue
-        style_formats.append(custom_formats.get(cell_format.attrib.get("numFmtId", "")))
+        style_formats.append(
+            _xf_format_code(
+                cell_format,
+                custom_formats,
+                base_style_formats=base_style_formats,
+            )
+        )
     return style_formats
+
+
+def _read_styles_part_name(archive: ZipFile) -> Optional[str]:
+    if "xl/_rels/workbook.xml.rels" in archive.namelist():
+        relationships = _read_workbook_relationships(archive)
+        for relationship in relationships.values():
+            if relationship.rel_type == STYLES_REL_TYPE:
+                return _resolve_workbook_target(relationship.target)
+    if "xl/styles.xml" in archive.namelist():
+        return "xl/styles.xml"
+    return None
+
+
+def _xf_format_code(
+    cell_format: ElementTree.Element,
+    custom_formats: Dict[str, str],
+    *,
+    base_style_formats: Optional[List[Optional[str]]] = None,
+) -> Optional[str]:
+    if _is_false(cell_format.attrib.get("applyNumberFormat")):
+        return None
+    if "numFmtId" in cell_format.attrib:
+        return custom_formats.get(cell_format.attrib["numFmtId"])
+    if base_style_formats is None:
+        return None
+    base_style_index = _style_index(cell_format.attrib.get("xfId"))
+    if base_style_index is None:
+        return None
+    if base_style_index < 0 or base_style_index >= len(base_style_formats):
+        return None
+    return base_style_formats[base_style_index]
 
 
 def _read_workbook_sheet_parts(archive: ZipFile) -> List[tuple[str, str]]:
     workbook = _read_xml(archive, "xl/workbook.xml", "workbook")
-    relationships = _read_relationships(archive)
+    relationships = _read_workbook_relationships(archive)
     sheet_parts: List[tuple[str, str]] = []
 
     for sheet in workbook.findall(f"{SHEET_NS}sheets/{SHEET_NS}sheet"):
@@ -120,15 +169,18 @@ def _read_workbook_sheet_parts(archive: ZipFile) -> List[tuple[str, str]]:
         rel_id = sheet.attrib.get(f"{OFFICE_REL_NS}id")
         if rel_id is None or rel_id not in relationships:
             raise ValueError(f"worksheet relationship is missing for sheet: {name}")
-        sheet_parts.append((name, _resolve_workbook_target(relationships[rel_id])))
+        sheet_parts.append((name, _resolve_workbook_target(relationships[rel_id].target)))
 
     return sheet_parts
 
 
-def _read_relationships(archive: ZipFile) -> Dict[str, str]:
+def _read_workbook_relationships(archive: ZipFile) -> Dict[str, _WorkbookRelationship]:
     root = _read_xml(archive, "xl/_rels/workbook.xml.rels", "workbook relationships")
     return {
-        rel.attrib["Id"]: rel.attrib["Target"]
+        rel.attrib["Id"]: _WorkbookRelationship(
+            target=rel.attrib["Target"],
+            rel_type=rel.attrib.get("Type"),
+        )
         for rel in root.findall(f"{REL_NS}Relationship")
         if "Id" in rel.attrib and "Target" in rel.attrib
     }
@@ -157,7 +209,11 @@ def _read_sheet(
     column_styles = _read_column_styles(root)
     cells: List[XlsxCell] = []
     for row in root.findall(f"{SHEET_NS}sheetData/{SHEET_NS}row"):
-        row_style_index = _style_index(row.attrib.get("s"))
+        row_style_index = (
+            _style_index(row.attrib.get("s"))
+            if _is_true(row.attrib.get("customFormat"))
+            else None
+        )
         cells.extend(
             _cell_from_xml(
                 cell,
@@ -233,11 +289,13 @@ def _formatted_identifier_value(
     column_styles: List[_ColumnStyle],
     row_style_index: Optional[int],
 ) -> Optional[str]:
-    integer_value = _integral_numeric_value(value_text)
-    if integer_value is None:
-        return None
     format_code = _cell_format_code(cell, style_formats, column_styles, row_style_index)
     if format_code is None:
+        return None
+    if not _has_zero_padding_candidate(format_code):
+        return None
+    integer_value = _integral_numeric_value(value_text)
+    if integer_value is None:
         return None
     zero_format = _zero_padding_format(format_code, integer_value)
     if zero_format is None:
@@ -341,6 +399,14 @@ def _zero_padding_format(format_code: str, value: int) -> Optional[tuple[int, bo
     return width, show_negative_sign
 
 
+def _has_zero_padding_candidate(format_code: str) -> bool:
+    for section in _format_sections(format_code)[:3]:
+        normalized = _strip_leading_format_directives(section)
+        if re.fullmatch(r"-?0{2,}", normalized) is not None:
+            return True
+    return False
+
+
 def _format_section(format_code: str, value: int) -> Optional[tuple[str, bool]]:
     sections = _format_sections(format_code)
     if not sections:
@@ -435,6 +501,10 @@ def _format_sections(format_code: str) -> List[str]:
 
 def _is_false(value: Optional[str]) -> bool:
     return value is not None and value.lower() in {"0", "false"}
+
+
+def _is_true(value: Optional[str]) -> bool:
+    return value is not None and value.lower() in {"1", "true"}
 
 
 def _integral_numeric_value(value_text: str) -> Optional[int]:
