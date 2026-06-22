@@ -269,6 +269,7 @@ def test_build_conversion_audit_log_redacts_signature_credentials(
         ({"source": {"bytes": b"Lot: ABC-123\n"}}, r"parameters\.source"),
         ({"output": {"bytes": b'{"lot_number":"ABC-123"}\n'}}, r"parameters\.output"),
         ({"source": [("bytes", b"Lot: ABC-123\n")]}, r"parameters\.source"),
+        ({"extra": [["prompt", "Lot: ABC-123"]]}, r"parameters\.extra\[0\]\.prompt"),
         ({"blob": b"Lot: ABC-123\n"}, r"parameters\.blob"),
         ({"file": "Lot: ABC-123"}, r"parameters\.file"),
         ({"files": ["Lot: ABC-123"]}, r"parameters\.files\[0\]"),
@@ -371,15 +372,18 @@ def test_build_conversion_audit_log_sanitizes_list_key_value_parameter_entries()
         parameters={
             "headers": [["Authorization", "Bearer operator-runtime-token"]],
             "options": [["max_prompt_tokens", 4096]],
+            "extra": [["privateKey", "operator-runtime-private-key"]],
         },
     )
 
     assert audit_log["parameters"] == {
         "headers": [["Authorization", "[REDACTED]"]],
         "options": [["max_prompt_tokens", 4096]],
+        "extra": [["privateKey", "[REDACTED]"]],
     }
     rendered = json.dumps(audit_log, sort_keys=True)
     assert "operator-runtime-token" not in rendered
+    assert "operator-runtime-private-key" not in rendered
     assert "Bearer" not in rendered
 
 

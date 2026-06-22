@@ -501,9 +501,15 @@ def _redact_audit_parameters(value: object, *, key_path: str = "") -> object:
         if _is_credential_bearing_url(value):
             return _REDACTED_VALUE
     if isinstance(value, list):
-        return [_redact_audit_parameters(item, key_path=key_path) for item in value]
+        return [
+            _redact_audit_parameters(item, key_path=f"{key_path}[{index}]")
+            for index, item in enumerate(value)
+        ]
     if isinstance(value, tuple):
-        return [_redact_audit_parameters(item, key_path=key_path) for item in value]
+        return [
+            _redact_audit_parameters(item, key_path=f"{key_path}[{index}]")
+            for index, item in enumerate(value)
+        ]
     return value
 
 
@@ -688,13 +694,28 @@ def _join_parameter_key_path(parent: str, key: str) -> str:
 
 
 def _is_key_value_parameter_entry(value: object, key_path: str) -> bool:
-    return (
+    if not (
         isinstance(value, (list, tuple))
         and len(value) == 2
         and isinstance(value[0], str)
         and _raw_key_value_parameter_line(value[0], key_path) is None
-        and _is_key_value_audit_parameter_sequence_container_key(key_path)
+    ):
+        return False
+    entry_path = _join_parameter_key_path(key_path, value[0])
+    return (
+        _is_key_value_audit_parameter_sequence_container_key(key_path)
+        or (
+            _is_parameter_sequence_item_key(key_path)
+            and (
+                _is_secret_parameter_key(entry_path)
+                or _is_content_bearing_audit_parameter_key(entry_path)
+            )
+        )
     )
+
+
+def _is_parameter_sequence_item_key(key: str) -> bool:
+    return _PARAMETER_INDEX_SUFFIX_RE.search(key.rsplit(".", 1)[-1]) is not None
 
 
 def _is_safe_audit_parameter_sequence_key(key: str) -> bool:
