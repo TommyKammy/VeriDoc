@@ -237,6 +237,9 @@ def _block_from_fragment(
     if data.get("low_confidence") is True:
         requires_review = True
         review_warnings.append(f"blocks[{block_index - 1}].low confidence; block marked requires_review")
+    if data.get("requires_review") is True:
+        requires_review = True
+        review_warnings.append(f"blocks[{block_index - 1}].parser marked block requires_review")
 
     return DocumentBlock(
         id=f"block-{block_index:04d}",
@@ -271,6 +274,8 @@ def _list_value(value: Any) -> list[Any]:
 def _parser_pages(data: dict[str, Any], source_type: str) -> list[Any]:
     pages = _list_value(data.get("pages"))
     if pages:
+        if source_type == "pdf":
+            return _pdf_document_ir_v0_pages(data, pages)
         return pages
     if source_type == "docx":
         blocks = _list_value(data.get("blocks"))
@@ -292,6 +297,75 @@ def _parser_pages(data: dict[str, Any], source_type: str) -> list[Any]:
         if table_pages:
             return table_pages
     return []
+
+
+def _pdf_document_ir_v0_pages(data: dict[str, Any], pages: list[Any]) -> list[Any]:
+    top_level_blocks = [_to_mapping(block) for block in _list_value(data.get("blocks"))]
+    if not top_level_blocks:
+        return pages
+
+    adapted_pages: list[dict[str, Any]] = []
+    blocks_by_page: dict[int, list[dict[str, Any]]] = {}
+    unmatched_blocks: list[dict[str, Any]] = []
+    known_page_numbers = {
+        _page_number_value(_to_mapping(page).get("page_number"), default=index)
+        for index, page in enumerate(pages, start=1)
+    }
+
+    for block in top_level_blocks:
+        metadata = _to_mapping(block.get("value_metadata"))
+        source_page = _page_number_value(metadata.get("source_page"), default=0)
+        fragment = _pdf_document_ir_v0_fragment(block)
+        if source_page in known_page_numbers:
+            blocks_by_page.setdefault(source_page, []).append(fragment)
+        else:
+            unmatched_blocks.append(fragment)
+
+    for index, page_data in enumerate(pages, start=1):
+        page = dict(_to_mapping(page_data))
+        existing_page_blocks = [*_list_value(page.get("fragments")), *_list_value(page.get("regions"))]
+        if existing_page_blocks:
+            adapted_pages.append(page)
+            continue
+
+        page_number = _page_number_value(page.get("page_number"), default=index)
+        fragments = list(blocks_by_page.get(page_number, []))
+        if index == 1:
+            fragments.extend(unmatched_blocks)
+        if fragments:
+            page["fragments"] = fragments
+        adapted_pages.append(page)
+    return adapted_pages
+
+
+def _pdf_document_ir_v0_fragment(block: dict[str, Any]) -> dict[str, Any]:
+    metadata = _to_mapping(block.get("value_metadata"))
+    fragment: dict[str, Any] = {
+        "kind": str(block.get("type") or "paragraph"),
+        "text": str(block.get("text") or ""),
+    }
+
+    source_page = _page_number_value(metadata.get("source_page"), default=0)
+    if source_page:
+        fragment["page_number"] = source_page
+
+    bbox = _to_mapping(metadata.get("bbox"))
+    if bbox:
+        fragment["bbox"] = bbox
+
+    confidence = metadata.get("confidence")
+    if confidence is not None:
+        fragment["confidence"] = confidence
+
+    extractor = metadata.get("extractor")
+    if isinstance(extractor, dict):
+        fragment["extractor"] = str(extractor.get("name") or "unknown")
+    elif extractor is not None:
+        fragment["extractor"] = str(extractor)
+
+    if metadata.get("requires_review") is True:
+        fragment["requires_review"] = True
+    return fragment
 
 
 def _xlsx_sheet_page(sheet_data: Any, page_number: int) -> dict[str, Any]:

@@ -8,6 +8,7 @@ import sys
 from threading import Thread
 from zipfile import ZIP_DEFLATED, ZipFile
 
+import services.api.poc_web as poc_web
 from services.api.poc_web import PocWebRequestHandler, convert_uploaded_document
 
 
@@ -94,6 +95,55 @@ def test_convert_uploaded_docx_uses_real_parser_bytes(tmp_path: Path) -> None:
     assert [block["text"] for block in result["document_ir"]["blocks"]] == [
         "Batch Summary",
         "Lot SAMPLE-001 requires review",
+    ]
+
+
+def test_convert_uploaded_pdf_adapts_phase0_document_ir_v0_blocks(monkeypatch) -> None:
+    def fake_parse_text_pdf_to_document_ir(upload_path: Path, *, document_id: str) -> dict:
+        assert upload_path.read_bytes() == b"%PDF sample bytes"
+        return {
+            "schema_version": "document-ir/v0",
+            "document": {
+                "id": document_id,
+                "title": upload_path.name,
+                "source_type": "pdf",
+            },
+            "pages": [{"page_number": 1, "width": 612, "height": 792, "unit": "pt"}],
+            "blocks": [
+                {
+                    "id": "block-001",
+                    "type": "table",
+                    "text": "Lot\tSAMPLE-001",
+                    "value_metadata": {
+                        "source_page": 1,
+                        "bbox": {"x": 72, "y": 72, "width": 180, "height": 24, "unit": "pt"},
+                        "extractor": {"name": "pymupdf-text-table-heuristic"},
+                        "confidence": 0.6,
+                        "requires_review": True,
+                    },
+                }
+            ],
+        }
+
+    monkeypatch.setattr(poc_web, "parse_text_pdf_to_document_ir", fake_parse_text_pdf_to_document_ir)
+
+    result = convert_uploaded_document(
+        filename="batch-record.pdf",
+        content=b"%PDF sample bytes",
+    )
+
+    assert result["status"] == "requires_review"
+    assert result["document_ir"]["document"]["source_type"] == "pdf"
+    assert result["document_ir"]["blocks"][0]["type"] == "table"
+    assert result["document_ir"]["blocks"][0]["text"] == "Lot\tSAMPLE-001"
+    assert result["document_ir"]["blocks"][0]["review"]["requires_review"] is True
+    assert result["review_items"] == [
+        {
+            "block_id": "block-0001",
+            "source_page": 1,
+            "text": "Lot\tSAMPLE-001",
+            "warnings": ["blocks[0].parser marked block requires_review"],
+        }
     ]
 
 
