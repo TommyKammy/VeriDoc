@@ -238,6 +238,8 @@ def render_xlsx_from_ir(
         vml_content_type = (
             '  <Default Extension="vml" '
             'ContentType="application/vnd.openxmlformats-officedocument.vmlDrawing"/>\n'
+            '  <Override PartName="/xl/drawings/vmlDrawing1.vml" '
+            'ContentType="application/vnd.openxmlformats-officedocument.vmlDrawing"/>\n'
         )
         comment_content_type = (
             '  <Override PartName="/xl/comments1.xml" '
@@ -713,6 +715,14 @@ def _xlsx_vml_drawing_xml(comment_refs: Sequence[str]) -> str:
 
 def _xlsx_vml_comment_shape(ref: str, shape_index: int) -> str:
     column_index, row_index = _xlsx_cell_coordinates(ref)
+    anchor_start_column = column_index
+    anchor_start_row = row_index - 1
+    anchor_end_column = anchor_start_column + 2
+    anchor_end_row = anchor_start_row + 4
+    anchor = (
+        f"{anchor_start_column}, 15, {anchor_start_row}, 2, "
+        f"{anchor_end_column}, 15, {anchor_end_row}, 4"
+    )
     return (
         f'<v:shape id="_x0000_s{shape_index}" type="#_x0000_t202" '
         'style="position:absolute;margin-left:80pt;margin-top:5pt;width:108pt;'
@@ -725,7 +735,7 @@ def _xlsx_vml_comment_shape(ref: str, shape_index: int) -> str:
         '<x:ClientData ObjectType="Note">'
         '<x:MoveWithCells/>'
         '<x:SizeWithCells/>'
-        '<x:Anchor>1, 15, 0, 2, 3, 15, 5, 4</x:Anchor>'
+        f"<x:Anchor>{anchor}</x:Anchor>"
         '<x:AutoFill>False</x:AutoFill>'
         f"<x:Row>{row_index - 1}</x:Row>"
         f"<x:Column>{column_index - 1}</x:Column>"
