@@ -319,6 +319,40 @@ def test_extract_xlsx_structure_uses_inherited_named_style_number_format(
     assert cells["B1"] == (123, "number")
 
 
+def test_extract_xlsx_structure_uses_named_style_when_direct_numfmt_is_default(
+    tmp_path: Path,
+) -> None:
+    xlsx_path = tmp_path / "named-style-default-direct-format.xlsx"
+    _write_xlsx(
+        xlsx_path,
+        sheet_xml="""<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1"><c r="A1" s="1"><v>123</v></c></row>
+  </sheetData>
+</worksheet>
+""",
+        styles_xml="""<?xml version="1.0" encoding="UTF-8"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <numFmts count="1"><numFmt numFmtId="164" formatCode="00000"/></numFmts>
+  <cellStyleXfs count="2">
+    <xf numFmtId="0"/>
+    <xf numFmtId="164" applyNumberFormat="1"/>
+  </cellStyleXfs>
+  <cellXfs count="2">
+    <xf numFmtId="0"/>
+    <xf xfId="1" numFmtId="0"/>
+  </cellXfs>
+</styleSheet>
+""",
+    )
+
+    result = extract_xlsx_structure(xlsx_path)
+
+    cells = {cell.ref: (cell.value, cell.value_type) for cell in result.sheets[0].cells}
+    assert cells["A1"] == ("00123", "string")
+
+
 def test_extract_xlsx_structure_resolves_styles_relationship_target(
     tmp_path: Path,
 ) -> None:
@@ -332,6 +366,42 @@ def test_extract_xlsx_structure_resolves_styles_relationship_target(
 </Relationships>
 """,
         styles_part_name="xl/custom/styles.xml",
+        sheet_xml="""<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1"><c r="A1" s="1"><v>123</v></c></row>
+  </sheetData>
+</worksheet>
+""",
+        styles_xml="""<?xml version="1.0" encoding="UTF-8"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <numFmts count="1"><numFmt numFmtId="164" formatCode="00000"/></numFmts>
+  <cellXfs count="2">
+    <xf numFmtId="0"/>
+    <xf numFmtId="164" applyNumberFormat="1"/>
+  </cellXfs>
+</styleSheet>
+""",
+    )
+
+    result = extract_xlsx_structure(xlsx_path)
+
+    cells = {cell.ref: (cell.value, cell.value_type) for cell in result.sheets[0].cells}
+    assert cells["A1"] == ("00123", "string")
+
+
+def test_extract_xlsx_structure_normalizes_styles_relationship_target(
+    tmp_path: Path,
+) -> None:
+    xlsx_path = tmp_path / "normalized-styles-target.xlsx"
+    _write_xlsx(
+        xlsx_path,
+        workbook_rels_xml="""<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="../xl/styles.xml"/>
+</Relationships>
+""",
         sheet_xml="""<?xml version="1.0" encoding="UTF-8"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
   <sheetData>
@@ -595,6 +665,46 @@ def test_extract_xlsx_structure_skips_integerizing_when_no_padded_style(
         raise AssertionError(f"unexpected integer parsing for {value_text}")
 
     monkeypatch.setattr(xlsx_extraction, "_integral_numeric_value", fail_integerize)
+
+    result = extract_xlsx_structure(xlsx_path)
+
+    cells = {cell.ref: (cell.value, cell.value_type) for cell in result.sheets[0].cells}
+    assert cells["A1"] == ("1E+100000", "number")
+
+
+def test_extract_xlsx_structure_bounds_styled_numeric_identifier_conversion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    xlsx_path = tmp_path / "styled-huge-scientific-number.xlsx"
+    _write_xlsx(
+        xlsx_path,
+        sheet_xml="""<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1"><c r="A1" s="1"><v>1E+100000</v></c></row>
+  </sheetData>
+</worksheet>
+""",
+        styles_xml="""<?xml version="1.0" encoding="UTF-8"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <numFmts count="1"><numFmt numFmtId="164" formatCode="00000"/></numFmts>
+  <cellXfs count="2">
+    <xf numFmtId="0"/>
+    <xf numFmtId="164" applyNumberFormat="1"/>
+  </cellXfs>
+</styleSheet>
+""",
+    )
+
+    original_int = int
+
+    def bounded_int(value: object) -> int:
+        if not isinstance(value, str):
+            raise AssertionError(f"unexpected integer materialization for {value!r}")
+        return original_int(value)
+
+    monkeypatch.setattr(xlsx_extraction, "int", bounded_int, raising=False)
 
     result = extract_xlsx_structure(xlsx_path)
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import PurePosixPath, Path
+import posixpath
 import re
 from typing import Any, Dict, List, Optional, Union
 from xml.etree import ElementTree
@@ -16,6 +17,7 @@ OFFICE_REL_TYPE_BASE = (
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 )
 STYLES_REL_TYPE = f"{OFFICE_REL_TYPE_BASE}/styles"
+MAX_STYLED_IDENTIFIER_DIGITS = 1024
 
 
 @dataclass(frozen=True)
@@ -147,8 +149,12 @@ def _xf_format_code(
 ) -> Optional[str]:
     if _is_false(cell_format.attrib.get("applyNumberFormat")):
         return None
-    if "numFmtId" in cell_format.attrib:
-        return custom_formats.get(cell_format.attrib["numFmtId"])
+    num_format_id = cell_format.attrib.get("numFmtId")
+    if num_format_id is not None:
+        if num_format_id in custom_formats:
+            return custom_formats[num_format_id]
+        if num_format_id != "0":
+            return None
     if base_style_formats is None:
         return None
     base_style_index = _style_index(cell_format.attrib.get("xfId"))
@@ -188,8 +194,13 @@ def _read_workbook_relationships(archive: ZipFile) -> Dict[str, _WorkbookRelatio
 
 def _resolve_workbook_target(target: str) -> str:
     if target.startswith("/"):
-        return target.lstrip("/")
-    return str(PurePosixPath("xl") / target)
+        candidate = target.lstrip("/")
+    else:
+        candidate = str(PurePosixPath("xl") / target)
+    normalized = posixpath.normpath(candidate)
+    if normalized in {"", "."} or normalized.startswith("../"):
+        raise ValueError(f"workbook relationship target escapes package: {target}")
+    return normalized
 
 
 def _read_sheet(
@@ -515,6 +526,8 @@ def _integral_numeric_value(value_text: str) -> Optional[int]:
     except InvalidOperation:
         return None
     if not value.is_finite() or value != value.to_integral_value():
+        return None
+    if not value.is_zero() and value.adjusted() + 1 > MAX_STYLED_IDENTIFIER_DIGITS:
         return None
     return int(value)
 
