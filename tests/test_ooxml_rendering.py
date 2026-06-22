@@ -281,6 +281,24 @@ def test_docx_table_splits_only_on_ir_row_delimiters(tmp_path: Path) -> None:
     ]
 
 
+def test_docx_table_normalizes_crlf_row_delimiters(tmp_path: Path) -> None:
+    document_ir = {
+        "document": {"title": "Table CRLF delimiters"},
+        "blocks": [
+            {"id": "table-1", "type": "table", "text": "A\tB\r\nC\tD\rE\tF"},
+        ],
+    }
+    output_path = tmp_path / "table-crlf-delimiters.docx"
+
+    render_docx_from_ir(document_ir, output_path)
+
+    docx = extract_docx_structure(output_path)
+    assert [(block.kind, block.text, block.rows) for block in docx.blocks] == [
+        ("heading", "Table CRLF delimiters", None),
+        ("table", "A\tB\nC\tD\nE\tF", [["A", "B"], ["C", "D"], ["E", "F"]]),
+    ]
+
+
 def test_docx_renders_list_items_with_list_semantics(tmp_path: Path) -> None:
     document_ir = {
         "document": {"title": "Checklist"},
@@ -374,6 +392,10 @@ def test_xlsx_field_values_preserve_boundary_spaces(tmp_path: Path) -> None:
 
     render_xlsx_from_ir(document_ir, output_path)
 
+    with ZipFile(output_path) as archive:
+        sheet_xml = archive.read("xl/worksheets/sheet1.xml").decode("utf-8")
+    assert '<t xml:space="preserve"> A </t>' in sheet_xml
+
     xlsx = extract_xlsx_structure(output_path)
     cells = {cell.ref: (cell.value, cell.value_type) for cell in xlsx.sheets[0].cells}
     assert cells["B4"] == ("Code", "inline_string")
@@ -405,6 +427,11 @@ def test_xlsx_numeric_detection_preserves_code_like_values_as_text(tmp_path: Pat
                 "text": "Identifier: 1234567890123456",
             },
             {"id": "safe-decimal", "type": "field", "text": "Safe Decimal: -12.50"},
+            {
+                "id": "high-precision-decimal",
+                "type": "field",
+                "text": "High Precision: 0.1234567890123456",
+            },
             {"id": "underscore", "type": "field", "text": "Code: 1_000"},
             {"id": "full-width", "type": "field", "text": "Code: １２３"},
             {"id": "nan-prefix", "type": "field", "text": "Code: NaN123"},
@@ -421,7 +448,8 @@ def test_xlsx_numeric_detection_preserves_code_like_values_as_text(tmp_path: Pat
     assert cells["C5"] == (123456789012345, "number")
     assert cells["C6"] == (" 1234567890123456", "inline_string")
     assert cells["C7"] == ("-12.50", "number")
-    assert cells["C8"] == (" 1_000", "inline_string")
-    assert cells["C9"] == (" １２３", "inline_string")
-    assert cells["C10"] == (" NaN123", "inline_string")
-    assert cells["C11"] == (" -01", "inline_string")
+    assert cells["C8"] == (" 0.1234567890123456", "inline_string")
+    assert cells["C9"] == (" 1_000", "inline_string")
+    assert cells["C10"] == (" １２３", "inline_string")
+    assert cells["C11"] == (" NaN123", "inline_string")
+    assert cells["C12"] == (" -01", "inline_string")

@@ -79,3 +79,31 @@ def test_extract_docx_structure_returns_headings_paragraphs_and_tables(tmp_path:
         ["First paragraph\nSecond paragraph", ""],
         ["", ""],
     ]
+
+
+def test_extract_docx_structure_ignores_removed_numbering(tmp_path: Path) -> None:
+    docx_path = tmp_path / "removed-numbering.docx"
+    _write_docx(
+        docx_path,
+        """<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:pPr><w:numPr><w:numId w:val="0"/></w:numPr></w:pPr>
+      <w:r><w:t>Plain paragraph</w:t></w:r>
+    </w:p>
+    <w:p>
+      <w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr>
+      <w:r><w:t>Numbered paragraph</w:t></w:r>
+    </w:p>
+  </w:body>
+</w:document>
+""",
+    )
+
+    result = extract_docx_structure(docx_path)
+
+    assert [(block.kind, block.text) for block in result.blocks] == [
+        ("paragraph", "Plain paragraph"),
+        ("list_item", "Numbered paragraph"),
+    ]

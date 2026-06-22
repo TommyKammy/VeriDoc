@@ -264,7 +264,7 @@ def _docx_table_rows(block: Mapping[str, Any]) -> Sequence[Sequence[str]]:
         ]
         if normalized_rows:
             return normalized_rows
-    sanitized_text = _sanitize_xml_text(_text(block.get("text")))
+    sanitized_text = _normalize_table_row_delimiters(_sanitize_xml_text(_text(block.get("text"))))
     if not sanitized_text:
         return [[""]]
     return [line.split("\t") for line in sanitized_text.split("\n")]
@@ -297,8 +297,11 @@ def _is_plain_number(value: str) -> bool:
 
 
 def _exceeds_spreadsheet_integer_precision(value: str) -> bool:
-    integer_part = value.split(".", 1)[0].removeprefix("-")
-    return len(integer_part) > MAX_EXACT_SPREADSHEET_DIGITS
+    return _spreadsheet_numeric_digit_count(value) > MAX_EXACT_SPREADSHEET_DIGITS
+
+
+def _spreadsheet_numeric_digit_count(value: str) -> int:
+    return sum(1 for character in value if character.isdigit())
 
 
 def _xlsx_row(row_index: int, cells: Sequence[str]) -> str:
@@ -306,7 +309,8 @@ def _xlsx_row(row_index: int, cells: Sequence[str]) -> str:
 
 
 def _text_cell(ref: str, value: str) -> str:
-    return f'<c r="{ref}" t="inlineStr"><is><t>{_xml_escape(value)}</t></is></c>'
+    space_attr = ' xml:space="preserve"' if _needs_xml_space_preserve(value) else ""
+    return f'<c r="{ref}" t="inlineStr"><is><t{space_attr}>{_xml_escape(value)}</t></is></c>'
 
 
 def _number_cell(ref: str, value: str) -> str:
@@ -333,6 +337,10 @@ def _needs_xml_space_preserve(value: str) -> bool:
     return bool(sanitized_value) and (
         sanitized_value[0].isspace() or sanitized_value[-1].isspace()
     )
+
+
+def _normalize_table_row_delimiters(value: str) -> str:
+    return value.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _is_xml_char(character: str) -> bool:
