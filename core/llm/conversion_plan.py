@@ -1,16 +1,18 @@
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import json
 import http.client
+import re
 import socket
 import ssl
 import urllib.error
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, unquote_plus, urlparse
 
 
 CONVERSION_PLAN_SCHEMA: dict[str, Any] = {
@@ -85,6 +87,199 @@ _BLOCKED_LOCAL_RUNTIME_ADDRESSES = frozenset(
     }
 )
 _SUPPORTED_ACTIONS = {"extract_field", "extract_table", "normalize_value", "flag_review"}
+_AUDIT_LOG_SCHEMA_VERSION = "veridoc-conversion-audit-log/v0"
+_REDACTED_VALUE = "[REDACTED]"
+_SECRET_PARAMETER_KEYS = frozenset(
+    {
+        "api_key",
+        "apikey",
+        "auth",
+        "authentication",
+        "authorization",
+        "cookie",
+        "credential",
+        "credentials",
+        "csrftoken",
+        "connection_string",
+        "jwt",
+        "password",
+        "private_key",
+        "secret",
+        "session",
+        "sessionid",
+        "sig",
+        "signature",
+        "set_cookie",
+        "token",
+        "xsrf",
+        "xsrf_token",
+    }
+)
+_SECRET_PARAMETER_KEY_SUFFIXES = (
+    "_api_key",
+    "_apikey",
+    "_authorization",
+    "_credential",
+    "_credentials",
+    "_password",
+    "_private_key",
+    "_secret",
+    "_sig",
+    "_signature",
+    "_token",
+)
+_SECRET_PARAMETER_KEY_PREFIXES = (
+    "api_key_",
+    "apikey_",
+    "auth_",
+    "authorization_",
+    "credential_",
+    "credentials_",
+    "password_",
+    "private_key_",
+    "secret_",
+    "sig_",
+    "signature_",
+    "token_",
+)
+_SECRET_PARAMETER_KEY_PHRASES = (
+    "api_key",
+    "apikey",
+    "private_key",
+    "secret",
+    "signature",
+    "connection_string",
+)
+_SECRET_PARAMETER_KEY_COMPONENTS = frozenset(
+    {
+        "authorization",
+        "auth",
+        "authentication",
+        "cookie",
+        "credential",
+        "credentials",
+        "jwt",
+        "password",
+        "secret",
+        "session",
+        "signature",
+        "sig",
+        "token",
+    }
+)
+_SECRET_PARAMETER_KEY_COMPONENT_SEQUENCES = (
+    ("account", "key"),
+    ("api", "key"),
+    ("access", "key"),
+    ("functions", "key"),
+    ("private", "key"),
+    ("subscription", "key"),
+)
+_CAMEL_ACRONYM_BOUNDARY_RE = re.compile(r"(.)([A-Z][a-z]+)")
+_CAMEL_CASE_BOUNDARY_RE = re.compile(r"([a-z0-9])([A-Z])")
+_PARAMETER_KEY_SEPARATOR_RE = re.compile(r"[^A-Za-z0-9]+")
+_PARAMETER_INDEX_SUFFIX_RE = re.compile(r"\[\d+\]$")
+_CONTENT_BEARING_AUDIT_PARAMETER_KEYS = frozenset(
+    {
+        "content",
+        "attachment",
+        "attachments",
+        "body",
+        "document",
+        "input",
+        "instructions",
+        "messages",
+        "output_bytes",
+        "previous_response",
+        "prompt",
+        "output",
+        "payload",
+        "request_body",
+        "source",
+        "source_bytes",
+        "synthetic_text",
+        "text",
+        "upload",
+        "uploads",
+    }
+)
+_SAFE_CONTENT_WORD_AUDIT_PARAMETER_KEYS = frozenset(
+    {
+        "content_type",
+        "content_encoding",
+        "content_length",
+        "content_md5",
+        "max_tokens",
+        "max_prompt_tokens",
+        "x_amz_content_sha256",
+    }
+)
+_SAFE_AUDIT_PARAMETER_SEQUENCE_KEYS = frozenset(
+    {
+        "stop",
+    }
+)
+_CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENTS = frozenset(
+    {
+        "content",
+        "attachment",
+        "attachments",
+        "body",
+        "document",
+        "input",
+        "instructions",
+        "messages",
+        "prompt",
+        "payload",
+        "text",
+        "upload",
+        "uploads",
+    }
+)
+_CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENT_SEQUENCES = (
+    ("raw", "source"),
+    ("raw", "output"),
+)
+_JSON_SCHEMA_VALUE_AUDIT_PARAMETER_KEYS = frozenset(
+    {
+        "const",
+        "default",
+        "enum",
+        "examples",
+    }
+)
+_SAFE_JSON_SCHEMA_AUDIT_PARAMETER_METADATA_KEYS = frozenset(
+    {
+        "content_encoding",
+        "content_media_type",
+        "description",
+        "format",
+        "title",
+        "type",
+    }
+)
+_KEY_VALUE_AUDIT_PARAMETER_SEQUENCE_CONTAINER_KEYS = frozenset(
+    {
+        "cookies",
+        "extra_cookies",
+        "extra_headers",
+        "files",
+        "headers",
+        "http_headers",
+        "options",
+        "params",
+        "parameters",
+        "query_params",
+        "request_headers",
+    }
+)
+_FILE_AUDIT_PARAMETER_CONTAINER_KEYS = frozenset({"file", "files"})
+_CONTENT_BYTE_AUDIT_PARAMETER_ANCESTOR_COMPONENTS = frozenset(
+    {
+        "output",
+        "source",
+    }
+)
 CONVERSION_TASK_PROMPTS = {
     "text_pdf": (
         "For text PDF conversion, use embedded text and page/table cues from the synthetic input; "
@@ -191,6 +386,46 @@ class LocalLLMConversionPlanAdapter:
         return self.transport(request_url, payload, headers, self.timeout_seconds)
 
 
+def build_conversion_audit_log(
+    *,
+    source_bytes: bytes,
+    output_bytes: bytes,
+    model: str,
+    prompt_id: str,
+    prompt_version: str,
+    ir_version: str,
+    parameters: Mapping[str, object],
+) -> JsonObject:
+    """Build a minimal conversion audit record without retaining document content."""
+
+    if not isinstance(source_bytes, bytes) or not isinstance(output_bytes, bytes):
+        raise TypeError("source_bytes and output_bytes must be bytes")
+    if not _non_empty_string(model):
+        raise ValueError("model is required")
+    if not _non_empty_string(prompt_id):
+        raise ValueError("prompt_id is required")
+    if not _non_empty_string(prompt_version):
+        raise ValueError("prompt_version is required")
+    if not _non_empty_string(ir_version):
+        raise ValueError("ir_version is required")
+    if not isinstance(parameters, Mapping):
+        raise TypeError("parameters must be a mapping")
+    _reject_content_bearing_audit_parameters(parameters)
+
+    return {
+        "schema_version": _AUDIT_LOG_SCHEMA_VERSION,
+        "source_sha256": hashlib.sha256(source_bytes).hexdigest(),
+        "output_sha256": hashlib.sha256(output_bytes).hexdigest(),
+        "model": model,
+        "prompt": {
+            "id": prompt_id,
+            "version": prompt_version,
+        },
+        "ir_version": ir_version,
+        "parameters": _redact_audit_parameters(parameters),
+    }
+
+
 def _build_conversion_plan_payload(
     *,
     model: str,
@@ -246,6 +481,493 @@ def _build_conversion_plan_payload(
         },
         "messages": messages,
     }
+
+
+def _redact_audit_parameters(value: object, *, key_path: str = "") -> object:
+    if (
+        key_path
+        and _is_secret_parameter_key(key_path)
+        and not _is_safe_json_schema_audit_parameter_key(key_path)
+    ):
+        return _REDACTED_VALUE
+    if isinstance(value, Mapping):
+        key_value_entry = _mapping_key_value_parameter_entry(value)
+        return {
+            str(key): _redact_audit_parameters(
+                item,
+                key_path=(
+                    _join_parameter_key_path(key_path, key_value_entry[1])
+                    if key_value_entry is not None and str(key) == key_value_entry[2]
+                    else _join_parameter_key_path(key_path, str(key))
+                ),
+            )
+            for key, item in value.items()
+        }
+    if _is_key_value_parameter_entry(value, key_path):
+        entry_key = str(value[0])
+        entry_path = _join_parameter_key_path(key_path, entry_key)
+        return [entry_key, _redact_audit_parameters(value[1], key_path=entry_path)]
+    if isinstance(value, str):
+        redacted_raw_value = _redact_raw_key_value_parameter_text(value, key_path)
+        if redacted_raw_value is not None:
+            return redacted_raw_value
+        if _is_credential_bearing_url(value):
+            return _REDACTED_VALUE
+    if isinstance(value, list):
+        return [
+            _redact_audit_parameters(item, key_path=f"{key_path}[{index}]")
+            for index, item in enumerate(value)
+        ]
+    if isinstance(value, tuple):
+        return [
+            _redact_audit_parameters(item, key_path=f"{key_path}[{index}]")
+            for index, item in enumerate(value)
+        ]
+    return value
+
+
+def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "parameters") -> None:
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        raise ValueError(f"{key_path} must not include document or request content")
+    if isinstance(value, Mapping):
+        key_value_entry = _mapping_key_value_parameter_entry(value)
+        if key_value_entry is None and _is_file_audit_parameter_container_path(key_path):
+            raise ValueError(f"{key_path} must not include document or request content")
+        if key_value_entry is not None:
+            _key_field, entry_key, value_field = key_value_entry
+            item_path = _join_parameter_key_path(key_path, entry_key)
+            if _is_file_audit_parameter_container_path(key_path):
+                raise ValueError(f"{item_path} must not include document or request content")
+            if _is_content_bearing_audit_parameter_key(item_path):
+                raise ValueError(f"{item_path} must not include document or request content")
+            _reject_content_bearing_audit_parameters(value[value_field], key_path=item_path)
+        for key, item in value.items():
+            key_string = str(key)
+            item_path = f"{key_path}.{key_string}"
+            if _is_content_bearing_schema_value_path(item_path):
+                raise ValueError(f"{item_path} must not include document or request content")
+            if _is_invalid_json_schema_field_value_path(item_path, item):
+                raise ValueError(f"{item_path} must not include document or request content")
+            if _is_content_bearing_audit_parameter_key(item_path):
+                raise ValueError(f"{item_path} must not include document or request content")
+            _reject_content_bearing_audit_parameters(item, key_path=item_path)
+    elif _is_key_value_parameter_entry(value, key_path):
+        entry_key = str(value[0])
+        item_path = f"{key_path}.{entry_key}"
+        if _is_file_audit_parameter_container_path(key_path):
+            raise ValueError(f"{item_path} must not include document or request content")
+        if _is_content_bearing_audit_parameter_key(item_path):
+            raise ValueError(f"{item_path} must not include document or request content")
+        _reject_content_bearing_audit_parameters(value[1], key_path=item_path)
+    elif isinstance(value, str):
+        if _is_file_audit_parameter_container_path(key_path):
+            raise ValueError(f"{key_path} must not include document or request content")
+        if _is_content_bearing_schema_value_path(key_path) or _is_content_bearing_url(value):
+            raise ValueError(f"{key_path} must not include document or request content")
+        for raw_entry in _raw_key_value_parameter_entries(value, key_path):
+            entry_key, _separator, _entry_value = raw_entry
+            item_path = _raw_key_value_parameter_entry_path(key_path, entry_key)
+            if _is_content_bearing_audit_parameter_key(item_path):
+                raise ValueError(f"{item_path} must not include document or request content")
+            if _is_content_bearing_url(_entry_value):
+                raise ValueError(f"{item_path} must not include document or request content")
+    elif isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            _reject_content_bearing_audit_parameters(item, key_path=f"{key_path}[{index}]")
+
+
+def _is_content_bearing_audit_parameter_key(key: str) -> bool:
+    normalized_leaf = _normalize_parameter_key(_parameter_key_leaf(key))
+    if _is_safe_json_schema_audit_parameter_key(key):
+        return False
+    if normalized_leaf in _SAFE_CONTENT_WORD_AUDIT_PARAMETER_KEYS:
+        return False
+    leaf_components = tuple(normalized_leaf.split("_"))
+    singular_leaf_components = tuple(
+        _singular_parameter_component(component) for component in leaf_components
+    )
+    path_components = tuple(_normalize_parameter_key(key).split("_"))
+    return (
+        normalized_leaf in _CONTENT_BEARING_AUDIT_PARAMETER_KEYS
+        or "previous_response" in normalized_leaf
+        or any(component in _CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENTS for component in leaf_components)
+        or any(
+            component in _CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENTS
+            for component in singular_leaf_components
+        )
+        or any(
+            _contains_component_sequence(leaf_components, sequence)
+            for sequence in _CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENT_SEQUENCES
+        )
+        or (
+            normalized_leaf == "bytes"
+            and any(
+                component in _CONTENT_BYTE_AUDIT_PARAMETER_ANCESTOR_COMPONENTS
+                for component in path_components
+            )
+        )
+    )
+
+
+def _is_safe_json_schema_audit_parameter_key(key: str) -> bool:
+    components = _audit_parameter_path_components(key)
+    if not _is_json_schema_audit_parameter_path(components):
+        return False
+    leaf = components[-1]
+    return _is_json_schema_field_name_path(components) or (
+        leaf in _SAFE_JSON_SCHEMA_AUDIT_PARAMETER_METADATA_KEYS
+    )
+
+
+def _audit_parameter_path_components(key: str) -> tuple[str, ...]:
+    return tuple(
+        _normalize_parameter_key(_PARAMETER_INDEX_SUFFIX_RE.sub("", component))
+        for component in key.split(".")
+    )
+
+
+def _is_response_format_json_schema_path(components: tuple[str, ...]) -> bool:
+    return "response_format" in components and (
+        "json_schema" in components or "schema" in components
+    )
+
+
+def _is_tool_function_json_schema_path(components: tuple[str, ...]) -> bool:
+    return "tools" in components and "function" in components and "parameters" in components
+
+
+def _is_json_schema_audit_parameter_path(components: tuple[str, ...]) -> bool:
+    return (
+        {"properties", "defs", "definitions"}.intersection(components)
+        and (
+            _is_response_format_json_schema_path(components)
+            or _is_tool_function_json_schema_path(components)
+        )
+    )
+
+
+def _is_json_schema_field_name_path(components: tuple[str, ...]) -> bool:
+    return (
+        len(components) >= 2
+        and components[-2] in {"properties", "defs", "definitions"}
+    )
+
+
+def _is_content_bearing_schema_value_path(key: str) -> bool:
+    components = _audit_parameter_path_components(key)
+    if not _is_json_schema_audit_parameter_path(components):
+        return False
+    return components[-1] in _JSON_SCHEMA_VALUE_AUDIT_PARAMETER_KEYS
+
+
+def _is_invalid_json_schema_field_value_path(key: str, value: object) -> bool:
+    components = _audit_parameter_path_components(key)
+    return _is_json_schema_field_name_path(components) and not isinstance(value, Mapping)
+
+
+def _is_content_bearing_schema_field_name(name: str) -> bool:
+    if name in _SAFE_CONTENT_WORD_AUDIT_PARAMETER_KEYS:
+        return False
+    components = tuple(name.split("_"))
+    singular_components = tuple(_singular_parameter_component(component) for component in components)
+    return (
+        name in _CONTENT_BEARING_AUDIT_PARAMETER_KEYS
+        or any(component in _CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENTS for component in components)
+        or any(
+            component in _CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENTS
+            for component in singular_components
+        )
+        or any(
+            _contains_component_sequence(components, sequence)
+            for sequence in _CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENT_SEQUENCES
+        )
+    )
+
+
+def _is_secret_parameter_key(key: str) -> bool:
+    normalized = _normalize_parameter_key(key)
+    normalized_leaf = _normalize_parameter_key(_parameter_key_leaf(key))
+    if (
+        normalized in _SAFE_CONTENT_WORD_AUDIT_PARAMETER_KEYS
+        or normalized_leaf in _SAFE_CONTENT_WORD_AUDIT_PARAMETER_KEYS
+        or _is_key_value_audit_parameter_sequence_container_key(key)
+    ):
+        return False
+    key_candidates = (normalized, normalized_leaf)
+    components = tuple(normalized_leaf.split("_"))
+    path_components = tuple(normalized.split("_"))
+    singular_components = tuple(_singular_parameter_component(component) for component in components)
+    return (
+        any(candidate in _SECRET_PARAMETER_KEYS for candidate in key_candidates)
+        or (
+            normalized_leaf in {"code", "key"}
+            and ("query" in path_components or "params" in path_components)
+        )
+        or any(
+            candidate.endswith(suffix)
+            for candidate in key_candidates
+            for suffix in _SECRET_PARAMETER_KEY_SUFFIXES
+        )
+        or any(
+            candidate.startswith(prefix)
+            for candidate in key_candidates
+            for prefix in _SECRET_PARAMETER_KEY_PREFIXES
+        )
+        or any(
+            phrase in candidate
+            for candidate in key_candidates
+            for phrase in _SECRET_PARAMETER_KEY_PHRASES
+        )
+        or any(component in _SECRET_PARAMETER_KEY_COMPONENTS for component in components)
+        or any(component in _SECRET_PARAMETER_KEY_COMPONENTS for component in singular_components)
+        or any(
+            _contains_component_sequence(components, sequence)
+            for sequence in _SECRET_PARAMETER_KEY_COMPONENT_SEQUENCES
+        )
+    )
+
+
+def _normalize_parameter_key(key: str) -> str:
+    normalized = _CAMEL_ACRONYM_BOUNDARY_RE.sub(r"\1_\2", unquote_plus(key.strip()))
+    normalized = _CAMEL_CASE_BOUNDARY_RE.sub(r"\1_\2", normalized)
+    normalized = _PARAMETER_KEY_SEPARATOR_RE.sub("_", normalized)
+    return normalized.strip("_").lower()
+
+
+def _singular_parameter_component(component: str) -> str:
+    return component[:-1] if component.endswith("s") else component
+
+
+def _parameter_key_leaf(key: str) -> str:
+    return _PARAMETER_INDEX_SUFFIX_RE.sub("", key.rsplit(".", 1)[-1])
+
+
+def _is_file_audit_parameter_container_path(key_path: str) -> bool:
+    return (
+        _normalize_parameter_key(_parameter_key_leaf(key_path))
+        in _FILE_AUDIT_PARAMETER_CONTAINER_KEYS
+    )
+
+
+def _join_parameter_key_path(parent: str, key: str) -> str:
+    if not parent:
+        return key
+    return f"{parent}.{key}"
+
+
+def _is_key_value_parameter_entry(value: object, key_path: str) -> bool:
+    if not (
+        isinstance(value, (list, tuple))
+        and len(value) == 2
+        and isinstance(value[0], str)
+        and _raw_key_value_parameter_line(value[0], key_path) is None
+    ):
+        return False
+    entry_path = _join_parameter_key_path(key_path, value[0])
+    return (
+        _is_key_value_audit_parameter_sequence_container_key(key_path)
+        or (
+            _is_parameter_sequence_item_key(key_path)
+            and (
+                _is_secret_parameter_key(entry_path)
+                or _is_content_bearing_audit_parameter_key(entry_path)
+            )
+        )
+    )
+
+
+def _is_parameter_sequence_item_key(key: str) -> bool:
+    return _PARAMETER_INDEX_SUFFIX_RE.search(key.rsplit(".", 1)[-1]) is not None
+
+
+def _is_safe_audit_parameter_sequence_key(key: str) -> bool:
+    return _normalize_parameter_key(_parameter_key_leaf(key)) in _SAFE_AUDIT_PARAMETER_SEQUENCE_KEYS
+
+
+def _raw_key_value_parameter_line(value: str, key_path: str) -> tuple[str, str, str] | None:
+    if not _is_key_value_audit_parameter_sequence_container_key(key_path):
+        return None
+    separator = _raw_key_value_parameter_separator(value)
+    if separator is not None:
+        entry_key, found, entry_value = value.partition(separator)
+        if found and entry_key.strip() and entry_value.strip():
+            return (entry_key.strip(), found, entry_value.strip())
+    return None
+
+
+def _raw_key_value_parameter_separator(value: str) -> str | None:
+    positions = [
+        (position, separator)
+        for separator in ("=", ":")
+        if (position := value.find(separator)) >= 0
+    ]
+    if not positions:
+        return None
+    return min(positions)[1]
+
+
+def _raw_key_value_parameter_entries(value: str, key_path: str) -> list[tuple[str, str, str]]:
+    normalized_leaf = _normalize_parameter_key(_parameter_key_leaf(key_path))
+    if not _is_key_value_audit_parameter_sequence_container_key(key_path):
+        return []
+    return [
+        entry
+        for chunk in _raw_key_value_parameter_chunks(value, normalized_leaf)
+        if (entry := _raw_key_value_parameter_line(chunk, key_path)) is not None
+    ]
+
+
+def _redact_raw_key_value_parameter_text(value: str, key_path: str) -> str | None:
+    normalized_leaf = _normalize_parameter_key(_parameter_key_leaf(key_path))
+    if not _is_key_value_audit_parameter_sequence_container_key(key_path):
+        return None
+    chunks = _raw_key_value_parameter_chunks(value, normalized_leaf)
+    if len(chunks) == 1 and chunks[0] == value:
+        raw_entry = _raw_key_value_parameter_line(value, key_path)
+        if raw_entry is None:
+            return None
+        return _redact_raw_key_value_parameter_line(raw_entry, key_path)
+
+    redacted_chunks = []
+    changed = False
+    for chunk in chunks:
+        raw_entry = _raw_key_value_parameter_line(chunk, key_path)
+        if raw_entry is None:
+            redacted_chunks.append(chunk)
+            continue
+        redacted_chunk = _redact_raw_key_value_parameter_line(raw_entry, key_path)
+        changed = changed or redacted_chunk != chunk
+        redacted_chunks.append(redacted_chunk)
+    if not changed:
+        return None
+    return _raw_key_value_parameter_joiner(value, normalized_leaf).join(redacted_chunks)
+
+
+def _raw_key_value_parameter_chunks(value: str, normalized_leaf: str) -> list[str]:
+    if "\n" in value or "\r" in value:
+        return value.splitlines()
+    if normalized_leaf in {"params", "query_params"} and ("&" in value or ";" in value):
+        return re.split(r"[&;]", value)
+    if _is_cookie_audit_parameter_container_leaf(normalized_leaf) and ";" in value:
+        return [chunk.strip() for chunk in value.split(";")]
+    return [value]
+
+
+def _raw_key_value_parameter_joiner(value: str, normalized_leaf: str) -> str:
+    if "\n" in value or "\r" in value:
+        return "\n"
+    if normalized_leaf in {"params", "query_params"} and "&" in value:
+        return "&"
+    if normalized_leaf in {"params", "query_params"} and ";" in value:
+        return ";"
+    if _is_cookie_audit_parameter_container_leaf(normalized_leaf) and ";" in value:
+        return "; "
+    return ""
+
+
+def _redact_raw_key_value_parameter_line(
+    raw_entry: tuple[str, str, str], key_path: str
+) -> str:
+    entry_key, separator, entry_value = raw_entry
+    entry_path = _raw_key_value_parameter_entry_path(key_path, entry_key)
+    redacted_value = _redact_audit_parameters(entry_value, key_path=entry_path)
+    if redacted_value == _REDACTED_VALUE:
+        redacted_separator = ": " if separator == ":" else separator
+        return f"{entry_key}{redacted_separator}{_REDACTED_VALUE}"
+    separator_text = ": " if separator == ":" else separator
+    return f"{entry_key}{separator_text}{entry_value}"
+
+
+def _raw_key_value_parameter_entry_path(key_path: str, entry_key: str) -> str:
+    normalized_leaf = _normalize_parameter_key(_parameter_key_leaf(key_path))
+    if normalized_leaf in {"params", "query_params"}:
+        return _join_parameter_key_path(key_path, unquote_plus(entry_key))
+    return _join_parameter_key_path(key_path, entry_key)
+
+
+def _mapping_key_value_parameter_entry(value: Mapping[object, object]) -> tuple[str, str, str] | None:
+    normalized_fields: dict[str, object] = {}
+    for field in value:
+        if isinstance(field, str):
+            normalized_fields[_normalize_parameter_key(field)] = field
+
+    value_field = normalized_fields.get("value")
+    if value_field is None:
+        return None
+    for key_field in ("key", "name", "header", "parameter"):
+        original_key_field = normalized_fields.get(key_field)
+        if original_key_field is None:
+            continue
+        key = value.get(original_key_field)
+        if isinstance(key, str):
+            return (str(original_key_field), key, str(value_field))
+    return None
+
+
+def _is_key_value_audit_parameter_sequence_container_key(key_path: str) -> bool:
+    normalized_leaf = _normalize_parameter_key(_parameter_key_leaf(key_path))
+    return (
+        normalized_leaf in _KEY_VALUE_AUDIT_PARAMETER_SEQUENCE_CONTAINER_KEYS
+        or normalized_leaf.endswith("_headers")
+        or normalized_leaf.endswith("_cookies")
+    )
+
+
+def _is_cookie_audit_parameter_container_leaf(normalized_leaf: str) -> bool:
+    return normalized_leaf in {"cookies", "extra_cookies"} or normalized_leaf.endswith("_cookies")
+
+
+def _is_content_bearing_url(value: str, *, _depth: int = 0) -> bool:
+    parsed_url = urlparse(value)
+    if parsed_url.scheme.lower() == "data":
+        return True
+    if not parsed_url.scheme or not parsed_url.netloc:
+        return False
+    url_pairs = _url_parameter_pairs(parsed_url.query) + _url_parameter_pairs(parsed_url.fragment)
+    return any(
+        _is_content_bearing_audit_parameter_key(key)
+        for key, _value in url_pairs
+    ) or any(
+        _is_content_bearing_url(parameter_value, _depth=_depth + 1)
+        for _key, parameter_value in url_pairs
+        if _depth < 3
+    )
+
+
+def _is_credential_bearing_url(value: str, *, _depth: int = 0) -> bool:
+    parsed_url = urlparse(value)
+    if not parsed_url.scheme or not parsed_url.netloc:
+        return False
+    if parsed_url.username is not None or parsed_url.password is not None:
+        return True
+    url_pairs = _url_parameter_pairs(parsed_url.query) + _url_parameter_pairs(parsed_url.fragment)
+    if any(_is_secret_url_parameter_key(key) for key, _value in url_pairs):
+        return True
+    return any(
+        _is_credential_bearing_url(parameter_value, _depth=_depth + 1)
+        for _key, parameter_value in url_pairs
+        if _depth < 3
+    )
+
+
+def _is_secret_url_parameter_key(key: str) -> bool:
+    return _is_secret_parameter_key(key) or _normalize_parameter_key(key) in {"code", "key"}
+
+
+def _url_parameter_pairs(value: str) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    for chunk in re.split(r"[&;]", value):
+        pairs.extend(parse_qsl(chunk, keep_blank_values=True))
+    return pairs
+
+
+def _contains_component_sequence(components: tuple[str, ...], sequence: tuple[str, ...]) -> bool:
+    if len(sequence) > len(components):
+        return False
+    return any(
+        components[index : index + len(sequence)] == sequence
+        for index in range(len(components) - len(sequence) + 1)
+    )
 
 
 def validate_conversion_plan(plan: object) -> None:
