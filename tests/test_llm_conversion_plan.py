@@ -10,6 +10,7 @@ import pytest
 from core.llm.conversion_plan import (
     CONVERSION_PLAN_SCHEMA,
     CONVERSION_TASK_PROMPTS,
+    build_conversion_audit_log,
     ConversionPlanValidationError,
     LocalLLMConfigurationError,
     LocalLLMConversionPlanAdapter,
@@ -104,6 +105,44 @@ def test_adapter_returns_schema_valid_conversion_plan_with_temperature_zero() ->
     assert "scanned_pdf_ocr" in system_prompt
     assert "word_document" in system_prompt
     assert "excel_workbook" in system_prompt
+
+
+def test_build_conversion_audit_log_records_hashes_metadata_and_redacts_secrets() -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={
+            "temperature": 0,
+            "max_tokens": 1024,
+            "api_key": "operator-runtime-token",
+            "nested": {"authorization": "Bearer operator-runtime-token"},
+        },
+    )
+
+    assert audit_log == {
+        "schema_version": "veridoc-conversion-audit-log/v0",
+        "source_sha256": "b0ebacea0dcf186fd6c9fd36fd9bb1fc087e1b75fee337a3ebef432143529558",
+        "output_sha256": "46401c81d6eb7e1cc2ad9f82df8b95c5aabab04143d90a15c8868e9767e208ca",
+        "model": "local-json-model",
+        "prompt": {
+            "id": "veridoc_conversion_plan",
+            "version": "poc-08",
+        },
+        "ir_version": "document-ir-v1",
+        "parameters": {
+            "temperature": 0,
+            "max_tokens": 1024,
+            "api_key": "[REDACTED]",
+            "nested": {"authorization": "[REDACTED]"},
+        },
+    }
+    rendered = json.dumps(audit_log, sort_keys=True)
+    assert "operator-runtime-token" not in rendered
+    assert "Bearer" not in rendered
 
 
 def test_schema_incompatible_conversion_plan_fails_closed() -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import json
 import http.client
@@ -7,7 +8,7 @@ import socket
 import ssl
 import urllib.error
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse
@@ -85,6 +86,41 @@ _BLOCKED_LOCAL_RUNTIME_ADDRESSES = frozenset(
     }
 )
 _SUPPORTED_ACTIONS = {"extract_field", "extract_table", "normalize_value", "flag_review"}
+_AUDIT_LOG_SCHEMA_VERSION = "veridoc-conversion-audit-log/v0"
+_REDACTED_VALUE = "[REDACTED]"
+_SECRET_PARAMETER_KEYS = frozenset(
+    {
+        "api_key",
+        "apikey",
+        "authorization",
+        "credential",
+        "password",
+        "secret",
+        "token",
+    }
+)
+_SECRET_PARAMETER_KEY_SUFFIXES = (
+    "_api_key",
+    "_apikey",
+    "_authorization",
+    "_credential",
+    "_password",
+    "_secret",
+    "_token",
+)
+_SECRET_PARAMETER_KEY_PREFIXES = (
+    "api_key_",
+    "apikey_",
+    "authorization_",
+    "credential_",
+    "password_",
+    "secret_",
+    "token_",
+)
+_SECRET_PARAMETER_KEY_PHRASES = (
+    "api_key",
+    "apikey",
+)
 CONVERSION_TASK_PROMPTS = {
     "text_pdf": (
         "For text PDF conversion, use embedded text and page/table cues from the synthetic input; "
@@ -191,6 +227,45 @@ class LocalLLMConversionPlanAdapter:
         return self.transport(request_url, payload, headers, self.timeout_seconds)
 
 
+def build_conversion_audit_log(
+    *,
+    source_bytes: bytes,
+    output_bytes: bytes,
+    model: str,
+    prompt_id: str,
+    prompt_version: str,
+    ir_version: str,
+    parameters: Mapping[str, object],
+) -> JsonObject:
+    """Build a minimal conversion audit record without retaining document content."""
+
+    if not isinstance(source_bytes, bytes) or not isinstance(output_bytes, bytes):
+        raise TypeError("source_bytes and output_bytes must be bytes")
+    if not _non_empty_string(model):
+        raise ValueError("model is required")
+    if not _non_empty_string(prompt_id):
+        raise ValueError("prompt_id is required")
+    if not _non_empty_string(prompt_version):
+        raise ValueError("prompt_version is required")
+    if not _non_empty_string(ir_version):
+        raise ValueError("ir_version is required")
+    if not isinstance(parameters, Mapping):
+        raise TypeError("parameters must be a mapping")
+
+    return {
+        "schema_version": _AUDIT_LOG_SCHEMA_VERSION,
+        "source_sha256": hashlib.sha256(source_bytes).hexdigest(),
+        "output_sha256": hashlib.sha256(output_bytes).hexdigest(),
+        "model": model,
+        "prompt": {
+            "id": prompt_id,
+            "version": prompt_version,
+        },
+        "ir_version": ir_version,
+        "parameters": _redact_audit_parameters(parameters),
+    }
+
+
 def _build_conversion_plan_payload(
     *,
     model: str,
@@ -246,6 +321,31 @@ def _build_conversion_plan_payload(
         },
         "messages": messages,
     }
+
+
+def _redact_audit_parameters(value: object, *, key_path: str = "") -> object:
+    if _is_secret_parameter_key(key_path):
+        return _REDACTED_VALUE
+    if isinstance(value, Mapping):
+        return {
+            str(key): _redact_audit_parameters(item, key_path=str(key))
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_audit_parameters(item, key_path=key_path) for item in value]
+    if isinstance(value, tuple):
+        return [_redact_audit_parameters(item, key_path=key_path) for item in value]
+    return value
+
+
+def _is_secret_parameter_key(key: str) -> bool:
+    normalized = key.strip().lower().replace("-", "_")
+    return (
+        normalized in _SECRET_PARAMETER_KEYS
+        or any(normalized.endswith(suffix) for suffix in _SECRET_PARAMETER_KEY_SUFFIXES)
+        or any(normalized.startswith(prefix) for prefix in _SECRET_PARAMETER_KEY_PREFIXES)
+        or any(phrase in normalized for phrase in _SECRET_PARAMETER_KEY_PHRASES)
+    )
 
 
 def validate_conversion_plan(plan: object) -> None:
