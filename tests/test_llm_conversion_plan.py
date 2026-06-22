@@ -119,7 +119,13 @@ def test_build_conversion_audit_log_records_hashes_metadata_and_redacts_secrets(
             "temperature": 0,
             "max_tokens": 1024,
             "api_key": "operator-runtime-token",
-            "nested": {"authorization": "Bearer operator-runtime-token"},
+            "apiKey": "operator-runtime-api-key",
+            "accessToken": "operator-runtime-access-token",
+            "nested": {
+                "authorization": "Bearer operator-runtime-token",
+                "refreshToken": "operator-runtime-refresh-token",
+                "clientSecret": "operator-runtime-client-secret",
+            },
         },
     )
 
@@ -137,11 +143,21 @@ def test_build_conversion_audit_log_records_hashes_metadata_and_redacts_secrets(
             "temperature": 0,
             "max_tokens": 1024,
             "api_key": "[REDACTED]",
-            "nested": {"authorization": "[REDACTED]"},
+            "apiKey": "[REDACTED]",
+            "accessToken": "[REDACTED]",
+            "nested": {
+                "authorization": "[REDACTED]",
+                "refreshToken": "[REDACTED]",
+                "clientSecret": "[REDACTED]",
+            },
         },
     }
     rendered = json.dumps(audit_log, sort_keys=True)
     assert "operator-runtime-token" not in rendered
+    assert "operator-runtime-api-key" not in rendered
+    assert "operator-runtime-access-token" not in rendered
+    assert "operator-runtime-refresh-token" not in rendered
+    assert "operator-runtime-client-secret" not in rendered
     assert "Bearer" not in rendered
 
 

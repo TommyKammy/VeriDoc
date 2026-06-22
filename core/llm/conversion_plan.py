@@ -4,6 +4,7 @@ import hashlib
 import ipaddress
 import json
 import http.client
+import re
 import socket
 import ssl
 import urllib.error
@@ -121,6 +122,9 @@ _SECRET_PARAMETER_KEY_PHRASES = (
     "api_key",
     "apikey",
 )
+_CAMEL_ACRONYM_BOUNDARY_RE = re.compile(r"(.)([A-Z][a-z]+)")
+_CAMEL_CASE_BOUNDARY_RE = re.compile(r"([a-z0-9])([A-Z])")
+_PARAMETER_KEY_SEPARATOR_RE = re.compile(r"[^A-Za-z0-9]+")
 CONVERSION_TASK_PROMPTS = {
     "text_pdf": (
         "For text PDF conversion, use embedded text and page/table cues from the synthetic input; "
@@ -339,13 +343,20 @@ def _redact_audit_parameters(value: object, *, key_path: str = "") -> object:
 
 
 def _is_secret_parameter_key(key: str) -> bool:
-    normalized = key.strip().lower().replace("-", "_")
+    normalized = _normalize_parameter_key(key)
     return (
         normalized in _SECRET_PARAMETER_KEYS
         or any(normalized.endswith(suffix) for suffix in _SECRET_PARAMETER_KEY_SUFFIXES)
         or any(normalized.startswith(prefix) for prefix in _SECRET_PARAMETER_KEY_PREFIXES)
         or any(phrase in normalized for phrase in _SECRET_PARAMETER_KEY_PHRASES)
     )
+
+
+def _normalize_parameter_key(key: str) -> str:
+    normalized = _CAMEL_ACRONYM_BOUNDARY_RE.sub(r"\1_\2", key.strip())
+    normalized = _CAMEL_CASE_BOUNDARY_RE.sub(r"\1_\2", normalized)
+    normalized = _PARAMETER_KEY_SEPARATOR_RE.sub("_", normalized)
+    return normalized.strip("_").lower()
 
 
 def validate_conversion_plan(plan: object) -> None:
