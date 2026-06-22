@@ -129,6 +129,7 @@ def test_extract_pdf_text_preserves_span_whitespace(monkeypatch: pytest.MonkeyPa
 
     fragments = result.pages[0].fragments
     assert [fragment.text for fragment in fragments] == ["Approved ", "By"]
+    assert [fragment.source_line_index for fragment in fragments] == [0, 0]
 
 
 def test_extract_pdf_text_disables_image_payload_extraction(
@@ -274,6 +275,54 @@ def test_parse_text_pdf_to_document_ir_preserves_spaces_between_same_line_fragme
     document_ir = parse_text_pdf_to_document_ir(pdf_path)
 
     assert [block["text"] for block in document_ir["blocks"]] == ["Approved By"]
+
+
+def test_parse_text_pdf_to_document_ir_preserves_native_line_subscript_spans(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pdf_path = tmp_path / "subscript-line.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n")
+    extraction = PdfTextExtraction(
+        source_path=str(pdf_path),
+        extractor="pymupdf",
+        pages=[
+            PdfPageText(
+                page_number=1,
+                width_pt=300.0,
+                height_pt=200.0,
+                fragments=[
+                    _fragment(
+                        "H",
+                        page_number=1,
+                        x=36.0,
+                        y=40.0,
+                        width=8.0,
+                    ),
+                    _fragment(
+                        "O",
+                        page_number=1,
+                        x=50.0,
+                        y=40.0,
+                        width=8.0,
+                    ),
+                    _fragment(
+                        "2",
+                        page_number=1,
+                        x=44.0,
+                        y=46.0,
+                        width=6.0,
+                        height=7.0,
+                    ),
+                ],
+            )
+        ],
+    )
+    monkeypatch.setattr(pdf_text_extraction, "extract_pdf_text", lambda _path: extraction)
+
+    document_ir = parse_text_pdf_to_document_ir(pdf_path)
+
+    assert [block["text"] for block in document_ir["blocks"]] == ["H2O"]
 
 
 def test_parse_text_pdf_to_document_ir_rejects_zero_page_extraction(
@@ -567,10 +616,12 @@ def _fragment(
     y: float,
     width: float,
     height: float = 12.0,
+    source_line_index: int | None = None,
 ) -> TextFragment:
     return TextFragment(
         text=text,
         page_number=page_number,
         bbox=TextBBox(x=x, y=y, width=width, height=height),
         extractor="pymupdf",
+        source_line_index=source_line_index,
     )

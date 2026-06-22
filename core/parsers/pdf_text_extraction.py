@@ -22,6 +22,7 @@ class TextFragment:
     page_number: int
     bbox: TextBBox
     extractor: str
+    source_line_index: int | None = None
 
 
 @dataclass(frozen=True)
@@ -178,6 +179,7 @@ def extract_pdf_text(pdf_path: str | Path) -> PdfTextExtraction:
             page_rect = page.cropbox
             fragments: list[TextFragment] = []
             text_page = page.get_text("dict", flags=_text_dict_flags(fitz))
+            source_line_index = 0
             for block in text_page.get("blocks", []):
                 for line in block.get("lines", []):
                     for span in line.get("spans", []):
@@ -198,8 +200,10 @@ def extract_pdf_text(pdf_path: str | Path) -> PdfTextExtraction:
                                 page_number=page_index,
                                 bbox=bbox,
                                 extractor="pymupdf",
+                                source_line_index=source_line_index,
                             )
                         )
+                    source_line_index += 1
             pages.append(
                 PdfPageText(
                     page_number=page_index,
@@ -326,6 +330,10 @@ def _normalize_bbox(
 
 
 def _group_fragments_by_line(fragments: list[TextFragment]) -> list[list[TextFragment]]:
+    native_lines = _group_fragments_by_source_line(fragments)
+    if native_lines is not None:
+        return native_lines
+
     lines: list[list[TextFragment]] = []
     sorted_fragments = sorted(fragments, key=lambda fragment: (fragment.bbox.y, fragment.bbox.x))
 
@@ -341,15 +349,70 @@ def _group_fragments_by_line(fragments: list[TextFragment]) -> list[list[TextFra
     return lines
 
 
+def _group_fragments_by_source_line(
+    fragments: list[TextFragment],
+) -> list[list[TextFragment]] | None:
+    if not fragments or any(fragment.source_line_index is None for fragment in fragments):
+        return None
+
+    grouped: dict[int, list[TextFragment]] = {}
+    for fragment in fragments:
+        grouped.setdefault(fragment.source_line_index, []).append(fragment)
+
+    return [
+        sorted(line, key=lambda fragment: fragment.bbox.x)
+        for _line_index, line in sorted(grouped.items())
+    ]
+
+
 def _belongs_to_line(fragment: TextFragment, line: list[TextFragment]) -> bool:
     reference = line[0].bbox
     max_height = max(reference.height, fragment.bbox.height)
-    if abs(_bbox_center_y(fragment.bbox) - _bbox_center_y(reference)) > max_height * 0.25:
-        return False
+    center_delta = abs(_bbox_center_y(fragment.bbox) - _bbox_center_y(reference))
+    if center_delta > max_height * 0.25:
+        return _overlaps_line_vertically(fragment, line) and _has_inline_neighbor(
+            fragment,
+            line,
+            max_height=max_height,
+        )
     return (
         _horizontal_gap_to_line(fragment, line)
         <= max_height * 2.0
     )
+
+
+def _overlaps_line_vertically(fragment: TextFragment, line: list[TextFragment]) -> bool:
+    line_bbox = _union_text_bboxes(line)
+    if line_bbox is None:
+        return False
+    overlap = _vertical_overlap(fragment.bbox, line_bbox)
+    return overlap >= min(fragment.bbox.height, line_bbox.height) * 0.25
+
+
+def _vertical_overlap(left: TextBBox, right: TextBBox) -> float:
+    return max(0.0, min(left.y + left.height, right.y + right.height) - max(left.y, right.y))
+
+
+def _has_inline_neighbor(
+    fragment: TextFragment,
+    line: list[TextFragment],
+    *,
+    max_height: float,
+) -> bool:
+    tolerance = max_height * 0.15
+    max_gap = max_height * 2.0
+    fragment_left = fragment.bbox.x
+    fragment_right = fragment.bbox.x + fragment.bbox.width
+    for existing in line:
+        existing_left = existing.bbox.x
+        existing_right = existing.bbox.x + existing.bbox.width
+        gap_after_existing = fragment_left - existing_right
+        gap_before_existing = existing_left - fragment_right
+        if -tolerance <= gap_after_existing <= max_gap:
+            return True
+        if -tolerance <= gap_before_existing <= max_gap:
+            return True
+    return False
 
 
 def _bbox_center_y(bbox: TextBBox) -> float:
