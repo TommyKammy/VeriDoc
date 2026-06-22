@@ -319,6 +319,27 @@ def test_renderers_reject_duplicate_block_ids_before_render_plan_lookup(tmp_path
     assert not xlsx_output.exists()
 
 
+def test_renderers_reject_duplicate_table_ids_before_merge_lookup(tmp_path: Path) -> None:
+    document_ir = {
+        "document": {"title": "Duplicate table IDs"},
+        "blocks": [
+            {"id": "table-1", "type": "table", "rows": [["Header", ""]]},
+            {"id": "table-1", "type": "table", "rows": [["Other", ""]]},
+        ],
+    }
+    docx_output = tmp_path / "duplicate-table-id.docx"
+    xlsx_output = tmp_path / "duplicate-table-id.xlsx"
+    render_plan = {"table_merges": [{"block_id": "table-1", "range": "A4:B4"}]}
+
+    with pytest.raises(ValueError, match="ids must be unique"):
+        render_docx_from_ir(document_ir, docx_output, render_plan=render_plan)
+    assert not docx_output.exists()
+
+    with pytest.raises(ValueError, match="ids must be unique"):
+        render_xlsx_from_ir(document_ir, xlsx_output, render_plan=render_plan)
+    assert not xlsx_output.exists()
+
+
 @pytest.mark.parametrize("merge_range", ["A1:B1", "A4:B6", "A4:C4", "B4:A4"])
 def test_renderers_reject_table_merges_outside_their_table_grid(
     tmp_path: Path,

@@ -339,14 +339,20 @@ def _blocks(document_ir: Mapping[str, Any]) -> Sequence[Mapping[str, Any]]:
         block_type = _text(block.get("type"))
         if block_type not in SUPPORTED_BLOCK_TYPES:
             raise ValueError(f"unsupported document_ir.blocks type: {block_type!r}")
-    block_ids = _block_ids(blocks)
-    if len(block_ids) != len(set(block_ids)):
-        raise ValueError("document_ir.blocks ids must be unique")
+    _unique_block_ids(blocks)
     return blocks
 
 
 def _block_ids(blocks: Sequence[Mapping[str, Any]]) -> list[str]:
     return [_text(block.get("id")) for block in blocks]
+
+
+def _unique_block_ids(blocks: Sequence[Mapping[str, Any]]) -> set[str]:
+    block_ids = _block_ids(blocks)
+    unique_ids = set(block_ids)
+    if len(block_ids) != len(unique_ids):
+        raise ValueError("document_ir.blocks ids must be unique")
+    return unique_ids
 
 
 def _render_directives(
@@ -373,7 +379,7 @@ def _source_annotations_by_block(
     annotations = render.get("source_annotations", [])
     if not isinstance(annotations, Sequence) or isinstance(annotations, (str, bytes)):
         raise ValueError("render_plan.source_annotations must be a list")
-    valid_block_ids = set(_block_ids(blocks))
+    valid_block_ids = _unique_block_ids(blocks)
     by_block: dict[str, list[str]] = {}
     for index, annotation in enumerate(annotations):
         if not isinstance(annotation, Mapping):
@@ -395,11 +401,8 @@ def _table_merges_by_block(
     merges = render.get("table_merges", [])
     if not isinstance(merges, Sequence) or isinstance(merges, (str, bytes)):
         raise ValueError("render_plan.table_merges must be a list")
-    table_blocks = {
-        _text(block.get("id")): block
-        for block in blocks
-        if _text(block.get("type")) == "table"
-    }
+    _unique_block_ids(blocks)
+    table_blocks = _table_blocks_by_id(blocks)
     by_block: dict[str, list[str]] = {}
     for index, merge in enumerate(merges):
         if not isinstance(merge, Mapping):
@@ -410,12 +413,18 @@ def _table_merges_by_block(
             raise ValueError(f"render_plan.table_merges[{index}].block_id must reference a table block")
         if not isinstance(merge_range, str) or not XLSX_RANGE_RE.fullmatch(merge_range):
             raise ValueError(f"render_plan.table_merges[{index}].range is invalid")
-        _validate_xlsx_table_merge_range(merge_range, table_blocks[block_id], index)
         block_merges = by_block.setdefault(block_id, [])
-        _validate_xlsx_table_merge_does_not_overlap(merge_range, block_merges, index)
-        _validate_xlsx_table_merge_preserves_values(merge_range, table_blocks[block_id], index)
+        _validate_xlsx_table_merge(merge_range, table_blocks[block_id], block_merges, index)
         block_merges.append(merge_range)
     return by_block
+
+
+def _table_blocks_by_id(blocks: Sequence[Mapping[str, Any]]) -> dict[str, Mapping[str, Any]]:
+    return {
+        _text(block.get("id")): block
+        for block in blocks
+        if _text(block.get("type")) == "table"
+    }
 
 
 def _should_render_xlsx_table_grid(
@@ -614,6 +623,17 @@ def _column_index(column_name: str) -> int:
     for character in column_name:
         column_index = column_index * 26 + (ord(character) - ord("A") + 1)
     return column_index
+
+
+def _validate_xlsx_table_merge(
+    merge_range: str,
+    block: Mapping[str, Any],
+    existing_ranges: Sequence[str],
+    directive_index: int,
+) -> None:
+    _validate_xlsx_table_merge_range(merge_range, block, directive_index)
+    _validate_xlsx_table_merge_does_not_overlap(merge_range, existing_ranges, directive_index)
+    _validate_xlsx_table_merge_preserves_values(merge_range, block, directive_index)
 
 
 def _validate_xlsx_table_merge_range(
