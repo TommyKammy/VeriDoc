@@ -172,6 +172,8 @@ def test_build_conversion_audit_log_records_hashes_metadata_and_redacts_secrets(
         "accessToken",
         "refreshToken",
         "clientSecret",
+        "awsSecretAccessKey",
+        "privateKey",
     ],
 )
 def test_build_conversion_audit_log_redacts_review_thread_credential_keys(parameter_key: str) -> None:
@@ -196,6 +198,8 @@ def test_build_conversion_audit_log_redacts_review_thread_credential_keys(parame
         ({"generation": {"previous_response": {"choices": []}}}, r"parameters\.generation\.previous_response"),
         ({"tools": [{"content": "Lot: ABC-123"}]}, r"parameters\.tools\[0\]\.content"),
         ({"previousResponse": {"choices": []}}, r"parameters\.previousResponse"),
+        ({"input": "Lot: ABC-123"}, r"parameters\.input"),
+        ({"prompt": "Lot: ABC-123"}, r"parameters\.prompt"),
     ],
 )
 def test_build_conversion_audit_log_rejects_content_bearing_parameters(
@@ -219,6 +223,7 @@ def test_build_conversion_audit_log_rejects_openai_request_payload_parameters() 
         "model": "local-json-model",
         "temperature": 0,
         "max_tokens": 1024,
+        "input": "Lot: ABC-123",
         "messages": [
             {"role": "system", "content": "Return only JSON."},
             {"role": "user", "content": "Lot: ABC-123"},
@@ -226,7 +231,7 @@ def test_build_conversion_audit_log_rejects_openai_request_payload_parameters() 
         "previous_response": {"choices": [{"message": {"content": "{}"}}]},
     }
 
-    with pytest.raises(ValueError, match=r"parameters\.messages"):
+    with pytest.raises(ValueError, match=r"parameters\.input"):
         build_conversion_audit_log(
             source_bytes=b"Lot: ABC-123\n",
             output_bytes=b'{"lot_number":"ABC-123"}\n',

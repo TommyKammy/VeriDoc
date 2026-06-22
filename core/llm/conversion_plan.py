@@ -97,6 +97,7 @@ _SECRET_PARAMETER_KEYS = frozenset(
         "credential",
         "credentials",
         "password",
+        "private_key",
         "secret",
         "token",
     }
@@ -108,6 +109,7 @@ _SECRET_PARAMETER_KEY_SUFFIXES = (
     "_credential",
     "_credentials",
     "_password",
+    "_private_key",
     "_secret",
     "_token",
 )
@@ -118,12 +120,15 @@ _SECRET_PARAMETER_KEY_PREFIXES = (
     "credential_",
     "credentials_",
     "password_",
+    "private_key_",
     "secret_",
     "token_",
 )
 _SECRET_PARAMETER_KEY_PHRASES = (
     "api_key",
     "apikey",
+    "private_key",
+    "secret",
 )
 _CAMEL_ACRONYM_BOUNDARY_RE = re.compile(r"(.)([A-Z][a-z]+)")
 _CAMEL_CASE_BOUNDARY_RE = re.compile(r"([a-z0-9])([A-Z])")
@@ -131,8 +136,10 @@ _PARAMETER_KEY_SEPARATOR_RE = re.compile(r"[^A-Za-z0-9]+")
 _CONTENT_BEARING_AUDIT_PARAMETER_KEYS = frozenset(
     {
         "content",
+        "input",
         "messages",
         "previous_response",
+        "prompt",
     }
 )
 CONVERSION_TASK_PROMPTS = {
