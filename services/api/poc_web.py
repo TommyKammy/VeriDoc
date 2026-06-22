@@ -4,16 +4,24 @@ from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import base64
 import json
+import math
 from pathlib import Path
 import re
+import sys
 from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from core.ir.document_ir_v1 import DocumentIRV1, from_parser_output, validate_document_ir_v1
 
-WEB_ROOT = Path(__file__).resolve().parents[2] / "apps" / "web"
+WEB_ROOT = REPO_ROOT / "apps" / "web"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8788
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024
+SOURCE_TYPES = {"pdf", "docx", "xlsx", "unknown"}
+KNOWN_SOURCE_TYPES = SOURCE_TYPES - {"unknown"}
 
 
 def convert_uploaded_document(*, filename: str, content: bytes) -> dict[str, Any]:
@@ -24,7 +32,7 @@ def convert_uploaded_document(*, filename: str, content: bytes) -> dict[str, Any
         parser_output,
         document_id=_document_id(safe_filename),
         title=safe_filename,
-        source_type=_source_type(safe_filename),
+        source_type=_source_type(safe_filename, parser_output),
     )
     validation = validate_document_ir_v1(document_ir)
     review_items = _review_items(document_ir)
@@ -34,7 +42,7 @@ def convert_uploaded_document(*, filename: str, content: bytes) -> dict[str, Any
         "review_items": review_items,
         "warnings": [*input_warnings, *validation.warnings],
     }
-    download_content = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8")
+    download_content = _strict_json_bytes(payload, indent=2)
     return {
         "status": _status(validation.ok, validation.requires_review),
         **payload,
@@ -51,6 +59,14 @@ def run(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> None:
     server = ThreadingHTTPServer((host, port), PocWebRequestHandler)
     print(f"VeriDoc PoC web API listening on http://{host}:{port}")
     server.serve_forever()
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if args == ["--check"]:
+        return 0
+    run()
+    return 0
 
 
 class PocWebRequestHandler(BaseHTTPRequestHandler):
@@ -76,6 +92,8 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             return
         try:
             request = json.loads(self.rfile.read(byte_count).decode("utf-8"))
+            if not isinstance(request, dict):
+                raise ValueError("request JSON root must be an object")
             filename = str(request.get("filename") or "upload.txt")
             content = _decode_request_content(request)
             result = convert_uploaded_document(filename=filename, content=content)
@@ -99,7 +117,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _send_json(self, payload: dict[str, Any], *, status: int = 200) -> None:
-        body = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        body = _strict_json_bytes(payload)
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -179,8 +197,37 @@ def _decode_request_content(request: dict[str, Any]) -> bytes:
     raise ValueError("content or content_base64 is required")
 
 
-def _source_type(filename: str) -> str:
-    suffix = Path(filename).suffix.lower()
+def _source_type(filename: str, parser_output: dict[str, Any] | None = None) -> str:
+    filename_source_type = _source_type_from_path(filename)
+    if filename_source_type != "unknown":
+        return filename_source_type
+
+    data = parser_output if isinstance(parser_output, dict) else {}
+    explicit_source_type = str(data.get("source_type") or "")
+    if explicit_source_type in KNOWN_SOURCE_TYPES:
+        return explicit_source_type
+
+    document = data.get("document")
+    if isinstance(document, dict):
+        document_source_type = str(document.get("source_type") or "")
+        if document_source_type in KNOWN_SOURCE_TYPES:
+            return document_source_type
+
+    source_path_type = _source_type_from_path(str(data.get("source_path") or ""))
+    if source_path_type != "unknown":
+        return source_path_type
+
+    if isinstance(data.get("blocks"), list):
+        return "docx"
+    if isinstance(data.get("sheets"), list):
+        return "xlsx"
+    if isinstance(data.get("candidates"), list):
+        return "pdf"
+    return "unknown"
+
+
+def _source_type_from_path(path: str) -> str:
+    suffix = Path(path).suffix.lower()
     if suffix == ".pdf":
         return "pdf"
     if suffix == ".docx":
@@ -209,5 +256,25 @@ def _status(ok: bool, requires_review: bool) -> str:
     return "converted"
 
 
+def _strict_json_bytes(payload: Any, *, indent: int | None = None) -> bytes:
+    return json.dumps(
+        _json_safe(payload),
+        allow_nan=False,
+        ensure_ascii=False,
+        indent=indent,
+        sort_keys=True,
+    ).encode("utf-8")
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    return value
+
+
 if __name__ == "__main__":
-    run()
+    raise SystemExit(main())

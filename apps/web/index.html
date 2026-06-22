@@ -103,7 +103,7 @@
       <section id="result-panel" hidden>
         <span id="status" class="status"></span>
         <div id="review-list"></div>
-        <a id="download-link" download>Download</a>
+        <a id="download-link" download hidden>Download</a>
       </section>
       <section id="raw-panel" hidden>
         <pre id="raw-result"></pre>
@@ -118,6 +118,7 @@
       const reviewList = document.querySelector("#review-list");
       const downloadLink = document.querySelector("#download-link");
       const rawResult = document.querySelector("#raw-result");
+      let downloadUrl = "";
 
       button.addEventListener("click", async () => {
         const file = input.files[0];
@@ -136,6 +137,7 @@
         } catch (error) {
           status.textContent = `blocked: ${error.message}`;
           reviewList.replaceChildren();
+          clearDownload();
           resultPanel.hidden = false;
           rawPanel.hidden = true;
         } finally {
@@ -147,8 +149,11 @@
         status.textContent = result.status;
         reviewList.replaceChildren(...result.review_items.map(renderReviewItem));
         const blob = new Blob([result.download.content_text], { type: result.download.content_type });
-        downloadLink.href = URL.createObjectURL(blob);
+        clearDownload();
+        downloadUrl = URL.createObjectURL(blob);
+        downloadLink.href = downloadUrl;
         downloadLink.download = result.download.filename;
+        downloadLink.hidden = false;
         rawResult.textContent = JSON.stringify(
           { validation: result.validation, review_items: result.review_items },
           null,
@@ -156,6 +161,16 @@
         );
         resultPanel.hidden = false;
         rawPanel.hidden = false;
+      }
+
+      function clearDownload() {
+        if (downloadUrl) {
+          URL.revokeObjectURL(downloadUrl);
+          downloadUrl = "";
+        }
+        downloadLink.removeAttribute("href");
+        downloadLink.removeAttribute("download");
+        downloadLink.hidden = true;
       }
 
       function renderReviewItem(item) {
