@@ -109,6 +109,19 @@ def test_low_confidence_item_cannot_be_auto_confirmed_even_with_matching_source(
     assert "item confidence requires human review" in decision.warnings
 
 
+def test_low_confidence_item_does_not_skip_mandatory_scope_binding() -> None:
+    decision = validate_extracted_item(
+        expected=_expected_item(risk_level="medium", requires_review=False),
+        actual=_actual_item(confidence=0.42),
+    )
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert decision.requires_review is True
+    assert "scope_binding" in decision.failed_rules
+    assert "item confidence requires human review" in decision.warnings
+
+
 def test_item_scope_binding_requires_matching_document_and_block_ids() -> None:
     expected = _expected_item(
         risk_level="medium",
