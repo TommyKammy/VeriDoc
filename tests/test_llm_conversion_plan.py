@@ -165,6 +165,31 @@ def test_build_conversion_audit_log_records_hashes_metadata_and_redacts_secrets(
 
 
 @pytest.mark.parametrize(
+    "parameter_key",
+    [
+        "credentials",
+        "serviceCredentials",
+        "accessToken",
+        "refreshToken",
+        "clientSecret",
+    ],
+)
+def test_build_conversion_audit_log_redacts_review_thread_credential_keys(parameter_key: str) -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={parameter_key: "operator-runtime-sensitive-value"},
+    )
+
+    assert audit_log["parameters"] == {parameter_key: "[REDACTED]"}
+    assert "operator-runtime-sensitive-value" not in json.dumps(audit_log, sort_keys=True)
+
+
+@pytest.mark.parametrize(
     ("parameters", "message"),
     [
         ({"messages": [{"role": "user", "content": "Lot: ABC-123"}]}, r"parameters\.messages"),
@@ -186,6 +211,30 @@ def test_build_conversion_audit_log_rejects_content_bearing_parameters(
             prompt_version="poc-08",
             ir_version="document-ir-v1",
             parameters=parameters,
+        )
+
+
+def test_build_conversion_audit_log_rejects_openai_request_payload_parameters() -> None:
+    request_payload = {
+        "model": "local-json-model",
+        "temperature": 0,
+        "max_tokens": 1024,
+        "messages": [
+            {"role": "system", "content": "Return only JSON."},
+            {"role": "user", "content": "Lot: ABC-123"},
+        ],
+        "previous_response": {"choices": [{"message": {"content": "{}"}}]},
+    }
+
+    with pytest.raises(ValueError, match=r"parameters\.messages"):
+        build_conversion_audit_log(
+            source_bytes=b"Lot: ABC-123\n",
+            output_bytes=b'{"lot_number":"ABC-123"}\n',
+            model="local-json-model",
+            prompt_id="veridoc_conversion_plan",
+            prompt_version="poc-08",
+            ir_version="document-ir-v1",
+            parameters=request_payload,
         )
 
 
