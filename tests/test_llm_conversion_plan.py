@@ -460,6 +460,33 @@ def test_build_conversion_audit_log_allows_content_type_header_metadata() -> Non
     }
 
 
+def test_build_conversion_audit_log_redacts_credential_bearing_url_values() -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={
+            "base_url": "https://operator:operator-runtime-password@example.invalid/v1",
+            "callback_url": (
+                "https://example.invalid/callback?api_key=operator-runtime-api-key"
+            ),
+            "metadata_url": "https://example.invalid/metadata",
+        },
+    )
+
+    assert audit_log["parameters"] == {
+        "base_url": "[REDACTED]",
+        "callback_url": "[REDACTED]",
+        "metadata_url": "https://example.invalid/metadata",
+    }
+    rendered = json.dumps(audit_log, sort_keys=True)
+    assert "operator-runtime-password" not in rendered
+    assert "operator-runtime-api-key" not in rendered
+
+
 def test_build_conversion_audit_log_rejects_mapping_key_value_content_parameter_entries() -> None:
     with pytest.raises(ValueError, match=r"parameters\.options\[0\]\.prompt"):
         build_conversion_audit_log(

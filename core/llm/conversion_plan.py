@@ -12,7 +12,7 @@ import urllib.request
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlparse
 
 
 CONVERSION_PLAN_SCHEMA: dict[str, Any] = {
@@ -453,6 +453,8 @@ def _redact_audit_parameters(value: object, *, key_path: str = "") -> object:
             if redacted_value == _REDACTED_VALUE:
                 redacted_separator = ": " if separator == ":" else separator
                 return f"{entry_key}{redacted_separator}{_REDACTED_VALUE}"
+        if _is_credential_bearing_url(value):
+            return _REDACTED_VALUE
     if isinstance(value, list):
         return [_redact_audit_parameters(item, key_path=key_path) for item in value]
     if isinstance(value, tuple):
@@ -615,6 +617,18 @@ def _mapping_key_value_parameter_entry(value: Mapping[object, object]) -> tuple[
         if isinstance(key, str):
             return (str(original_key_field), key, str(value_field))
     return None
+
+
+def _is_credential_bearing_url(value: str) -> bool:
+    parsed_url = urlparse(value)
+    if not parsed_url.scheme or not parsed_url.netloc:
+        return False
+    if parsed_url.username is not None or parsed_url.password is not None:
+        return True
+    return any(
+        _is_secret_parameter_key(key)
+        for key, _value in parse_qsl(parsed_url.query, keep_blank_values=True)
+    )
 
 
 def _contains_component_sequence(components: tuple[str, ...], sequence: tuple[str, ...]) -> bool:
