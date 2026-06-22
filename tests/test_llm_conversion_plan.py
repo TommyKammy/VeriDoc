@@ -403,6 +403,34 @@ def test_build_conversion_audit_log_sanitizes_extra_header_and_cookie_pair_conta
     assert "Bearer" not in rendered
 
 
+def test_build_conversion_audit_log_allows_content_type_header_metadata() -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={
+            "headers": {
+                "Content-Type": "application/json",
+            },
+            "extra_headers": [
+                ("Content-Type", "application/json"),
+            ],
+        },
+    )
+
+    assert audit_log["parameters"] == {
+        "headers": {
+            "Content-Type": "application/json",
+        },
+        "extra_headers": [
+            ["Content-Type", "application/json"],
+        ],
+    }
+
+
 def test_build_conversion_audit_log_rejects_mapping_key_value_content_parameter_entries() -> None:
     with pytest.raises(ValueError, match=r"parameters\.options\[0\]\.prompt"):
         build_conversion_audit_log(
@@ -454,6 +482,11 @@ def test_build_conversion_audit_log_allows_response_format_schema_property_names
                         "type": "object",
                         "properties": {
                             "text": {"type": "string"},
+                            "attachment": {
+                                "type": "string",
+                                "contentMediaType": "application/pdf",
+                                "contentEncoding": "base64",
+                            },
                         },
                     },
                 },
@@ -472,6 +505,39 @@ def test_build_conversion_audit_log_allows_response_format_schema_property_names
     )
 
     assert audit_log["parameters"] == {"response_format": response_format}
+
+
+def test_build_conversion_audit_log_allows_tool_function_schema_property_names() -> None:
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "extract_field",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "input": {
+                            "type": "string",
+                            "contentMediaType": "text/plain",
+                        },
+                        "content": {"type": "string"},
+                    },
+                },
+            },
+        }
+    ]
+
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={"tools": tools},
+    )
+
+    assert audit_log["parameters"] == {"tools": tools}
 
 
 def test_build_conversion_audit_log_rejects_direct_response_format_content_values() -> None:

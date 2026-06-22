@@ -182,6 +182,7 @@ _CONTENT_BEARING_AUDIT_PARAMETER_KEYS = frozenset(
 )
 _SAFE_CONTENT_WORD_AUDIT_PARAMETER_KEYS = frozenset(
     {
+        "content_type",
         "max_prompt_tokens",
     }
 )
@@ -478,7 +479,7 @@ def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "
 
 def _is_content_bearing_audit_parameter_key(key: str) -> bool:
     normalized_leaf = _normalize_parameter_key(_parameter_key_leaf(key))
-    if _is_response_format_schema_property_name(key):
+    if _is_safe_json_schema_audit_parameter_key(key):
         return False
     if normalized_leaf in _SAFE_CONTENT_WORD_AUDIT_PARAMETER_KEYS:
         return False
@@ -498,16 +499,27 @@ def _is_content_bearing_audit_parameter_key(key: str) -> bool:
     )
 
 
-def _is_response_format_schema_property_name(key: str) -> bool:
+def _is_safe_json_schema_audit_parameter_key(key: str) -> bool:
     components = tuple(
         _normalize_parameter_key(_PARAMETER_INDEX_SUFFIX_RE.sub("", component))
         for component in key.split(".")
     )
-    if len(components) < 2 or components[-2] != "properties":
+    if "properties" not in components:
         return False
+    return (
+        _is_response_format_json_schema_path(components)
+        or _is_tool_function_json_schema_path(components)
+    )
+
+
+def _is_response_format_json_schema_path(components: tuple[str, ...]) -> bool:
     return "response_format" in components and (
         "json_schema" in components or "schema" in components
     )
+
+
+def _is_tool_function_json_schema_path(components: tuple[str, ...]) -> bool:
+    return "tools" in components and "function" in components and "parameters" in components
 
 
 def _is_secret_parameter_key(key: str) -> bool:
