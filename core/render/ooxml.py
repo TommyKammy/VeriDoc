@@ -223,14 +223,21 @@ def render_xlsx_from_ir(
     dimension = f"A1:{_cell_ref(max_column_count, max(current_row - 1, 3))}"
     sheet_rows = "\n".join(_xlsx_row(index + 1, cells) for index, cells in enumerate(rows) if cells)
     merge_xml = _xlsx_merge_cells_xml(merge_ranges)
+    vml_content_type = ""
     comment_content_type = ""
     xlsx_comment_parts: list[tuple[str, str]] = []
+    legacy_drawing_xml = ""
     sheet_relationships: tuple[str, str] | None = None
     if comment_refs:
+        vml_content_type = (
+            '  <Default Extension="vml" '
+            'ContentType="application/vnd.openxmlformats-officedocument.vmlDrawing"/>\n'
+        )
         comment_content_type = (
             '  <Override PartName="/xl/comments1.xml" '
             'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml"/>\n'
         )
+        legacy_drawing_xml = '  <legacyDrawing r:id="rId2"/>\n'
         xlsx_comment_parts.append(
             (
                 "xl/comments1.xml",
@@ -248,8 +255,21 @@ def render_xlsx_from_ir(
             """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="../comments1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing" Target="../drawings/vmlDrawing1.vml"/>
 </Relationships>
 """,
+        )
+        xlsx_comment_parts.append(
+            (
+                "xl/drawings/vmlDrawing1.vml",
+                _xlsx_vml_drawing_xml(
+                    [
+                        comment_refs[block_id]
+                        for block_id in source_annotations
+                        if block_id in comment_refs
+                    ]
+                ),
+            )
         )
     parts = [
         (
@@ -258,6 +278,7 @@ def render_xlsx_from_ir(
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
   <Default Extension="xml" ContentType="application/xml"/>
+{vml_content_type.rstrip()}
   <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
   <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
 {comment_content_type.rstrip()}
@@ -294,12 +315,14 @@ def render_xlsx_from_ir(
         (
             "xl/worksheets/sheet1.xml",
             f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
   <dimension ref="{dimension}"/>
   <sheetData>
 {sheet_rows}
   </sheetData>
 {merge_xml}
+{legacy_drawing_xml.rstrip()}
 </worksheet>
 """,
         ),
@@ -373,17 +396,22 @@ def _table_merges_by_block(
     merges = render.get("table_merges", [])
     if not isinstance(merges, Sequence) or isinstance(merges, (str, bytes)):
         raise ValueError("render_plan.table_merges must be a list")
-    table_block_ids = {_text(block.get("id")) for block in blocks if _text(block.get("type")) == "table"}
+    table_blocks = {
+        _text(block.get("id")): block
+        for block in blocks
+        if _text(block.get("type")) == "table"
+    }
     by_block: dict[str, list[str]] = {}
     for index, merge in enumerate(merges):
         if not isinstance(merge, Mapping):
             raise ValueError(f"render_plan.table_merges[{index}] must be an object")
         block_id = merge.get("block_id")
         merge_range = merge.get("range")
-        if not isinstance(block_id, str) or block_id not in table_block_ids:
+        if not isinstance(block_id, str) or block_id not in table_blocks:
             raise ValueError(f"render_plan.table_merges[{index}].block_id must reference a table block")
         if not isinstance(merge_range, str) or not XLSX_RANGE_RE.fullmatch(merge_range):
             raise ValueError(f"render_plan.table_merges[{index}].range is invalid")
+        _validate_xlsx_table_merge_range(merge_range, table_blocks[block_id], index)
         by_block.setdefault(block_id, []).append(merge_range)
     return by_block
 
@@ -586,6 +614,39 @@ def _column_index(column_name: str) -> int:
     return column_index
 
 
+def _validate_xlsx_table_merge_range(
+    merge_range: str,
+    block: Mapping[str, Any],
+    directive_index: int,
+) -> None:
+    start_ref, _separator, end_ref = merge_range.partition(":")
+    start_column, start_row = _xlsx_cell_coordinates(start_ref)
+    end_column, end_row = _xlsx_cell_coordinates(end_ref)
+    table_rows = _docx_table_rows(block)
+    table_row_count = len(table_rows)
+    table_column_count = max((len(row) for row in table_rows), default=1)
+    first_table_row = 4
+    last_table_row = first_table_row + table_row_count - 1
+    if (
+        start_column < 1
+        or end_column > table_column_count
+        or start_column > end_column
+        or start_row < first_table_row
+        or end_row > last_table_row
+        or start_row > end_row
+    ):
+        raise ValueError(
+            f"render_plan.table_merges[{directive_index}].range must stay within the table grid"
+        )
+
+
+def _xlsx_cell_coordinates(ref: str) -> tuple[int, int]:
+    match = XLSX_CELL_RE.fullmatch(ref)
+    if match is None:
+        raise ValueError(f"render_plan.table_merges range is invalid: {ref!r}")
+    return _column_index(match.group(1)), int(match.group(2))
+
+
 def _offset_xlsx_range(merge_range: str, row_delta: int) -> str:
     start_ref, _separator, end_ref = merge_range.partition(":")
     return f"{_offset_xlsx_cell(start_ref, row_delta)}:{_offset_xlsx_cell(end_ref, row_delta)}"
@@ -635,6 +696,48 @@ def _xlsx_comments_xml(comments: Sequence[tuple[str, str]]) -> str:
   <commentList>{comment_xml}</commentList>
 </comments>
 """
+
+
+def _xlsx_vml_drawing_xml(comment_refs: Sequence[str]) -> str:
+    shapes = "".join(
+        _xlsx_vml_comment_shape(ref, shape_index)
+        for shape_index, ref in enumerate(comment_refs, start=1025)
+    )
+    return f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<xml xmlns:v="urn:schemas-microsoft-com:vml"
+  xmlns:o="urn:schemas-microsoft-com:office:office"
+  xmlns:x="urn:schemas-microsoft-com:office:excel">
+  <o:shapelayout v:ext="edit"><o:idmap v:ext="edit" data="1"/></o:shapelayout>
+  <v:shapetype id="_x0000_t202" coordsize="21600,21600" o:spt="202" path="m,l,21600r21600,l21600,xe">
+    <v:stroke joinstyle="miter"/>
+    <v:path gradientshapeok="t" o:connecttype="rect"/>
+  </v:shapetype>
+  {shapes}
+</xml>
+"""
+
+
+def _xlsx_vml_comment_shape(ref: str, shape_index: int) -> str:
+    column_index, row_index = _xlsx_cell_coordinates(ref)
+    return (
+        f'<v:shape id="_x0000_s{shape_index}" type="#_x0000_t202" '
+        'style="position:absolute;margin-left:80pt;margin-top:5pt;width:108pt;'
+        'height:59.25pt;z-index:1;visibility:hidden" fillcolor="#ffffe1" '
+        'o:insetmode="auto">'
+        '<v:fill color2="#ffffe1"/>'
+        '<v:shadow on="t" color="black" obscured="t"/>'
+        '<v:path o:connecttype="none"/>'
+        '<v:textbox style="mso-direction-alt:auto"/>'
+        '<x:ClientData ObjectType="Note">'
+        '<x:MoveWithCells/>'
+        '<x:SizeWithCells/>'
+        '<x:Anchor>1, 15, 0, 2, 3, 15, 5, 4</x:Anchor>'
+        '<x:AutoFill>False</x:AutoFill>'
+        f"<x:Row>{row_index - 1}</x:Row>"
+        f"<x:Column>{column_index - 1}</x:Column>"
+        "</x:ClientData>"
+        "</v:shape>"
+    )
 
 
 def _text(value: Any) -> str:

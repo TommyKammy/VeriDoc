@@ -213,14 +213,24 @@ def test_renderers_apply_plan_table_merges_and_source_annotations(tmp_path: Path
 
     with ZipFile(xlsx_path) as xlsx_archive:
         xlsx_names = set(xlsx_archive.namelist())
+        content_types = xlsx_archive.read("[Content_Types].xml").decode("utf-8")
         sheet_xml = xlsx_archive.read("xl/worksheets/sheet1.xml").decode("utf-8")
         sheet_relationships = xlsx_archive.read("xl/worksheets/_rels/sheet1.xml.rels").decode("utf-8")
         comments_xml = xlsx_archive.read("xl/comments1.xml").decode("utf-8")
+        vml_xml = xlsx_archive.read("xl/drawings/vmlDrawing1.vml").decode("utf-8")
     assert "xl/comments1.xml" in xlsx_names
+    assert "xl/drawings/vmlDrawing1.vml" in xlsx_names
+    assert 'Default Extension="vml"' in content_types
     assert '<mergeCell ref="A4:B4"/>' in sheet_xml
+    assert '<legacyDrawing r:id="rId2"/>' in sheet_xml
     assert "relationships/comments" in sheet_relationships
+    assert "relationships/vmlDrawing" in sheet_relationships
+    assert 'Target="../drawings/vmlDrawing1.vml"' in sheet_relationships
     assert "Source page 2" in comments_xml
     assert "Lab worksheet A" in comments_xml
+    assert '<x:ClientData ObjectType="Note">' in vml_xml
+    assert "<x:Row>3</x:Row>" in vml_xml
+    assert "<x:Column>0</x:Column>" in vml_xml
 
 
 def test_xlsx_offsets_table_merges_to_rendered_table_start_row(tmp_path: Path) -> None:
@@ -264,6 +274,31 @@ def test_xlsx_rejects_table_merges_for_non_table_blocks(tmp_path: Path) -> None:
             document_ir,
             tmp_path / "invalid-merge.xlsx",
             render_plan={"table_merges": [{"block_id": "paragraph-1", "range": "A4:B4"}]},
+        )
+
+
+@pytest.mark.parametrize("merge_range", ["A1:B1", "A4:B6", "A4:C4", "B4:A4"])
+def test_xlsx_rejects_table_merges_outside_their_table_grid(
+    tmp_path: Path,
+    merge_range: str,
+) -> None:
+    document_ir = {
+        "document": {"title": "Bounded merge target"},
+        "blocks": [
+            {
+                "id": "table-1",
+                "type": "table",
+                "rows": [["Header", ""], ["Lot", "SAMPLE-LOT-001"]],
+            },
+            {"id": "paragraph-1", "type": "paragraph", "text": "After table"},
+        ],
+    }
+
+    with pytest.raises(ValueError, match="range must stay within the table grid"):
+        render_xlsx_from_ir(
+            document_ir,
+            tmp_path / f"invalid-merge-{merge_range.replace(':', '-')}.xlsx",
+            render_plan={"table_merges": [{"block_id": "table-1", "range": merge_range}]},
         )
 
 
