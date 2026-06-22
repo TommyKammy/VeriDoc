@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
 import pytest
+
+from scripts.ci.validate_document_ir import validate, validate_document_ir_consistency
 
 try:
     import pymupdf as fitz
@@ -12,7 +15,11 @@ except ImportError:
         raise
     pytest.skip("PyMuPDF eval dependency is not installed", allow_module_level=True)
 
-from core.parsers.pdf_text_extraction import extract_pdf_text
+from core.parsers.pdf_text_extraction import extract_pdf_text, parse_text_pdf_to_document_ir
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SCHEMA_PATH = REPO_ROOT / "core" / "ir" / "document-ir-v0.schema.json"
 
 
 def _write_pdf(
@@ -176,3 +183,88 @@ def test_extract_pdf_text_clips_bboxes_to_crop_box_dimensions(tmp_path: Path) ->
         assert fragment.bbox.height > 0
         assert fragment.bbox.x + fragment.bbox.width <= page_result.width_pt
         assert fragment.bbox.y + fragment.bbox.height <= page_result.height_pt
+
+
+def test_parse_text_pdf_to_document_ir_emits_paragraphs_tables_and_coordinates(
+    tmp_path: Path,
+) -> None:
+    pdf_path = tmp_path / "batch-record.pdf"
+    _write_pdf(
+        pdf_path,
+        [
+            [
+                ("Manufacturing summary", (36, 48)),
+                ("Batch was inspected before release.", (36, 78)),
+                ("Lot\tResult", (36, 118)),
+                ("A-001\tPass", (36, 138)),
+            ]
+        ],
+    )
+
+    document_ir = parse_text_pdf_to_document_ir(pdf_path, document_id="sample-pdf")
+
+    assert document_ir["schema_version"] == "document-ir/v0"
+    assert document_ir["document"] == {
+        "id": "sample-pdf",
+        "title": "batch-record.pdf",
+        "source_type": "pdf",
+    }
+    assert document_ir["pages"] == [
+        {"page_number": 1, "width": 300.0, "height": 200.0, "unit": "pt"}
+    ]
+
+    blocks = document_ir["blocks"]
+    assert [(block["id"], block["type"], block["text"]) for block in blocks] == [
+        ("block-001", "paragraph", "Manufacturing summary"),
+        ("block-002", "paragraph", "Batch was inspected before release."),
+        ("block-003", "table", "Lot\tResult\nA-001\tPass"),
+    ]
+    assert blocks[0]["value_metadata"]["requires_review"] is False
+    assert blocks[2]["value_metadata"]["requires_review"] is True
+    assert blocks[2]["value_metadata"]["extractor"]["name"] == "pymupdf-text-table-heuristic"
+
+    for block in blocks:
+        metadata = block["value_metadata"]
+        assert metadata["source_page"] == 1
+        assert metadata["confidence"] > 0
+        bbox = metadata["bbox"]
+        assert bbox["x"] >= 0
+        assert bbox["y"] >= 0
+        assert bbox["width"] > 0
+        assert bbox["height"] > 0
+        assert bbox["x"] + bbox["width"] <= document_ir["pages"][0]["width"]
+        assert bbox["y"] + bbox["height"] <= document_ir["pages"][0]["height"]
+
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    validate(schema, document_ir)
+    validate_document_ir_consistency(document_ir)
+
+
+def test_parse_text_pdf_to_document_ir_marks_empty_text_for_review(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "empty-page.pdf"
+    document = fitz.open()
+    document.new_page(width=300, height=200)
+    document.save(pdf_path)
+    document.close()
+
+    document_ir = parse_text_pdf_to_document_ir(pdf_path)
+
+    assert len(document_ir["blocks"]) == 1
+    block = document_ir["blocks"][0]
+    assert block["id"] == "block-001"
+    assert block["type"] == "paragraph"
+    assert block["text"] == "PDF text extraction produced no text blocks."
+    assert block["value_metadata"]["source_page"] == 1
+    assert block["value_metadata"]["bbox"] == {
+        "x": 0.0,
+        "y": 0.0,
+        "width": 300.0,
+        "height": 200.0,
+    }
+    assert block["value_metadata"]["extractor"]["name"] == "pymupdf"
+    assert block["value_metadata"]["confidence"] == 0.0
+    assert block["value_metadata"]["requires_review"] is True
+
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    validate(schema, document_ir)
+    validate_document_ir_consistency(document_ir)
