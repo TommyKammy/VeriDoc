@@ -371,12 +371,19 @@ def test_non_top_left_source_origin_blocks_auto_confirm() -> None:
         risk_level="medium",
         requires_review=False,
         fixture_id="fixture-001",
+        document_id="doc-001",
+        block_id="block-001",
         evidence=bottom_left_source,
     )
 
     decision = validate_extracted_item(
         expected=expected,
-        actual=_actual_item(fixture_id="fixture-001", evidence=bottom_left_source),
+        actual=_actual_item(
+            fixture_id="fixture-001",
+            document_id="doc-001",
+            block_id="block-001",
+            evidence=bottom_left_source,
+        ),
     )
 
     assert decision.auto_confirm_allowed is False
@@ -437,10 +444,14 @@ def test_unsupported_source_bbox_unit_blocks_auto_confirm() -> None:
             risk_level="medium",
             requires_review=False,
             fixture_id="fixture-001",
+            document_id="doc-001",
+            block_id="block-001",
             evidence=unsupported_unit_source,
         ),
         actual=_actual_item(
             fixture_id="fixture-001",
+            document_id="doc-001",
+            block_id="block-001",
             evidence=unsupported_unit_source,
         ),
     )
@@ -1027,6 +1038,8 @@ def test_current_head_review_examples_fail_closed() -> None:
                     risk_level="medium",
                     requires_review=False,
                     fixture_id="fixture-001",
+                    document_id="doc-001",
+                    block_id="block-001",
                     evidence={
                         "source_page": 1,
                         "bbox": {
@@ -1040,10 +1053,52 @@ def test_current_head_review_examples_fail_closed() -> None:
                 ),
                 actual=_actual_item(
                     fixture_id="fixture-001",
+                    document_id="doc-001",
+                    block_id="block-001",
                     evidence={
                         "source_page": 1,
                         "bbox": {
                             "origin": "bottom_left",
+                            "x": 72.0,
+                            "y": 112.0,
+                            "width": 180.0,
+                            "height": 18.0,
+                        },
+                    },
+                ),
+            ),
+            "provenance",
+        ),
+        (
+            "unsupported_bbox_unit",
+            validate_extracted_item(
+                expected=_expected_item(
+                    risk_level="medium",
+                    requires_review=False,
+                    fixture_id="fixture-001",
+                    document_id="doc-001",
+                    block_id="block-001",
+                    evidence={
+                        "source_page": 1,
+                        "bbox": {
+                            "origin": "top-left",
+                            "unit": "inch",
+                            "x": 72.0,
+                            "y": 112.0,
+                            "width": 180.0,
+                            "height": 18.0,
+                        },
+                    },
+                ),
+                actual=_actual_item(
+                    fixture_id="fixture-001",
+                    document_id="doc-001",
+                    block_id="block-001",
+                    evidence={
+                        "source_page": 1,
+                        "bbox": {
+                            "origin": "top-left",
+                            "unit": "inch",
                             "x": 72.0,
                             "y": 112.0,
                             "width": 180.0,
