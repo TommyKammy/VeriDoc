@@ -298,6 +298,27 @@ def test_renderers_reject_table_merges_for_non_table_blocks(tmp_path: Path) -> N
     assert not xlsx_output.exists()
 
 
+def test_renderers_reject_duplicate_block_ids_before_render_plan_lookup(tmp_path: Path) -> None:
+    document_ir = {
+        "document": {"title": "Duplicate IDs"},
+        "blocks": [
+            {"id": "block-1", "type": "paragraph", "text": "First"},
+            {"id": "block-1", "type": "paragraph", "text": "Second"},
+        ],
+    }
+    docx_output = tmp_path / "duplicate-id.docx"
+    xlsx_output = tmp_path / "duplicate-id.xlsx"
+    render_plan = {"source_annotations": [{"block_id": "block-1", "text": "Ambiguous source"}]}
+
+    with pytest.raises(ValueError, match="ids must be unique"):
+        render_docx_from_ir(document_ir, docx_output, render_plan=render_plan)
+    assert not docx_output.exists()
+
+    with pytest.raises(ValueError, match="ids must be unique"):
+        render_xlsx_from_ir(document_ir, xlsx_output, render_plan=render_plan)
+    assert not xlsx_output.exists()
+
+
 @pytest.mark.parametrize("merge_range", ["A1:B1", "A4:B6", "A4:C4", "B4:A4"])
 def test_renderers_reject_table_merges_outside_their_table_grid(
     tmp_path: Path,
@@ -332,6 +353,59 @@ def test_renderers_reject_table_merges_outside_their_table_grid(
             render_plan={"table_merges": [{"block_id": "table-1", "range": merge_range}]},
         )
     assert not output_path.exists()
+
+
+def test_renderers_reject_overlapping_table_merge_ranges(tmp_path: Path) -> None:
+    document_ir = {
+        "document": {"title": "Overlapping merge target"},
+        "blocks": [
+            {
+                "id": "table-1",
+                "type": "table",
+                "rows": [["Header", "", ""], ["Lot", "", ""]],
+            },
+        ],
+    }
+    render_plan = {
+        "table_merges": [
+            {"block_id": "table-1", "range": "A4:B4"},
+            {"block_id": "table-1", "range": "B4:C4"},
+        ],
+    }
+    docx_output = tmp_path / "overlap.docx"
+    xlsx_output = tmp_path / "overlap.xlsx"
+
+    with pytest.raises(ValueError, match="must not overlap another table merge"):
+        render_docx_from_ir(document_ir, docx_output, render_plan=render_plan)
+    assert not docx_output.exists()
+
+    with pytest.raises(ValueError, match="must not overlap another table merge"):
+        render_xlsx_from_ir(document_ir, xlsx_output, render_plan=render_plan)
+    assert not xlsx_output.exists()
+
+
+def test_renderers_reject_table_merges_that_hide_populated_cells(tmp_path: Path) -> None:
+    document_ir = {
+        "document": {"title": "Populated merge target"},
+        "blocks": [
+            {
+                "id": "table-1",
+                "type": "table",
+                "rows": [["Header", "Value"], ["Lot", "SAMPLE-LOT-001"]],
+            },
+        ],
+    }
+    render_plan = {"table_merges": [{"block_id": "table-1", "range": "A4:B4"}]}
+    docx_output = tmp_path / "populated-merge.docx"
+    xlsx_output = tmp_path / "populated-merge.xlsx"
+
+    with pytest.raises(ValueError, match="must not cover populated non-anchor cells"):
+        render_docx_from_ir(document_ir, docx_output, render_plan=render_plan)
+    assert not docx_output.exists()
+
+    with pytest.raises(ValueError, match="must not cover populated non-anchor cells"):
+        render_xlsx_from_ir(document_ir, xlsx_output, render_plan=render_plan)
+    assert not xlsx_output.exists()
 
 
 @pytest.mark.parametrize("merge_range", ["A1:B1", "A4:B6"])

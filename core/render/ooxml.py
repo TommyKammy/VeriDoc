@@ -339,6 +339,9 @@ def _blocks(document_ir: Mapping[str, Any]) -> Sequence[Mapping[str, Any]]:
         block_type = _text(block.get("type"))
         if block_type not in SUPPORTED_BLOCK_TYPES:
             raise ValueError(f"unsupported document_ir.blocks type: {block_type!r}")
+    block_ids = _block_ids(blocks)
+    if len(block_ids) != len(set(block_ids)):
+        raise ValueError("document_ir.blocks ids must be unique")
     return blocks
 
 
@@ -408,7 +411,10 @@ def _table_merges_by_block(
         if not isinstance(merge_range, str) or not XLSX_RANGE_RE.fullmatch(merge_range):
             raise ValueError(f"render_plan.table_merges[{index}].range is invalid")
         _validate_xlsx_table_merge_range(merge_range, table_blocks[block_id], index)
-        by_block.setdefault(block_id, []).append(merge_range)
+        block_merges = by_block.setdefault(block_id, [])
+        _validate_xlsx_table_merge_does_not_overlap(merge_range, block_merges, index)
+        _validate_xlsx_table_merge_preserves_values(merge_range, table_blocks[block_id], index)
+        block_merges.append(merge_range)
     return by_block
 
 
@@ -615,9 +621,7 @@ def _validate_xlsx_table_merge_range(
     block: Mapping[str, Any],
     directive_index: int,
 ) -> None:
-    start_ref, _separator, end_ref = merge_range.partition(":")
-    start_column, start_row = _xlsx_cell_coordinates(start_ref)
-    end_column, end_row = _xlsx_cell_coordinates(end_ref)
+    start_column, start_row, end_column, end_row = _xlsx_range_coordinates(merge_range)
     table_rows = _docx_table_rows(block)
     table_row_count = len(table_rows)
     table_column_count = max((len(row) for row in table_rows), default=1)
@@ -634,6 +638,56 @@ def _validate_xlsx_table_merge_range(
         raise ValueError(
             f"render_plan.table_merges[{directive_index}].range must stay within the table grid"
         )
+
+
+def _validate_xlsx_table_merge_does_not_overlap(
+    merge_range: str,
+    existing_ranges: Sequence[str],
+    directive_index: int,
+) -> None:
+    start_column, start_row, end_column, end_row = _xlsx_range_coordinates(merge_range)
+    for existing_range in existing_ranges:
+        (
+            existing_start_column,
+            existing_start_row,
+            existing_end_column,
+            existing_end_row,
+        ) = _xlsx_range_coordinates(existing_range)
+        if (
+            max(start_column, existing_start_column) <= min(end_column, existing_end_column)
+            and max(start_row, existing_start_row) <= min(end_row, existing_end_row)
+        ):
+            raise ValueError(
+                f"render_plan.table_merges[{directive_index}].range must not overlap another table merge"
+            )
+
+
+def _validate_xlsx_table_merge_preserves_values(
+    merge_range: str,
+    block: Mapping[str, Any],
+    directive_index: int,
+) -> None:
+    start_column, start_row, end_column, end_row = _xlsx_range_coordinates(merge_range)
+    table_rows = _docx_table_rows(block)
+    for row_index in range(start_row, end_row + 1):
+        table_row_index = row_index - 4
+        row = table_rows[table_row_index]
+        for column_index in range(start_column, end_column + 1):
+            if row_index == start_row and column_index == start_column:
+                continue
+            table_column_index = column_index - 1
+            value = row[table_column_index] if table_column_index < len(row) else ""
+            if _text(value):
+                raise ValueError(
+                    f"render_plan.table_merges[{directive_index}].range must not cover populated non-anchor cells"
+                )
+
+
+def _xlsx_range_coordinates(merge_range: str) -> tuple[int, int, int, int]:
+    start_ref, _separator, end_ref = merge_range.partition(":")
+    start_column, start_row = _xlsx_cell_coordinates(start_ref)
+    end_column, end_row = _xlsx_cell_coordinates(end_ref)
+    return start_column, start_row, end_column, end_row
 
 
 def _xlsx_cell_coordinates(ref: str) -> tuple[int, int]:
