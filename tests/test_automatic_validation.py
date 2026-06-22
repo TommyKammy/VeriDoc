@@ -40,6 +40,7 @@ def _actual_item(**overrides: object) -> dict[str, object]:
         "label_id": "lot_number",
         "value": "SAMPLE-LOT-001",
         "auto_confirmed": False,
+        "confidence": 0.95,
         "evidence": _evidence(),
     }
     item.update(overrides)
@@ -79,6 +80,33 @@ def test_missing_or_mismatched_provenance_blocks_auto_confirm() -> None:
     assert decision.auto_confirm_allowed is False
     assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
     assert "provenance" in decision.failed_rules
+
+
+def test_low_confidence_item_cannot_be_auto_confirmed_even_with_matching_source() -> None:
+    expected = _expected_item(
+        risk_level="medium",
+        requires_review=False,
+        fixture_id="fixture-001",
+        document_id="doc-001",
+        block_id="block-001",
+    )
+
+    decision = validate_extracted_item(
+        expected=expected,
+        actual=_actual_item(
+            auto_confirmed=True,
+            confidence=0.42,
+            fixture_id="fixture-001",
+            document_id="doc-001",
+            block_id="block-001",
+        ),
+    )
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert decision.requires_review is True
+    assert "risk_gate" in decision.failed_rules
+    assert "item confidence requires human review" in decision.warnings
 
 
 def test_item_scope_binding_requires_matching_document_and_block_ids() -> None:
