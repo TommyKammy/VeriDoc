@@ -154,7 +154,8 @@ def test_renderers_apply_plan_table_merges_and_source_annotations(tmp_path: Path
                     "confidence": 0.9,
                     "requires_review": False,
                 },
-            }
+            },
+            {"id": "paragraph-1", "type": "paragraph", "text": "QA review complete"},
         ],
     }
     conversion_plan = {
@@ -176,6 +177,7 @@ def test_renderers_apply_plan_table_merges_and_source_annotations(tmp_path: Path
         "source_annotations": [
             {"block_id": "table-1", "text": "Source page 2"},
             {"block_id": "table-1", "text": "Lab worksheet A"},
+            {"block_id": "paragraph-1", "text": "QA note"},
         ],
     }
     docx_path = tmp_path / "planned.docx"
@@ -201,6 +203,7 @@ def test_renderers_apply_plan_table_merges_and_source_annotations(tmp_path: Path
     assert cells["A5"] == ("Lot", "inline_string")
     assert cells["B5"] == ("SAMPLE-LOT-001", "inline_string")
     assert cells["B6"] == ("12.5", "number")
+    assert cells["A7"] == ("paragraph-1", "inline_string")
 
     with ZipFile(docx_path) as docx_archive:
         docx_names = set(docx_archive.namelist())
@@ -210,6 +213,7 @@ def test_renderers_apply_plan_table_merges_and_source_annotations(tmp_path: Path
     assert "relationships/comments" in document_relationships
     assert "Source page 2" in comments_xml
     assert "Lab worksheet A" in comments_xml
+    assert "QA note" in comments_xml
 
     with ZipFile(xlsx_path) as xlsx_archive:
         xlsx_names = set(xlsx_archive.namelist())
@@ -228,8 +232,11 @@ def test_renderers_apply_plan_table_merges_and_source_annotations(tmp_path: Path
     assert 'Target="../drawings/vmlDrawing1.vml"' in sheet_relationships
     assert "Source page 2" in comments_xml
     assert "Lab worksheet A" in comments_xml
+    assert "QA note" in comments_xml
+    assert vml_xml.count('<x:ClientData ObjectType="Note">') == 2
     assert '<x:ClientData ObjectType="Note">' in vml_xml
     assert "<x:Row>3</x:Row>" in vml_xml
+    assert "<x:Row>6</x:Row>" in vml_xml
     assert "<x:Column>0</x:Column>" in vml_xml
 
 
@@ -261,24 +268,35 @@ def test_xlsx_offsets_table_merges_to_rendered_table_start_row(tmp_path: Path) -
     assert cells["A5"] == "Batch Summary"
 
 
-def test_xlsx_rejects_table_merges_for_non_table_blocks(tmp_path: Path) -> None:
+def test_renderers_reject_table_merges_for_non_table_blocks(tmp_path: Path) -> None:
     document_ir = {
         "document": {"title": "Invalid merge target"},
         "blocks": [
             {"id": "paragraph-1", "type": "paragraph", "text": "Not a table"},
         ],
     }
+    docx_output = tmp_path / "invalid-merge.docx"
+    xlsx_output = tmp_path / "invalid-merge.xlsx"
+
+    with pytest.raises(ValueError, match="must reference a table block"):
+        render_docx_from_ir(
+            document_ir,
+            docx_output,
+            render_plan={"table_merges": [{"block_id": "paragraph-1", "range": "A4:B4"}]},
+        )
+    assert not docx_output.exists()
 
     with pytest.raises(ValueError, match="must reference a table block"):
         render_xlsx_from_ir(
             document_ir,
-            tmp_path / "invalid-merge.xlsx",
+            xlsx_output,
             render_plan={"table_merges": [{"block_id": "paragraph-1", "range": "A4:B4"}]},
         )
+    assert not xlsx_output.exists()
 
 
 @pytest.mark.parametrize("merge_range", ["A1:B1", "A4:B6", "A4:C4", "B4:A4"])
-def test_xlsx_rejects_table_merges_outside_their_table_grid(
+def test_renderers_reject_table_merges_outside_their_table_grid(
     tmp_path: Path,
     merge_range: str,
 ) -> None:
@@ -294,6 +312,15 @@ def test_xlsx_rejects_table_merges_outside_their_table_grid(
         ],
     }
     output_path = tmp_path / f"invalid-merge-{merge_range.replace(':', '-')}.xlsx"
+    docx_output_path = tmp_path / f"invalid-merge-{merge_range.replace(':', '-')}.docx"
+
+    with pytest.raises(ValueError, match="range must stay within the table grid"):
+        render_docx_from_ir(
+            document_ir,
+            docx_output_path,
+            render_plan={"table_merges": [{"block_id": "table-1", "range": merge_range}]},
+        )
+    assert not docx_output_path.exists()
 
     with pytest.raises(ValueError, match="range must stay within the table grid"):
         render_xlsx_from_ir(

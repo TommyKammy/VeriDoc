@@ -29,6 +29,7 @@ def render_docx_from_ir(
     blocks = _blocks(document_ir)
     render_directives = _render_directives(conversion_plan, render_plan)
     source_annotations = _source_annotations_by_block(render_directives, blocks)
+    _table_merges_by_block(render_directives, blocks)
     comment_ids = {
         block_id: index
         for index, block_id in enumerate(
@@ -229,6 +230,11 @@ def render_xlsx_from_ir(
     legacy_drawing_xml = ""
     sheet_relationships: tuple[str, str] | None = None
     if comment_refs:
+        xlsx_comment_entries = [
+            (comment_refs[block_id], _joined_annotation_text(texts))
+            for block_id, texts in source_annotations.items()
+            if block_id in comment_refs
+        ]
         vml_content_type = (
             '  <Default Extension="vml" '
             'ContentType="application/vnd.openxmlformats-officedocument.vmlDrawing"/>\n'
@@ -241,13 +247,7 @@ def render_xlsx_from_ir(
         xlsx_comment_parts.append(
             (
                 "xl/comments1.xml",
-                _xlsx_comments_xml(
-                    [
-                        (comment_refs[block_id], _joined_annotation_text(texts))
-                        for block_id, texts in source_annotations.items()
-                        if block_id in comment_refs
-                    ]
-                ),
+                _xlsx_comments_xml(xlsx_comment_entries),
             )
         )
         sheet_relationships = (
@@ -262,13 +262,7 @@ def render_xlsx_from_ir(
         xlsx_comment_parts.append(
             (
                 "xl/drawings/vmlDrawing1.vml",
-                _xlsx_vml_drawing_xml(
-                    [
-                        comment_refs[block_id]
-                        for block_id in source_annotations
-                        if block_id in comment_refs
-                    ]
-                ),
+                _xlsx_vml_drawing_xml([ref for ref, _text in xlsx_comment_entries]),
             )
         )
     parts = [
