@@ -80,7 +80,7 @@ def validate_table_consistency(
 
     if not _same_non_empty_string(expected_table.get("id"), actual_table.get("id")):
         failed_rules.append("table_consistency")
-    if "fixture_table_id" in expected_table and not _same_non_empty_string(
+    if not _same_non_empty_string(
         expected_table.get("fixture_table_id"), expected_table.get("id")
     ):
         failed_rules.append("table_consistency")

@@ -282,6 +282,7 @@ def test_matching_negative_source_coordinates_block_auto_confirm() -> None:
 def test_table_consistency_rejects_missing_cells_and_wrong_text() -> None:
     expected_table = {
         "id": "table-001",
+        "fixture_table_id": "table-001",
         "cells": [
             {"id": "table-001-r1-c1", "text": "Lot number", "requires_review": False},
             {
@@ -311,6 +312,7 @@ def test_table_cells_enforce_provenance_and_review_gates() -> None:
     source = _evidence()
     expected_table = {
         "id": "table-001",
+        "fixture_table_id": "table-001",
         "cells": [
             {
                 "id": "table-001-r1-c1",
@@ -375,6 +377,7 @@ def test_table_cell_requires_review_blocks_auto_confirm_even_without_failures() 
     source = _evidence()
     expected_table = {
         "id": "table-001",
+        "fixture_table_id": "table-001",
         "cells": [
             {
                 "id": "table-001-r1-c1",
@@ -408,6 +411,7 @@ def test_actual_table_cell_requires_review_blocks_auto_confirm() -> None:
     source = _evidence()
     expected_table = {
         "id": "table-001",
+        "fixture_table_id": "table-001",
         "cells": [
             {
                 "id": "table-001-r1-c1",
@@ -701,6 +705,33 @@ def test_current_head_review_examples_fail_closed() -> None:
                 ),
             ),
             "scope_binding",
+        ),
+        (
+            "missing_fixture_table_id",
+            validate_table_consistency(
+                {
+                    "id": "table-001",
+                    "cells": [
+                        {
+                            "id": "table-001-r1-c1",
+                            "text": "SAMPLE-LOT-001",
+                            "source": source,
+                            "requires_review": False,
+                        },
+                    ],
+                },
+                {
+                    "id": "table-001",
+                    "cells": [
+                        {
+                            "id": "table-001-r1-c1",
+                            "text": "SAMPLE-LOT-001",
+                            "source": source,
+                        },
+                    ],
+                },
+            ),
+            "table_consistency",
         ),
         (
             "mismatched_fixture_table_id",
