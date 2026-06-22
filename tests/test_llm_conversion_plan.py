@@ -270,6 +270,8 @@ def test_build_conversion_audit_log_redacts_signature_credentials(
         ({"output": {"bytes": b'{"lot_number":"ABC-123"}\n'}}, r"parameters\.output"),
         ({"source": [("bytes", b"Lot: ABC-123\n")]}, r"parameters\.source"),
         ({"blob": b"Lot: ABC-123\n"}, r"parameters\.blob"),
+        ({"file": "Lot: ABC-123"}, r"parameters\.file"),
+        ({"files": ["Lot: ABC-123"]}, r"parameters\.files\[0\]"),
         ({"files": [("upload", b"Lot: ABC-123\n")]}, r"parameters\.files\[0\]\.upload"),
         ({"files": [("upload", "Lot: ABC-123")]}, r"parameters\.files\[0\]\.upload"),
         (

@@ -523,6 +523,11 @@ def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "
             raise ValueError(f"{item_path} must not include document or request content")
         _reject_content_bearing_audit_parameters(value[1], key_path=item_path)
     elif isinstance(value, str):
+        if (
+            _normalize_parameter_key(_parameter_key_leaf(key_path))
+            in _FILE_AUDIT_PARAMETER_CONTAINER_KEYS
+        ):
+            raise ValueError(f"{key_path} must not include document or request content")
         for raw_entry in _raw_key_value_parameter_entries(value, key_path):
             entry_key, _separator, _entry_value = raw_entry
             item_path = _raw_key_value_parameter_entry_path(key_path, entry_key)
