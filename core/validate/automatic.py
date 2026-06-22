@@ -14,6 +14,7 @@ class ValidationStatus(Enum):
 
 
 SUPPORTED_BBOX_UNITS = {"pt", "px", "mm"}
+MIN_IMPORTANT_VALUE_CONFIDENCE = 0.8
 
 
 @dataclass(frozen=True)
@@ -59,6 +60,12 @@ def validate_extracted_item(
         failed_rules.append("risk_gate")
         auto_confirmed = True
 
+    confidence_requires_review = _confidence_requires_review(actual.get("confidence"))
+    if confidence_requires_review:
+        warnings.append("item confidence requires human review")
+        if auto_confirmed:
+            failed_rules.append("risk_gate")
+
     if _has_malformed_review_flag(expected) or _has_malformed_review_flag(actual):
         failed_rules.append("risk_gate")
     if _has_missing_or_malformed_risk_level(expected) or _has_malformed_risk_level(actual):
@@ -68,8 +75,9 @@ def validate_extracted_item(
 
     explicit_review_required = _requires_review(expected) or _requires_review(actual)
     high_risk = _is_high_risk(expected) or _is_high_risk(actual)
-    requires_review = explicit_review_required or high_risk
-    if not requires_review:
+    requires_review = explicit_review_required or high_risk or confidence_requires_review
+    scope_binding_required = not (explicit_review_required or high_risk)
+    if scope_binding_required:
         for scope_key in ("fixture_id", "document_id", "block_id"):
             if not _same_non_empty_string(expected.get(scope_key), actual.get(scope_key)):
                 failed_rules.append("scope_binding")
@@ -249,6 +257,12 @@ def _is_supported_finite_number(value: object) -> bool:
     except OverflowError:
         return False
     return math.isfinite(number)
+
+
+def _confidence_requires_review(value: object) -> bool:
+    if not _is_supported_finite_number(value):
+        return True
+    return float(value) < MIN_IMPORTANT_VALUE_CONFIDENCE or float(value) > 1
 
 
 def _cell_requires_review(cell: Mapping[str, Any]) -> bool:
