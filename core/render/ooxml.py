@@ -11,28 +11,75 @@ from zipfile import ZIP_STORED, ZipFile, ZipInfo
 FIXED_ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 MAX_EXACT_SPREADSHEET_DIGITS = 15
 ASCII_NUMBER_RE = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?\Z")
+XLSX_RANGE_RE = re.compile(r"[A-Z]+[1-9][0-9]*:[A-Z]+[1-9][0-9]*\Z")
+XLSX_CELL_RE = re.compile(r"([A-Z]+)([1-9][0-9]*)\Z")
 SUPPORTED_BLOCK_TYPES = {"field", "heading", "list_item", "paragraph", "table"}
 
 
-def render_docx_from_ir(document_ir: Mapping[str, Any], output_path: str | Path) -> None:
+def render_docx_from_ir(
+    document_ir: Mapping[str, Any],
+    output_path: str | Path,
+    *,
+    conversion_plan: Mapping[str, Any] | None = None,
+    render_plan: Mapping[str, Any] | None = None,
+) -> None:
     """Render a minimal deterministic DOCX package from Document IR v0."""
     document = _mapping(document_ir.get("document"), "document")
     title = _text(document.get("title"))
     blocks = _blocks(document_ir)
+    render_directives = _render_directives(conversion_plan, render_plan)
+    source_annotations = _source_annotations_by_block(render_directives, blocks)
+    _table_merges_by_block(render_directives, blocks)
+    comment_ids = {
+        block_id: index
+        for index, block_id in enumerate(
+            block_id for block_id in _block_ids(blocks) if block_id in source_annotations
+        )
+    }
     body_parts = [_docx_paragraph(title, style="Heading1")]
-    body_parts.extend(_docx_block(block) for block in blocks)
+    body_parts.extend(
+        _docx_block(block, comment_id=comment_ids.get(_text(block.get("id"))))
+        for block in blocks
+    )
     body_parts.append("<w:sectPr/>")
+
+    comment_content_type = ""
+    comment_relationship = ""
+    comment_parts: list[tuple[str, str]] = []
+    if comment_ids:
+        comment_content_type = (
+            '  <Override PartName="/word/comments.xml" '
+            'ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml"/>\n'
+        )
+        comment_relationship = (
+            '  <Relationship Id="rId3" '
+            'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" '
+            'Target="comments.xml"/>\n'
+        )
+        comment_parts.append(
+            (
+                "word/comments.xml",
+                _docx_comments_xml(
+                    [
+                        (comment_ids[block_id], _joined_annotation_text(texts))
+                        for block_id, texts in source_annotations.items()
+                        if block_id in comment_ids
+                    ]
+                ),
+            )
+        )
 
     parts = [
         (
             "[Content_Types].xml",
-            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
   <Default Extension="xml" ContentType="application/xml"/>
   <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
   <Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>
   <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+{comment_content_type.rstrip()}
 </Types>
 """,
         ),
@@ -46,10 +93,11 @@ def render_docx_from_ir(document_ir: Mapping[str, Any], output_path: str | Path)
         ),
         (
             "word/_rels/document.xml.rels",
-            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>
   <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+{comment_relationship.rstrip()}
 </Relationships>
 """,
         ),
@@ -96,14 +144,24 @@ def render_docx_from_ir(document_ir: Mapping[str, Any], output_path: str | Path)
 </w:document>
 """,
         ),
-    ]
+    ] + comment_parts
     _write_zip(output_path, parts)
 
 
-def render_xlsx_from_ir(document_ir: Mapping[str, Any], output_path: str | Path) -> None:
+def render_xlsx_from_ir(
+    document_ir: Mapping[str, Any],
+    output_path: str | Path,
+    *,
+    conversion_plan: Mapping[str, Any] | None = None,
+    render_plan: Mapping[str, Any] | None = None,
+) -> None:
     """Render a minimal deterministic XLSX package from Document IR v0."""
     document = _mapping(document_ir.get("document"), "document")
     title = _text(document.get("title"))
+    blocks = _blocks(document_ir)
+    render_directives = _render_directives(conversion_plan, render_plan)
+    source_annotations = _source_annotations_by_block(render_directives, blocks)
+    table_merges = _table_merges_by_block(render_directives, blocks)
     rows = [
         [_text_cell("A1", title)],
         [],
@@ -115,9 +173,33 @@ def render_xlsx_from_ir(document_ir: Mapping[str, Any], output_path: str | Path)
         ],
     ]
     current_row = 4
-    for block in _blocks(document_ir):
+    max_column_count = 4
+    comment_refs: dict[str, str] = {}
+    merge_ranges: list[str] = []
+    for block in blocks:
+        block_id = _text(block.get("id"))
         kind = _text(block.get("type"))
         text = _text(block.get("text"))
+        if kind == "table" and _should_render_xlsx_table_grid(block, table_merges):
+            if block_id in source_annotations:
+                comment_refs[block_id] = f"A{current_row}"
+            table_start_row = current_row
+            table_rows = _docx_table_rows(block)
+            for row_offset, table_row in enumerate(table_rows):
+                row_index = current_row + row_offset
+                rows.append(
+                    [
+                        _typed_xlsx_cell(_cell_ref(column_index + 1, row_index), cell)
+                        for column_index, cell in enumerate(table_row)
+                    ]
+                )
+                max_column_count = max(max_column_count, len(table_row))
+            current_row += len(table_rows)
+            merge_ranges.extend(
+                _offset_xlsx_range(merge_range, table_start_row - 4)
+                for merge_range in table_merges.get(block_id, [])
+            )
+            continue
         if kind == "field":
             label, value = _split_field(text)
             rendered_value, value_type = _typed_xlsx_value(value)
@@ -126,6 +208,8 @@ def render_xlsx_from_ir(document_ir: Mapping[str, Any], output_path: str | Path)
             label, value = kind, text
             value_cell = _text_cell(f"C{current_row}", value)
             value_type = "text"
+        if block_id in source_annotations:
+            comment_refs[block_id] = f"A{current_row}"
         rows.append(
             [
                 _text_cell(f"A{current_row}", _text(block.get("id"))),
@@ -136,17 +220,64 @@ def render_xlsx_from_ir(document_ir: Mapping[str, Any], output_path: str | Path)
         )
         current_row += 1
 
-    dimension = f"A1:D{max(current_row - 1, 3)}"
+    max_column_count = max(max_column_count, _max_column_from_ranges(merge_ranges))
+    dimension = f"A1:{_cell_ref(max_column_count, max(current_row - 1, 3))}"
     sheet_rows = "\n".join(_xlsx_row(index + 1, cells) for index, cells in enumerate(rows) if cells)
+    merge_xml = _xlsx_merge_cells_xml(merge_ranges)
+    vml_content_type = ""
+    comment_content_type = ""
+    xlsx_comment_parts: list[tuple[str, str]] = []
+    legacy_drawing_xml = ""
+    sheet_relationships: tuple[str, str] | None = None
+    if comment_refs:
+        xlsx_comment_entries = [
+            (comment_refs[block_id], _joined_annotation_text(texts))
+            for block_id, texts in source_annotations.items()
+            if block_id in comment_refs
+        ]
+        vml_content_type = (
+            '  <Default Extension="vml" '
+            'ContentType="application/vnd.openxmlformats-officedocument.vmlDrawing"/>\n'
+            '  <Override PartName="/xl/drawings/vmlDrawing1.vml" '
+            'ContentType="application/vnd.openxmlformats-officedocument.vmlDrawing"/>\n'
+        )
+        comment_content_type = (
+            '  <Override PartName="/xl/comments1.xml" '
+            'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml"/>\n'
+        )
+        legacy_drawing_xml = '  <legacyDrawing r:id="rId2"/>\n'
+        xlsx_comment_parts.append(
+            (
+                "xl/comments1.xml",
+                _xlsx_comments_xml(xlsx_comment_entries),
+            )
+        )
+        sheet_relationships = (
+            "xl/worksheets/_rels/sheet1.xml.rels",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="../comments1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing" Target="../drawings/vmlDrawing1.vml"/>
+</Relationships>
+""",
+        )
+        xlsx_comment_parts.append(
+            (
+                "xl/drawings/vmlDrawing1.vml",
+                _xlsx_vml_drawing_xml([ref for ref, _text in xlsx_comment_entries]),
+            )
+        )
     parts = [
         (
             "[Content_Types].xml",
-            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
   <Default Extension="xml" ContentType="application/xml"/>
+{vml_content_type.rstrip()}
   <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
   <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+{comment_content_type.rstrip()}
 </Types>
 """,
         ),
@@ -180,15 +311,21 @@ def render_xlsx_from_ir(document_ir: Mapping[str, Any], output_path: str | Path)
         (
             "xl/worksheets/sheet1.xml",
             f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
   <dimension ref="{dimension}"/>
   <sheetData>
 {sheet_rows}
   </sheetData>
+{merge_xml}
+{legacy_drawing_xml.rstrip()}
 </worksheet>
 """,
         ),
     ]
+    if sheet_relationships is not None:
+        parts.append(sheet_relationships)
+    parts.extend(xlsx_comment_parts)
     _write_zip(output_path, parts)
 
 
@@ -202,7 +339,104 @@ def _blocks(document_ir: Mapping[str, Any]) -> Sequence[Mapping[str, Any]]:
         block_type = _text(block.get("type"))
         if block_type not in SUPPORTED_BLOCK_TYPES:
             raise ValueError(f"unsupported document_ir.blocks type: {block_type!r}")
+    _unique_block_ids(blocks)
     return blocks
+
+
+def _block_ids(blocks: Sequence[Mapping[str, Any]]) -> list[str]:
+    return [_text(block.get("id")) for block in blocks]
+
+
+def _unique_block_ids(blocks: Sequence[Mapping[str, Any]]) -> set[str]:
+    block_ids = _block_ids(blocks)
+    unique_ids = set(block_ids)
+    if len(block_ids) != len(unique_ids):
+        raise ValueError("document_ir.blocks ids must be unique")
+    return unique_ids
+
+
+def _render_directives(
+    conversion_plan: Mapping[str, Any] | None,
+    render_plan: Mapping[str, Any] | None,
+) -> Mapping[str, Any]:
+    if conversion_plan is not None and "render" in conversion_plan:
+        raise ValueError("conversion_plan.render is not supported; pass render_plan instead")
+    if render_plan is None:
+        return {}
+    if not isinstance(render_plan, Mapping):
+        raise ValueError("render_plan must be an object")
+    allowed_keys = {"source_annotations", "table_merges"}
+    unsupported_keys = sorted(str(key) for key in render_plan if key not in allowed_keys)
+    if unsupported_keys:
+        raise ValueError(f"render_plan contains unsupported directives: {unsupported_keys!r}")
+    return render_plan
+
+
+def _source_annotations_by_block(
+    render: Mapping[str, Any],
+    blocks: Sequence[Mapping[str, Any]],
+) -> dict[str, list[str]]:
+    annotations = render.get("source_annotations", [])
+    if not isinstance(annotations, Sequence) or isinstance(annotations, (str, bytes)):
+        raise ValueError("render_plan.source_annotations must be a list")
+    valid_block_ids = _unique_block_ids(blocks)
+    by_block: dict[str, list[str]] = {}
+    for index, annotation in enumerate(annotations):
+        if not isinstance(annotation, Mapping):
+            raise ValueError(f"render_plan.source_annotations[{index}] must be an object")
+        block_id = annotation.get("block_id")
+        text = annotation.get("text")
+        if not isinstance(block_id, str) or block_id not in valid_block_ids:
+            raise ValueError(f"render_plan.source_annotations[{index}].block_id must reference an IR block")
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError(f"render_plan.source_annotations[{index}].text is required")
+        by_block.setdefault(block_id, []).append(text)
+    return by_block
+
+
+def _table_merges_by_block(
+    render: Mapping[str, Any],
+    blocks: Sequence[Mapping[str, Any]],
+) -> dict[str, list[str]]:
+    merges = render.get("table_merges", [])
+    if not isinstance(merges, Sequence) or isinstance(merges, (str, bytes)):
+        raise ValueError("render_plan.table_merges must be a list")
+    _unique_block_ids(blocks)
+    table_blocks = _table_blocks_by_id(blocks)
+    by_block: dict[str, list[str]] = {}
+    for index, merge in enumerate(merges):
+        if not isinstance(merge, Mapping):
+            raise ValueError(f"render_plan.table_merges[{index}] must be an object")
+        block_id = merge.get("block_id")
+        merge_range = merge.get("range")
+        if not isinstance(block_id, str) or block_id not in table_blocks:
+            raise ValueError(f"render_plan.table_merges[{index}].block_id must reference a table block")
+        if not isinstance(merge_range, str) or not XLSX_RANGE_RE.fullmatch(merge_range):
+            raise ValueError(f"render_plan.table_merges[{index}].range is invalid")
+        block_merges = by_block.setdefault(block_id, [])
+        _validate_xlsx_table_merge(merge_range, table_blocks[block_id], block_merges, index)
+        block_merges.append(merge_range)
+    return by_block
+
+
+def _table_blocks_by_id(blocks: Sequence[Mapping[str, Any]]) -> dict[str, Mapping[str, Any]]:
+    return {
+        _text(block.get("id")): block
+        for block in blocks
+        if _text(block.get("type")) == "table"
+    }
+
+
+def _should_render_xlsx_table_grid(
+    block: Mapping[str, Any],
+    table_merges: Mapping[str, Sequence[str]],
+) -> bool:
+    block_id = _text(block.get("id"))
+    return bool(table_merges.get(block_id))
+
+
+def _joined_annotation_text(texts: Sequence[str]) -> str:
+    return "\n".join(texts)
 
 
 def _mapping(value: Any, label: str) -> Mapping[str, Any]:
@@ -211,16 +445,16 @@ def _mapping(value: Any, label: str) -> Mapping[str, Any]:
     return value
 
 
-def _docx_block(block: Mapping[str, Any]) -> str:
+def _docx_block(block: Mapping[str, Any], *, comment_id: int | None = None) -> str:
     kind = _text(block.get("type"))
     if kind == "table":
-        return _docx_table(_docx_table_rows(block))
+        return _docx_table(_docx_table_rows(block), comment_id=comment_id)
     if kind == "list_item":
-        return _docx_paragraph(_text(block.get("text")), numbering=True)
+        return _docx_paragraph(_text(block.get("text")), numbering=True, comment_id=comment_id)
     if kind in {"field", "paragraph"}:
-        return _docx_paragraph(_text(block.get("text")))
+        return _docx_paragraph(_text(block.get("text")), comment_id=comment_id)
     if kind == "heading":
-        return _docx_paragraph(_text(block.get("text")), style="Heading1")
+        return _docx_paragraph(_text(block.get("text")), style="Heading1", comment_id=comment_id)
     raise ValueError(f"unsupported document_ir.blocks type: {kind!r}")
 
 
@@ -229,6 +463,7 @@ def _docx_paragraph(
     *,
     style: str | None = None,
     numbering: bool = False,
+    comment_id: int | None = None,
 ) -> str:
     paragraph_properties = []
     if style is not None:
@@ -240,7 +475,16 @@ def _docx_paragraph(
         if not paragraph_properties
         else f"<w:pPr>{''.join(paragraph_properties)}</w:pPr>"
     )
-    return f"<w:p>{properties_xml}{_docx_runs(text)}</w:p>"
+    comment_start = "" if comment_id is None else f'<w:commentRangeStart w:id="{comment_id}"/>'
+    comment_end = (
+        ""
+        if comment_id is None
+        else (
+            f'<w:commentRangeEnd w:id="{comment_id}"/>'
+            f'<w:r><w:commentReference w:id="{comment_id}"/></w:r>'
+        )
+    )
+    return f"<w:p>{properties_xml}{comment_start}{_docx_runs(text)}{comment_end}</w:p>"
 
 
 def _docx_runs(text: str) -> str:
@@ -270,11 +514,15 @@ def _docx_text_run(text: str) -> str:
     return f"<w:r><w:t{space_attr}>{_xml_escape(text)}</w:t></w:r>"
 
 
-def _docx_table(rows: Sequence[Sequence[str]]) -> str:
-    row_xml = "".join(
-        f"<w:tr>{''.join(f'<w:tc>{_docx_paragraph(cell)}</w:tc>' for cell in row)}</w:tr>"
-        for row in rows
-    )
+def _docx_table(rows: Sequence[Sequence[str]], *, comment_id: int | None = None) -> str:
+    row_parts = []
+    for row_index, row in enumerate(rows):
+        cell_parts = []
+        for cell_index, cell in enumerate(row):
+            cell_comment_id = comment_id if row_index == 0 and cell_index == 0 else None
+            cell_parts.append(f"<w:tc>{_docx_paragraph(cell, comment_id=cell_comment_id)}</w:tc>")
+        row_parts.append(f"<w:tr>{''.join(cell_parts)}</w:tr>")
+    row_xml = "".join(row_parts)
     return f"<w:tbl>{row_xml}</w:tbl>"
 
 
@@ -306,6 +554,11 @@ def _typed_xlsx_value(value: str) -> tuple[Any, str]:
     if _is_plain_number(numeric_candidate):
         return (lambda ref: _number_cell(ref, numeric_candidate)), "number"
     return (lambda ref: _text_cell(ref, value)), "text"
+
+
+def _typed_xlsx_cell(ref: str, value: str) -> str:
+    rendered_value, _value_type = _typed_xlsx_value(value)
+    return rendered_value(ref)
 
 
 def _is_plain_number(value: str) -> bool:
@@ -341,6 +594,228 @@ def _text_cell(ref: str, value: str) -> str:
 
 def _number_cell(ref: str, value: str) -> str:
     return f'<c r="{ref}"><v>{_xml_escape(value)}</v></c>'
+
+
+def _cell_ref(column_index: int, row_index: int) -> str:
+    if column_index < 1 or row_index < 1:
+        raise ValueError("spreadsheet cell indexes are 1-based")
+    letters = []
+    current = column_index
+    while current:
+        current, remainder = divmod(current - 1, 26)
+        letters.append(chr(ord("A") + remainder))
+    return f"{''.join(reversed(letters))}{row_index}"
+
+
+def _max_column_from_ranges(ranges: Sequence[str]) -> int:
+    max_column = 1
+    for merge_range in ranges:
+        _start, _separator, end_ref = merge_range.partition(":")
+        match = XLSX_CELL_RE.fullmatch(end_ref)
+        if match is None:
+            continue
+        max_column = max(max_column, _column_index(match.group(1)))
+    return max_column
+
+
+def _column_index(column_name: str) -> int:
+    column_index = 0
+    for character in column_name:
+        column_index = column_index * 26 + (ord(character) - ord("A") + 1)
+    return column_index
+
+
+def _validate_xlsx_table_merge(
+    merge_range: str,
+    block: Mapping[str, Any],
+    existing_ranges: Sequence[str],
+    directive_index: int,
+) -> None:
+    _validate_xlsx_table_merge_range(merge_range, block, directive_index)
+    _validate_xlsx_table_merge_does_not_overlap(merge_range, existing_ranges, directive_index)
+    _validate_xlsx_table_merge_preserves_values(merge_range, block, directive_index)
+
+
+def _validate_xlsx_table_merge_range(
+    merge_range: str,
+    block: Mapping[str, Any],
+    directive_index: int,
+) -> None:
+    start_column, start_row, end_column, end_row = _xlsx_range_coordinates(merge_range)
+    table_rows = _docx_table_rows(block)
+    table_row_count = len(table_rows)
+    table_column_count = max((len(row) for row in table_rows), default=1)
+    first_table_row = 4
+    last_table_row = first_table_row + table_row_count - 1
+    if (
+        start_column < 1
+        or end_column > table_column_count
+        or start_column > end_column
+        or start_row < first_table_row
+        or end_row > last_table_row
+        or start_row > end_row
+    ):
+        raise ValueError(
+            f"render_plan.table_merges[{directive_index}].range must stay within the table grid"
+        )
+
+
+def _validate_xlsx_table_merge_does_not_overlap(
+    merge_range: str,
+    existing_ranges: Sequence[str],
+    directive_index: int,
+) -> None:
+    start_column, start_row, end_column, end_row = _xlsx_range_coordinates(merge_range)
+    for existing_range in existing_ranges:
+        (
+            existing_start_column,
+            existing_start_row,
+            existing_end_column,
+            existing_end_row,
+        ) = _xlsx_range_coordinates(existing_range)
+        if (
+            max(start_column, existing_start_column) <= min(end_column, existing_end_column)
+            and max(start_row, existing_start_row) <= min(end_row, existing_end_row)
+        ):
+            raise ValueError(
+                f"render_plan.table_merges[{directive_index}].range must not overlap another table merge"
+            )
+
+
+def _validate_xlsx_table_merge_preserves_values(
+    merge_range: str,
+    block: Mapping[str, Any],
+    directive_index: int,
+) -> None:
+    start_column, start_row, end_column, end_row = _xlsx_range_coordinates(merge_range)
+    table_rows = _docx_table_rows(block)
+    for row_index in range(start_row, end_row + 1):
+        table_row_index = row_index - 4
+        row = table_rows[table_row_index]
+        for column_index in range(start_column, end_column + 1):
+            if row_index == start_row and column_index == start_column:
+                continue
+            table_column_index = column_index - 1
+            value = row[table_column_index] if table_column_index < len(row) else ""
+            if _text(value):
+                raise ValueError(
+                    f"render_plan.table_merges[{directive_index}].range must not cover populated non-anchor cells"
+                )
+
+
+def _xlsx_range_coordinates(merge_range: str) -> tuple[int, int, int, int]:
+    start_ref, _separator, end_ref = merge_range.partition(":")
+    start_column, start_row = _xlsx_cell_coordinates(start_ref)
+    end_column, end_row = _xlsx_cell_coordinates(end_ref)
+    return start_column, start_row, end_column, end_row
+
+
+def _xlsx_cell_coordinates(ref: str) -> tuple[int, int]:
+    match = XLSX_CELL_RE.fullmatch(ref)
+    if match is None:
+        raise ValueError(f"render_plan.table_merges range is invalid: {ref!r}")
+    return _column_index(match.group(1)), int(match.group(2))
+
+
+def _offset_xlsx_range(merge_range: str, row_delta: int) -> str:
+    start_ref, _separator, end_ref = merge_range.partition(":")
+    return f"{_offset_xlsx_cell(start_ref, row_delta)}:{_offset_xlsx_cell(end_ref, row_delta)}"
+
+
+def _offset_xlsx_cell(ref: str, row_delta: int) -> str:
+    match = XLSX_CELL_RE.fullmatch(ref)
+    if match is None:
+        raise ValueError(f"render_plan.table_merges range is invalid: {ref!r}")
+    row_index = int(match.group(2)) + row_delta
+    if row_index < 1:
+        raise ValueError("render_plan.table_merges range resolves outside the worksheet")
+    return f"{match.group(1)}{row_index}"
+
+
+def _xlsx_merge_cells_xml(ranges: Sequence[str]) -> str:
+    if not ranges:
+        return ""
+    merge_cells = "".join(f'    <mergeCell ref="{_xml_escape(merge_range)}"/>' for merge_range in ranges)
+    return f'  <mergeCells count="{len(ranges)}">{merge_cells}</mergeCells>'
+
+
+def _docx_comments_xml(comments: Sequence[tuple[int, str]]) -> str:
+    comment_xml = "".join(
+        f'<w:comment w:id="{comment_id}" w:author="VeriDoc" w:initials="VD">'
+        f'<w:p>{_docx_runs(text)}</w:p>'
+        f"</w:comment>"
+        for comment_id, text in comments
+    )
+    return f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:comments xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  {comment_xml}
+</w:comments>
+"""
+
+
+def _xlsx_comments_xml(comments: Sequence[tuple[str, str]]) -> str:
+    comment_xml = "".join(
+        f'<comment ref="{_xml_escape(ref)}" authorId="0">'
+        f"<text><r><t>{_xml_escape(text)}</t></r></text>"
+        f"</comment>"
+        for ref, text in comments
+    )
+    return f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<comments xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <authors><author>VeriDoc</author></authors>
+  <commentList>{comment_xml}</commentList>
+</comments>
+"""
+
+
+def _xlsx_vml_drawing_xml(comment_refs: Sequence[str]) -> str:
+    shapes = "".join(
+        _xlsx_vml_comment_shape(ref, shape_index)
+        for shape_index, ref in enumerate(comment_refs, start=1025)
+    )
+    return f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<xml xmlns:v="urn:schemas-microsoft-com:vml"
+  xmlns:o="urn:schemas-microsoft-com:office:office"
+  xmlns:x="urn:schemas-microsoft-com:office:excel">
+  <o:shapelayout v:ext="edit"><o:idmap v:ext="edit" data="1"/></o:shapelayout>
+  <v:shapetype id="_x0000_t202" coordsize="21600,21600" o:spt="202" path="m,l,21600r21600,l21600,xe">
+    <v:stroke joinstyle="miter"/>
+    <v:path gradientshapeok="t" o:connecttype="rect"/>
+  </v:shapetype>
+  {shapes}
+</xml>
+"""
+
+
+def _xlsx_vml_comment_shape(ref: str, shape_index: int) -> str:
+    column_index, row_index = _xlsx_cell_coordinates(ref)
+    anchor_start_column = column_index
+    anchor_start_row = row_index - 1
+    anchor_end_column = anchor_start_column + 2
+    anchor_end_row = anchor_start_row + 4
+    anchor = (
+        f"{anchor_start_column}, 15, {anchor_start_row}, 2, "
+        f"{anchor_end_column}, 15, {anchor_end_row}, 4"
+    )
+    return (
+        f'<v:shape id="_x0000_s{shape_index}" type="#_x0000_t202" '
+        'style="position:absolute;margin-left:80pt;margin-top:5pt;width:108pt;'
+        'height:59.25pt;z-index:1;visibility:hidden" fillcolor="#ffffe1" '
+        'o:insetmode="auto">'
+        '<v:fill color2="#ffffe1"/>'
+        '<v:shadow on="t" color="black" obscured="t"/>'
+        '<v:path o:connecttype="none"/>'
+        '<v:textbox style="mso-direction-alt:auto"/>'
+        '<x:ClientData ObjectType="Note">'
+        '<x:MoveWithCells/>'
+        '<x:SizeWithCells/>'
+        f"<x:Anchor>{anchor}</x:Anchor>"
+        '<x:AutoFill>False</x:AutoFill>'
+        f"<x:Row>{row_index - 1}</x:Row>"
+        f"<x:Column>{column_index - 1}</x:Column>"
+        "</x:ClientData>"
+        "</v:shape>"
+    )
 
 
 def _text(value: Any) -> str:

@@ -6,6 +6,7 @@ from zipfile import ZipFile
 
 import pytest
 
+from core.llm.conversion_plan import validate_conversion_plan
 from core.parsers.docx_extraction import extract_docx_structure
 from core.parsers.xlsx_extraction import extract_xlsx_structure
 from core.render.ooxml import render_docx_from_ir, render_xlsx_from_ir
@@ -132,6 +133,357 @@ def test_same_ir_renders_deterministic_docx_and_xlsx_with_typed_cells(tmp_path: 
         "C6": ("12.5", "number"),
         "D6": ("number", "inline_string"),
     }
+
+
+def test_renderers_apply_plan_table_merges_and_source_annotations(tmp_path: Path) -> None:
+    document_ir = {
+        "document": {"title": "Planned table render"},
+        "blocks": [
+            {
+                "id": "table-1",
+                "type": "table",
+                "text": "Batch Summary\t\nLot\tSAMPLE-LOT-001\nAssay\t12.5",
+                "rows": [
+                    ["Batch Summary", ""],
+                    ["Lot", "SAMPLE-LOT-001"],
+                    ["Assay", "12.5"],
+                ],
+                "value_metadata": {
+                    "source_page": 2,
+                    "bbox": {"x": 10, "y": 20, "width": 200, "height": 48},
+                    "confidence": 0.9,
+                    "requires_review": False,
+                },
+            },
+            {"id": "paragraph-1", "type": "paragraph", "text": "QA review complete"},
+        ],
+    }
+    conversion_plan = {
+        "schema_version": 1,
+        "source_kind": "excel_workbook",
+        "operations": [
+            {
+                "id": "extract-summary-table",
+                "action": "extract_table",
+                "inputs": ["table-1"],
+                "output": "table-1",
+                "rationale": "Preserve directly extracted table structure.",
+            }
+        ],
+        "constraints": {"external_transmission": False},
+    }
+    render_plan = {
+        "table_merges": [{"block_id": "table-1", "range": "A4:B4"}],
+        "source_annotations": [
+            {"block_id": "table-1", "text": "Source page 2"},
+            {"block_id": "table-1", "text": "Lab worksheet A"},
+            {"block_id": "paragraph-1", "text": "QA note"},
+        ],
+    }
+    docx_path = tmp_path / "planned.docx"
+    xlsx_path = tmp_path / "planned.xlsx"
+
+    validate_conversion_plan(conversion_plan)
+    render_docx_from_ir(
+        document_ir,
+        docx_path,
+        conversion_plan=conversion_plan,
+        render_plan=render_plan,
+    )
+    render_xlsx_from_ir(
+        document_ir,
+        xlsx_path,
+        conversion_plan=conversion_plan,
+        render_plan=render_plan,
+    )
+
+    xlsx = extract_xlsx_structure(xlsx_path)
+    assert xlsx.sheets[0].merged_ranges == ["A4:B4"]
+    cells = {cell.ref: (cell.value, cell.value_type) for cell in xlsx.sheets[0].cells}
+    assert cells["A5"] == ("Lot", "inline_string")
+    assert cells["B5"] == ("SAMPLE-LOT-001", "inline_string")
+    assert cells["B6"] == ("12.5", "number")
+    assert cells["A7"] == ("paragraph-1", "inline_string")
+
+    with ZipFile(docx_path) as docx_archive:
+        docx_names = set(docx_archive.namelist())
+        document_relationships = docx_archive.read("word/_rels/document.xml.rels").decode("utf-8")
+        comments_xml = docx_archive.read("word/comments.xml").decode("utf-8")
+    assert "word/comments.xml" in docx_names
+    assert "relationships/comments" in document_relationships
+    assert "Source page 2" in comments_xml
+    assert "Lab worksheet A" in comments_xml
+    assert "QA note" in comments_xml
+
+    with ZipFile(xlsx_path) as xlsx_archive:
+        xlsx_names = set(xlsx_archive.namelist())
+        content_types = xlsx_archive.read("[Content_Types].xml").decode("utf-8")
+        sheet_xml = xlsx_archive.read("xl/worksheets/sheet1.xml").decode("utf-8")
+        sheet_relationships = xlsx_archive.read("xl/worksheets/_rels/sheet1.xml.rels").decode("utf-8")
+        comments_xml = xlsx_archive.read("xl/comments1.xml").decode("utf-8")
+        vml_xml = xlsx_archive.read("xl/drawings/vmlDrawing1.vml").decode("utf-8")
+    assert "xl/comments1.xml" in xlsx_names
+    assert "xl/drawings/vmlDrawing1.vml" in xlsx_names
+    assert 'Default Extension="vml"' in content_types
+    assert 'Override PartName="/xl/drawings/vmlDrawing1.vml"' in content_types
+    assert '<mergeCell ref="A4:B4"/>' in sheet_xml
+    assert '<legacyDrawing r:id="rId2"/>' in sheet_xml
+    assert "relationships/comments" in sheet_relationships
+    assert "relationships/vmlDrawing" in sheet_relationships
+    assert 'Target="../drawings/vmlDrawing1.vml"' in sheet_relationships
+    assert "Source page 2" in comments_xml
+    assert "Lab worksheet A" in comments_xml
+    assert "QA note" in comments_xml
+    assert vml_xml.count('<x:ClientData ObjectType="Note">') == 2
+    assert '<x:ClientData ObjectType="Note">' in vml_xml
+    assert "<x:Anchor>1, 15, 3, 2, 3, 15, 7, 4</x:Anchor>" in vml_xml
+    assert "<x:Anchor>1, 15, 6, 2, 3, 15, 10, 4</x:Anchor>" in vml_xml
+    assert "<x:Row>3</x:Row>" in vml_xml
+    assert "<x:Row>6</x:Row>" in vml_xml
+    assert "<x:Column>0</x:Column>" in vml_xml
+
+
+def test_xlsx_offsets_table_merges_to_rendered_table_start_row(tmp_path: Path) -> None:
+    document_ir = {
+        "document": {"title": "Offset table render"},
+        "blocks": [
+            {"id": "summary-1", "type": "paragraph", "text": "Summary before table"},
+            {
+                "id": "table-1",
+                "type": "table",
+                "text": "Batch Summary\t\nLot\tSAMPLE-LOT-001",
+                "rows": [["Batch Summary", ""], ["Lot", "SAMPLE-LOT-001"]],
+            },
+        ],
+    }
+    output_path = tmp_path / "offset-table.xlsx"
+
+    render_xlsx_from_ir(
+        document_ir,
+        output_path,
+        render_plan={"table_merges": [{"block_id": "table-1", "range": "A4:B4"}]},
+    )
+
+    xlsx = extract_xlsx_structure(output_path)
+    assert xlsx.sheets[0].merged_ranges == ["A5:B5"]
+    cells = {cell.ref: cell.value for cell in xlsx.sheets[0].cells}
+    assert cells["A4"] == "summary-1"
+    assert cells["A5"] == "Batch Summary"
+
+
+def test_renderers_reject_table_merges_for_non_table_blocks(tmp_path: Path) -> None:
+    document_ir = {
+        "document": {"title": "Invalid merge target"},
+        "blocks": [
+            {"id": "paragraph-1", "type": "paragraph", "text": "Not a table"},
+        ],
+    }
+    docx_output = tmp_path / "invalid-merge.docx"
+    xlsx_output = tmp_path / "invalid-merge.xlsx"
+
+    with pytest.raises(ValueError, match="must reference a table block"):
+        render_docx_from_ir(
+            document_ir,
+            docx_output,
+            render_plan={"table_merges": [{"block_id": "paragraph-1", "range": "A4:B4"}]},
+        )
+    assert not docx_output.exists()
+
+    with pytest.raises(ValueError, match="must reference a table block"):
+        render_xlsx_from_ir(
+            document_ir,
+            xlsx_output,
+            render_plan={"table_merges": [{"block_id": "paragraph-1", "range": "A4:B4"}]},
+        )
+    assert not xlsx_output.exists()
+
+
+def test_renderers_reject_duplicate_block_ids_before_render_plan_lookup(tmp_path: Path) -> None:
+    document_ir = {
+        "document": {"title": "Duplicate IDs"},
+        "blocks": [
+            {"id": "block-1", "type": "paragraph", "text": "First"},
+            {"id": "block-1", "type": "paragraph", "text": "Second"},
+        ],
+    }
+    docx_output = tmp_path / "duplicate-id.docx"
+    xlsx_output = tmp_path / "duplicate-id.xlsx"
+    render_plan = {"source_annotations": [{"block_id": "block-1", "text": "Ambiguous source"}]}
+
+    with pytest.raises(ValueError, match="ids must be unique"):
+        render_docx_from_ir(document_ir, docx_output, render_plan=render_plan)
+    assert not docx_output.exists()
+
+    with pytest.raises(ValueError, match="ids must be unique"):
+        render_xlsx_from_ir(document_ir, xlsx_output, render_plan=render_plan)
+    assert not xlsx_output.exists()
+
+
+def test_renderers_reject_duplicate_table_ids_before_merge_lookup(tmp_path: Path) -> None:
+    document_ir = {
+        "document": {"title": "Duplicate table IDs"},
+        "blocks": [
+            {"id": "table-1", "type": "table", "rows": [["Header", ""]]},
+            {"id": "table-1", "type": "table", "rows": [["Other", ""]]},
+        ],
+    }
+    docx_output = tmp_path / "duplicate-table-id.docx"
+    xlsx_output = tmp_path / "duplicate-table-id.xlsx"
+    render_plan = {"table_merges": [{"block_id": "table-1", "range": "A4:B4"}]}
+
+    with pytest.raises(ValueError, match="ids must be unique"):
+        render_docx_from_ir(document_ir, docx_output, render_plan=render_plan)
+    assert not docx_output.exists()
+
+    with pytest.raises(ValueError, match="ids must be unique"):
+        render_xlsx_from_ir(document_ir, xlsx_output, render_plan=render_plan)
+    assert not xlsx_output.exists()
+
+
+@pytest.mark.parametrize("merge_range", ["A1:B1", "A4:B6", "A4:C4", "B4:A4"])
+def test_renderers_reject_table_merges_outside_their_table_grid(
+    tmp_path: Path,
+    merge_range: str,
+) -> None:
+    document_ir = {
+        "document": {"title": "Bounded merge target"},
+        "blocks": [
+            {
+                "id": "table-1",
+                "type": "table",
+                "rows": [["Header", ""], ["Lot", "SAMPLE-LOT-001"]],
+            },
+            {"id": "paragraph-1", "type": "paragraph", "text": "After table"},
+        ],
+    }
+    output_path = tmp_path / f"invalid-merge-{merge_range.replace(':', '-')}.xlsx"
+    docx_output_path = tmp_path / f"invalid-merge-{merge_range.replace(':', '-')}.docx"
+
+    with pytest.raises(ValueError, match="range must stay within the table grid"):
+        render_docx_from_ir(
+            document_ir,
+            docx_output_path,
+            render_plan={"table_merges": [{"block_id": "table-1", "range": merge_range}]},
+        )
+    assert not docx_output_path.exists()
+
+    with pytest.raises(ValueError, match="range must stay within the table grid"):
+        render_xlsx_from_ir(
+            document_ir,
+            output_path,
+            render_plan={"table_merges": [{"block_id": "table-1", "range": merge_range}]},
+        )
+    assert not output_path.exists()
+
+
+def test_renderers_reject_overlapping_table_merge_ranges(tmp_path: Path) -> None:
+    document_ir = {
+        "document": {"title": "Overlapping merge target"},
+        "blocks": [
+            {
+                "id": "table-1",
+                "type": "table",
+                "rows": [["Header", "", ""], ["Lot", "", ""]],
+            },
+        ],
+    }
+    render_plan = {
+        "table_merges": [
+            {"block_id": "table-1", "range": "A4:B4"},
+            {"block_id": "table-1", "range": "B4:C4"},
+        ],
+    }
+    docx_output = tmp_path / "overlap.docx"
+    xlsx_output = tmp_path / "overlap.xlsx"
+
+    with pytest.raises(ValueError, match="must not overlap another table merge"):
+        render_docx_from_ir(document_ir, docx_output, render_plan=render_plan)
+    assert not docx_output.exists()
+
+    with pytest.raises(ValueError, match="must not overlap another table merge"):
+        render_xlsx_from_ir(document_ir, xlsx_output, render_plan=render_plan)
+    assert not xlsx_output.exists()
+
+
+def test_renderers_reject_table_merges_that_hide_populated_cells(tmp_path: Path) -> None:
+    document_ir = {
+        "document": {"title": "Populated merge target"},
+        "blocks": [
+            {
+                "id": "table-1",
+                "type": "table",
+                "rows": [["Header", "Value"], ["Lot", "SAMPLE-LOT-001"]],
+            },
+        ],
+    }
+    render_plan = {"table_merges": [{"block_id": "table-1", "range": "A4:B4"}]}
+    docx_output = tmp_path / "populated-merge.docx"
+    xlsx_output = tmp_path / "populated-merge.xlsx"
+
+    with pytest.raises(ValueError, match="must not cover populated non-anchor cells"):
+        render_docx_from_ir(document_ir, docx_output, render_plan=render_plan)
+    assert not docx_output.exists()
+
+    with pytest.raises(ValueError, match="must not cover populated non-anchor cells"):
+        render_xlsx_from_ir(document_ir, xlsx_output, render_plan=render_plan)
+    assert not xlsx_output.exists()
+
+
+@pytest.mark.parametrize("merge_range", ["A1:B1", "A4:B6"])
+def test_xlsx_rejects_table_merges_that_would_target_non_table_rows_after_offset(
+    tmp_path: Path,
+    merge_range: str,
+) -> None:
+    document_ir = {
+        "document": {"title": "Offset bounded merge target"},
+        "blocks": [
+            {"id": "summary-1", "type": "paragraph", "text": "Summary before table"},
+            {
+                "id": "table-1",
+                "type": "table",
+                "rows": [["Header", ""], ["Lot", "SAMPLE-LOT-001"]],
+            },
+            {"id": "paragraph-1", "type": "paragraph", "text": "After table"},
+        ],
+    }
+    output_path = tmp_path / f"offset-invalid-merge-{merge_range.replace(':', '-')}.xlsx"
+
+    with pytest.raises(ValueError, match="range must stay within the table grid"):
+        render_xlsx_from_ir(
+            document_ir,
+            output_path,
+            render_plan={"table_merges": [{"block_id": "table-1", "range": merge_range}]},
+        )
+    assert not output_path.exists()
+
+
+def test_renderers_reject_render_directives_inside_conversion_plan(tmp_path: Path) -> None:
+    document_ir = {
+        "document": {"title": "Invalid render location"},
+        "blocks": [
+            {"id": "table-1", "type": "table", "text": "A\tB"},
+        ],
+    }
+    conversion_plan = {
+        "schema_version": 1,
+        "source_kind": "excel_workbook",
+        "operations": [
+            {
+                "id": "extract-table",
+                "action": "extract_table",
+                "inputs": ["table-1"],
+                "output": "table-1",
+                "rationale": "Preserve directly extracted table structure.",
+            }
+        ],
+        "constraints": {"external_transmission": False},
+        "render": {"table_merges": [{"block_id": "table-1", "range": "A4:B4"}]},
+    }
+
+    with pytest.raises(ValueError, match="conversion_plan\\.render is not supported"):
+        render_docx_from_ir(document_ir, tmp_path / "invalid-render.docx", conversion_plan=conversion_plan)
+    with pytest.raises(ValueError, match="conversion_plan\\.render is not supported"):
+        render_xlsx_from_ir(document_ir, tmp_path / "invalid-render.xlsx", conversion_plan=conversion_plan)
 
 
 def test_xlsx_renders_non_field_blocks_as_document_content_rows(tmp_path: Path) -> None:
