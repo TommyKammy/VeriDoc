@@ -447,6 +447,37 @@ def test_parse_text_pdf_to_document_ir_splits_same_baseline_tabular_regions(
     ]
 
 
+def test_parse_text_pdf_to_document_ir_groups_overlapping_adjacent_table_rows(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pdf_path = tmp_path / "overlapping-table-rows.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n")
+    extraction = PdfTextExtraction(
+        source_path=str(pdf_path),
+        extractor="pymupdf",
+        pages=[
+            PdfPageText(
+                page_number=1,
+                width_pt=300.0,
+                height_pt=200.0,
+                fragments=[
+                    _fragment("Lot\tResult", page_number=1, x=36.0, y=40.0, width=80.0),
+                    _fragment("A-001\tPass", page_number=1, x=36.0, y=49.0, width=82.0),
+                    _fragment("A-002\tHold", page_number=1, x=36.0, y=58.0, width=84.0),
+                ],
+            )
+        ],
+    )
+    monkeypatch.setattr(pdf_text_extraction, "extract_pdf_text", lambda _path: extraction)
+
+    document_ir = parse_text_pdf_to_document_ir(pdf_path)
+
+    assert [(block["type"], block["text"]) for block in document_ir["blocks"]] == [
+        ("table", "Lot\tResult\nA-001\tPass\nA-002\tHold"),
+    ]
+
+
 def test_parse_text_pdf_to_document_ir_marks_empty_text_for_review(tmp_path: Path) -> None:
     pdf_path = tmp_path / "empty-page.pdf"
     document = fitz.open()

@@ -408,7 +408,13 @@ def _are_vertically_adjacent_table_lines(
         return False
     vertical_gap = next_bbox.y - (previous_bbox.y + previous_bbox.height)
     max_height = max(previous_bbox.height, next_bbox.height)
-    return 0 <= vertical_gap <= max_height
+    rows_progress_down_page = (
+        next_bbox.y > previous_bbox.y
+        and _bbox_center_y(next_bbox) > _bbox_center_y(previous_bbox)
+    )
+    if not rows_progress_down_page:
+        return False
+    return -max_height * 0.75 <= vertical_gap <= max_height
 
 
 def _is_table_line(line: list[TextFragment]) -> bool:
