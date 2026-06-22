@@ -473,6 +473,8 @@ def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "
 
 def _is_content_bearing_audit_parameter_key(key: str) -> bool:
     normalized_leaf = _normalize_parameter_key(_parameter_key_leaf(key))
+    if _is_response_format_schema_property_name(key):
+        return False
     if normalized_leaf in _SAFE_CONTENT_WORD_AUDIT_PARAMETER_KEYS:
         return False
     leaf_components = tuple(normalized_leaf.split("_"))
@@ -488,6 +490,18 @@ def _is_content_bearing_audit_parameter_key(key: str) -> bool:
                 for component in path_components
             )
         )
+    )
+
+
+def _is_response_format_schema_property_name(key: str) -> bool:
+    components = tuple(
+        _normalize_parameter_key(_PARAMETER_INDEX_SUFFIX_RE.sub("", component))
+        for component in key.split(".")
+    )
+    if len(components) < 2 or components[-2] != "properties":
+        return False
+    return "response_format" in components and (
+        "json_schema" in components or "schema" in components
     )
 
 
