@@ -894,10 +894,10 @@ def _is_content_bearing_url(value: str) -> bool:
         return False
     return any(
         _is_content_bearing_audit_parameter_key(key)
-        for key, _value in parse_qsl(parsed_url.query, keep_blank_values=True)
+        for key, _value in _url_parameter_pairs(parsed_url.query)
     ) or any(
         _is_content_bearing_audit_parameter_key(key)
-        for key, _value in parse_qsl(parsed_url.fragment, keep_blank_values=True)
+        for key, _value in _url_parameter_pairs(parsed_url.fragment)
     )
 
 
@@ -909,13 +909,20 @@ def _is_credential_bearing_url(value: str) -> bool:
         return True
     if any(
         _is_secret_parameter_key(key)
-        for key, _value in parse_qsl(parsed_url.query, keep_blank_values=True)
+        for key, _value in _url_parameter_pairs(parsed_url.query)
     ):
         return True
     return any(
         _is_secret_parameter_key(key)
-        for key, _value in parse_qsl(parsed_url.fragment, keep_blank_values=True)
+        for key, _value in _url_parameter_pairs(parsed_url.fragment)
     )
+
+
+def _url_parameter_pairs(value: str) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    for chunk in re.split(r"[&;]", value):
+        pairs.extend(parse_qsl(chunk, keep_blank_values=True))
+    return pairs
 
 
 def _contains_component_sequence(components: tuple[str, ...], sequence: tuple[str, ...]) -> bool:

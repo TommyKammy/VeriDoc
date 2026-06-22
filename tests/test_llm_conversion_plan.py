@@ -290,6 +290,10 @@ def test_build_conversion_audit_log_redacts_signature_credentials(
             r"parameters\.callback_url",
         ),
         (
+            {"callback_url": "https://example.invalid/cb?version=1;prompt=Lot%3A+ABC-123"},
+            r"parameters\.callback_url",
+        ),
+        (
             {"image_url": "data:application/pdf;base64,TG90OiBBQkMtMTIz"},
             r"parameters\.image_url",
         ),
@@ -650,6 +654,9 @@ def test_build_conversion_audit_log_redacts_credential_bearing_url_values() -> N
             "callback_url": (
                 "https://example.invalid/callback?api_key=operator-runtime-api-key"
             ),
+            "webhook_url": (
+                "https://example.invalid/callback?version=1;api_key=operator-runtime-api-key-2"
+            ),
             "metadata_url": "https://example.invalid/metadata",
         },
     )
@@ -657,11 +664,13 @@ def test_build_conversion_audit_log_redacts_credential_bearing_url_values() -> N
     assert audit_log["parameters"] == {
         "base_url": "[REDACTED]",
         "callback_url": "[REDACTED]",
+        "webhook_url": "[REDACTED]",
         "metadata_url": "https://example.invalid/metadata",
     }
     rendered = json.dumps(audit_log, sort_keys=True)
     assert "operator-runtime-password" not in rendered
     assert "operator-runtime-api-key" not in rendered
+    assert "operator-runtime-api-key-2" not in rendered
 
 
 def test_build_conversion_audit_log_redacts_header_suffixed_parameter_containers() -> None:
