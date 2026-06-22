@@ -4,6 +4,8 @@ import hashlib
 from pathlib import Path
 from zipfile import ZipFile
 
+import pytest
+
 from core.parsers.docx_extraction import extract_docx_structure
 from core.parsers.xlsx_extraction import extract_xlsx_structure
 from core.render.ooxml import render_docx_from_ir, render_xlsx_from_ir
@@ -299,6 +301,20 @@ def test_docx_renders_list_items_with_list_semantics(tmp_path: Path) -> None:
         ("heading", "Checklist", None),
         ("list_item", "Verify batch number", None),
     ]
+
+
+def test_ooxml_renderers_reject_unsupported_block_types(tmp_path: Path) -> None:
+    document_ir = {
+        "document": {"title": "Unsupported"},
+        "blocks": [
+            {"id": "unknown-1", "type": "unknown", "text": "Should not render"},
+        ],
+    }
+
+    with pytest.raises(ValueError, match="unsupported document_ir\\.blocks type: 'unknown'"):
+        render_docx_from_ir(document_ir, tmp_path / "unsupported.docx")
+    with pytest.raises(ValueError, match="unsupported document_ir\\.blocks type: 'unknown'"):
+        render_xlsx_from_ir(document_ir, tmp_path / "unsupported.xlsx")
 
 
 def test_docx_encodes_tabs_and_line_breaks_as_run_elements(tmp_path: Path) -> None:

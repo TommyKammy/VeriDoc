@@ -10,6 +10,7 @@ from zipfile import ZIP_STORED, ZipFile, ZipInfo
 
 FIXED_ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 ASCII_NUMBER_RE = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?\Z")
+SUPPORTED_BLOCK_TYPES = {"field", "heading", "list_item", "paragraph", "table"}
 
 
 def render_docx_from_ir(document_ir: Mapping[str, Any], output_path: str | Path) -> None:
@@ -173,6 +174,9 @@ def _blocks(document_ir: Mapping[str, Any]) -> Sequence[Mapping[str, Any]]:
     for block in blocks:
         if not isinstance(block, Mapping):
             raise ValueError("document_ir.blocks entries must be objects")
+        block_type = _text(block.get("type"))
+        if block_type not in SUPPORTED_BLOCK_TYPES:
+            raise ValueError(f"unsupported document_ir.blocks type: {block_type!r}")
     return blocks
 
 
@@ -188,8 +192,11 @@ def _docx_block(block: Mapping[str, Any]) -> str:
         return _docx_table(_docx_table_rows(block))
     if kind == "list_item":
         return _docx_paragraph(_text(block.get("text")), numbering=True)
-    style = "Heading1" if kind == "heading" else None
-    return _docx_paragraph(_text(block.get("text")), style=style)
+    if kind in {"field", "paragraph"}:
+        return _docx_paragraph(_text(block.get("text")))
+    if kind == "heading":
+        return _docx_paragraph(_text(block.get("text")), style="Heading1")
+    raise ValueError(f"unsupported document_ir.blocks type: {kind!r}")
 
 
 def _docx_paragraph(
