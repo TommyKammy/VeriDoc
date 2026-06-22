@@ -138,9 +138,9 @@ def test_xlsx_renders_non_field_blocks_as_document_content_rows(tmp_path: Path) 
     document_ir = {
         "document": {"title": "Mixed content"},
         "blocks": [
-            {"id": "heading-1", "type": "heading", "text": "Section 1"},
-            {"id": "paragraph-1", "type": "paragraph", "text": "Observed value summary"},
-            {"id": "list-item-1", "type": "list_item", "text": "First check"},
+            {"id": "heading-1", "type": "heading", "text": "001"},
+            {"id": "paragraph-1", "type": "paragraph", "text": "12.5"},
+            {"id": "list-item-1", "type": "list_item", "text": "-01"},
             {"id": "table-1", "type": "table", "text": "A\tB\n1\t2"},
         ],
     }
@@ -152,16 +152,20 @@ def test_xlsx_renders_non_field_blocks_as_document_content_rows(tmp_path: Path) 
     cells = {(cell.ref, cell.value, cell.value_type) for cell in xlsx.sheets[0].cells}
     assert ("A4", "heading-1", "inline_string") in cells
     assert ("B4", "heading", "inline_string") in cells
-    assert ("C4", "Section 1", "inline_string") in cells
+    assert ("C4", "001", "inline_string") in cells
+    assert ("D4", "text", "inline_string") in cells
     assert ("A5", "paragraph-1", "inline_string") in cells
     assert ("B5", "paragraph", "inline_string") in cells
-    assert ("C5", "Observed value summary", "inline_string") in cells
+    assert ("C5", "12.5", "inline_string") in cells
+    assert ("D5", "text", "inline_string") in cells
     assert ("A6", "list-item-1", "inline_string") in cells
     assert ("B6", "list_item", "inline_string") in cells
-    assert ("C6", "First check", "inline_string") in cells
+    assert ("C6", "-01", "inline_string") in cells
+    assert ("D6", "text", "inline_string") in cells
     assert ("A7", "table-1", "inline_string") in cells
     assert ("B7", "table", "inline_string") in cells
     assert ("C7", "A\tB\n1\t2", "inline_string") in cells
+    assert ("D7", "text", "inline_string") in cells
 
 
 def test_renderer_sanitizes_xml_invalid_text_before_writing_ooxml(tmp_path: Path) -> None:

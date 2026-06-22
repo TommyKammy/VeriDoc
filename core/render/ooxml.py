@@ -100,13 +100,19 @@ def render_xlsx_from_ir(document_ir: Mapping[str, Any], output_path: str | Path)
     for block in _blocks(document_ir):
         kind = _text(block.get("type"))
         text = _text(block.get("text"))
-        label, value = _split_field(text) if kind == "field" else (kind, text)
-        rendered_value, value_type = _typed_xlsx_value(value)
+        if kind == "field":
+            label, value = _split_field(text)
+            rendered_value, value_type = _typed_xlsx_value(value)
+            value_cell = rendered_value(f"C{current_row}")
+        else:
+            label, value = kind, text
+            value_cell = _text_cell(f"C{current_row}", value)
+            value_type = "text"
         rows.append(
             [
                 _text_cell(f"A{current_row}", _text(block.get("id"))),
                 _text_cell(f"B{current_row}", label),
-                rendered_value(f"C{current_row}"),
+                value_cell,
                 _text_cell(f"D{current_row}", value_type),
             ]
         )
