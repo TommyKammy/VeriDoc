@@ -58,7 +58,7 @@ def validate_extracted_item(
 
     if _has_malformed_review_flag(expected) or _has_malformed_review_flag(actual):
         failed_rules.append("risk_gate")
-    if _has_malformed_risk_level(expected) or _has_malformed_risk_level(actual):
+    if _has_missing_or_malformed_risk_level(expected) or _has_malformed_risk_level(actual):
         failed_rules.append("risk_gate")
     if not isinstance(expected.get("requires_review"), bool):
         failed_rules.append("risk_gate")
@@ -252,6 +252,10 @@ def _has_malformed_risk_level(record: Mapping[str, Any]) -> bool:
     if "risk_level" not in record:
         return False
     return record.get("risk_level") not in {"low", "medium", "high"}
+
+
+def _has_missing_or_malformed_risk_level(record: Mapping[str, Any]) -> bool:
+    return "risk_level" not in record or _has_malformed_risk_level(record)
 
 
 def _requires_review(record: Mapping[str, Any]) -> bool:

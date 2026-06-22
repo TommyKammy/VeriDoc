@@ -230,6 +230,18 @@ def test_malformed_item_risk_level_blocks_auto_confirm() -> None:
     assert "risk_gate" in actual_malformed.failed_rules
 
 
+def test_missing_expected_item_risk_level_blocks_auto_confirm() -> None:
+    expected = _expected_item(requires_review=False)
+    del expected["risk_level"]
+
+    decision = validate_extracted_item(expected=expected, actual=_actual_item())
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert decision.requires_review is True
+    assert "risk_gate" in decision.failed_rules
+
+
 def test_malformed_item_review_flag_blocks_auto_confirm() -> None:
     expected = _expected_item(risk_level="medium", requires_review="true")
 
@@ -862,6 +874,20 @@ def test_current_head_review_examples_fail_closed() -> None:
             "malformed_risk_level",
             validate_extracted_item(
                 expected=_expected_item(risk_level="todo", requires_review=False),
+                actual=_actual_item(),
+            ),
+            "risk_gate",
+        ),
+        (
+            "missing_expected_risk_level",
+            validate_extracted_item(
+                expected={
+                    "id": "gold-001",
+                    "label_id": "lot_number",
+                    "expected_value": "SAMPLE-LOT-001",
+                    "requires_review": False,
+                    "evidence": source,
+                },
                 actual=_actual_item(),
             ),
             "risk_gate",
