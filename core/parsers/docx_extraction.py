@@ -69,7 +69,12 @@ def _paragraph_block(paragraph: ElementTree.Element) -> Optional[DocxBlock]:
     if not text:
         return None
     style = _paragraph_style(paragraph)
-    kind = "heading" if _is_heading_style(style) else "paragraph"
+    if _is_heading_style(style):
+        kind = "heading"
+    elif _is_numbered_paragraph(paragraph):
+        kind = "list_item"
+    else:
+        kind = "paragraph"
     return DocxBlock(kind=kind, text=text, style=style)
 
 
@@ -82,6 +87,19 @@ def _paragraph_style(paragraph: ElementTree.Element) -> Optional[str]:
 
 def _is_heading_style(style: Optional[str]) -> bool:
     return style is not None and style.lower().startswith("heading")
+
+
+def _is_numbered_paragraph(paragraph: ElementTree.Element) -> bool:
+    numbering_id = paragraph.find(f"{WORD_NS}pPr/{WORD_NS}numPr/{WORD_NS}numId")
+    if numbering_id is None:
+        return False
+    value = numbering_id.attrib.get(f"{WORD_NS}val")
+    if value is None:
+        return False
+    try:
+        return int(value) > 0
+    except ValueError:
+        return False
 
 
 def _table_rows(table: ElementTree.Element) -> List[List[str]]:

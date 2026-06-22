@@ -1,0 +1,391 @@
+from __future__ import annotations
+
+import re
+from decimal import Decimal, InvalidOperation
+from html import escape
+from pathlib import Path
+from typing import Any, Iterable, Mapping, Sequence
+from zipfile import ZIP_STORED, ZipFile, ZipInfo
+
+
+FIXED_ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
+MAX_EXACT_SPREADSHEET_DIGITS = 15
+ASCII_NUMBER_RE = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?\Z")
+SUPPORTED_BLOCK_TYPES = {"field", "heading", "list_item", "paragraph", "table"}
+
+
+def render_docx_from_ir(document_ir: Mapping[str, Any], output_path: str | Path) -> None:
+    """Render a minimal deterministic DOCX package from Document IR v0."""
+    document = _mapping(document_ir.get("document"), "document")
+    title = _text(document.get("title"))
+    blocks = _blocks(document_ir)
+    body_parts = [_docx_paragraph(title, style="Heading1")]
+    body_parts.extend(_docx_block(block) for block in blocks)
+    body_parts.append("<w:sectPr/>")
+
+    parts = [
+        (
+            "[Content_Types].xml",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  <Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>
+  <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+</Types>
+""",
+        ),
+        (
+            "_rels/.rels",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>
+""",
+        ),
+        (
+            "word/_rels/document.xml.rels",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>
+""",
+        ),
+        (
+            "word/styles.xml",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:style w:type="paragraph" w:default="1" w:styleId="Normal">
+    <w:name w:val="Normal"/>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="Heading1">
+    <w:name w:val="heading 1"/>
+    <w:basedOn w:val="Normal"/>
+    <w:next w:val="Normal"/>
+    <w:qFormat/>
+  </w:style>
+</w:styles>
+""",
+        ),
+        (
+            "word/numbering.xml",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:abstractNum w:abstractNumId="0">
+    <w:lvl w:ilvl="0">
+      <w:start w:val="1"/>
+      <w:numFmt w:val="bullet"/>
+      <w:lvlText w:val="&#8226;"/>
+    </w:lvl>
+  </w:abstractNum>
+  <w:num w:numId="1">
+    <w:abstractNumId w:val="0"/>
+  </w:num>
+</w:numbering>
+""",
+        ),
+        (
+            "word/document.xml",
+            f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    {"".join(body_parts)}
+  </w:body>
+</w:document>
+""",
+        ),
+    ]
+    _write_zip(output_path, parts)
+
+
+def render_xlsx_from_ir(document_ir: Mapping[str, Any], output_path: str | Path) -> None:
+    """Render a minimal deterministic XLSX package from Document IR v0."""
+    document = _mapping(document_ir.get("document"), "document")
+    title = _text(document.get("title"))
+    rows = [
+        [_text_cell("A1", title)],
+        [],
+        [
+            _text_cell("A3", "Block ID"),
+            _text_cell("B3", "Label"),
+            _text_cell("C3", "Value"),
+            _text_cell("D3", "Value type"),
+        ],
+    ]
+    current_row = 4
+    for block in _blocks(document_ir):
+        kind = _text(block.get("type"))
+        text = _text(block.get("text"))
+        if kind == "field":
+            label, value = _split_field(text)
+            rendered_value, value_type = _typed_xlsx_value(value)
+            value_cell = rendered_value(f"C{current_row}")
+        else:
+            label, value = kind, text
+            value_cell = _text_cell(f"C{current_row}", value)
+            value_type = "text"
+        rows.append(
+            [
+                _text_cell(f"A{current_row}", _text(block.get("id"))),
+                _text_cell(f"B{current_row}", label),
+                value_cell,
+                _text_cell(f"D{current_row}", value_type),
+            ]
+        )
+        current_row += 1
+
+    dimension = f"A1:D{max(current_row - 1, 3)}"
+    sheet_rows = "\n".join(_xlsx_row(index + 1, cells) for index, cells in enumerate(rows) if cells)
+    parts = [
+        (
+            "[Content_Types].xml",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+</Types>
+""",
+        ),
+        (
+            "_rels/.rels",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>
+""",
+        ),
+        (
+            "xl/workbook.xml",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="Document IR" sheetId="1" r:id="rId1"/>
+  </sheets>
+</workbook>
+""",
+        ),
+        (
+            "xl/_rels/workbook.xml.rels",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+</Relationships>
+""",
+        ),
+        (
+            "xl/worksheets/sheet1.xml",
+            f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <dimension ref="{dimension}"/>
+  <sheetData>
+{sheet_rows}
+  </sheetData>
+</worksheet>
+""",
+        ),
+    ]
+    _write_zip(output_path, parts)
+
+
+def _blocks(document_ir: Mapping[str, Any]) -> Sequence[Mapping[str, Any]]:
+    blocks = document_ir.get("blocks")
+    if not isinstance(blocks, Sequence) or isinstance(blocks, (str, bytes)):
+        raise ValueError("document_ir.blocks must be a list")
+    for block in blocks:
+        if not isinstance(block, Mapping):
+            raise ValueError("document_ir.blocks entries must be objects")
+        block_type = _text(block.get("type"))
+        if block_type not in SUPPORTED_BLOCK_TYPES:
+            raise ValueError(f"unsupported document_ir.blocks type: {block_type!r}")
+    return blocks
+
+
+def _mapping(value: Any, label: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"document_ir.{label} must be an object")
+    return value
+
+
+def _docx_block(block: Mapping[str, Any]) -> str:
+    kind = _text(block.get("type"))
+    if kind == "table":
+        return _docx_table(_docx_table_rows(block))
+    if kind == "list_item":
+        return _docx_paragraph(_text(block.get("text")), numbering=True)
+    if kind in {"field", "paragraph"}:
+        return _docx_paragraph(_text(block.get("text")))
+    if kind == "heading":
+        return _docx_paragraph(_text(block.get("text")), style="Heading1")
+    raise ValueError(f"unsupported document_ir.blocks type: {kind!r}")
+
+
+def _docx_paragraph(
+    text: str,
+    *,
+    style: str | None = None,
+    numbering: bool = False,
+) -> str:
+    paragraph_properties = []
+    if style is not None:
+        paragraph_properties.append(f'<w:pStyle w:val="{_xml_escape(style)}"/>')
+    if numbering:
+        paragraph_properties.append('<w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr>')
+    properties_xml = (
+        ""
+        if not paragraph_properties
+        else f"<w:pPr>{''.join(paragraph_properties)}</w:pPr>"
+    )
+    return f"<w:p>{properties_xml}{_docx_runs(text)}</w:p>"
+
+
+def _docx_runs(text: str) -> str:
+    runs: list[str] = []
+    index = 0
+    text_start = 0
+    while index < len(text):
+        character = text[index]
+        if character in {"\t", "\n", "\r"}:
+            if text_start < index:
+                runs.append(_docx_text_run(text[text_start:index]))
+            if character == "\t":
+                runs.append("<w:r><w:tab/></w:r>")
+            else:
+                runs.append("<w:r><w:br/></w:r>")
+                if character == "\r" and index + 1 < len(text) and text[index + 1] == "\n":
+                    index += 1
+            text_start = index + 1
+        index += 1
+    if text_start < len(text):
+        runs.append(_docx_text_run(text[text_start:]))
+    return "".join(runs)
+
+
+def _docx_text_run(text: str) -> str:
+    space_attr = ' xml:space="preserve"' if _needs_xml_space_preserve(text) else ""
+    return f"<w:r><w:t{space_attr}>{_xml_escape(text)}</w:t></w:r>"
+
+
+def _docx_table(rows: Sequence[Sequence[str]]) -> str:
+    row_xml = "".join(
+        f"<w:tr>{''.join(f'<w:tc>{_docx_paragraph(cell)}</w:tc>' for cell in row)}</w:tr>"
+        for row in rows
+    )
+    return f"<w:tbl>{row_xml}</w:tbl>"
+
+
+def _docx_table_rows(block: Mapping[str, Any]) -> Sequence[Sequence[str]]:
+    rows = block.get("rows")
+    if isinstance(rows, Sequence) and not isinstance(rows, (str, bytes)):
+        normalized_rows = [
+            [_text(cell) for cell in row]
+            for row in rows
+            if isinstance(row, Sequence) and not isinstance(row, (str, bytes))
+        ]
+        if normalized_rows:
+            return normalized_rows
+    sanitized_text = _normalize_table_row_delimiters(_sanitize_xml_text(_text(block.get("text"))))
+    if not sanitized_text:
+        return [[""]]
+    return [line.split("\t") for line in sanitized_text.split("\n")]
+
+
+def _split_field(text: str) -> tuple[str, str]:
+    label, separator, value = text.partition(":")
+    if not separator:
+        return "", text
+    return label.strip(), value
+
+
+def _typed_xlsx_value(value: str) -> tuple[Any, str]:
+    numeric_candidate = value.strip()
+    if _is_plain_number(numeric_candidate):
+        return (lambda ref: _number_cell(ref, numeric_candidate)), "number"
+    return (lambda ref: _text_cell(ref, value)), "text"
+
+
+def _is_plain_number(value: str) -> bool:
+    if not ASCII_NUMBER_RE.fullmatch(value):
+        return False
+    if _exceeds_spreadsheet_numeric_precision(value):
+        return False
+    try:
+        numeric_value = Decimal(value)
+    except InvalidOperation:
+        return False
+    return numeric_value.is_finite()
+
+
+def _exceeds_spreadsheet_numeric_precision(value: str) -> bool:
+    return _spreadsheet_significant_digit_count(value) > MAX_EXACT_SPREADSHEET_DIGITS
+
+
+def _spreadsheet_significant_digit_count(value: str) -> int:
+    integer_part, _, fractional_part = value.removeprefix("-").partition(".")
+    significant_digits = f"{integer_part}{fractional_part}".lstrip("0")
+    return len(significant_digits) if significant_digits else 1
+
+
+def _xlsx_row(row_index: int, cells: Sequence[str]) -> str:
+    return f'    <row r="{row_index}">{"".join(cells)}</row>'
+
+
+def _text_cell(ref: str, value: str) -> str:
+    space_attr = ' xml:space="preserve"' if _needs_xml_space_preserve(value) else ""
+    return f'<c r="{ref}" t="inlineStr"><is><t{space_attr}>{_xml_escape(value)}</t></is></c>'
+
+
+def _number_cell(ref: str, value: str) -> str:
+    return f'<c r="{ref}"><v>{_xml_escape(value)}</v></c>'
+
+
+def _text(value: Any) -> str:
+    return "" if value is None else str(value)
+
+
+def _xml_escape(value: str) -> str:
+    return "".join(
+        "&#13;" if character == "\r" else escape(character)
+        for character in _sanitize_xml_text(value)
+    )
+
+
+def _sanitize_xml_text(value: str) -> str:
+    return "".join(character if _is_xml_char(character) else " " for character in value)
+
+
+def _needs_xml_space_preserve(value: str) -> bool:
+    sanitized_value = _sanitize_xml_text(value)
+    return bool(sanitized_value) and (
+        sanitized_value[0].isspace() or sanitized_value[-1].isspace()
+    )
+
+
+def _normalize_table_row_delimiters(value: str) -> str:
+    return value.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _is_xml_char(character: str) -> bool:
+    codepoint = ord(character)
+    return (
+        codepoint in {0x09, 0x0A, 0x0D}
+        or 0x20 <= codepoint <= 0xD7FF
+        or 0xE000 <= codepoint <= 0xFFFD
+        or 0x10000 <= codepoint <= 0x10FFFF
+    )
+
+
+def _write_zip(output_path: str | Path, parts: Iterable[tuple[str, str]]) -> None:
+    destination = Path(output_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with ZipFile(destination, "w", ZIP_STORED) as archive:
+        for name, content in parts:
+            info = ZipInfo(filename=name, date_time=FIXED_ZIP_TIMESTAMP)
+            info.create_system = 0
+            info.compress_type = ZIP_STORED
+            info.external_attr = 0o644 << 16
+            archive.writestr(info, content.encode("utf-8"))
