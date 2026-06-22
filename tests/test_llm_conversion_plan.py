@@ -174,6 +174,10 @@ def test_build_conversion_audit_log_records_hashes_metadata_and_redacts_secrets(
         "authentication",
         "clientAuthentication",
         "basicAuth",
+        "accessKey",
+        "subscriptionKey",
+        "Ocp-Apim-Subscription-Key",
+        "x-functions-key",
         "accessToken",
         "githubTokenFile",
         "refreshToken",
@@ -212,6 +216,7 @@ def test_build_conversion_audit_log_redacts_review_thread_credential_keys(parame
         ({"source": "Lot: ABC-123"}, r"parameters\.source"),
         ({"output": '{"lot_number":"ABC-123"}'}, r"parameters\.output"),
         ({"input": "Lot: ABC-123"}, r"parameters\.input"),
+        ({"instructions": "Use the source document exactly."}, r"parameters\.instructions"),
         ({"prompt": "Lot: ABC-123"}, r"parameters\.prompt"),
         ({"userPrompt": "Lot: ABC-123"}, r"parameters\.userPrompt"),
         ({"system_prompt": "Lot: ABC-123"}, r"parameters\.system_prompt"),
@@ -291,11 +296,15 @@ def test_build_conversion_audit_log_preserves_two_string_generation_parameter_li
         prompt_version="poc-08",
         ir_version="document-ir-v1",
         parameters={
+            "metadata": ["prompt", "END"],
             "stop": ["prompt", "END"],
         },
     )
 
-    assert audit_log["parameters"] == {"stop": ["prompt", "END"]}
+    assert audit_log["parameters"] == {
+        "metadata": ["prompt", "END"],
+        "stop": ["prompt", "END"],
+    }
 
 
 def test_build_conversion_audit_log_sanitizes_list_key_value_parameter_entries() -> None:

@@ -154,16 +154,21 @@ _SECRET_PARAMETER_KEY_COMPONENTS = frozenset(
 )
 _SECRET_PARAMETER_KEY_COMPONENT_SEQUENCES = (
     ("api", "key"),
+    ("access", "key"),
+    ("functions", "key"),
     ("private", "key"),
+    ("subscription", "key"),
 )
 _CAMEL_ACRONYM_BOUNDARY_RE = re.compile(r"(.)([A-Z][a-z]+)")
 _CAMEL_CASE_BOUNDARY_RE = re.compile(r"([a-z0-9])([A-Z])")
 _PARAMETER_KEY_SEPARATOR_RE = re.compile(r"[^A-Za-z0-9]+")
+_PARAMETER_INDEX_SUFFIX_RE = re.compile(r"\[\d+\]$")
 _CONTENT_BEARING_AUDIT_PARAMETER_KEYS = frozenset(
     {
         "content",
         "document",
         "input",
+        "instructions",
         "messages",
         "output_bytes",
         "previous_response",
@@ -190,9 +195,18 @@ _CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENTS = frozenset(
         "content",
         "document",
         "input",
+        "instructions",
         "messages",
         "prompt",
         "text",
+    }
+)
+_KEY_VALUE_AUDIT_PARAMETER_SEQUENCE_CONTAINER_KEYS = frozenset(
+    {
+        "headers",
+        "options",
+        "params",
+        "query_params",
     }
 )
 _CONTENT_BYTE_AUDIT_PARAMETER_ANCESTOR_COMPONENTS = frozenset(
@@ -420,7 +434,7 @@ def _redact_audit_parameters(value: object, *, key_path: str = "") -> object:
             )
             for key, item in value.items()
         }
-    if _is_key_value_parameter_entry(value) and not _is_safe_audit_parameter_sequence_key(key_path):
+    if _is_key_value_parameter_entry(value, key_path):
         entry_key = str(value[0])
         entry_path = _join_parameter_key_path(key_path, entry_key)
         return [entry_key, _redact_audit_parameters(value[1], key_path=entry_path)]
@@ -446,7 +460,7 @@ def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "
             if _is_content_bearing_audit_parameter_key(item_path):
                 raise ValueError(f"{item_path} must not include document or request content")
             _reject_content_bearing_audit_parameters(item, key_path=item_path)
-    elif _is_key_value_parameter_entry(value) and not _is_safe_audit_parameter_sequence_key(key_path):
+    elif _is_key_value_parameter_entry(value, key_path):
         entry_key = str(value[0])
         item_path = f"{key_path}.{entry_key}"
         if _is_content_bearing_audit_parameter_key(item_path):
@@ -501,7 +515,7 @@ def _normalize_parameter_key(key: str) -> str:
 
 
 def _parameter_key_leaf(key: str) -> str:
-    return key.rsplit(".", 1)[-1]
+    return _PARAMETER_INDEX_SUFFIX_RE.sub("", key.rsplit(".", 1)[-1])
 
 
 def _join_parameter_key_path(parent: str, key: str) -> str:
@@ -510,11 +524,13 @@ def _join_parameter_key_path(parent: str, key: str) -> str:
     return f"{parent}.{key}"
 
 
-def _is_key_value_parameter_entry(value: object) -> bool:
+def _is_key_value_parameter_entry(value: object, key_path: str) -> bool:
     return (
         isinstance(value, (list, tuple))
         and len(value) == 2
         and isinstance(value[0], str)
+        and _normalize_parameter_key(_parameter_key_leaf(key_path))
+        in _KEY_VALUE_AUDIT_PARAMETER_SEQUENCE_CONTAINER_KEYS
     )
 
 
