@@ -170,6 +170,8 @@ def test_build_conversion_audit_log_records_hashes_metadata_and_redacts_secrets(
         "credentials",
         "serviceCredentials",
         "googleCredentialsJson",
+        "auth",
+        "basicAuth",
         "accessToken",
         "githubTokenFile",
         "refreshToken",
@@ -206,6 +208,8 @@ def test_build_conversion_audit_log_redacts_review_thread_credential_keys(parame
         ({"userPrompt": "Lot: ABC-123"}, r"parameters\.userPrompt"),
         ({"system_prompt": "Lot: ABC-123"}, r"parameters\.system_prompt"),
         ({"inputText": "Lot: ABC-123"}, r"parameters\.inputText"),
+        ({"text": "Lot: ABC-123"}, r"parameters\.text"),
+        ({"synthetic_text": "Lot: ABC-123"}, r"parameters\.synthetic_text"),
     ],
 )
 def test_build_conversion_audit_log_rejects_content_bearing_parameters(
@@ -222,6 +226,20 @@ def test_build_conversion_audit_log_rejects_content_bearing_parameters(
             ir_version="document-ir-v1",
             parameters=parameters,
         )
+
+
+def test_build_conversion_audit_log_allows_scalar_prompt_token_limits() -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={"max_prompt_tokens": 4096},
+    )
+
+    assert audit_log["parameters"] == {"max_prompt_tokens": 4096}
 
 
 def test_build_conversion_audit_log_rejects_openai_request_payload_parameters() -> None:

@@ -93,6 +93,7 @@ _SECRET_PARAMETER_KEYS = frozenset(
     {
         "api_key",
         "apikey",
+        "auth",
         "authorization",
         "credential",
         "credentials",
@@ -116,6 +117,7 @@ _SECRET_PARAMETER_KEY_SUFFIXES = (
 _SECRET_PARAMETER_KEY_PREFIXES = (
     "api_key_",
     "apikey_",
+    "auth_",
     "authorization_",
     "credential_",
     "credentials_",
@@ -133,6 +135,7 @@ _SECRET_PARAMETER_KEY_PHRASES = (
 _SECRET_PARAMETER_KEY_COMPONENTS = frozenset(
     {
         "authorization",
+        "auth",
         "credential",
         "credentials",
         "password",
@@ -154,6 +157,13 @@ _CONTENT_BEARING_AUDIT_PARAMETER_KEYS = frozenset(
         "messages",
         "previous_response",
         "prompt",
+        "synthetic_text",
+        "text",
+    }
+)
+_SAFE_CONTENT_WORD_AUDIT_PARAMETER_KEYS = frozenset(
+    {
+        "max_prompt_tokens",
     }
 )
 _CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENTS = frozenset(
@@ -162,6 +172,7 @@ _CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENTS = frozenset(
         "input",
         "messages",
         "prompt",
+        "text",
     }
 )
 CONVERSION_TASK_PROMPTS = {
@@ -397,6 +408,8 @@ def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "
 
 def _is_content_bearing_audit_parameter_key(key: str) -> bool:
     normalized = _normalize_parameter_key(key)
+    if normalized in _SAFE_CONTENT_WORD_AUDIT_PARAMETER_KEYS:
+        return False
     components = tuple(normalized.split("_"))
     return (
         normalized in _CONTENT_BEARING_AUDIT_PARAMETER_KEYS
