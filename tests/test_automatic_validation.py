@@ -120,6 +120,41 @@ def test_string_value_rejects_numeric_actual_value() -> None:
     assert "value_non_modification" in decision.failed_rules
 
 
+def test_actual_review_flag_blocks_item_auto_confirm_without_failures() -> None:
+    expected = _expected_item(risk_level="medium", requires_review=False)
+
+    decision = validate_extracted_item(
+        expected=expected,
+        actual=_actual_item(requires_review=True, auto_confirmed=False),
+    )
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.REQUIRES_REVIEW
+    assert decision.requires_review is True
+    assert decision.failed_rules == ()
+
+
+def test_matching_negative_source_coordinates_block_auto_confirm() -> None:
+    off_page_source = {
+        "source_page": 1,
+        "bbox": {"x": -1.0, "y": 112.0, "width": 180.0, "height": 18.0},
+    }
+    expected = _expected_item(
+        risk_level="medium",
+        requires_review=False,
+        evidence=off_page_source,
+    )
+
+    decision = validate_extracted_item(
+        expected=expected,
+        actual=_actual_item(evidence=off_page_source),
+    )
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert "provenance" in decision.failed_rules
+
+
 def test_table_consistency_rejects_missing_cells_and_wrong_text() -> None:
     expected_table = {
         "id": "table-001",
@@ -139,7 +174,8 @@ def test_table_consistency_rejects_missing_cells_and_wrong_text() -> None:
 
     assert decision.auto_confirm_allowed is False
     assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
-    assert decision.failed_rules == ("table_consistency",)
+    assert "table_consistency" in decision.failed_rules
+    assert "provenance" in decision.failed_rules
     assert decision.requires_review is True
 
 
@@ -175,6 +211,32 @@ def test_table_cells_enforce_provenance_and_review_gates() -> None:
     assert decision.requires_review is True
     assert "provenance" in decision.failed_rules
     assert "risk_gate" in decision.failed_rules
+
+
+def test_table_cell_missing_expected_source_blocks_auto_confirm() -> None:
+    expected_table = {
+        "id": "table-001",
+        "cells": [
+            {"id": "table-001-r1-c1", "text": "SAMPLE-LOT-001"},
+        ],
+    }
+    actual_table = {
+        "id": "table-001",
+        "cells": [
+            {
+                "id": "table-001-r1-c1",
+                "text": "SAMPLE-LOT-001",
+                "source": _evidence(),
+                "auto_confirmed": False,
+            },
+        ],
+    }
+
+    decision = validate_table_consistency(expected_table, actual_table)
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert "provenance" in decision.failed_rules
 
 
 def test_table_cell_requires_review_blocks_auto_confirm_even_without_failures() -> None:

@@ -51,7 +51,9 @@ def validate_extracted_item(
         failed_rules.append("risk_gate")
         auto_confirmed = True
 
-    explicit_review_required = expected.get("requires_review") is True
+    explicit_review_required = (
+        expected.get("requires_review") is True or actual.get("requires_review") is True
+    )
     high_risk = expected.get("risk_level") == "high"
     requires_review = explicit_review_required or high_risk
     if requires_review:
@@ -93,9 +95,7 @@ def validate_table_consistency(
             actual_cell = actual_cells[cell_id]
             expected_source = expected_cell.get("source")
             actual_source = actual_cell.get("source")
-            if expected_source is not None and not _evidence_matches(
-                expected_source, actual_source
-            ):
+            if not _evidence_matches(expected_source, actual_source):
                 failed_rules.append("provenance")
 
             auto_confirmed = actual_cell.get("auto_confirmed", False)
@@ -190,7 +190,12 @@ def _is_source_anchor(value: object) -> bool:
         coordinate = bbox.get(key)
         if not _is_supported_finite_number(coordinate):
             return False
-    return bbox["width"] > 0 and bbox["height"] > 0
+    return (
+        bbox["x"] >= 0
+        and bbox["y"] >= 0
+        and bbox["width"] > 0
+        and bbox["height"] > 0
+    )
 
 
 def _is_supported_finite_number(value: object) -> bool:
