@@ -130,6 +130,20 @@ _SECRET_PARAMETER_KEY_PHRASES = (
     "private_key",
     "secret",
 )
+_SECRET_PARAMETER_KEY_COMPONENTS = frozenset(
+    {
+        "authorization",
+        "credential",
+        "credentials",
+        "password",
+        "secret",
+        "token",
+    }
+)
+_SECRET_PARAMETER_KEY_COMPONENT_SEQUENCES = (
+    ("api", "key"),
+    ("private", "key"),
+)
 _CAMEL_ACRONYM_BOUNDARY_RE = re.compile(r"(.)([A-Z][a-z]+)")
 _CAMEL_CASE_BOUNDARY_RE = re.compile(r"([a-z0-9])([A-Z])")
 _PARAMETER_KEY_SEPARATOR_RE = re.compile(r"[^A-Za-z0-9]+")
@@ -383,20 +397,27 @@ def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "
 
 def _is_content_bearing_audit_parameter_key(key: str) -> bool:
     normalized = _normalize_parameter_key(key)
+    components = tuple(normalized.split("_"))
     return (
         normalized in _CONTENT_BEARING_AUDIT_PARAMETER_KEYS
         or "previous_response" in normalized
-        or any(component in _CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENTS for component in normalized.split("_"))
+        or any(component in _CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENTS for component in components)
     )
 
 
 def _is_secret_parameter_key(key: str) -> bool:
     normalized = _normalize_parameter_key(key)
+    components = tuple(normalized.split("_"))
     return (
         normalized in _SECRET_PARAMETER_KEYS
         or any(normalized.endswith(suffix) for suffix in _SECRET_PARAMETER_KEY_SUFFIXES)
         or any(normalized.startswith(prefix) for prefix in _SECRET_PARAMETER_KEY_PREFIXES)
         or any(phrase in normalized for phrase in _SECRET_PARAMETER_KEY_PHRASES)
+        or any(component in _SECRET_PARAMETER_KEY_COMPONENTS for component in components)
+        or any(
+            _contains_component_sequence(components, sequence)
+            for sequence in _SECRET_PARAMETER_KEY_COMPONENT_SEQUENCES
+        )
     )
 
 
@@ -405,6 +426,15 @@ def _normalize_parameter_key(key: str) -> str:
     normalized = _CAMEL_CASE_BOUNDARY_RE.sub(r"\1_\2", normalized)
     normalized = _PARAMETER_KEY_SEPARATOR_RE.sub("_", normalized)
     return normalized.strip("_").lower()
+
+
+def _contains_component_sequence(components: tuple[str, ...], sequence: tuple[str, ...]) -> bool:
+    if len(sequence) > len(components):
+        return False
+    return any(
+        components[index : index + len(sequence)] == sequence
+        for index in range(len(components) - len(sequence) + 1)
+    )
 
 
 def validate_conversion_plan(plan: object) -> None:

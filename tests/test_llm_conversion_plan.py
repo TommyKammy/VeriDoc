@@ -169,11 +169,14 @@ def test_build_conversion_audit_log_records_hashes_metadata_and_redacts_secrets(
     [
         "credentials",
         "serviceCredentials",
+        "googleCredentialsJson",
         "accessToken",
+        "githubTokenFile",
         "refreshToken",
         "clientSecret",
         "awsSecretAccessKey",
         "privateKey",
+        "signingPrivateKeyPem",
     ],
 )
 def test_build_conversion_audit_log_redacts_review_thread_credential_keys(parameter_key: str) -> None:
