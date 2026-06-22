@@ -427,7 +427,10 @@ def _format_section(format_code: str, value: int) -> Optional[tuple[str, bool]]:
     ]
     if any(condition is not None for _, condition in conditional_sections):
         for index, (section, condition) in enumerate(conditional_sections):
-            if condition is None or _condition_matches(condition, value):
+            if condition is not None and _condition_matches(condition, value):
+                return section, value < 0 and index == 1
+        for index, (section, condition) in enumerate(conditional_sections):
+            if condition is None:
                 return section, value < 0 and index == 1
         return None
 
