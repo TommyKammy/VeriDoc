@@ -325,6 +325,36 @@ def test_docx_renders_list_items_with_list_semantics(tmp_path: Path) -> None:
     ]
 
 
+def test_docx_package_defines_heading_style(tmp_path: Path) -> None:
+    document_ir = {
+        "document": {"title": "Styled title"},
+        "blocks": [
+            {"id": "heading-1", "type": "heading", "text": "Styled heading"},
+        ],
+    }
+    output_path = tmp_path / "styled-heading.docx"
+
+    render_docx_from_ir(document_ir, output_path)
+
+    with ZipFile(output_path) as archive:
+        names = set(archive.namelist())
+        content_types = archive.read("[Content_Types].xml").decode("utf-8")
+        relationships = archive.read("word/_rels/document.xml.rels").decode("utf-8")
+        styles_xml = archive.read("word/styles.xml").decode("utf-8")
+
+    assert "word/styles.xml" in names
+    assert (
+        '<Override PartName="/word/styles.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>'
+    ) in content_types
+    assert (
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" '
+        'Target="styles.xml"'
+    ) in relationships
+    assert '<w:style w:type="paragraph" w:styleId="Heading1">' in styles_xml
+    assert '<w:name w:val="heading 1"/>' in styles_xml
+
+
 def test_ooxml_renderers_reject_unsupported_block_types(tmp_path: Path) -> None:
     document_ir = {
         "document": {"title": "Unsupported"},
@@ -436,6 +466,11 @@ def test_xlsx_numeric_detection_preserves_code_like_values_as_text(tmp_path: Pat
                 "type": "field",
                 "text": "High Precision: 0.1234567890123456",
             },
+            {
+                "id": "small-decimal",
+                "type": "field",
+                "text": "Concentration: 0.000000000000001",
+            },
             {"id": "underscore", "type": "field", "text": "Code: 1_000"},
             {"id": "full-width", "type": "field", "text": "Code: １２３"},
             {"id": "nan-prefix", "type": "field", "text": "Code: NaN123"},
@@ -453,7 +488,8 @@ def test_xlsx_numeric_detection_preserves_code_like_values_as_text(tmp_path: Pat
     assert cells["C6"] == (" 1234567890123456", "inline_string")
     assert cells["C7"] == ("-12.50", "number")
     assert cells["C8"] == (" 0.1234567890123456", "inline_string")
-    assert cells["C9"] == (" 1_000", "inline_string")
-    assert cells["C10"] == (" １２３", "inline_string")
-    assert cells["C11"] == (" NaN123", "inline_string")
-    assert cells["C12"] == (" -01", "inline_string")
+    assert cells["C9"] == ("0.000000000000001", "number")
+    assert cells["C10"] == (" 1_000", "inline_string")
+    assert cells["C11"] == (" １２３", "inline_string")
+    assert cells["C12"] == (" NaN123", "inline_string")
+    assert cells["C13"] == (" -01", "inline_string")

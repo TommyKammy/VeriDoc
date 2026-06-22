@@ -32,6 +32,7 @@ def render_docx_from_ir(document_ir: Mapping[str, Any], output_path: str | Path)
   <Default Extension="xml" ContentType="application/xml"/>
   <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
   <Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>
+  <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
 </Types>
 """,
         ),
@@ -48,7 +49,24 @@ def render_docx_from_ir(document_ir: Mapping[str, Any], output_path: str | Path)
             """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
 </Relationships>
+""",
+        ),
+        (
+            "word/styles.xml",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:style w:type="paragraph" w:default="1" w:styleId="Normal">
+    <w:name w:val="Normal"/>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="Heading1">
+    <w:name w:val="heading 1"/>
+    <w:basedOn w:val="Normal"/>
+    <w:next w:val="Normal"/>
+    <w:qFormat/>
+  </w:style>
+</w:styles>
 """,
         ),
         (
@@ -293,7 +311,7 @@ def _typed_xlsx_value(value: str) -> tuple[Any, str]:
 def _is_plain_number(value: str) -> bool:
     if not ASCII_NUMBER_RE.fullmatch(value):
         return False
-    if _exceeds_spreadsheet_integer_precision(value):
+    if _exceeds_spreadsheet_numeric_precision(value):
         return False
     try:
         numeric_value = Decimal(value)
@@ -302,12 +320,14 @@ def _is_plain_number(value: str) -> bool:
     return numeric_value.is_finite()
 
 
-def _exceeds_spreadsheet_integer_precision(value: str) -> bool:
-    return _spreadsheet_numeric_digit_count(value) > MAX_EXACT_SPREADSHEET_DIGITS
+def _exceeds_spreadsheet_numeric_precision(value: str) -> bool:
+    return _spreadsheet_significant_digit_count(value) > MAX_EXACT_SPREADSHEET_DIGITS
 
 
-def _spreadsheet_numeric_digit_count(value: str) -> int:
-    return sum(1 for character in value if character.isdigit())
+def _spreadsheet_significant_digit_count(value: str) -> int:
+    integer_part, _, fractional_part = value.removeprefix("-").partition(".")
+    significant_digits = f"{integer_part}{fractional_part}".lstrip("0")
+    return len(significant_digits) if significant_digits else 1
 
 
 def _xlsx_row(row_index: int, cells: Sequence[str]) -> str:
