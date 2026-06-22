@@ -612,12 +612,11 @@ def _is_safe_audit_parameter_sequence_key(key: str) -> bool:
 
 
 def _raw_key_value_parameter_line(value: str, key_path: str) -> tuple[str, str, str] | None:
-    if (
-        _normalize_parameter_key(_parameter_key_leaf(key_path))
-        not in _KEY_VALUE_AUDIT_PARAMETER_SEQUENCE_CONTAINER_KEYS
-    ):
+    normalized_leaf = _normalize_parameter_key(_parameter_key_leaf(key_path))
+    if normalized_leaf not in _KEY_VALUE_AUDIT_PARAMETER_SEQUENCE_CONTAINER_KEYS:
         return None
-    for separator in (":", "="):
+    separators = ("=", ":") if normalized_leaf in {"params", "query_params"} else (":", "=")
+    for separator in separators:
         entry_key, found, entry_value = value.partition(separator)
         if found and entry_key.strip() and entry_value.strip():
             return (entry_key.strip(), found, entry_value.strip())

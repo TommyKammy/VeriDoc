@@ -473,16 +473,21 @@ def test_build_conversion_audit_log_redacts_multi_entry_raw_parameter_strings() 
         ir_version="document-ir-v1",
         parameters={
             "query_params": "version=1&api_key=operator-runtime-api-key",
+            "params": [
+                "callback=https://example.invalid/callback?sig=operator-runtime-signature"
+            ],
             "headers": "X-Test: ok\nAuthorization: Bearer operator-runtime-token",
         },
     )
 
     assert audit_log["parameters"] == {
         "query_params": "version=1&api_key=[REDACTED]",
+        "params": ["callback=[REDACTED]"],
         "headers": "X-Test: ok\nAuthorization: [REDACTED]",
     }
     rendered = json.dumps(audit_log, sort_keys=True)
     assert "operator-runtime-api-key" not in rendered
+    assert "operator-runtime-signature" not in rendered
     assert "operator-runtime-token" not in rendered
     assert "Bearer" not in rendered
 
