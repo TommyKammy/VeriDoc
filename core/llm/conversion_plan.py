@@ -160,6 +160,7 @@ _PARAMETER_KEY_SEPARATOR_RE = re.compile(r"[^A-Za-z0-9]+")
 _CONTENT_BEARING_AUDIT_PARAMETER_KEYS = frozenset(
     {
         "content",
+        "document",
         "input",
         "messages",
         "output_bytes",
@@ -178,6 +179,7 @@ _SAFE_CONTENT_WORD_AUDIT_PARAMETER_KEYS = frozenset(
 _CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENTS = frozenset(
     {
         "content",
+        "document",
         "input",
         "messages",
         "prompt",
@@ -397,10 +399,15 @@ def _redact_audit_parameters(value: object, *, key_path: str = "") -> object:
     if key_path and _is_secret_parameter_key(key_path):
         return _REDACTED_VALUE
     if isinstance(value, Mapping):
+        key_value_entry = _mapping_key_value_parameter_entry(value)
         return {
             str(key): _redact_audit_parameters(
                 item,
-                key_path=_join_parameter_key_path(key_path, str(key)),
+                key_path=(
+                    _join_parameter_key_path(key_path, key_value_entry[1])
+                    if key_value_entry is not None and str(key) == key_value_entry[2]
+                    else _join_parameter_key_path(key_path, str(key))
+                ),
             )
             for key, item in value.items()
         }
@@ -417,6 +424,13 @@ def _redact_audit_parameters(value: object, *, key_path: str = "") -> object:
 
 def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "parameters") -> None:
     if isinstance(value, Mapping):
+        key_value_entry = _mapping_key_value_parameter_entry(value)
+        if key_value_entry is not None:
+            _key_field, entry_key, value_field = key_value_entry
+            item_path = _join_parameter_key_path(key_path, entry_key)
+            if _is_content_bearing_audit_parameter_key(item_path):
+                raise ValueError(f"{item_path} must not include document or request content")
+            _reject_content_bearing_audit_parameters(value[value_field], key_path=item_path)
         for key, item in value.items():
             key_string = str(key)
             item_path = f"{key_path}.{key_string}"
@@ -489,10 +503,20 @@ def _join_parameter_key_path(parent: str, key: str) -> str:
 
 def _is_key_value_parameter_entry(value: object) -> bool:
     return (
-        isinstance(value, (list, tuple))
+        isinstance(value, tuple)
         and len(value) == 2
         and isinstance(value[0], str)
     )
+
+
+def _mapping_key_value_parameter_entry(value: Mapping[object, object]) -> tuple[str, str, str] | None:
+    if "value" not in value:
+        return None
+    for key_field in ("key", "name"):
+        key = value.get(key_field)
+        if isinstance(key, str):
+            return (key_field, key, "value")
+    return None
 
 
 def _contains_component_sequence(components: tuple[str, ...], sequence: tuple[str, ...]) -> bool:

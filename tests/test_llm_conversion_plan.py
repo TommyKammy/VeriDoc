@@ -214,6 +214,9 @@ def test_build_conversion_audit_log_redacts_review_thread_credential_keys(parame
         ({"inputText": "Lot: ABC-123"}, r"parameters\.inputText"),
         ({"text": "Lot: ABC-123"}, r"parameters\.text"),
         ({"synthetic_text": "Lot: ABC-123"}, r"parameters\.synthetic_text"),
+        ({"document": "Lot: ABC-123"}, r"parameters\.document"),
+        ({"sourceDocument": "Lot: ABC-123"}, r"parameters\.sourceDocument"),
+        ({"document_bytes": b"Lot: ABC-123\n"}, r"parameters\.document_bytes"),
         ({"source_bytes": b"Lot: ABC-123\n"}, r"parameters\.source_bytes"),
         ({"output_bytes": b'{"lot_number":"ABC-123"}\n'}, r"parameters\.output_bytes"),
         ({"sourceBytes": b"Lot: ABC-123\n"}, r"parameters\.sourceBytes"),
@@ -273,6 +276,58 @@ def test_build_conversion_audit_log_redacts_tuple_parameter_entries() -> None:
     }
     assert "operator-runtime-token" not in json.dumps(audit_log, sort_keys=True)
     assert "Bearer" not in json.dumps(audit_log, sort_keys=True)
+
+
+def test_build_conversion_audit_log_preserves_two_string_generation_parameter_lists() -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={
+            "stop": ["prompt", "END"],
+        },
+    )
+
+    assert audit_log["parameters"] == {"stop": ["prompt", "END"]}
+
+
+def test_build_conversion_audit_log_sanitizes_mapping_key_value_parameter_entries() -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={
+            "headers": [{"name": "Authorization", "value": "Bearer operator-runtime-token"}],
+            "options": [{"key": "max_prompt_tokens", "value": 4096}],
+        },
+    )
+
+    assert audit_log["parameters"] == {
+        "headers": [{"name": "Authorization", "value": "[REDACTED]"}],
+        "options": [{"key": "max_prompt_tokens", "value": 4096}],
+    }
+    rendered = json.dumps(audit_log, sort_keys=True)
+    assert "operator-runtime-token" not in rendered
+    assert "Bearer" not in rendered
+
+
+def test_build_conversion_audit_log_rejects_mapping_key_value_content_parameter_entries() -> None:
+    with pytest.raises(ValueError, match=r"parameters\.options\[0\]\.prompt"):
+        build_conversion_audit_log(
+            source_bytes=b"Lot: ABC-123\n",
+            output_bytes=b'{"lot_number":"ABC-123"}\n',
+            model="local-json-model",
+            prompt_id="veridoc_conversion_plan",
+            prompt_version="poc-08",
+            ir_version="document-ir-v1",
+            parameters={"options": [{"key": "prompt", "value": "Lot: ABC-123"}]},
+        )
 
 
 def test_build_conversion_audit_log_redacts_sequence_valued_secret_parameters() -> None:
