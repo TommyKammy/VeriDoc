@@ -203,6 +203,13 @@ def validate_document_ir_v1_consistency(document: dict[str, Any]) -> None:
             )
         page = pages_by_number[source_page]
         bbox = block["bbox"]
+        if bbox["unit"] != page["unit"]:
+            raise ValidationError(
+                "$.blocks"
+                f"[{index}]"
+                ".bbox.unit: "
+                f"must match page {source_page!r} unit {page['unit']!r}"
+            )
         if bbox["x"] + bbox["width"] > page["width"]:
             raise ValidationError(
                 "$.blocks"

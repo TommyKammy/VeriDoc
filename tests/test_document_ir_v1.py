@@ -292,6 +292,145 @@ class DocumentIrV1Test(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertIn("blocks[0].bbox unit must match page 1 unit", result.errors)
 
+    def test_invalid_present_confidence_marks_block_for_review(self) -> None:
+        document_ir = from_parser_output(
+            {
+                "source_path": "fixtures/sample.pdf",
+                "extractor": "pymupdf",
+                "pages": [
+                    {
+                        "page_number": 1,
+                        "width_pt": 595.0,
+                        "height_pt": 842.0,
+                        "fragments": [
+                            {
+                                "text": "invalid confidence",
+                                "page_number": 1,
+                                "bbox": {"x": 72.0, "y": 80.0, "width": 120.0, "height": 18.0},
+                                "confidence": "bad",
+                                "extractor": "pymupdf",
+                            }
+                        ],
+                    }
+                ],
+            },
+            document_id="sample-pdf",
+            title="Sample PDF",
+            source_type="pdf",
+        )
+
+        result = validate_document_ir_v1(document_ir)
+
+        self.assertTrue(result.ok, result.errors)
+        self.assertTrue(result.requires_review)
+        self.assertEqual(0.0, document_ir.blocks[0].confidence)
+        self.assertTrue(document_ir.blocks[0].review.requires_review)
+        self.assertIn("blocks[0].confidence invalid; block marked requires_review", result.warnings)
+
+    def test_pdf_table_report_converts_selected_candidate_tables(self) -> None:
+        document_ir = from_parser_output(
+            {
+                "source_path": "fixtures/sample.pdf",
+                "selected_candidate": "pdfplumber:table",
+                "candidates": [
+                    {
+                        "extractor": "camelot",
+                        "flavor": "lattice",
+                        "status": "failed",
+                        "tables": [],
+                    },
+                    {
+                        "extractor": "pdfplumber",
+                        "flavor": "table",
+                        "status": "ok",
+                        "tables": [
+                            {
+                                "page_number": 2,
+                                "rows": [["Field", "Value"], ["Lot", "L-001"]],
+                                "cell_bboxes": [
+                                    [
+                                        {
+                                            "x": 72.0,
+                                            "y": 96.0,
+                                            "width": 60.0,
+                                            "height": 18.0,
+                                            "unit": "pt",
+                                            "origin": "top-left",
+                                        },
+                                        {
+                                            "x": 132.0,
+                                            "y": 96.0,
+                                            "width": 90.0,
+                                            "height": 18.0,
+                                            "unit": "pt",
+                                            "origin": "top-left",
+                                        },
+                                    ]
+                                ],
+                            }
+                        ],
+                    },
+                ],
+            },
+            document_id="sample-pdf",
+            title="Sample PDF",
+            source_type="pdf",
+        )
+
+        result = validate_document_ir_v1(document_ir)
+
+        self.assertTrue(result.ok, result.errors)
+        self.assertFalse(result.requires_review, result.warnings)
+        self.assertEqual([2], [page.page_number for page in document_ir.pages])
+        self.assertEqual("table", document_ir.blocks[0].type)
+        self.assertEqual("pdfplumber:table", document_ir.blocks[0].extractor.name)
+        self.assertIn("Lot\tL-001", document_ir.blocks[0].text)
+        self.assertEqual(72.0, document_ir.blocks[0].bbox.x)
+        self.assertEqual(150.0, document_ir.blocks[0].bbox.width)
+
+    def test_pdf_table_report_does_not_trust_bottom_left_cell_bboxes(self) -> None:
+        document_ir = from_parser_output(
+            {
+                "source_path": "fixtures/sample.pdf",
+                "selected_candidate": "camelot:lattice",
+                "candidates": [
+                    {
+                        "extractor": "camelot",
+                        "flavor": "lattice",
+                        "status": "ok",
+                        "tables": [
+                            {
+                                "page_number": 1,
+                                "rows": [["Field", "Value"]],
+                                "cell_bboxes": [
+                                    [
+                                        {
+                                            "x": 72.0,
+                                            "y": 96.0,
+                                            "width": 60.0,
+                                            "height": 18.0,
+                                            "unit": "pt",
+                                            "origin": "bottom-left",
+                                        }
+                                    ]
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            },
+            document_id="sample-pdf",
+            title="Sample PDF",
+            source_type="pdf",
+        )
+
+        result = validate_document_ir_v1(document_ir)
+
+        self.assertTrue(result.ok, result.errors)
+        self.assertTrue(result.requires_review)
+        self.assertEqual("Field\tValue", document_ir.blocks[0].text)
+        self.assertIn("blocks[0].bbox missing; block marked requires_review", result.warnings)
+
     def test_docx_parser_output_converts_to_document_ir_v1_blocks(self) -> None:
         document_ir = from_parser_output(
             {

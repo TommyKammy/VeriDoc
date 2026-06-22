@@ -202,7 +202,7 @@ def _block_from_fragment(
     review_warnings: List[str] = []
     source_page = _page_number_value(data.get("page_number"), default=fallback_page_number)
     bbox = _bbox_value(data.get("bbox"))
-    confidence = _confidence_value(
+    confidence, invalid_confidence = _confidence_value(
         data.get("confidence"),
         default=0.95,
         scale_percent=bool(data.get("engine")),
@@ -225,6 +225,10 @@ def _block_from_fragment(
         confidence = 0.0
         requires_review = True
         review_warnings.append(f"blocks[{block_index - 1}].confidence missing; block marked requires_review")
+    if invalid_confidence:
+        confidence = 0.0
+        requires_review = True
+        review_warnings.append(f"blocks[{block_index - 1}].confidence invalid; block marked requires_review")
     if data.get("low_confidence") is True:
         requires_review = True
         review_warnings.append(f"blocks[{block_index - 1}].low confidence; block marked requires_review")
@@ -278,6 +282,10 @@ def _parser_pages(data: dict[str, Any], source_type: str) -> list[Any]:
     if source_type == "xlsx":
         sheets = _list_value(data.get("sheets"))
         return [_xlsx_sheet_page(sheet_data, index) for index, sheet_data in enumerate(sheets, start=1)]
+    if source_type == "pdf":
+        table_pages = _pdf_table_report_pages(data)
+        if table_pages:
+            return table_pages
     return []
 
 
@@ -298,6 +306,102 @@ def _xlsx_sheet_page(sheet_data: Any, page_number: int) -> dict[str, Any]:
         "height": max(DEFAULT_PAGE_HEIGHT_PT, 72.0 + (18.0 * max(len(text_lines), 1))),
         "unit": "pt",
         "fragments": [{"kind": "table", "text": text, "extractor": "xlsx"}],
+    }
+
+
+def _pdf_table_report_pages(data: dict[str, Any]) -> list[Any]:
+    candidates = [_to_mapping(candidate) for candidate in _list_value(data.get("candidates"))]
+    if not candidates:
+        return []
+    selected_candidate = str(data.get("selected_candidate") or "")
+    preferred_candidates = [
+        candidate
+        for candidate in candidates
+        if candidate.get("status") == "ok"
+        and _table_candidate_name(candidate) == selected_candidate
+    ]
+    table_candidates = preferred_candidates or [
+        candidate for candidate in candidates if candidate.get("status") == "ok"
+    ]
+
+    pages_by_number: dict[int, dict[str, Any]] = {}
+    for candidate in table_candidates:
+        candidate_name = _table_candidate_name(candidate)
+        for table_data in _list_value(candidate.get("tables")):
+            table = _to_mapping(table_data)
+            page_number = _page_number_value(table.get("page_number"), default=1)
+            page = pages_by_number.setdefault(
+                page_number,
+                {
+                    "page_number": page_number,
+                    "width": DEFAULT_PAGE_WIDTH_PT,
+                    "height": DEFAULT_PAGE_HEIGHT_PT,
+                    "unit": "pt",
+                    "fragments": [],
+                },
+            )
+            fragment: dict[str, Any] = {
+                "kind": "table",
+                "text": _table_rows_text(table.get("rows")),
+                "page_number": page_number,
+                "extractor": candidate_name,
+            }
+            bbox = _table_bbox(table)
+            if bbox is not None:
+                fragment["bbox"] = bbox
+                page["width"] = max(page["width"], bbox["x"] + bbox["width"])
+                page["height"] = max(page["height"], bbox["y"] + bbox["height"])
+                page["unit"] = bbox["unit"]
+            page["fragments"].append(fragment)
+    return [pages_by_number[page_number] for page_number in sorted(pages_by_number)]
+
+
+def _table_candidate_name(candidate: dict[str, Any]) -> str:
+    extractor = str(candidate.get("extractor") or "unknown")
+    flavor = str(candidate.get("flavor") or "table")
+    return f"{extractor}:{flavor}"
+
+
+def _table_rows_text(rows_value: Any) -> str:
+    lines = []
+    for row in _list_value(rows_value):
+        cells = _list_value(row)
+        lines.append("\t".join(str(cell) for cell in cells))
+    return "\n".join(lines)
+
+
+def _table_bbox(table: dict[str, Any]) -> Optional[dict[str, Any]]:
+    cells: list[dict[str, Any]] = []
+    for row in _list_value(table.get("cell_bboxes")):
+        for cell_value in _list_value(row):
+            cell = _to_mapping(cell_value)
+            if cell:
+                cells.append(cell)
+    if not cells:
+        return None
+
+    units = {str(cell.get("unit") or "pt") for cell in cells}
+    origins = {str(cell.get("origin") or "top-left") for cell in cells}
+    if len(units) != 1 or origins != {"top-left"}:
+        return None
+
+    min_x = min(_required_finite_float_value(cell.get("x")) for cell in cells)
+    min_y = min(_required_finite_float_value(cell.get("y")) for cell in cells)
+    max_x = max(
+        _required_finite_float_value(cell.get("x")) + _required_finite_float_value(cell.get("width"))
+        for cell in cells
+    )
+    max_y = max(
+        _required_finite_float_value(cell.get("y")) + _required_finite_float_value(cell.get("height"))
+        for cell in cells
+    )
+    return {
+        "x": min_x,
+        "y": min_y,
+        "width": max_x - min_x,
+        "height": max_y - min_y,
+        "unit": units.pop(),
+        "origin": "top-left",
     }
 
 
@@ -349,15 +453,18 @@ def _page_size(page: dict[str, Any]) -> tuple[float, float, str]:
     )
 
 
-def _confidence_value(value: Any, *, default: float, scale_percent: bool) -> float:
+def _confidence_value(value: Any, *, default: float, scale_percent: bool) -> tuple[float, bool]:
     if value is None:
-        return default
-    confidence = _finite_float_value(value, default=-1.0)
-    if confidence < 0:
-        return 0.0
+        return default, False
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        return 0.0, True
+    if not math.isfinite(confidence) or confidence < 0:
+        return 0.0, True
     if scale_percent:
         confidence = confidence / 100.0
-    return confidence
+    return confidence, False
 
 
 def _bbox_value(value: Any) -> Optional[BoundingBox]:
