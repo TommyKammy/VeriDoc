@@ -66,6 +66,10 @@ def validate_extracted_item(
     explicit_review_required = _requires_review(expected) or _requires_review(actual)
     high_risk = _is_high_risk(expected) or _is_high_risk(actual)
     requires_review = explicit_review_required or high_risk
+    if not requires_review and not _same_non_empty_string(
+        expected.get("fixture_id"), actual.get("fixture_id")
+    ):
+        failed_rules.append("scope_binding")
     if requires_review:
         warnings.append("item requires human review")
     if requires_review and auto_confirmed:
@@ -218,6 +222,8 @@ def _is_source_anchor(value: object) -> bool:
     bbox = value.get("bbox")
     if not isinstance(bbox, Mapping):
         return False
+    if "origin" in bbox and bbox.get("origin") != "top_left":
+        return False
     for key in ("x", "y", "width", "height"):
         coordinate = bbox.get(key)
         if not _is_supported_finite_number(coordinate):
@@ -277,7 +283,7 @@ def _cells_by_id(value: object) -> dict[str, Mapping[str, Any]] | None:
         if not isinstance(cell, Mapping):
             return None
         cell_id = cell.get("id")
-        if not isinstance(cell_id, str) or not cell_id or cell_id in cells:
+        if not isinstance(cell_id, str) or not cell_id.strip() or cell_id in cells:
             return None
         cells[cell_id] = cell
     return cells

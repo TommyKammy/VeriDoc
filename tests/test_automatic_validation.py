@@ -144,6 +144,18 @@ def test_item_scope_binding_requires_matching_fixture_id() -> None:
     assert "scope_binding" in decision.failed_rules
 
 
+def test_missing_expected_item_fixture_id_blocks_auto_confirm() -> None:
+    decision = validate_extracted_item(
+        expected=_expected_item(risk_level="medium", requires_review=False),
+        actual=_actual_item(),
+    )
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert decision.requires_review is True
+    assert "scope_binding" in decision.failed_rules
+
+
 def test_numeric_rule_rejects_non_finite_or_stringified_numbers() -> None:
     expected = _expected_item(expected_value=12.5, risk_level="medium", requires_review=False)
 
@@ -321,6 +333,34 @@ def test_matching_negative_source_coordinates_block_auto_confirm() -> None:
     decision = validate_extracted_item(
         expected=expected,
         actual=_actual_item(evidence=off_page_source),
+    )
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert "provenance" in decision.failed_rules
+
+
+def test_non_top_left_source_origin_blocks_auto_confirm() -> None:
+    bottom_left_source = {
+        "source_page": 1,
+        "bbox": {
+            "origin": "bottom_left",
+            "x": 72.0,
+            "y": 112.0,
+            "width": 180.0,
+            "height": 18.0,
+        },
+    }
+    expected = _expected_item(
+        risk_level="medium",
+        requires_review=False,
+        fixture_id="fixture-001",
+        evidence=bottom_left_source,
+    )
+
+    decision = validate_extracted_item(
+        expected=expected,
+        actual=_actual_item(fixture_id="fixture-001", evidence=bottom_left_source),
     )
 
     assert decision.auto_confirm_allowed is False
@@ -625,6 +665,40 @@ def test_empty_expected_table_cells_block_auto_confirm() -> None:
     assert "table_consistency" in decision.failed_rules
 
 
+def test_whitespace_only_table_cell_id_blocks_auto_confirm() -> None:
+    source = _evidence()
+    expected_table = {
+        "id": "table-001",
+        "fixture_table_id": "table-001",
+        "cells": [
+            {
+                "id": "   ",
+                "text": "SAMPLE-LOT-001",
+                "source": source,
+                "requires_review": False,
+            },
+        ],
+    }
+    actual_table = {
+        "id": "table-001",
+        "cells": [
+            {
+                "id": "   ",
+                "text": "SAMPLE-LOT-001",
+                "source": source,
+                "auto_confirmed": False,
+            },
+        ],
+    }
+
+    decision = validate_table_consistency(expected_table, actual_table)
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert decision.requires_review is True
+    assert "table_consistency" in decision.failed_rules
+
+
 def test_mismatched_expected_table_fixture_binding_blocks_auto_confirm() -> None:
     source = _evidence()
     expected_table = {
@@ -815,6 +889,76 @@ def test_current_head_review_examples_fail_closed() -> None:
                 },
             ),
             "table_consistency",
+        ),
+        (
+            "missing_fixture_scope",
+            validate_extracted_item(
+                expected=_expected_item(risk_level="medium", requires_review=False),
+                actual=_actual_item(),
+            ),
+            "scope_binding",
+        ),
+        (
+            "whitespace_only_table_cell_id",
+            validate_table_consistency(
+                {
+                    "id": "table-001",
+                    "fixture_table_id": "table-001",
+                    "cells": [
+                        {
+                            "id": " ",
+                            "text": "SAMPLE-LOT-001",
+                            "source": source,
+                            "requires_review": False,
+                        },
+                    ],
+                },
+                {
+                    "id": "table-001",
+                    "cells": [
+                        {
+                            "id": " ",
+                            "text": "SAMPLE-LOT-001",
+                            "source": source,
+                        },
+                    ],
+                },
+            ),
+            "table_consistency",
+        ),
+        (
+            "non_top_left_source_origin",
+            validate_extracted_item(
+                expected=_expected_item(
+                    risk_level="medium",
+                    requires_review=False,
+                    fixture_id="fixture-001",
+                    evidence={
+                        "source_page": 1,
+                        "bbox": {
+                            "origin": "bottom_left",
+                            "x": 72.0,
+                            "y": 112.0,
+                            "width": 180.0,
+                            "height": 18.0,
+                        },
+                    },
+                ),
+                actual=_actual_item(
+                    fixture_id="fixture-001",
+                    evidence={
+                        "source_page": 1,
+                        "bbox": {
+                            "origin": "bottom_left",
+                            "x": 72.0,
+                            "y": 112.0,
+                            "width": 180.0,
+                            "height": 18.0,
+                        },
+                    },
+                ),
+            ),
+            "provenance",
         ),
         (
             "mismatched_fixture_table_id",
