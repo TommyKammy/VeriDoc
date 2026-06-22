@@ -15,7 +15,15 @@ except ImportError:
         raise
     pytest.skip("PyMuPDF eval dependency is not installed", allow_module_level=True)
 
-from core.parsers.pdf_text_extraction import extract_pdf_text, parse_text_pdf_to_document_ir
+from core.parsers import pdf_text_extraction
+from core.parsers.pdf_text_extraction import (
+    PdfPageText,
+    PdfTextExtraction,
+    TextBBox,
+    TextFragment,
+    extract_pdf_text,
+    parse_text_pdf_to_document_ir,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -240,6 +248,65 @@ def test_parse_text_pdf_to_document_ir_emits_paragraphs_tables_and_coordinates(
     validate_document_ir_consistency(document_ir)
 
 
+def test_parse_text_pdf_to_document_ir_preserves_spaces_between_same_line_fragments(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pdf_path = tmp_path / "split-line.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n")
+    extraction = PdfTextExtraction(
+        source_path=str(pdf_path),
+        extractor="pymupdf",
+        pages=[
+            PdfPageText(
+                page_number=1,
+                width_pt=300.0,
+                height_pt=200.0,
+                fragments=[
+                    _fragment("Approved", page_number=1, x=36.0, y=40.0, width=52.0),
+                    _fragment("By", page_number=1, x=92.0, y=40.0, width=12.0),
+                ],
+            )
+        ],
+    )
+    monkeypatch.setattr(pdf_text_extraction, "extract_pdf_text", lambda _path: extraction)
+
+    document_ir = parse_text_pdf_to_document_ir(pdf_path)
+
+    assert [block["text"] for block in document_ir["blocks"]] == ["Approved By"]
+
+
+def test_parse_text_pdf_to_document_ir_does_not_merge_far_same_baseline_fragments(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pdf_path = tmp_path / "two-columns.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n")
+    extraction = PdfTextExtraction(
+        source_path=str(pdf_path),
+        extractor="pymupdf",
+        pages=[
+            PdfPageText(
+                page_number=1,
+                width_pt=300.0,
+                height_pt=200.0,
+                fragments=[
+                    _fragment("Main header", page_number=1, x=36.0, y=40.0, width=70.0),
+                    _fragment("Sidebar note", page_number=1, x=210.0, y=40.0, width=60.0),
+                ],
+            )
+        ],
+    )
+    monkeypatch.setattr(pdf_text_extraction, "extract_pdf_text", lambda _path: extraction)
+
+    document_ir = parse_text_pdf_to_document_ir(pdf_path)
+
+    assert [(block["type"], block["text"]) for block in document_ir["blocks"]] == [
+        ("paragraph", "Main header"),
+        ("paragraph", "Sidebar note"),
+    ]
+
+
 def test_parse_text_pdf_to_document_ir_marks_empty_text_for_review(tmp_path: Path) -> None:
     pdf_path = tmp_path / "empty-page.pdf"
     document = fitz.open()
@@ -253,7 +320,7 @@ def test_parse_text_pdf_to_document_ir_marks_empty_text_for_review(tmp_path: Pat
     block = document_ir["blocks"][0]
     assert block["id"] == "block-001"
     assert block["type"] == "paragraph"
-    assert block["text"] == "PDF text extraction produced no text blocks."
+    assert block["text"] == "PDF text extraction produced no text blocks for this page."
     assert block["value_metadata"]["source_page"] == 1
     assert block["value_metadata"]["bbox"] == {
         "x": 0.0,
@@ -268,3 +335,71 @@ def test_parse_text_pdf_to_document_ir_marks_empty_text_for_review(tmp_path: Pat
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     validate(schema, document_ir)
     validate_document_ir_consistency(document_ir)
+
+
+def test_parse_text_pdf_to_document_ir_marks_each_textless_page_for_review(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pdf_path = tmp_path / "mixed-textless.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n")
+    extraction = PdfTextExtraction(
+        source_path=str(pdf_path),
+        extractor="pymupdf",
+        pages=[
+            PdfPageText(
+                page_number=1,
+                width_pt=300.0,
+                height_pt=200.0,
+                fragments=[
+                    _fragment("Readable page", page_number=1, x=36.0, y=40.0, width=78.0),
+                ],
+            ),
+            PdfPageText(
+                page_number=2,
+                width_pt=300.0,
+                height_pt=200.0,
+                fragments=[],
+            ),
+            PdfPageText(
+                page_number=3,
+                width_pt=300.0,
+                height_pt=200.0,
+                fragments=[
+                    _fragment("Readable again", page_number=3, x=36.0, y=40.0, width=84.0),
+                ],
+            ),
+        ],
+    )
+    monkeypatch.setattr(pdf_text_extraction, "extract_pdf_text", lambda _path: extraction)
+
+    document_ir = parse_text_pdf_to_document_ir(pdf_path)
+
+    page_texts = [
+        (block["text"], block["value_metadata"]["source_page"]) for block in document_ir["blocks"]
+    ]
+    assert page_texts == [
+        ("Readable page", 1),
+        ("PDF text extraction produced no text blocks for this page.", 2),
+        ("Readable again", 3),
+    ]
+    textless_block = document_ir["blocks"][1]
+    assert textless_block["value_metadata"]["confidence"] == 0.0
+    assert textless_block["value_metadata"]["requires_review"] is True
+
+
+def _fragment(
+    text: str,
+    *,
+    page_number: int,
+    x: float,
+    y: float,
+    width: float,
+    height: float = 12.0,
+) -> TextFragment:
+    return TextFragment(
+        text=text,
+        page_number=page_number,
+        bbox=TextBBox(x=x, y=y, width=width, height=height),
+        extractor="pymupdf",
+    )

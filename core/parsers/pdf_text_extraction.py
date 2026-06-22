@@ -68,6 +68,11 @@ def parse_text_pdf_to_document_ir(
 
     for page in extraction.pages:
         page_lines = _group_fragments_by_line(page.fragments)
+        if not page_lines:
+            blocks.append(
+                _review_required_empty_page_block(page, extraction, block_index=len(blocks) + 1)
+            )
+            continue
         for line_group in _group_table_lines(page_lines):
             block_type = "table" if _is_table_line_group(line_group) else "paragraph"
             text = "\n".join(_line_text(line) for line in line_group)
@@ -97,31 +102,6 @@ def parse_text_pdf_to_document_ir(
                 }
             )
 
-    if not blocks and extraction.pages:
-        first_page = extraction.pages[0]
-        blocks.append(
-            {
-                "id": "block-001",
-                "type": "paragraph",
-                "text": "PDF text extraction produced no text blocks.",
-                "value_metadata": {
-                    "source_page": first_page.page_number,
-                    "bbox": {
-                        "x": 0.0,
-                        "y": 0.0,
-                        "width": first_page.width_pt,
-                        "height": first_page.height_pt,
-                    },
-                    "extractor": {
-                        "name": extraction.extractor,
-                        "version": _package_version("PyMuPDF") or "unknown",
-                    },
-                    "confidence": 0.0,
-                    "requires_review": True,
-                },
-            }
-        )
-
     return {
         "schema_version": "document-ir/v0",
         "document": {
@@ -139,6 +119,34 @@ def parse_text_pdf_to_document_ir(
             for page in extraction.pages
         ],
         "blocks": blocks,
+    }
+
+
+def _review_required_empty_page_block(
+    page: PdfPageText,
+    extraction: PdfTextExtraction,
+    *,
+    block_index: int,
+) -> dict[str, Any]:
+    return {
+        "id": f"block-{block_index:03d}",
+        "type": "paragraph",
+        "text": "PDF text extraction produced no text blocks for this page.",
+        "value_metadata": {
+            "source_page": page.page_number,
+            "bbox": {
+                "x": 0.0,
+                "y": 0.0,
+                "width": page.width_pt,
+                "height": page.height_pt,
+            },
+            "extractor": {
+                "name": extraction.extractor,
+                "version": _package_version("PyMuPDF") or "unknown",
+            },
+            "confidence": 0.0,
+            "requires_review": True,
+        },
     }
 
 
@@ -313,9 +321,7 @@ def _group_fragments_by_line(fragments: list[TextFragment]) -> list[list[TextFra
 
     for fragment in sorted_fragments:
         for line in reversed(lines):
-            reference = line[0].bbox
-            tolerance = max(reference.height, fragment.bbox.height) * 0.75
-            if abs(fragment.bbox.y - reference.y) <= tolerance:
+            if _belongs_to_line(fragment, line):
                 line.append(fragment)
                 line.sort(key=lambda item: item.bbox.x)
                 break
@@ -323,6 +329,33 @@ def _group_fragments_by_line(fragments: list[TextFragment]) -> list[list[TextFra
             lines.append([fragment])
 
     return lines
+
+
+def _belongs_to_line(fragment: TextFragment, line: list[TextFragment]) -> bool:
+    reference = line[0].bbox
+    tolerance = max(reference.height, fragment.bbox.height) * 0.75
+    if abs(fragment.bbox.y - reference.y) > tolerance:
+        return False
+    return (
+        _horizontal_gap_to_line(fragment, line)
+        <= max(reference.height, fragment.bbox.height) * 2.0
+    )
+
+
+def _horizontal_gap_to_line(fragment: TextFragment, line: list[TextFragment]) -> float:
+    fragment_left = fragment.bbox.x
+    fragment_right = fragment.bbox.x + fragment.bbox.width
+    gaps: list[float] = []
+    for existing in line:
+        existing_left = existing.bbox.x
+        existing_right = existing.bbox.x + existing.bbox.width
+        if fragment_right < existing_left:
+            gaps.append(existing_left - fragment_right)
+        elif existing_right < fragment_left:
+            gaps.append(fragment_left - existing_right)
+        else:
+            return 0.0
+    return min(gaps) if gaps else 0.0
 
 
 def _group_table_lines(lines: list[list[TextFragment]]) -> list[list[list[TextFragment]]]:
@@ -352,7 +385,33 @@ def _is_table_line(line: list[TextFragment]) -> bool:
 
 
 def _line_text(line: list[TextFragment]) -> str:
-    return "".join(fragment.text for fragment in line)
+    if not line:
+        return ""
+
+    ordered = sorted(line, key=lambda fragment: fragment.bbox.x)
+    text = ordered[0].text
+    previous = ordered[0]
+    for fragment in ordered[1:]:
+        gap = fragment.bbox.x - (previous.bbox.x + previous.bbox.width)
+        if _needs_inserted_space(text, fragment.text, gap, previous, fragment):
+            text += " "
+        text += fragment.text
+        previous = fragment
+    return text
+
+
+def _needs_inserted_space(
+    left_text: str,
+    right_text: str,
+    gap: float,
+    left_fragment: TextFragment,
+    right_fragment: TextFragment,
+) -> bool:
+    if gap <= max(left_fragment.bbox.height, right_fragment.bbox.height) * 0.15:
+        return False
+    if not left_text or not right_text:
+        return False
+    return not left_text[-1].isspace() and not right_text[0].isspace()
 
 
 def _union_text_bboxes(fragments: Any) -> TextBBox | None:
