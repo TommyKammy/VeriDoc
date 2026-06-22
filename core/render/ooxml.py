@@ -21,12 +21,14 @@ def render_docx_from_ir(
     output_path: str | Path,
     *,
     conversion_plan: Mapping[str, Any] | None = None,
+    render_plan: Mapping[str, Any] | None = None,
 ) -> None:
     """Render a minimal deterministic DOCX package from Document IR v0."""
     document = _mapping(document_ir.get("document"), "document")
     title = _text(document.get("title"))
     blocks = _blocks(document_ir)
-    source_annotations = _source_annotations_by_block(conversion_plan, blocks)
+    render_directives = _render_directives(conversion_plan, render_plan)
+    source_annotations = _source_annotations_by_block(render_directives, blocks)
     comment_ids = {
         block_id: index
         for index, block_id in enumerate(
@@ -58,8 +60,8 @@ def render_docx_from_ir(
                 "word/comments.xml",
                 _docx_comments_xml(
                     [
-                        (comment_ids[block_id], text)
-                        for block_id, text in source_annotations.items()
+                        (comment_ids[block_id], _joined_annotation_text(texts))
+                        for block_id, texts in source_annotations.items()
                         if block_id in comment_ids
                     ]
                 ),
@@ -150,13 +152,15 @@ def render_xlsx_from_ir(
     output_path: str | Path,
     *,
     conversion_plan: Mapping[str, Any] | None = None,
+    render_plan: Mapping[str, Any] | None = None,
 ) -> None:
     """Render a minimal deterministic XLSX package from Document IR v0."""
     document = _mapping(document_ir.get("document"), "document")
     title = _text(document.get("title"))
     blocks = _blocks(document_ir)
-    source_annotations = _source_annotations_by_block(conversion_plan, blocks)
-    table_merges = _table_merges_by_block(conversion_plan, blocks)
+    render_directives = _render_directives(conversion_plan, render_plan)
+    source_annotations = _source_annotations_by_block(render_directives, blocks)
+    table_merges = _table_merges_by_block(render_directives, blocks)
     rows = [
         [_text_cell("A1", title)],
         [],
@@ -170,6 +174,7 @@ def render_xlsx_from_ir(
     current_row = 4
     max_column_count = 4
     comment_refs: dict[str, str] = {}
+    merge_ranges: list[str] = []
     for block in blocks:
         block_id = _text(block.get("id"))
         kind = _text(block.get("type"))
@@ -177,6 +182,7 @@ def render_xlsx_from_ir(
         if kind == "table" and _should_render_xlsx_table_grid(block, table_merges):
             if block_id in source_annotations:
                 comment_refs[block_id] = f"A{current_row}"
+            table_start_row = current_row
             table_rows = _docx_table_rows(block)
             for row_offset, table_row in enumerate(table_rows):
                 row_index = current_row + row_offset
@@ -188,6 +194,10 @@ def render_xlsx_from_ir(
                 )
                 max_column_count = max(max_column_count, len(table_row))
             current_row += len(table_rows)
+            merge_ranges.extend(
+                _offset_xlsx_range(merge_range, table_start_row - 4)
+                for merge_range in table_merges.get(block_id, [])
+            )
             continue
         if kind == "field":
             label, value = _split_field(text)
@@ -209,11 +219,6 @@ def render_xlsx_from_ir(
         )
         current_row += 1
 
-    merge_ranges = [
-        merge_range
-        for block_id in _block_ids(blocks)
-        for merge_range in table_merges.get(block_id, [])
-    ]
     max_column_count = max(max_column_count, _max_column_from_ranges(merge_ranges))
     dimension = f"A1:{_cell_ref(max_column_count, max(current_row - 1, 3))}"
     sheet_rows = "\n".join(_xlsx_row(index + 1, cells) for index, cells in enumerate(rows) if cells)
@@ -231,8 +236,8 @@ def render_xlsx_from_ir(
                 "xl/comments1.xml",
                 _xlsx_comments_xml(
                     [
-                        (comment_refs[block_id], text)
-                        for block_id, text in source_annotations.items()
+                        (comment_refs[block_id], _joined_annotation_text(texts))
+                        for block_id, texts in source_annotations.items()
                         if block_id in comment_refs
                     ]
                 ),
@@ -322,63 +327,63 @@ def _block_ids(blocks: Sequence[Mapping[str, Any]]) -> list[str]:
     return [_text(block.get("id")) for block in blocks]
 
 
-def _render_directives(conversion_plan: Mapping[str, Any] | None) -> Mapping[str, Any]:
-    if conversion_plan is None:
+def _render_directives(
+    conversion_plan: Mapping[str, Any] | None,
+    render_plan: Mapping[str, Any] | None,
+) -> Mapping[str, Any]:
+    if conversion_plan is not None and "render" in conversion_plan:
+        raise ValueError("conversion_plan.render is not supported; pass render_plan instead")
+    if render_plan is None:
         return {}
-    render = conversion_plan.get("render")
-    if render is None:
-        return {}
-    if not isinstance(render, Mapping):
-        raise ValueError("conversion_plan.render must be an object")
-    return render
+    if not isinstance(render_plan, Mapping):
+        raise ValueError("render_plan must be an object")
+    allowed_keys = {"source_annotations", "table_merges"}
+    unsupported_keys = sorted(str(key) for key in render_plan if key not in allowed_keys)
+    if unsupported_keys:
+        raise ValueError(f"render_plan contains unsupported directives: {unsupported_keys!r}")
+    return render_plan
 
 
 def _source_annotations_by_block(
-    conversion_plan: Mapping[str, Any] | None,
+    render: Mapping[str, Any],
     blocks: Sequence[Mapping[str, Any]],
-) -> dict[str, str]:
-    render = _render_directives(conversion_plan)
+) -> dict[str, list[str]]:
     annotations = render.get("source_annotations", [])
     if not isinstance(annotations, Sequence) or isinstance(annotations, (str, bytes)):
-        raise ValueError("conversion_plan.render.source_annotations must be a list")
+        raise ValueError("render_plan.source_annotations must be a list")
     valid_block_ids = set(_block_ids(blocks))
-    by_block: dict[str, str] = {}
+    by_block: dict[str, list[str]] = {}
     for index, annotation in enumerate(annotations):
         if not isinstance(annotation, Mapping):
-            raise ValueError(f"conversion_plan.render.source_annotations[{index}] must be an object")
+            raise ValueError(f"render_plan.source_annotations[{index}] must be an object")
         block_id = annotation.get("block_id")
         text = annotation.get("text")
         if not isinstance(block_id, str) or block_id not in valid_block_ids:
-            raise ValueError(
-                f"conversion_plan.render.source_annotations[{index}].block_id must reference an IR block"
-            )
+            raise ValueError(f"render_plan.source_annotations[{index}].block_id must reference an IR block")
         if not isinstance(text, str) or not text.strip():
-            raise ValueError(f"conversion_plan.render.source_annotations[{index}].text is required")
-        by_block[block_id] = text
+            raise ValueError(f"render_plan.source_annotations[{index}].text is required")
+        by_block.setdefault(block_id, []).append(text)
     return by_block
 
 
 def _table_merges_by_block(
-    conversion_plan: Mapping[str, Any] | None,
+    render: Mapping[str, Any],
     blocks: Sequence[Mapping[str, Any]],
 ) -> dict[str, list[str]]:
-    render = _render_directives(conversion_plan)
     merges = render.get("table_merges", [])
     if not isinstance(merges, Sequence) or isinstance(merges, (str, bytes)):
-        raise ValueError("conversion_plan.render.table_merges must be a list")
-    valid_block_ids = set(_block_ids(blocks))
+        raise ValueError("render_plan.table_merges must be a list")
+    table_block_ids = {_text(block.get("id")) for block in blocks if _text(block.get("type")) == "table"}
     by_block: dict[str, list[str]] = {}
     for index, merge in enumerate(merges):
         if not isinstance(merge, Mapping):
-            raise ValueError(f"conversion_plan.render.table_merges[{index}] must be an object")
+            raise ValueError(f"render_plan.table_merges[{index}] must be an object")
         block_id = merge.get("block_id")
         merge_range = merge.get("range")
-        if not isinstance(block_id, str) or block_id not in valid_block_ids:
-            raise ValueError(
-                f"conversion_plan.render.table_merges[{index}].block_id must reference an IR block"
-            )
+        if not isinstance(block_id, str) or block_id not in table_block_ids:
+            raise ValueError(f"render_plan.table_merges[{index}].block_id must reference a table block")
         if not isinstance(merge_range, str) or not XLSX_RANGE_RE.fullmatch(merge_range):
-            raise ValueError(f"conversion_plan.render.table_merges[{index}].range is invalid")
+            raise ValueError(f"render_plan.table_merges[{index}].range is invalid")
         by_block.setdefault(block_id, []).append(merge_range)
     return by_block
 
@@ -389,6 +394,10 @@ def _should_render_xlsx_table_grid(
 ) -> bool:
     block_id = _text(block.get("id"))
     return bool(table_merges.get(block_id))
+
+
+def _joined_annotation_text(texts: Sequence[str]) -> str:
+    return "\n".join(texts)
 
 
 def _mapping(value: Any, label: str) -> Mapping[str, Any]:
@@ -575,6 +584,21 @@ def _column_index(column_name: str) -> int:
     for character in column_name:
         column_index = column_index * 26 + (ord(character) - ord("A") + 1)
     return column_index
+
+
+def _offset_xlsx_range(merge_range: str, row_delta: int) -> str:
+    start_ref, _separator, end_ref = merge_range.partition(":")
+    return f"{_offset_xlsx_cell(start_ref, row_delta)}:{_offset_xlsx_cell(end_ref, row_delta)}"
+
+
+def _offset_xlsx_cell(ref: str, row_delta: int) -> str:
+    match = XLSX_CELL_RE.fullmatch(ref)
+    if match is None:
+        raise ValueError(f"render_plan.table_merges range is invalid: {ref!r}")
+    row_index = int(match.group(2)) + row_delta
+    if row_index < 1:
+        raise ValueError("render_plan.table_merges range resolves outside the worksheet")
+    return f"{match.group(1)}{row_index}"
 
 
 def _xlsx_merge_cells_xml(ranges: Sequence[str]) -> str:

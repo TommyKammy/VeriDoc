@@ -6,6 +6,7 @@ from zipfile import ZipFile
 
 import pytest
 
+from core.llm.conversion_plan import validate_conversion_plan
 from core.parsers.docx_extraction import extract_docx_structure
 from core.parsers.xlsx_extraction import extract_xlsx_structure
 from core.render.ooxml import render_docx_from_ir, render_xlsx_from_ir
@@ -168,17 +169,31 @@ def test_renderers_apply_plan_table_merges_and_source_annotations(tmp_path: Path
                 "rationale": "Preserve directly extracted table structure.",
             }
         ],
-        "constraints": {"external_transmission": False, "requires_review": False},
-        "render": {
-            "table_merges": [{"block_id": "table-1", "range": "A4:B4"}],
-            "source_annotations": [{"block_id": "table-1", "text": "Source page 2"}],
-        },
+        "constraints": {"external_transmission": False},
+    }
+    render_plan = {
+        "table_merges": [{"block_id": "table-1", "range": "A4:B4"}],
+        "source_annotations": [
+            {"block_id": "table-1", "text": "Source page 2"},
+            {"block_id": "table-1", "text": "Lab worksheet A"},
+        ],
     }
     docx_path = tmp_path / "planned.docx"
     xlsx_path = tmp_path / "planned.xlsx"
 
-    render_docx_from_ir(document_ir, docx_path, conversion_plan=conversion_plan)
-    render_xlsx_from_ir(document_ir, xlsx_path, conversion_plan=conversion_plan)
+    validate_conversion_plan(conversion_plan)
+    render_docx_from_ir(
+        document_ir,
+        docx_path,
+        conversion_plan=conversion_plan,
+        render_plan=render_plan,
+    )
+    render_xlsx_from_ir(
+        document_ir,
+        xlsx_path,
+        conversion_plan=conversion_plan,
+        render_plan=render_plan,
+    )
 
     xlsx = extract_xlsx_structure(xlsx_path)
     assert xlsx.sheets[0].merged_ranges == ["A4:B4"]
@@ -194,6 +209,7 @@ def test_renderers_apply_plan_table_merges_and_source_annotations(tmp_path: Path
     assert "word/comments.xml" in docx_names
     assert "relationships/comments" in document_relationships
     assert "Source page 2" in comments_xml
+    assert "Lab worksheet A" in comments_xml
 
     with ZipFile(xlsx_path) as xlsx_archive:
         xlsx_names = set(xlsx_archive.namelist())
@@ -204,6 +220,80 @@ def test_renderers_apply_plan_table_merges_and_source_annotations(tmp_path: Path
     assert '<mergeCell ref="A4:B4"/>' in sheet_xml
     assert "relationships/comments" in sheet_relationships
     assert "Source page 2" in comments_xml
+    assert "Lab worksheet A" in comments_xml
+
+
+def test_xlsx_offsets_table_merges_to_rendered_table_start_row(tmp_path: Path) -> None:
+    document_ir = {
+        "document": {"title": "Offset table render"},
+        "blocks": [
+            {"id": "summary-1", "type": "paragraph", "text": "Summary before table"},
+            {
+                "id": "table-1",
+                "type": "table",
+                "text": "Batch Summary\t\nLot\tSAMPLE-LOT-001",
+                "rows": [["Batch Summary", ""], ["Lot", "SAMPLE-LOT-001"]],
+            },
+        ],
+    }
+    output_path = tmp_path / "offset-table.xlsx"
+
+    render_xlsx_from_ir(
+        document_ir,
+        output_path,
+        render_plan={"table_merges": [{"block_id": "table-1", "range": "A4:B4"}]},
+    )
+
+    xlsx = extract_xlsx_structure(output_path)
+    assert xlsx.sheets[0].merged_ranges == ["A5:B5"]
+    cells = {cell.ref: cell.value for cell in xlsx.sheets[0].cells}
+    assert cells["A4"] == "summary-1"
+    assert cells["A5"] == "Batch Summary"
+
+
+def test_xlsx_rejects_table_merges_for_non_table_blocks(tmp_path: Path) -> None:
+    document_ir = {
+        "document": {"title": "Invalid merge target"},
+        "blocks": [
+            {"id": "paragraph-1", "type": "paragraph", "text": "Not a table"},
+        ],
+    }
+
+    with pytest.raises(ValueError, match="must reference a table block"):
+        render_xlsx_from_ir(
+            document_ir,
+            tmp_path / "invalid-merge.xlsx",
+            render_plan={"table_merges": [{"block_id": "paragraph-1", "range": "A4:B4"}]},
+        )
+
+
+def test_renderers_reject_render_directives_inside_conversion_plan(tmp_path: Path) -> None:
+    document_ir = {
+        "document": {"title": "Invalid render location"},
+        "blocks": [
+            {"id": "table-1", "type": "table", "text": "A\tB"},
+        ],
+    }
+    conversion_plan = {
+        "schema_version": 1,
+        "source_kind": "excel_workbook",
+        "operations": [
+            {
+                "id": "extract-table",
+                "action": "extract_table",
+                "inputs": ["table-1"],
+                "output": "table-1",
+                "rationale": "Preserve directly extracted table structure.",
+            }
+        ],
+        "constraints": {"external_transmission": False},
+        "render": {"table_merges": [{"block_id": "table-1", "range": "A4:B4"}]},
+    }
+
+    with pytest.raises(ValueError, match="conversion_plan\\.render is not supported"):
+        render_docx_from_ir(document_ir, tmp_path / "invalid-render.docx", conversion_plan=conversion_plan)
+    with pytest.raises(ValueError, match="conversion_plan\\.render is not supported"):
+        render_xlsx_from_ir(document_ir, tmp_path / "invalid-render.xlsx", conversion_plan=conversion_plan)
 
 
 def test_xlsx_renders_non_field_blocks_as_document_content_rows(tmp_path: Path) -> None:
