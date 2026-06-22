@@ -155,8 +155,10 @@ _CONTENT_BEARING_AUDIT_PARAMETER_KEYS = frozenset(
         "content",
         "input",
         "messages",
+        "output_bytes",
         "previous_response",
         "prompt",
+        "source_bytes",
         "synthetic_text",
         "text",
     }
@@ -379,17 +381,24 @@ def _build_conversion_plan_payload(
 
 
 def _redact_audit_parameters(value: object, *, key_path: str = "") -> object:
-    if _is_secret_parameter_key(key_path):
-        return _REDACTED_VALUE
     if isinstance(value, Mapping):
         return {
-            str(key): _redact_audit_parameters(item, key_path=str(key))
+            str(key): _redact_audit_parameters(
+                item,
+                key_path=_join_parameter_key_path(key_path, str(key)),
+            )
             for key, item in value.items()
         }
+    if _is_key_value_parameter_entry(value):
+        entry_key = str(value[0])
+        entry_path = _join_parameter_key_path(key_path, entry_key)
+        return [entry_key, _redact_audit_parameters(value[1], key_path=entry_path)]
     if isinstance(value, list):
         return [_redact_audit_parameters(item, key_path=key_path) for item in value]
     if isinstance(value, tuple):
         return [_redact_audit_parameters(item, key_path=key_path) for item in value]
+    if _is_secret_parameter_key(key_path):
+        return _REDACTED_VALUE
     return value
 
 
@@ -398,16 +407,22 @@ def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "
         for key, item in value.items():
             key_string = str(key)
             item_path = f"{key_path}.{key_string}"
-            if _is_content_bearing_audit_parameter_key(key_string):
+            if _is_content_bearing_audit_parameter_key(item_path):
                 raise ValueError(f"{item_path} must not include document or request content")
             _reject_content_bearing_audit_parameters(item, key_path=item_path)
+    elif _is_key_value_parameter_entry(value):
+        entry_key = str(value[0])
+        item_path = f"{key_path}.{entry_key}"
+        if _is_content_bearing_audit_parameter_key(item_path):
+            raise ValueError(f"{item_path} must not include document or request content")
+        _reject_content_bearing_audit_parameters(value[1], key_path=item_path)
     elif isinstance(value, (list, tuple)):
         for index, item in enumerate(value):
             _reject_content_bearing_audit_parameters(item, key_path=f"{key_path}[{index}]")
 
 
 def _is_content_bearing_audit_parameter_key(key: str) -> bool:
-    normalized = _normalize_parameter_key(key)
+    normalized = _normalize_parameter_key(_parameter_key_leaf(key))
     if normalized in _SAFE_CONTENT_WORD_AUDIT_PARAMETER_KEYS:
         return False
     components = tuple(normalized.split("_"))
@@ -439,6 +454,24 @@ def _normalize_parameter_key(key: str) -> str:
     normalized = _CAMEL_CASE_BOUNDARY_RE.sub(r"\1_\2", normalized)
     normalized = _PARAMETER_KEY_SEPARATOR_RE.sub("_", normalized)
     return normalized.strip("_").lower()
+
+
+def _parameter_key_leaf(key: str) -> str:
+    return key.rsplit(".", 1)[-1]
+
+
+def _join_parameter_key_path(parent: str, key: str) -> str:
+    if not parent:
+        return key
+    return f"{parent}.{key}"
+
+
+def _is_key_value_parameter_entry(value: object) -> bool:
+    return (
+        isinstance(value, (list, tuple))
+        and len(value) == 2
+        and isinstance(value[0], str)
+    )
 
 
 def _contains_component_sequence(components: tuple[str, ...], sequence: tuple[str, ...]) -> bool:
