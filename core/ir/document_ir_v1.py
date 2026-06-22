@@ -145,13 +145,16 @@ def validate_document_ir_v1(document_ir: DocumentIRV1) -> ValidationResult:
 
     pages_by_number: dict[int, DocumentPage] = {}
     for index, page in enumerate(document_ir.pages):
+        if not _is_integer_value(page.page_number):
+            errors.append(f"pages[{index}].page_number must be an integer")
+            continue
         if page.page_number < 1:
             errors.append(f"pages[{index}].page_number must be >= 1")
             continue
         if page.page_number in pages_by_number:
             errors.append(f"pages[{index}].page_number duplicates page {page.page_number}")
         pages_by_number[page.page_number] = page
-        if page.width <= 0 or page.height <= 0:
+        if not _page_dimensions_are_finite(page) or page.width <= 0 or page.height <= 0:
             errors.append(f"pages[{index}] dimensions must be positive")
         if page.unit not in UNITS:
             errors.append(f"pages[{index}].unit is unsupported: {page.unit}")
@@ -159,6 +162,9 @@ def validate_document_ir_v1(document_ir: DocumentIRV1) -> ValidationResult:
     for index, block in enumerate(document_ir.blocks):
         if block.type not in BLOCK_TYPES:
             errors.append(f"blocks[{index}].type is unsupported: {block.type}")
+        if not _is_integer_value(block.source_page):
+            errors.append(f"blocks[{index}].source_page must be an integer")
+            continue
         page = pages_by_number.get(block.source_page)
         if page is None:
             errors.append(f"blocks[{index}].source_page references undeclared page {block.source_page}")
@@ -175,7 +181,7 @@ def validate_document_ir_v1(document_ir: DocumentIRV1) -> ValidationResult:
             errors.append(f"blocks[{index}].bbox unit must match page {block.source_page} unit")
         if _bbox_outside_page(block.bbox, page):
             errors.append(f"blocks[{index}].bbox extends past page {block.source_page}")
-        if block.confidence < 0 or block.confidence > 1:
+        if not math.isfinite(block.confidence) or block.confidence < 0 or block.confidence > 1:
             errors.append(f"blocks[{index}].confidence must be between 0 and 1")
         warnings.extend(block.review.warnings)
 
@@ -314,15 +320,15 @@ def _pdf_table_report_pages(data: dict[str, Any]) -> list[Any]:
     if not candidates:
         return []
     selected_candidate = str(data.get("selected_candidate") or "")
-    preferred_candidates = [
-        candidate
-        for candidate in candidates
-        if candidate.get("status") == "ok"
-        and _table_candidate_name(candidate) == selected_candidate
-    ]
-    table_candidates = preferred_candidates or [
-        candidate for candidate in candidates if candidate.get("status") == "ok"
-    ]
+    if selected_candidate:
+        table_candidates = [
+            candidate
+            for candidate in candidates
+            if candidate.get("status") == "ok"
+            and _table_candidate_name(candidate) == selected_candidate
+        ]
+    else:
+        table_candidates = [candidate for candidate in candidates if candidate.get("status") == "ok"]
 
     pages_by_number: dict[int, dict[str, Any]] = {}
     for candidate in table_candidates:
@@ -417,6 +423,10 @@ def _page_number_value(value: Any, *, default: int) -> int:
     return 0
 
 
+def _is_integer_value(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def _finite_float_value(value: Any, *, default: float) -> float:
     try:
         converted = float(value)
@@ -492,6 +502,10 @@ def _block_type(data: dict[str, Any], text: str) -> str:
 
 def _bbox_values_are_finite(bbox: BoundingBox) -> bool:
     return all(math.isfinite(value) for value in (bbox.x, bbox.y, bbox.width, bbox.height))
+
+
+def _page_dimensions_are_finite(page: DocumentPage) -> bool:
+    return math.isfinite(page.width) and math.isfinite(page.height)
 
 
 def _bbox_outside_page(bbox: BoundingBox, page: DocumentPage) -> bool:

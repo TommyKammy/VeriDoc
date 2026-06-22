@@ -3,13 +3,50 @@ from __future__ import annotations
 import json
 import unittest
 
-from core.ir.document_ir_v1 import from_parser_output, validate_document_ir_v1
+from core.ir.document_ir_v1 import (
+    BoundingBox,
+    DocumentBlock,
+    DocumentIRV1,
+    DocumentInfo,
+    DocumentPage,
+    ExtractorRef,
+    ReviewState,
+    from_parser_output,
+    validate_document_ir_v1,
+)
 
 
 SCHEMA_PATH = "core/ir/document-ir-v1.schema.json"
 
 
 class DocumentIrV1Test(unittest.TestCase):
+    def _document_ir_from_dataclasses(
+        self,
+        *,
+        pages: list[DocumentPage],
+        blocks: list[DocumentBlock] | None = None,
+    ) -> DocumentIRV1:
+        return DocumentIRV1(
+            schema_version="document-ir/v1",
+            document=DocumentInfo(id="sample", title="Sample", source_type="pdf"),
+            pages=pages,
+            blocks=blocks
+            if blocks is not None
+            else [
+                DocumentBlock(
+                    id="block-0001",
+                    type="paragraph",
+                    text="Batch Record",
+                    source_page=1,
+                    bbox=BoundingBox(x=72.0, y=80.0, width=120.0, height=18.0),
+                    extractor=ExtractorRef(name="unit-test"),
+                    confidence=0.95,
+                    review=ReviewState(requires_review=False, warnings=[]),
+                )
+            ],
+            warnings=[],
+        )
+
     def test_document_ir_v1_schema_exists_with_review_surface(self) -> None:
         with open(SCHEMA_PATH, encoding="utf-8") as file:
             schema = json.load(file)
@@ -155,6 +192,26 @@ class DocumentIrV1Test(unittest.TestCase):
 
         self.assertFalse(result.ok)
         self.assertIn("pages[0] dimensions must be positive", result.errors)
+
+    def test_validation_rejects_direct_non_finite_page_dimensions(self) -> None:
+        document_ir = self._document_ir_from_dataclasses(
+            pages=[DocumentPage(page_number=1, width=float("nan"), height=842.0)]
+        )
+
+        result = validate_document_ir_v1(document_ir)
+
+        self.assertFalse(result.ok)
+        self.assertIn("pages[0] dimensions must be positive", result.errors)
+
+    def test_validation_rejects_direct_non_integer_page_numbers(self) -> None:
+        document_ir = self._document_ir_from_dataclasses(
+            pages=[DocumentPage(page_number=1.5, width=595.0, height=842.0)]
+        )
+
+        result = validate_document_ir_v1(document_ir)
+
+        self.assertFalse(result.ok)
+        self.assertIn("pages[0].page_number must be an integer", result.errors)
 
     def test_validation_fails_closed_for_negative_bbox_dimensions(self) -> None:
         document_ir = from_parser_output(
@@ -327,6 +384,28 @@ class DocumentIrV1Test(unittest.TestCase):
         self.assertTrue(document_ir.blocks[0].review.requires_review)
         self.assertIn("blocks[0].confidence invalid; block marked requires_review", result.warnings)
 
+    def test_validation_rejects_direct_non_finite_confidence(self) -> None:
+        document_ir = self._document_ir_from_dataclasses(
+            pages=[DocumentPage(page_number=1, width=595.0, height=842.0)],
+            blocks=[
+                DocumentBlock(
+                    id="block-0001",
+                    type="paragraph",
+                    text="Batch Record",
+                    source_page=1,
+                    bbox=BoundingBox(x=72.0, y=80.0, width=120.0, height=18.0),
+                    extractor=ExtractorRef(name="unit-test"),
+                    confidence=float("nan"),
+                    review=ReviewState(requires_review=False, warnings=[]),
+                )
+            ],
+        )
+
+        result = validate_document_ir_v1(document_ir)
+
+        self.assertFalse(result.ok)
+        self.assertIn("blocks[0].confidence must be between 0 and 1", result.errors)
+
     def test_pdf_table_report_converts_selected_candidate_tables(self) -> None:
         document_ir = from_parser_output(
             {
@@ -387,6 +466,71 @@ class DocumentIrV1Test(unittest.TestCase):
         self.assertIn("Lot\tL-001", document_ir.blocks[0].text)
         self.assertEqual(72.0, document_ir.blocks[0].bbox.x)
         self.assertEqual(150.0, document_ir.blocks[0].bbox.width)
+
+    def test_pdf_table_report_does_not_merge_unselected_candidates(self) -> None:
+        document_ir = from_parser_output(
+            {
+                "source_path": "fixtures/sample.pdf",
+                "selected_candidate": "camelot:lattice",
+                "candidates": [
+                    {
+                        "extractor": "camelot",
+                        "flavor": "lattice",
+                        "status": "ok",
+                        "tables": [
+                            {
+                                "page_number": 1,
+                                "rows": [["Selected", "Only"]],
+                                "cell_bboxes": [
+                                    [
+                                        {
+                                            "x": 72.0,
+                                            "y": 96.0,
+                                            "width": 60.0,
+                                            "height": 18.0,
+                                            "unit": "pt",
+                                            "origin": "top-left",
+                                        }
+                                    ]
+                                ],
+                            }
+                        ],
+                    },
+                    {
+                        "extractor": "pdfplumber",
+                        "flavor": "table",
+                        "status": "ok",
+                        "tables": [
+                            {
+                                "page_number": 1,
+                                "rows": [["Unselected", "Candidate"]],
+                                "cell_bboxes": [
+                                    [
+                                        {
+                                            "x": 132.0,
+                                            "y": 96.0,
+                                            "width": 90.0,
+                                            "height": 18.0,
+                                            "unit": "pt",
+                                            "origin": "top-left",
+                                        }
+                                    ]
+                                ],
+                            }
+                        ],
+                    },
+                ],
+            },
+            document_id="sample-pdf",
+            title="Sample PDF",
+            source_type="pdf",
+        )
+
+        result = validate_document_ir_v1(document_ir)
+
+        self.assertTrue(result.ok, result.errors)
+        self.assertEqual(["camelot:lattice"], [block.extractor.name for block in document_ir.blocks])
+        self.assertEqual(["Selected\tOnly"], [block.text for block in document_ir.blocks])
 
     def test_pdf_table_report_does_not_trust_bottom_left_cell_bboxes(self) -> None:
         document_ir = from_parser_output(
