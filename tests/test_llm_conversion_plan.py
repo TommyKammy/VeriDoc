@@ -528,6 +528,7 @@ def test_build_conversion_audit_log_redacts_multi_entry_raw_parameter_strings() 
             "params": [
                 "callback=https://example.invalid/callback?sig=operator-runtime-signature",
                 "?key=operator-runtime-query-key",
+                "code=operator-runtime-function-code",
                 "version=1;api_key=operator-runtime-api-key-2",
             ],
             "headers": "X-Test: ok\nAuthorization: Bearer operator-runtime-token",
@@ -541,7 +542,7 @@ def test_build_conversion_audit_log_redacts_multi_entry_raw_parameter_strings() 
     assert audit_log["parameters"] == {
         "query_params": "version=1&api%5Fkey=[REDACTED]",
         "params_semicolon": "version=1;token=not-a-container",
-        "params": ["callback=[REDACTED]", "?key=[REDACTED]", "version=1;api_key=[REDACTED]"],
+        "params": ["callback=[REDACTED]", "?key=[REDACTED]", "code=[REDACTED]", "version=1;api_key=[REDACTED]"],
         "headers": "X-Test: ok\nAuthorization: [REDACTED]",
         "extra_headers": ["Authorization=[REDACTED]"],
         "cookies": "theme=light; session=[REDACTED]",
@@ -550,6 +551,7 @@ def test_build_conversion_audit_log_redacts_multi_entry_raw_parameter_strings() 
     assert "operator-runtime-api-key" not in rendered
     assert "operator-runtime-api-key-2" not in rendered
     assert "operator-runtime-query-key" not in rendered
+    assert "operator-runtime-function-code" not in rendered
     assert "operator-runtime-signature" not in rendered
     assert "operator-runtime-token-with" not in rendered
     assert "operator-runtime-session" not in rendered
@@ -673,6 +675,7 @@ def test_build_conversion_audit_log_redacts_credential_bearing_url_values() -> N
                 "https://example.invalid/callback?"
                 "next=https%3A%2F%2Fnested.invalid%2F%3Fkey%3Doperator-runtime-query-key"
             ),
+            "function_url": "https://example.invalid/api/convert?code=operator-runtime-function-code",
             "webhook_url": (
                 "https://example.invalid/callback?version=1;api_key=operator-runtime-api-key-2"
             ),
@@ -684,6 +687,7 @@ def test_build_conversion_audit_log_redacts_credential_bearing_url_values() -> N
         "base_url": "[REDACTED]",
         "callback_url": "[REDACTED]",
         "redirect_url": "[REDACTED]",
+        "function_url": "[REDACTED]",
         "webhook_url": "[REDACTED]",
         "metadata_url": "https://example.invalid/metadata",
     }
@@ -692,6 +696,7 @@ def test_build_conversion_audit_log_redacts_credential_bearing_url_values() -> N
     assert "operator-runtime-api-key" not in rendered
     assert "operator-runtime-api-key-2" not in rendered
     assert "operator-runtime-query-key" not in rendered
+    assert "operator-runtime-function-code" not in rendered
 
 
 def test_build_conversion_audit_log_redacts_header_suffixed_parameter_containers() -> None:

@@ -700,7 +700,7 @@ def _is_secret_parameter_key(key: str) -> bool:
     return (
         any(candidate in _SECRET_PARAMETER_KEYS for candidate in key_candidates)
         or (
-            normalized_leaf == "key"
+            normalized_leaf in {"code", "key"}
             and ("query" in path_components or "params" in path_components)
         )
         or any(
@@ -951,7 +951,7 @@ def _is_credential_bearing_url(value: str, *, _depth: int = 0) -> bool:
 
 
 def _is_secret_url_parameter_key(key: str) -> bool:
-    return _is_secret_parameter_key(key) or _normalize_parameter_key(key) == "key"
+    return _is_secret_parameter_key(key) or _normalize_parameter_key(key) in {"code", "key"}
 
 
 def _url_parameter_pairs(value: str) -> list[tuple[str, str]]:
