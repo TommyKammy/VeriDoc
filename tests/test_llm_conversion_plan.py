@@ -210,6 +210,31 @@ def test_build_conversion_audit_log_redacts_review_thread_credential_keys(parame
 
 
 @pytest.mark.parametrize(
+    "parameters",
+    [
+        {"X-Amz-Signature": "operator-runtime-signature"},
+        {"sig": "operator-runtime-signature"},
+        {"sharedAccessSignature": "operator-runtime-signature"},
+        {"endpoint": "https://example.invalid/blob?sv=1&sig=operator-runtime-signature"},
+    ],
+)
+def test_build_conversion_audit_log_redacts_signature_credentials(
+    parameters: dict[str, object],
+) -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters=parameters,
+    )
+
+    assert "operator-runtime-signature" not in json.dumps(audit_log, sort_keys=True)
+
+
+@pytest.mark.parametrize(
     ("parameters", "message"),
     [
         ({"messages": [{"role": "user", "content": "Lot: ABC-123"}]}, r"parameters\.messages"),
@@ -239,6 +264,8 @@ def test_build_conversion_audit_log_redacts_review_thread_credential_keys(parame
         ({"source": {"bytes": b"Lot: ABC-123\n"}}, r"parameters\.source"),
         ({"output": {"bytes": b'{"lot_number":"ABC-123"}\n'}}, r"parameters\.output"),
         ({"source": [("bytes", b"Lot: ABC-123\n")]}, r"parameters\.source"),
+        ({"blob": b"Lot: ABC-123\n"}, r"parameters\.blob"),
+        ({"files": [("upload", b"Lot: ABC-123\n")]}, r"parameters\.files\[0\]\.upload"),
     ],
 )
 def test_build_conversion_audit_log_rejects_content_bearing_parameters(
@@ -436,6 +463,43 @@ def test_build_conversion_audit_log_redacts_raw_header_line_parameter_values() -
     assert "Bearer" not in rendered
 
 
+def test_build_conversion_audit_log_redacts_multi_entry_raw_parameter_strings() -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={
+            "query_params": "version=1&api_key=operator-runtime-api-key",
+            "headers": "X-Test: ok\nAuthorization: Bearer operator-runtime-token",
+        },
+    )
+
+    assert audit_log["parameters"] == {
+        "query_params": "version=1&api_key=[REDACTED]",
+        "headers": "X-Test: ok\nAuthorization: [REDACTED]",
+    }
+    rendered = json.dumps(audit_log, sort_keys=True)
+    assert "operator-runtime-api-key" not in rendered
+    assert "operator-runtime-token" not in rendered
+    assert "Bearer" not in rendered
+
+
+def test_build_conversion_audit_log_rejects_multi_entry_raw_content_parameters() -> None:
+    with pytest.raises(ValueError, match=r"parameters\.query_params\.prompt"):
+        build_conversion_audit_log(
+            source_bytes=b"Lot: ABC-123\n",
+            output_bytes=b'{"lot_number":"ABC-123"}\n',
+            model="local-json-model",
+            prompt_id="veridoc_conversion_plan",
+            prompt_version="poc-08",
+            ir_version="document-ir-v1",
+            parameters={"query_params": "version=1&prompt=Lot: ABC-123"},
+        )
+
+
 def test_build_conversion_audit_log_allows_content_type_header_metadata() -> None:
     audit_log = build_conversion_audit_log(
         source_bytes=b"Lot: ABC-123\n",
@@ -590,6 +654,39 @@ def test_build_conversion_audit_log_allows_response_format_schema_property_names
                             },
                         },
                     },
+                },
+            },
+        },
+    }
+
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={"response_format": response_format},
+    )
+
+    assert audit_log["parameters"] == {"response_format": response_format}
+
+
+def test_build_conversion_audit_log_allows_response_format_schema_defs_names() -> None:
+    response_format = {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "veridoc_conversion_plan",
+            "schema": {
+                "type": "object",
+                "$defs": {
+                    "output": {"type": "string"},
+                    "input": {"type": "string"},
+                    "content": {"type": "string"},
+                    "signature": {"type": "string"},
+                },
+                "properties": {
+                    "result": {"$ref": "#/$defs/output"},
                 },
             },
         },

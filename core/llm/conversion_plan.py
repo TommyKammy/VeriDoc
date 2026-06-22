@@ -105,6 +105,8 @@ _SECRET_PARAMETER_KEYS = frozenset(
         "private_key",
         "secret",
         "session",
+        "sig",
+        "signature",
         "set_cookie",
         "token",
     }
@@ -118,6 +120,8 @@ _SECRET_PARAMETER_KEY_SUFFIXES = (
     "_password",
     "_private_key",
     "_secret",
+    "_sig",
+    "_signature",
     "_token",
 )
 _SECRET_PARAMETER_KEY_PREFIXES = (
@@ -130,6 +134,8 @@ _SECRET_PARAMETER_KEY_PREFIXES = (
     "password_",
     "private_key_",
     "secret_",
+    "sig_",
+    "signature_",
     "token_",
 )
 _SECRET_PARAMETER_KEY_PHRASES = (
@@ -137,6 +143,7 @@ _SECRET_PARAMETER_KEY_PHRASES = (
     "apikey",
     "private_key",
     "secret",
+    "signature",
     "connection_string",
 )
 _SECRET_PARAMETER_KEY_COMPONENTS = frozenset(
@@ -151,6 +158,8 @@ _SECRET_PARAMETER_KEY_COMPONENTS = frozenset(
         "password",
         "secret",
         "session",
+        "signature",
+        "sig",
         "token",
     }
 )
@@ -219,6 +228,7 @@ _KEY_VALUE_AUDIT_PARAMETER_SEQUENCE_CONTAINER_KEYS = frozenset(
         "cookies",
         "extra_cookies",
         "extra_headers",
+        "files",
         "headers",
         "http_headers",
         "options",
@@ -462,14 +472,9 @@ def _redact_audit_parameters(value: object, *, key_path: str = "") -> object:
         entry_path = _join_parameter_key_path(key_path, entry_key)
         return [entry_key, _redact_audit_parameters(value[1], key_path=entry_path)]
     if isinstance(value, str):
-        raw_entry = _raw_key_value_parameter_line(value, key_path)
-        if raw_entry is not None:
-            entry_key, separator, entry_value = raw_entry
-            entry_path = _join_parameter_key_path(key_path, entry_key)
-            redacted_value = _redact_audit_parameters(entry_value, key_path=entry_path)
-            if redacted_value == _REDACTED_VALUE:
-                redacted_separator = ": " if separator == ":" else separator
-                return f"{entry_key}{redacted_separator}{_REDACTED_VALUE}"
+        redacted_raw_value = _redact_raw_key_value_parameter_text(value, key_path)
+        if redacted_raw_value is not None:
+            return redacted_raw_value
         if _is_credential_bearing_url(value):
             return _REDACTED_VALUE
     if isinstance(value, list):
@@ -480,6 +485,8 @@ def _redact_audit_parameters(value: object, *, key_path: str = "") -> object:
 
 
 def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "parameters") -> None:
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        raise ValueError(f"{key_path} must not include document or request content")
     if isinstance(value, Mapping):
         key_value_entry = _mapping_key_value_parameter_entry(value)
         if key_value_entry is not None:
@@ -501,8 +508,7 @@ def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "
             raise ValueError(f"{item_path} must not include document or request content")
         _reject_content_bearing_audit_parameters(value[1], key_path=item_path)
     elif isinstance(value, str):
-        raw_entry = _raw_key_value_parameter_line(value, key_path)
-        if raw_entry is not None:
+        for raw_entry in _raw_key_value_parameter_entries(value, key_path):
             entry_key, _separator, _entry_value = raw_entry
             item_path = f"{key_path}.{entry_key}"
             if _is_content_bearing_audit_parameter_key(item_path):
@@ -539,7 +545,7 @@ def _is_safe_json_schema_audit_parameter_key(key: str) -> bool:
         _normalize_parameter_key(_PARAMETER_INDEX_SUFFIX_RE.sub("", component))
         for component in key.split(".")
     )
-    if "properties" not in components:
+    if not {"properties", "defs", "definitions"}.intersection(components):
         return False
     return (
         _is_response_format_json_schema_path(components)
@@ -616,6 +622,72 @@ def _raw_key_value_parameter_line(value: str, key_path: str) -> tuple[str, str, 
         if found and entry_key.strip() and entry_value.strip():
             return (entry_key.strip(), found, entry_value.strip())
     return None
+
+
+def _raw_key_value_parameter_entries(value: str, key_path: str) -> list[tuple[str, str, str]]:
+    normalized_leaf = _normalize_parameter_key(_parameter_key_leaf(key_path))
+    if normalized_leaf not in _KEY_VALUE_AUDIT_PARAMETER_SEQUENCE_CONTAINER_KEYS:
+        return []
+    return [
+        entry
+        for chunk in _raw_key_value_parameter_chunks(value, normalized_leaf)
+        if (entry := _raw_key_value_parameter_line(chunk, key_path)) is not None
+    ]
+
+
+def _redact_raw_key_value_parameter_text(value: str, key_path: str) -> str | None:
+    normalized_leaf = _normalize_parameter_key(_parameter_key_leaf(key_path))
+    if normalized_leaf not in _KEY_VALUE_AUDIT_PARAMETER_SEQUENCE_CONTAINER_KEYS:
+        return None
+    chunks = _raw_key_value_parameter_chunks(value, normalized_leaf)
+    if len(chunks) == 1 and chunks[0] == value:
+        raw_entry = _raw_key_value_parameter_line(value, key_path)
+        if raw_entry is None:
+            return None
+        return _redact_raw_key_value_parameter_line(raw_entry, key_path)
+
+    redacted_chunks = []
+    changed = False
+    for chunk in chunks:
+        raw_entry = _raw_key_value_parameter_line(chunk, key_path)
+        if raw_entry is None:
+            redacted_chunks.append(chunk)
+            continue
+        redacted_chunk = _redact_raw_key_value_parameter_line(raw_entry, key_path)
+        changed = changed or redacted_chunk != chunk
+        redacted_chunks.append(redacted_chunk)
+    if not changed:
+        return None
+    return _raw_key_value_parameter_joiner(value, normalized_leaf).join(redacted_chunks)
+
+
+def _raw_key_value_parameter_chunks(value: str, normalized_leaf: str) -> list[str]:
+    if "\n" in value or "\r" in value:
+        return value.splitlines()
+    if normalized_leaf in {"params", "query_params"} and "&" in value:
+        return value.split("&")
+    return [value]
+
+
+def _raw_key_value_parameter_joiner(value: str, normalized_leaf: str) -> str:
+    if "\n" in value or "\r" in value:
+        return "\n"
+    if normalized_leaf in {"params", "query_params"} and "&" in value:
+        return "&"
+    return ""
+
+
+def _redact_raw_key_value_parameter_line(
+    raw_entry: tuple[str, str, str], key_path: str
+) -> str:
+    entry_key, separator, entry_value = raw_entry
+    entry_path = _join_parameter_key_path(key_path, entry_key)
+    redacted_value = _redact_audit_parameters(entry_value, key_path=entry_path)
+    if redacted_value == _REDACTED_VALUE:
+        redacted_separator = ": " if separator == ":" else separator
+        return f"{entry_key}{redacted_separator}{_REDACTED_VALUE}"
+    separator_text = ": " if separator == ":" else separator
+    return f"{entry_key}{separator_text}{entry_value}"
 
 
 def _mapping_key_value_parameter_entry(value: Mapping[object, object]) -> tuple[str, str, str] | None:
