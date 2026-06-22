@@ -134,6 +134,78 @@ def test_same_ir_renders_deterministic_docx_and_xlsx_with_typed_cells(tmp_path: 
     }
 
 
+def test_renderers_apply_plan_table_merges_and_source_annotations(tmp_path: Path) -> None:
+    document_ir = {
+        "document": {"title": "Planned table render"},
+        "blocks": [
+            {
+                "id": "table-1",
+                "type": "table",
+                "text": "Batch Summary\t\nLot\tSAMPLE-LOT-001\nAssay\t12.5",
+                "rows": [
+                    ["Batch Summary", ""],
+                    ["Lot", "SAMPLE-LOT-001"],
+                    ["Assay", "12.5"],
+                ],
+                "value_metadata": {
+                    "source_page": 2,
+                    "bbox": {"x": 10, "y": 20, "width": 200, "height": 48},
+                    "confidence": 0.9,
+                    "requires_review": False,
+                },
+            }
+        ],
+    }
+    conversion_plan = {
+        "schema_version": 1,
+        "source_kind": "excel_workbook",
+        "operations": [
+            {
+                "id": "extract-summary-table",
+                "action": "extract_table",
+                "inputs": ["table-1"],
+                "output": "table-1",
+                "rationale": "Preserve directly extracted table structure.",
+            }
+        ],
+        "constraints": {"external_transmission": False, "requires_review": False},
+        "render": {
+            "table_merges": [{"block_id": "table-1", "range": "A4:B4"}],
+            "source_annotations": [{"block_id": "table-1", "text": "Source page 2"}],
+        },
+    }
+    docx_path = tmp_path / "planned.docx"
+    xlsx_path = tmp_path / "planned.xlsx"
+
+    render_docx_from_ir(document_ir, docx_path, conversion_plan=conversion_plan)
+    render_xlsx_from_ir(document_ir, xlsx_path, conversion_plan=conversion_plan)
+
+    xlsx = extract_xlsx_structure(xlsx_path)
+    assert xlsx.sheets[0].merged_ranges == ["A4:B4"]
+    cells = {cell.ref: (cell.value, cell.value_type) for cell in xlsx.sheets[0].cells}
+    assert cells["A5"] == ("Lot", "inline_string")
+    assert cells["B5"] == ("SAMPLE-LOT-001", "inline_string")
+    assert cells["B6"] == ("12.5", "number")
+
+    with ZipFile(docx_path) as docx_archive:
+        docx_names = set(docx_archive.namelist())
+        document_relationships = docx_archive.read("word/_rels/document.xml.rels").decode("utf-8")
+        comments_xml = docx_archive.read("word/comments.xml").decode("utf-8")
+    assert "word/comments.xml" in docx_names
+    assert "relationships/comments" in document_relationships
+    assert "Source page 2" in comments_xml
+
+    with ZipFile(xlsx_path) as xlsx_archive:
+        xlsx_names = set(xlsx_archive.namelist())
+        sheet_xml = xlsx_archive.read("xl/worksheets/sheet1.xml").decode("utf-8")
+        sheet_relationships = xlsx_archive.read("xl/worksheets/_rels/sheet1.xml.rels").decode("utf-8")
+        comments_xml = xlsx_archive.read("xl/comments1.xml").decode("utf-8")
+    assert "xl/comments1.xml" in xlsx_names
+    assert '<mergeCell ref="A4:B4"/>' in sheet_xml
+    assert "relationships/comments" in sheet_relationships
+    assert "Source page 2" in comments_xml
+
+
 def test_xlsx_renders_non_field_blocks_as_document_content_rows(tmp_path: Path) -> None:
     document_ir = {
         "document": {"title": "Mixed content"},
