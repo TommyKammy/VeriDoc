@@ -398,6 +398,12 @@ def test_xlsx_numeric_detection_preserves_code_like_values_as_text(tmp_path: Pat
         "document": {"title": "Numeric boundaries"},
         "blocks": [
             {"id": "safe-integer", "type": "field", "text": "Safe Integer: 1000"},
+            {"id": "max-precision", "type": "field", "text": "Max Precision: 123456789012345"},
+            {
+                "id": "oversized-identifier",
+                "type": "field",
+                "text": "Identifier: 1234567890123456",
+            },
             {"id": "safe-decimal", "type": "field", "text": "Safe Decimal: -12.50"},
             {"id": "underscore", "type": "field", "text": "Code: 1_000"},
             {"id": "full-width", "type": "field", "text": "Code: １２３"},
@@ -412,8 +418,10 @@ def test_xlsx_numeric_detection_preserves_code_like_values_as_text(tmp_path: Pat
     xlsx = extract_xlsx_structure(output_path)
     cells = {cell.ref: (cell.value, cell.value_type) for cell in xlsx.sheets[0].cells}
     assert cells["C4"] == (1000, "number")
-    assert cells["C5"] == ("-12.50", "number")
-    assert cells["C6"] == (" 1_000", "inline_string")
-    assert cells["C7"] == (" １２３", "inline_string")
-    assert cells["C8"] == (" NaN123", "inline_string")
-    assert cells["C9"] == (" -01", "inline_string")
+    assert cells["C5"] == (123456789012345, "number")
+    assert cells["C6"] == (" 1234567890123456", "inline_string")
+    assert cells["C7"] == ("-12.50", "number")
+    assert cells["C8"] == (" 1_000", "inline_string")
+    assert cells["C9"] == (" １２３", "inline_string")
+    assert cells["C10"] == (" NaN123", "inline_string")
+    assert cells["C11"] == (" -01", "inline_string")

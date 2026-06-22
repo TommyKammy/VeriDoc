@@ -9,6 +9,7 @@ from zipfile import ZIP_STORED, ZipFile, ZipInfo
 
 
 FIXED_ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
+MAX_EXACT_SPREADSHEET_DIGITS = 15
 ASCII_NUMBER_RE = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?\Z")
 SUPPORTED_BLOCK_TYPES = {"field", "heading", "list_item", "paragraph", "table"}
 
@@ -286,11 +287,18 @@ def _typed_xlsx_value(value: str) -> tuple[Any, str]:
 def _is_plain_number(value: str) -> bool:
     if not ASCII_NUMBER_RE.fullmatch(value):
         return False
+    if _exceeds_spreadsheet_integer_precision(value):
+        return False
     try:
         numeric_value = Decimal(value)
     except InvalidOperation:
         return False
     return numeric_value.is_finite()
+
+
+def _exceeds_spreadsheet_integer_precision(value: str) -> bool:
+    integer_part = value.split(".", 1)[0].removeprefix("-")
+    return len(integer_part) > MAX_EXACT_SPREADSHEET_DIGITS
 
 
 def _xlsx_row(row_index: int, cells: Sequence[str]) -> str:
