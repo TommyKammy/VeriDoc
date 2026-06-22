@@ -161,23 +161,23 @@ class LocalLLMConversionPlanAdapter:
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
+        first_response = self._request(local_base_url, payload, headers)
+        first_plan = _extract_json_content(first_response)
         try:
-            first_response = self._request(local_base_url, payload, headers)
-            first_plan = _extract_json_content(first_response)
             validate_conversion_plan(first_plan)
-            return first_plan
         except ConversionPlanValidationError as exc:
             repair_payload = _build_conversion_plan_payload(
                 model=self.model,
                 max_tokens=self.max_tokens,
                 synthetic_text=synthetic_text,
                 repair_error=str(exc),
-                previous_response=first_response if "first_response" in locals() else None,
+                previous_response=first_response,
             )
             repaired_response = self._request(local_base_url, repair_payload, headers)
             repaired_plan = _extract_json_content(repaired_response)
             validate_conversion_plan(repaired_plan)
             return repaired_plan
+        return first_plan
 
     def _request(
         self,

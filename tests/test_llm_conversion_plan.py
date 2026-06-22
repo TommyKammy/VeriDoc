@@ -168,12 +168,16 @@ def test_adapter_rejects_when_repaired_plan_remains_invalid() -> None:
 
 @pytest.mark.parametrize("finish_reason", ["length", "content_filter"])
 def test_adapter_rejects_unclean_llm_finish_reasons(finish_reason: str) -> None:
+    call_count = 0
+
     def transport(
         url: str,
         payload: dict[str, object],
         headers: dict[str, str],
         timeout_seconds: float,
     ) -> dict[str, object]:
+        nonlocal call_count
+        call_count += 1
         return {
             "choices": [
                 {
@@ -191,17 +195,31 @@ def test_adapter_rejects_unclean_llm_finish_reasons(finish_reason: str) -> None:
 
     with pytest.raises(ConversionPlanValidationError, match=f"finish_reason={finish_reason}"):
         adapter.create_conversion_plan("Lot: ABC-123")
+    assert call_count == 1
 
 
 def test_adapter_wraps_malformed_choice_entries_as_validation_errors() -> None:
+    call_count = 0
+
+    def transport(
+        url: str,
+        payload: dict[str, object],
+        headers: dict[str, str],
+        timeout_seconds: float,
+    ) -> dict[str, object]:
+        nonlocal call_count
+        call_count += 1
+        return {"choices": [None]}
+
     adapter = LocalLLMConversionPlanAdapter(
         base_url="http://127.0.0.1:8000/v1",
         model="local-json-model",
-        transport=lambda _url, _payload, _headers, _timeout: {"choices": [None]},
+        transport=transport,
     )
 
     with pytest.raises(ConversionPlanValidationError, match=r"choices\[0\]\.message\.content"):
         adapter.create_conversion_plan("Lot: ABC-123")
+    assert call_count == 1
 
 
 def test_boolean_schema_version_fails_closed() -> None:
