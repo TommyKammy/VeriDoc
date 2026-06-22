@@ -60,7 +60,7 @@ def validate_extracted_item(
         failed_rules.append("risk_gate")
 
     explicit_review_required = _requires_review(expected) or _requires_review(actual)
-    high_risk = expected.get("risk_level") == "high"
+    high_risk = expected.get("risk_level") == "high" or actual.get("risk_level") == "high"
     requires_review = explicit_review_required or high_risk
     if requires_review:
         warnings.append("item requires human review")
@@ -237,8 +237,10 @@ def _requires_review(record: Mapping[str, Any]) -> bool:
 
 
 def _has_malformed_review_flag(record: Mapping[str, Any]) -> bool:
+    if "requires_review" not in record:
+        return False
     value = record.get("requires_review")
-    return value is not None and not isinstance(value, bool)
+    return not isinstance(value, bool)
 
 
 def _cells_by_id(value: object) -> dict[str, Mapping[str, Any]] | None:

@@ -156,6 +156,20 @@ def test_actual_review_flag_blocks_item_auto_confirm_without_failures() -> None:
     assert decision.failed_rules == ()
 
 
+def test_actual_high_risk_item_blocks_auto_confirm() -> None:
+    expected = _expected_item(risk_level="medium", requires_review=False)
+
+    decision = validate_extracted_item(
+        expected=expected,
+        actual=_actual_item(risk_level="high", auto_confirmed=True),
+    )
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert decision.requires_review is True
+    assert "risk_gate" in decision.failed_rules
+
+
 def test_malformed_item_review_flag_blocks_auto_confirm() -> None:
     expected = _expected_item(risk_level="medium", requires_review="true")
 
@@ -172,6 +186,25 @@ def test_malformed_item_review_flag_blocks_auto_confirm() -> None:
     assert actual_malformed.auto_confirm_allowed is False
     assert actual_malformed.status is ValidationStatus.BLOCK_AUTO_CONFIRM
     assert "risk_gate" in actual_malformed.failed_rules
+
+
+def test_null_item_review_flag_blocks_auto_confirm() -> None:
+    expected_null = validate_extracted_item(
+        expected=_expected_item(risk_level="medium", requires_review=None),
+        actual=_actual_item(),
+    )
+    actual_null = validate_extracted_item(
+        expected=_expected_item(risk_level="medium", requires_review=False),
+        actual=_actual_item(requires_review=None),
+    )
+
+    assert expected_null.auto_confirm_allowed is False
+    assert expected_null.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert expected_null.requires_review is True
+    assert "risk_gate" in expected_null.failed_rules
+    assert actual_null.auto_confirm_allowed is False
+    assert actual_null.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert "risk_gate" in actual_null.failed_rules
 
 
 def test_matching_negative_source_coordinates_block_auto_confirm() -> None:
@@ -374,6 +407,40 @@ def test_malformed_table_cell_review_flag_blocks_auto_confirm() -> None:
                 "id": "table-001-r1-c1",
                 "text": "SAMPLE-LOT-001",
                 "source": source,
+                "auto_confirmed": False,
+            },
+        ],
+    }
+
+    decision = validate_table_consistency(expected_table, actual_table)
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert decision.requires_review is True
+    assert "risk_gate" in decision.failed_rules
+
+
+def test_null_actual_table_cell_review_flag_blocks_auto_confirm() -> None:
+    source = _evidence()
+    expected_table = {
+        "id": "table-001",
+        "cells": [
+            {
+                "id": "table-001-r1-c1",
+                "text": "SAMPLE-LOT-001",
+                "source": source,
+                "requires_review": False,
+            },
+        ],
+    }
+    actual_table = {
+        "id": "table-001",
+        "cells": [
+            {
+                "id": "table-001-r1-c1",
+                "text": "SAMPLE-LOT-001",
+                "source": source,
+                "requires_review": None,
                 "auto_confirmed": False,
             },
         ],
