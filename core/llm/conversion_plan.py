@@ -223,6 +223,7 @@ _KEY_VALUE_AUDIT_PARAMETER_SEQUENCE_CONTAINER_KEYS = frozenset(
         "http_headers",
         "options",
         "params",
+        "parameters",
         "query_params",
         "request_headers",
     }
@@ -594,6 +595,7 @@ def _is_key_value_parameter_entry(value: object, key_path: str) -> bool:
         isinstance(value, (list, tuple))
         and len(value) == 2
         and isinstance(value[0], str)
+        and _raw_key_value_parameter_line(value[0], key_path) is None
         and _normalize_parameter_key(_parameter_key_leaf(key_path))
         in _KEY_VALUE_AUDIT_PARAMETER_SEQUENCE_CONTAINER_KEYS
     )

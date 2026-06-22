@@ -542,6 +542,19 @@ def test_build_conversion_audit_log_rejects_list_key_value_content_parameter_ent
         )
 
 
+def test_build_conversion_audit_log_rejects_parameters_key_value_content_entries() -> None:
+    with pytest.raises(ValueError, match=r"parameters\.parameters\.prompt"):
+        build_conversion_audit_log(
+            source_bytes=b"Lot: ABC-123\n",
+            output_bytes=b'{"lot_number":"ABC-123"}\n',
+            model="local-json-model",
+            prompt_id="veridoc_conversion_plan",
+            prompt_version="poc-08",
+            ir_version="document-ir-v1",
+            parameters={"parameters": ["prompt", "Lot: ABC-123"]},
+        )
+
+
 def test_build_conversion_audit_log_rejects_raw_key_value_content_parameter_lines() -> None:
     with pytest.raises(ValueError, match=r"parameters\.headers\[0\]\.Prompt"):
         build_conversion_audit_log(
