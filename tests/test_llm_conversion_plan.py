@@ -257,6 +257,8 @@ def test_build_conversion_audit_log_redacts_signature_credentials(
         ({"input": "Lot: ABC-123"}, r"parameters\.input"),
         ({"instructions": "Use the source document exactly."}, r"parameters\.instructions"),
         ({"prompt": "Lot: ABC-123"}, r"parameters\.prompt"),
+        ({"attachment": "Lot: ABC-123"}, r"parameters\.attachment"),
+        ({"upload": "Lot: ABC-123"}, r"parameters\.upload"),
         ({"userPrompt": "Lot: ABC-123"}, r"parameters\.userPrompt"),
         ({"system_prompt": "Lot: ABC-123"}, r"parameters\.system_prompt"),
         ({"inputText": "Lot: ABC-123"}, r"parameters\.inputText"),
@@ -284,6 +286,10 @@ def test_build_conversion_audit_log_redacts_signature_credentials(
         (
             {"files": [{"key": "upload", "value": "Lot: ABC-123"}]},
             r"parameters\.files\[0\]\.upload",
+        ),
+        (
+            {"files": [{"filename": "source.pdf", "sha256": "source-sha256"}]},
+            r"parameters\.files\[0\]",
         ),
         (
             {"callback_url": "https://example.invalid/cb?prompt=Lot%3A+ABC-123"},
@@ -461,6 +467,7 @@ def test_build_conversion_audit_log_sanitizes_extra_header_and_cookie_pair_conta
             "extra_headers": [("Authorization", "Bearer operator-runtime-token")],
             "extra_cookies": [("sessionToken", "operator-runtime-session")],
             "cookies": "theme=light; session=operator-runtime-session",
+            "customCookies": "csrftoken=operator-runtime-csrf; theme=light",
             "http_headers": [["Ocp-Apim-Subscription-Key", "operator-runtime-subscription"]],
         },
     )
@@ -469,11 +476,13 @@ def test_build_conversion_audit_log_sanitizes_extra_header_and_cookie_pair_conta
         "extra_headers": [["Authorization", "[REDACTED]"]],
         "extra_cookies": [["sessionToken", "[REDACTED]"]],
         "cookies": "theme=light; session=[REDACTED]",
+        "customCookies": "csrftoken=[REDACTED]; theme=light",
         "http_headers": [["Ocp-Apim-Subscription-Key", "[REDACTED]"]],
     }
     rendered = json.dumps(audit_log, sort_keys=True)
     assert "operator-runtime-token" not in rendered
     assert "operator-runtime-session" not in rendered
+    assert "operator-runtime-csrf" not in rendered
     assert "operator-runtime-subscription" not in rendered
     assert "Bearer" not in rendered
 
@@ -518,6 +527,7 @@ def test_build_conversion_audit_log_redacts_multi_entry_raw_parameter_strings() 
             "params_semicolon": "version=1;token=not-a-container",
             "params": [
                 "callback=https://example.invalid/callback?sig=operator-runtime-signature",
+                "?key=operator-runtime-query-key",
                 "version=1;api_key=operator-runtime-api-key-2",
             ],
             "headers": "X-Test: ok\nAuthorization: Bearer operator-runtime-token",
@@ -531,7 +541,7 @@ def test_build_conversion_audit_log_redacts_multi_entry_raw_parameter_strings() 
     assert audit_log["parameters"] == {
         "query_params": "version=1&api%5Fkey=[REDACTED]",
         "params_semicolon": "version=1;token=not-a-container",
-        "params": ["callback=[REDACTED]", "version=1;api_key=[REDACTED]"],
+        "params": ["callback=[REDACTED]", "?key=[REDACTED]", "version=1;api_key=[REDACTED]"],
         "headers": "X-Test: ok\nAuthorization: [REDACTED]",
         "extra_headers": ["Authorization=[REDACTED]"],
         "cookies": "theme=light; session=[REDACTED]",
@@ -539,6 +549,7 @@ def test_build_conversion_audit_log_redacts_multi_entry_raw_parameter_strings() 
     rendered = json.dumps(audit_log, sort_keys=True)
     assert "operator-runtime-api-key" not in rendered
     assert "operator-runtime-api-key-2" not in rendered
+    assert "operator-runtime-query-key" not in rendered
     assert "operator-runtime-signature" not in rendered
     assert "operator-runtime-token-with" not in rendered
     assert "operator-runtime-session" not in rendered
@@ -556,6 +567,10 @@ def test_build_conversion_audit_log_redacts_multi_entry_raw_parameter_strings() 
         (
             {"headers": "Referer: https://example.invalid/cb?prompt=Lot%3A+ABC-123"},
             r"parameters\.headers\.Referer",
+        ),
+        (
+            {"customHeaders": "Prompt: Lot: ABC-123"},
+            r"parameters\.customHeaders\.Prompt",
         ),
     ],
 )
@@ -654,6 +669,10 @@ def test_build_conversion_audit_log_redacts_credential_bearing_url_values() -> N
             "callback_url": (
                 "https://example.invalid/callback?api_key=operator-runtime-api-key"
             ),
+            "redirect_url": (
+                "https://example.invalid/callback?"
+                "next=https%3A%2F%2Fnested.invalid%2F%3Fkey%3Doperator-runtime-query-key"
+            ),
             "webhook_url": (
                 "https://example.invalid/callback?version=1;api_key=operator-runtime-api-key-2"
             ),
@@ -664,6 +683,7 @@ def test_build_conversion_audit_log_redacts_credential_bearing_url_values() -> N
     assert audit_log["parameters"] == {
         "base_url": "[REDACTED]",
         "callback_url": "[REDACTED]",
+        "redirect_url": "[REDACTED]",
         "webhook_url": "[REDACTED]",
         "metadata_url": "https://example.invalid/metadata",
     }
@@ -671,6 +691,7 @@ def test_build_conversion_audit_log_redacts_credential_bearing_url_values() -> N
     assert "operator-runtime-password" not in rendered
     assert "operator-runtime-api-key" not in rendered
     assert "operator-runtime-api-key-2" not in rendered
+    assert "operator-runtime-query-key" not in rendered
 
 
 def test_build_conversion_audit_log_redacts_header_suffixed_parameter_containers() -> None:
@@ -874,6 +895,7 @@ def test_build_conversion_audit_log_rejects_schema_content_values(
     ("field_name", "schema_key", "schema_value"),
     [
         ("lot_number", "const", "ABC-123"),
+        ("lot_number", "default", 123),
         ("patient_name", "examples", ["Jane Doe"]),
     ],
 )
@@ -901,6 +923,35 @@ def test_build_conversion_audit_log_rejects_domain_schema_values(
     with pytest.raises(
         ValueError,
         match=rf"parameters\.response_format\.json_schema\.schema\.properties\.{field_name}\.{schema_key}",
+    ):
+        build_conversion_audit_log(
+            source_bytes=b"Lot: ABC-123\n",
+            output_bytes=b'{"lot_number":"ABC-123"}\n',
+            model="local-json-model",
+            prompt_id="veridoc_conversion_plan",
+            prompt_version="poc-08",
+            ir_version="document-ir-v1",
+            parameters={"response_format": response_format},
+        )
+
+
+def test_build_conversion_audit_log_rejects_scalar_schema_field_entries() -> None:
+    response_format = {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "veridoc_conversion_plan",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "output": "Lot: ABC-123",
+                },
+            },
+        },
+    }
+
+    with pytest.raises(
+        ValueError,
+        match=r"parameters\.response_format\.json_schema\.schema\.properties\.output",
     ):
         build_conversion_audit_log(
             source_bytes=b"Lot: ABC-123\n",
