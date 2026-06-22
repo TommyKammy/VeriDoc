@@ -248,6 +248,8 @@ def test_build_conversion_audit_log_redacts_signature_credentials(
         ({"tools": [{"content": "Lot: ABC-123"}]}, r"parameters\.tools\[0\]\.content"),
         ({"previousResponse": {"choices": []}}, r"parameters\.previousResponse"),
         ({"source": "Lot: ABC-123"}, r"parameters\.source"),
+        ({"raw_source": "Lot: ABC-123"}, r"parameters\.raw_source"),
+        ({"rawOutput": '{"lot_number":"ABC-123"}'}, r"parameters\.rawOutput"),
         ({"output": '{"lot_number":"ABC-123"}'}, r"parameters\.output"),
         ({"input": "Lot: ABC-123"}, r"parameters\.input"),
         ({"instructions": "Use the source document exactly."}, r"parameters\.instructions"),

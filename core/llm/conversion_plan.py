@@ -223,6 +223,10 @@ _CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENTS = frozenset(
         "text",
     }
 )
+_CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENT_SEQUENCES = (
+    ("raw", "source"),
+    ("raw", "output"),
+)
 _KEY_VALUE_AUDIT_PARAMETER_SEQUENCE_CONTAINER_KEYS = frozenset(
     {
         "cookies",
@@ -541,6 +545,10 @@ def _is_content_bearing_audit_parameter_key(key: str) -> bool:
         normalized_leaf in _CONTENT_BEARING_AUDIT_PARAMETER_KEYS
         or "previous_response" in normalized_leaf
         or any(component in _CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENTS for component in leaf_components)
+        or any(
+            _contains_component_sequence(leaf_components, sequence)
+            for sequence in _CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENT_SEQUENCES
+        )
         or (
             normalized_leaf == "bytes"
             and any(
