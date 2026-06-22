@@ -3,11 +3,13 @@ from __future__ import annotations
 from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import base64
+import binascii
 import json
 import math
 from pathlib import Path
 import re
 import sys
+from tempfile import TemporaryDirectory
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -15,11 +17,15 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from core.ir.document_ir_v1 import DocumentIRV1, from_parser_output, validate_document_ir_v1
+from core.parsers.docx_extraction import extract_docx_structure
+from core.parsers.pdf_text_extraction import parse_text_pdf_to_document_ir
+from core.parsers.xlsx_extraction import extract_xlsx_structure
 
 WEB_ROOT = REPO_ROOT / "apps" / "web"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8788
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024
+MAX_UPLOAD_REQUEST_BYTES = (MAX_UPLOAD_BYTES * 4 // 3) + 4096
 SOURCE_TYPES = {"pdf", "docx", "xlsx", "unknown"}
 KNOWN_SOURCE_TYPES = SOURCE_TYPES - {"unknown"}
 
@@ -87,7 +93,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "content_length_required"}, status=411)
             return
         byte_count = int(length)
-        if byte_count > MAX_UPLOAD_BYTES:
+        if byte_count > MAX_UPLOAD_REQUEST_BYTES:
             self._send_json({"error": "upload_too_large"}, status=413)
             return
         try:
@@ -96,6 +102,9 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 raise ValueError("request JSON root must be an object")
             filename = str(request.get("filename") or "upload.txt")
             content = _decode_request_content(request)
+            if len(content) > MAX_UPLOAD_BYTES:
+                self._send_json({"error": "upload_too_large"}, status=413)
+                return
             result = convert_uploaded_document(filename=filename, content=content)
         except (json.JSONDecodeError, ValueError) as exc:
             self._send_json({"error": "invalid_upload", "message": str(exc)}, status=400)
@@ -127,7 +136,16 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
 
 def _parser_output_from_upload(filename: str, content: bytes) -> tuple[dict[str, Any], list[str]]:
     warnings: list[str] = []
-    text = content.decode("utf-8", errors="replace")
+    source_type = _source_type_from_path(filename)
+    if source_type in KNOWN_SOURCE_TYPES:
+        return _parser_output_from_binary_upload(filename, content, source_type), warnings
+
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(
+            "unsupported binary upload; use .pdf, .docx, .xlsx, or UTF-8 JSON/text"
+        ) from exc
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError:
@@ -137,6 +155,29 @@ def _parser_output_from_upload(filename: str, content: bytes) -> tuple[dict[str,
         warnings.append("JSON upload root is not an object; content requires review")
         return _plain_text_parser_output(text), warnings
     return parsed, warnings
+
+
+def _parser_output_from_binary_upload(
+    filename: str, content: bytes, source_type: str
+) -> dict[str, Any]:
+    with TemporaryDirectory(prefix="veridoc-poc-upload-") as temp_dir:
+        upload_path = Path(temp_dir) / filename
+        upload_path.write_bytes(content)
+        try:
+            if source_type == "docx":
+                return extract_docx_structure(upload_path).to_dict()
+            if source_type == "xlsx":
+                return extract_xlsx_structure(upload_path).to_dict()
+            if source_type == "pdf":
+                return parse_text_pdf_to_document_ir(
+                    upload_path,
+                    document_id=_document_id(filename),
+                )
+        except Exception as exc:
+            raise ValueError(
+                f"{source_type.upper()} parser failed; upload requires a valid {source_type.upper()} file"
+            ) from exc
+    raise ValueError("unsupported binary upload")
 
 
 def _plain_text_parser_output(text: str) -> dict[str, Any]:
@@ -191,7 +232,10 @@ def _http_result(result: dict[str, Any]) -> dict[str, Any]:
 
 def _decode_request_content(request: dict[str, Any]) -> bytes:
     if "content_base64" in request:
-        return base64.b64decode(str(request["content_base64"]), validate=True)
+        try:
+            return base64.b64decode(str(request["content_base64"]), validate=True)
+        except binascii.Error as exc:
+            raise ValueError("content_base64 must be valid base64") from exc
     if "content" in request:
         return str(request["content"]).encode("utf-8")
     raise ValueError("content or content_base64 is required")

@@ -1,11 +1,42 @@
+import base64
 import json
 from http.client import HTTPConnection
 from http.server import ThreadingHTTPServer
+from pathlib import Path
 import subprocess
 import sys
 from threading import Thread
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from services.api.poc_web import PocWebRequestHandler, convert_uploaded_document
+
+
+def _write_docx(path: Path, document_xml: str) -> None:
+    with ZipFile(path, "w", ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "[Content_Types].xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>
+""",
+        )
+        archive.writestr("word/document.xml", document_xml)
+
+
+def _sample_docx_xml() -> str:
+    return """<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:pPr><w:pStyle w:val="Heading1"/></w:pPr>
+      <w:r><w:t>Batch Summary</w:t></w:r>
+    </w:p>
+    <w:p><w:r><w:t>Lot SAMPLE-001 requires review</w:t></w:r></w:p>
+  </w:body>
+</w:document>
+"""
 
 
 def test_convert_uploaded_document_surfaces_review_items_and_download_payload() -> None:
@@ -47,6 +78,23 @@ def test_convert_uploaded_document_surfaces_review_items_and_download_payload() 
     downloaded = json.loads(result["download"]["content"].decode("utf-8"))
     assert downloaded["validation"]["requires_review"] is True
     assert downloaded["document_ir"]["blocks"][0]["review"]["requires_review"] is True
+
+
+def test_convert_uploaded_docx_uses_real_parser_bytes(tmp_path: Path) -> None:
+    docx_path = tmp_path / "batch-record.docx"
+    _write_docx(docx_path, _sample_docx_xml())
+
+    result = convert_uploaded_document(
+        filename="batch-record.docx",
+        content=docx_path.read_bytes(),
+    )
+
+    assert result["status"] == "requires_review"
+    assert result["document_ir"]["document"]["source_type"] == "docx"
+    assert [block["text"] for block in result["document_ir"]["blocks"]] == [
+        "Batch Summary",
+        "Lot SAMPLE-001 requires review",
+    ]
 
 
 def test_convert_uploaded_phase0_json_infers_docx_source_type_from_shape() -> None:
@@ -160,6 +208,68 @@ def test_poc_http_api_returns_json_safe_download_content() -> None:
     assert downloaded["document_ir"]["document"]["id"] == "upload"
 
 
+def test_poc_http_api_accepts_base64_docx_upload(tmp_path: Path) -> None:
+    docx_path = tmp_path / "batch-record.docx"
+    _write_docx(docx_path, _sample_docx_xml())
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = json.dumps(
+            {
+                "filename": "batch-record.docx",
+                "content_base64": base64.b64encode(docx_path.read_bytes()).decode("ascii"),
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/convert",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 200
+    assert body["document_ir"]["document"]["source_type"] == "docx"
+    assert body["document_ir"]["blocks"][0]["text"] == "Batch Summary"
+
+
+def test_poc_http_api_rejects_unsupported_non_utf8_binary_upload() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = json.dumps(
+            {
+                "filename": "upload.bin",
+                "content_base64": base64.b64encode(b"\xff\xfe\x00\x01").decode("ascii"),
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/convert",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 400
+    assert body == {
+        "error": "invalid_upload",
+        "message": "unsupported binary upload; use .pdf, .docx, .xlsx, or UTF-8 JSON/text",
+    }
+
+
 def test_poc_http_api_rejects_non_object_json_root() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     thread = Thread(target=server.serve_forever, daemon=True)
@@ -248,3 +358,11 @@ def test_poc_web_script_entrypoint_can_bootstrap_repo_imports() -> None:
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_web_upload_preserves_file_bytes() -> None:
+    html = Path("apps/web/index.html").read_text(encoding="utf-8")
+
+    assert "file.arrayBuffer()" in html
+    assert "content_base64" in html
+    assert "file.text()" not in html

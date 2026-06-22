@@ -125,11 +125,11 @@
         if (!file) return;
         button.disabled = true;
         try {
-          const content = await file.text();
+          const contentBase64 = await fileToBase64(file);
           const response = await fetch("/api/convert", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ filename: file.name, content }),
+            body: JSON.stringify({ filename: file.name, content_base64: contentBase64 }),
           });
           const result = await response.json();
           if (!response.ok) throw new Error(result.message || result.error || "convert failed");
@@ -171,6 +171,16 @@
         downloadLink.removeAttribute("href");
         downloadLink.removeAttribute("download");
         downloadLink.hidden = true;
+      }
+
+      async function fileToBase64(file) {
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        const chunkSize = 0x8000;
+        let binary = "";
+        for (let index = 0; index < bytes.length; index += chunkSize) {
+          binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+        }
+        return btoa(binary);
       }
 
       function renderReviewItem(item) {
