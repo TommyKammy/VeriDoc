@@ -51,9 +51,10 @@ def validate_extracted_item(
         failed_rules.append("risk_gate")
         auto_confirmed = True
 
-    explicit_review_required = (
-        expected.get("requires_review") is True or actual.get("requires_review") is True
-    )
+    if _has_malformed_review_flag(expected) or _has_malformed_review_flag(actual):
+        failed_rules.append("risk_gate")
+
+    explicit_review_required = _requires_review(expected) or _requires_review(actual)
     high_risk = expected.get("risk_level") == "high"
     requires_review = explicit_review_required or high_risk
     if requires_review:
@@ -102,7 +103,11 @@ def validate_table_consistency(
             if not isinstance(auto_confirmed, bool):
                 failed_rules.append("risk_gate")
                 auto_confirmed = True
-            if _cell_requires_review(expected_cell):
+            if _has_malformed_review_flag(expected_cell) or _has_malformed_review_flag(
+                actual_cell
+            ):
+                failed_rules.append("risk_gate")
+            if _cell_requires_review(expected_cell) or _cell_requires_review(actual_cell):
                 table_requires_review = True
                 warnings.append("table cell requires human review")
                 if auto_confirmed:
@@ -209,7 +214,16 @@ def _is_supported_finite_number(value: object) -> bool:
 
 
 def _cell_requires_review(cell: Mapping[str, Any]) -> bool:
-    return cell.get("requires_review") is True or cell.get("risk_level") == "high"
+    return _requires_review(cell) or cell.get("risk_level") == "high"
+
+
+def _requires_review(record: Mapping[str, Any]) -> bool:
+    return record.get("requires_review") is True
+
+
+def _has_malformed_review_flag(record: Mapping[str, Any]) -> bool:
+    value = record.get("requires_review")
+    return value is not None and not isinstance(value, bool)
 
 
 def _cells_by_id(value: object) -> dict[str, Mapping[str, Any]] | None:

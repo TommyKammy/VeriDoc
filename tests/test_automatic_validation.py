@@ -134,6 +134,24 @@ def test_actual_review_flag_blocks_item_auto_confirm_without_failures() -> None:
     assert decision.failed_rules == ()
 
 
+def test_malformed_item_review_flag_blocks_auto_confirm() -> None:
+    expected = _expected_item(risk_level="medium", requires_review="true")
+
+    decision = validate_extracted_item(expected=expected, actual=_actual_item())
+    actual_malformed = validate_extracted_item(
+        expected=_expected_item(risk_level="medium", requires_review=False),
+        actual=_actual_item(requires_review="true"),
+    )
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert decision.requires_review is True
+    assert "risk_gate" in decision.failed_rules
+    assert actual_malformed.auto_confirm_allowed is False
+    assert actual_malformed.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert "risk_gate" in actual_malformed.failed_rules
+
+
 def test_matching_negative_source_coordinates_block_auto_confirm() -> None:
     off_page_source = {
         "source_page": 1,
@@ -270,6 +288,72 @@ def test_table_cell_requires_review_blocks_auto_confirm_even_without_failures() 
     assert decision.status is ValidationStatus.REQUIRES_REVIEW
     assert decision.requires_review is True
     assert decision.failed_rules == ()
+
+
+def test_actual_table_cell_requires_review_blocks_auto_confirm() -> None:
+    source = _evidence()
+    expected_table = {
+        "id": "table-001",
+        "cells": [
+            {
+                "id": "table-001-r1-c1",
+                "text": "SAMPLE-LOT-001",
+                "source": source,
+            },
+        ],
+    }
+    actual_table = {
+        "id": "table-001",
+        "cells": [
+            {
+                "id": "table-001-r1-c1",
+                "text": "SAMPLE-LOT-001",
+                "source": source,
+                "requires_review": True,
+                "auto_confirmed": False,
+            },
+        ],
+    }
+
+    decision = validate_table_consistency(expected_table, actual_table)
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.REQUIRES_REVIEW
+    assert decision.requires_review is True
+    assert decision.failed_rules == ()
+
+
+def test_malformed_table_cell_review_flag_blocks_auto_confirm() -> None:
+    source = _evidence()
+    expected_table = {
+        "id": "table-001",
+        "cells": [
+            {
+                "id": "table-001-r1-c1",
+                "text": "SAMPLE-LOT-001",
+                "source": source,
+                "requires_review": "true",
+            },
+        ],
+    }
+    actual_table = {
+        "id": "table-001",
+        "cells": [
+            {
+                "id": "table-001-r1-c1",
+                "text": "SAMPLE-LOT-001",
+                "source": source,
+                "auto_confirmed": False,
+            },
+        ],
+    }
+
+    decision = validate_table_consistency(expected_table, actual_table)
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert decision.requires_review is True
+    assert "risk_gate" in decision.failed_rules
 
 
 def test_table_cell_text_rejects_numeric_actual_value() -> None:
