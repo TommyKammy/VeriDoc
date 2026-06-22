@@ -85,6 +85,24 @@ _BLOCKED_LOCAL_RUNTIME_ADDRESSES = frozenset(
     }
 )
 _SUPPORTED_ACTIONS = {"extract_field", "extract_table", "normalize_value", "flag_review"}
+CONVERSION_TASK_PROMPTS = {
+    "text_pdf": (
+        "For text PDF conversion, use embedded text and page/table cues from the synthetic input; "
+        "flag uncertain layout reconstruction for review."
+    ),
+    "scanned_pdf_ocr": (
+        "For scanned PDF OCR conversion, treat OCR text, confidence, and bounding boxes as "
+        "provisional signals; flag low-confidence or missing regions for review."
+    ),
+    "word_document": (
+        "For Word conversion, preserve paragraph, heading, table, and list intent from the "
+        "synthetic structure without inferring hidden styles."
+    ),
+    "excel_workbook": (
+        "For Excel conversion, preserve sheet, cell, merged-range, and table cues; never infer "
+        "formulas or values that are not present in the synthetic input."
+    ),
+}
 
 
 class ConversionPlanValidationError(ValueError):
@@ -132,47 +150,102 @@ class LocalLLMConversionPlanAdapter:
         if local_base_url is None:
             raise LocalLLMConfigurationError("base_url must target a local-only OpenAI-compatible endpoint")
 
-        payload: JsonObject = {
-            "model": self.model,
-            "temperature": 0,
-            "stream": False,
-            "max_tokens": self.max_tokens,
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "veridoc_conversion_plan",
-                    "strict": True,
-                    "schema": CONVERSION_PLAN_SCHEMA,
-                },
-            },
-            "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "Return only JSON that matches the supplied schema. "
-                        "Use synthetic input only and keep external_transmission false."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": synthetic_text,
-                },
-            ],
-        }
+        payload = _build_conversion_plan_payload(
+            model=self.model,
+            max_tokens=self.max_tokens,
+            synthetic_text=synthetic_text,
+        )
         headers = {"Content-Type": "application/json"}
         if local_base_url.host_header:
             headers["Host"] = local_base_url.host_header
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
+        first_response = self._request(local_base_url, payload, headers)
+        first_plan = _extract_json_content(first_response)
+        try:
+            validate_conversion_plan(first_plan)
+        except ConversionPlanValidationError as exc:
+            repair_payload = _build_conversion_plan_payload(
+                model=self.model,
+                max_tokens=self.max_tokens,
+                synthetic_text=synthetic_text,
+                repair_error=str(exc),
+                previous_response=first_response,
+            )
+            repaired_response = self._request(local_base_url, repair_payload, headers)
+            repaired_plan = _extract_json_content(repaired_response)
+            validate_conversion_plan(repaired_plan)
+            return repaired_plan
+        return first_plan
+
+    def _request(
+        self,
+        local_base_url: _LocalBaseUrl,
+        payload: JsonObject,
+        headers: dict[str, str],
+    ) -> JsonObject:
         if self.transport is None:
-            response = _send_local_llm_request(local_base_url, payload, headers, self.timeout_seconds)
-        else:
-            request_url = _chat_completions_url(local_base_url.request_base_urls[0])
-            response = self.transport(request_url, payload, headers, self.timeout_seconds)
-        plan = _extract_json_content(response)
-        validate_conversion_plan(plan)
-        return plan
+            return _send_local_llm_request(local_base_url, payload, headers, self.timeout_seconds)
+        request_url = _chat_completions_url(local_base_url.request_base_urls[0])
+        return self.transport(request_url, payload, headers, self.timeout_seconds)
+
+
+def _build_conversion_plan_payload(
+    *,
+    model: str,
+    max_tokens: int,
+    synthetic_text: str,
+    repair_error: str | None = None,
+    previous_response: JsonObject | None = None,
+) -> JsonObject:
+    task_prompts = "\n".join(
+        f"- {action}: {prompt}" for action, prompt in sorted(CONVERSION_TASK_PROMPTS.items())
+    )
+    messages: list[JsonObject] = [
+        {
+            "role": "system",
+            "content": (
+                "Return only JSON that matches the supplied schema. "
+                "Use synthetic input only and keep external_transmission false.\n"
+                "Task prompts:\n"
+                f"{task_prompts}"
+            ),
+        },
+        {
+            "role": "user",
+            "content": synthetic_text,
+        },
+    ]
+    if repair_error is not None:
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "Repair the previous JSON so it matches the schema exactly. "
+                    "Do not add unsupported keys, do not set external_transmission true, "
+                    "and return only the repaired JSON.\n"
+                    f"Validation error: {repair_error}\n"
+                    f"Previous response: {json.dumps(previous_response, ensure_ascii=False, sort_keys=True)}"
+                ),
+            }
+        )
+
+    return {
+        "model": model,
+        "temperature": 0,
+        "stream": False,
+        "max_tokens": max_tokens,
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "veridoc_conversion_plan",
+                "strict": True,
+                "schema": CONVERSION_PLAN_SCHEMA,
+            },
+        },
+        "messages": messages,
+    }
 
 
 def validate_conversion_plan(plan: object) -> None:
