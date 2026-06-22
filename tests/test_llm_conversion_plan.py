@@ -200,6 +200,9 @@ def test_build_conversion_audit_log_redacts_review_thread_credential_keys(parame
         ({"previousResponse": {"choices": []}}, r"parameters\.previousResponse"),
         ({"input": "Lot: ABC-123"}, r"parameters\.input"),
         ({"prompt": "Lot: ABC-123"}, r"parameters\.prompt"),
+        ({"userPrompt": "Lot: ABC-123"}, r"parameters\.userPrompt"),
+        ({"system_prompt": "Lot: ABC-123"}, r"parameters\.system_prompt"),
+        ({"inputText": "Lot: ABC-123"}, r"parameters\.inputText"),
     ],
 )
 def test_build_conversion_audit_log_rejects_content_bearing_parameters(

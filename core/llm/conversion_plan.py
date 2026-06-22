@@ -142,6 +142,14 @@ _CONTENT_BEARING_AUDIT_PARAMETER_KEYS = frozenset(
         "prompt",
     }
 )
+_CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENTS = frozenset(
+    {
+        "content",
+        "input",
+        "messages",
+        "prompt",
+    }
+)
 CONVERSION_TASK_PROMPTS = {
     "text_pdf": (
         "For text PDF conversion, use embedded text and page/table cues from the synthetic input; "
@@ -374,7 +382,12 @@ def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "
 
 
 def _is_content_bearing_audit_parameter_key(key: str) -> bool:
-    return _normalize_parameter_key(key) in _CONTENT_BEARING_AUDIT_PARAMETER_KEYS
+    normalized = _normalize_parameter_key(key)
+    return (
+        normalized in _CONTENT_BEARING_AUDIT_PARAMETER_KEYS
+        or "previous_response" in normalized
+        or any(component in _CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENTS for component in normalized.split("_"))
+    )
 
 
 def _is_secret_parameter_key(key: str) -> bool:
