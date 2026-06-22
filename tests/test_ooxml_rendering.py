@@ -293,13 +293,15 @@ def test_xlsx_rejects_table_merges_outside_their_table_grid(
             {"id": "paragraph-1", "type": "paragraph", "text": "After table"},
         ],
     }
+    output_path = tmp_path / f"invalid-merge-{merge_range.replace(':', '-')}.xlsx"
 
     with pytest.raises(ValueError, match="range must stay within the table grid"):
         render_xlsx_from_ir(
             document_ir,
-            tmp_path / f"invalid-merge-{merge_range.replace(':', '-')}.xlsx",
+            output_path,
             render_plan={"table_merges": [{"block_id": "table-1", "range": merge_range}]},
         )
+    assert not output_path.exists()
 
 
 def test_renderers_reject_render_directives_inside_conversion_plan(tmp_path: Path) -> None:
