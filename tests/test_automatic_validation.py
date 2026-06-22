@@ -81,6 +81,28 @@ def test_missing_or_mismatched_provenance_blocks_auto_confirm() -> None:
     assert "provenance" in decision.failed_rules
 
 
+def test_item_scope_binding_requires_matching_document_and_block_ids() -> None:
+    expected = _expected_item(
+        risk_level="medium",
+        requires_review=False,
+        document_id="doc-001",
+        block_id="block-001",
+    )
+
+    missing_scope = validate_extracted_item(expected=expected, actual=_actual_item())
+    wrong_scope = validate_extracted_item(
+        expected=expected,
+        actual=_actual_item(document_id="doc-001", block_id="block-002"),
+    )
+
+    assert missing_scope.auto_confirm_allowed is False
+    assert missing_scope.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert "scope_binding" in missing_scope.failed_rules
+    assert wrong_scope.auto_confirm_allowed is False
+    assert wrong_scope.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert "scope_binding" in wrong_scope.failed_rules
+
+
 def test_numeric_rule_rejects_non_finite_or_stringified_numbers() -> None:
     expected = _expected_item(expected_value=12.5, risk_level="medium", requires_review=False)
 
@@ -177,8 +199,12 @@ def test_table_consistency_rejects_missing_cells_and_wrong_text() -> None:
     expected_table = {
         "id": "table-001",
         "cells": [
-            {"id": "table-001-r1-c1", "text": "Lot number"},
-            {"id": "table-001-r1-c2", "text": "SAMPLE-LOT-001"},
+            {"id": "table-001-r1-c1", "text": "Lot number", "requires_review": False},
+            {
+                "id": "table-001-r1-c2",
+                "text": "SAMPLE-LOT-001",
+                "requires_review": False,
+            },
         ],
     }
     actual_table = {
@@ -235,7 +261,11 @@ def test_table_cell_missing_expected_source_blocks_auto_confirm() -> None:
     expected_table = {
         "id": "table-001",
         "cells": [
-            {"id": "table-001-r1-c1", "text": "SAMPLE-LOT-001"},
+            {
+                "id": "table-001-r1-c1",
+                "text": "SAMPLE-LOT-001",
+                "requires_review": False,
+            },
         ],
     }
     actual_table = {
@@ -299,6 +329,7 @@ def test_actual_table_cell_requires_review_blocks_auto_confirm() -> None:
                 "id": "table-001-r1-c1",
                 "text": "SAMPLE-LOT-001",
                 "source": source,
+                "requires_review": False,
             },
         ],
     }
@@ -360,7 +391,7 @@ def test_table_cell_text_rejects_numeric_actual_value() -> None:
     expected_table = {
         "id": "table-001",
         "cells": [
-            {"id": "table-001-r1-c1", "text": "123"},
+            {"id": "table-001-r1-c1", "text": "123", "requires_review": False},
         ],
     }
     actual_table = {
@@ -375,3 +406,80 @@ def test_table_cell_text_rejects_numeric_actual_value() -> None:
     assert decision.auto_confirm_allowed is False
     assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
     assert "table_consistency" in decision.failed_rules
+
+
+def test_empty_expected_table_cells_block_auto_confirm() -> None:
+    expected_table = {"id": "table-001", "cells": []}
+    actual_table = {"id": "table-001", "cells": []}
+
+    decision = validate_table_consistency(expected_table, actual_table)
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert decision.requires_review is True
+    assert "table_consistency" in decision.failed_rules
+
+
+def test_blank_table_cell_text_blocks_auto_confirm() -> None:
+    source = _evidence()
+    expected_table = {
+        "id": "table-001",
+        "cells": [
+            {
+                "id": "table-001-r1-c1",
+                "text": "  ",
+                "source": source,
+                "requires_review": False,
+            },
+        ],
+    }
+    actual_table = {
+        "id": "table-001",
+        "cells": [
+            {
+                "id": "table-001-r1-c1",
+                "text": "",
+                "source": source,
+                "auto_confirmed": False,
+            },
+        ],
+    }
+
+    decision = validate_table_consistency(expected_table, actual_table)
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert decision.requires_review is True
+    assert "table_consistency" in decision.failed_rules
+
+
+def test_missing_expected_table_cell_review_flag_blocks_auto_confirm() -> None:
+    source = _evidence()
+    expected_table = {
+        "id": "table-001",
+        "cells": [
+            {
+                "id": "table-001-r1-c1",
+                "text": "SAMPLE-LOT-001",
+                "source": source,
+            },
+        ],
+    }
+    actual_table = {
+        "id": "table-001",
+        "cells": [
+            {
+                "id": "table-001-r1-c1",
+                "text": "SAMPLE-LOT-001",
+                "source": source,
+                "auto_confirmed": False,
+            },
+        ],
+    }
+
+    decision = validate_table_consistency(expected_table, actual_table)
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert decision.requires_review is True
+    assert "risk_gate" in decision.failed_rules

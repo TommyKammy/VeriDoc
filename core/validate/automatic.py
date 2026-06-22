@@ -34,6 +34,11 @@ def validate_extracted_item(
         failed_rules.append("scope_binding")
     if not _same_non_empty_string(expected.get("label_id"), actual.get("label_id")):
         failed_rules.append("scope_binding")
+    for scope_key in ("document_id", "block_id"):
+        if scope_key in expected and not _same_non_empty_string(
+            expected.get(scope_key), actual.get(scope_key)
+        ):
+            failed_rules.append("scope_binding")
 
     if not _values_match(expected.get("expected_value"), actual.get("value")):
         failed_rules.append("value_non_modification")
@@ -83,7 +88,7 @@ def validate_table_consistency(
         missing_or_extra = set(expected_cells) != set(actual_cells)
         matching_cell_ids = set(expected_cells) & set(actual_cells)
         changed_text = any(
-            not _same_normalized_text(
+            not _same_non_blank_normalized_text(
                 expected_cells[cell_id].get("text"),
                 actual_cells[cell_id].get("text"),
             )
@@ -106,6 +111,8 @@ def validate_table_consistency(
             if _has_malformed_review_flag(expected_cell) or _has_malformed_review_flag(
                 actual_cell
             ):
+                failed_rules.append("risk_gate")
+            if not isinstance(expected_cell.get("requires_review"), bool):
                 failed_rules.append("risk_gate")
             if _cell_requires_review(expected_cell) or _cell_requires_review(actual_cell):
                 table_requires_review = True
@@ -154,6 +161,14 @@ def _same_normalized_text(expected: object, actual: object) -> bool:
     if not isinstance(expected, str) or not isinstance(actual, str):
         return False
     return _normalized_text(expected) == _normalized_text(actual)
+
+
+def _same_non_blank_normalized_text(expected: object, actual: object) -> bool:
+    if not isinstance(expected, str) or not isinstance(actual, str):
+        return False
+    normalized_expected = _normalized_text(expected)
+    normalized_actual = _normalized_text(actual)
+    return bool(normalized_expected) and normalized_expected == normalized_actual
 
 
 def _normalized_text(value: str) -> str:
@@ -227,7 +242,7 @@ def _has_malformed_review_flag(record: Mapping[str, Any]) -> bool:
 
 
 def _cells_by_id(value: object) -> dict[str, Mapping[str, Any]] | None:
-    if not isinstance(value, list):
+    if not isinstance(value, list) or not value:
         return None
     cells: dict[str, Mapping[str, Any]] = {}
     for cell in value:
