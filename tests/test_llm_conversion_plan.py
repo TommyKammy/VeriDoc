@@ -175,9 +175,12 @@ def test_build_conversion_audit_log_records_hashes_metadata_and_redacts_secrets(
         "clientAuthentication",
         "basicAuth",
         "accessKey",
+        "accountKey",
+        "storageAccountKey",
         "subscriptionKey",
         "Ocp-Apim-Subscription-Key",
         "x-functions-key",
+        "connectionString",
         "accessToken",
         "githubTokenFile",
         "refreshToken",
@@ -210,6 +213,9 @@ def test_build_conversion_audit_log_redacts_review_thread_credential_keys(parame
     ("parameters", "message"),
     [
         ({"messages": [{"role": "user", "content": "Lot: ABC-123"}]}, r"parameters\.messages"),
+        ({"body": "Lot: ABC-123"}, r"parameters\.body"),
+        ({"requestBody": "Lot: ABC-123"}, r"parameters\.requestBody"),
+        ({"payload": "Lot: ABC-123"}, r"parameters\.payload"),
         ({"generation": {"previous_response": {"choices": []}}}, r"parameters\.generation\.previous_response"),
         ({"tools": [{"content": "Lot: ABC-123"}]}, r"parameters\.tools\[0\]\.content"),
         ({"previousResponse": {"choices": []}}, r"parameters\.previousResponse"),
@@ -441,10 +447,15 @@ def test_build_conversion_audit_log_allows_content_type_header_metadata() -> Non
         parameters={
             "headers": {
                 "Content-Type": "application/json",
+                "Content-Length": "123",
+                "Content-Encoding": "gzip",
+                "Content-MD5": "checksum",
+                "X-Amz-Content-Sha256": "sha256-checksum",
             },
             "extra_headers": [
                 ("Content-Type", "application/json"),
                 "Content-Type: application/json",
+                "Content-Length: 123",
             ],
         },
     )
@@ -452,10 +463,15 @@ def test_build_conversion_audit_log_allows_content_type_header_metadata() -> Non
     assert audit_log["parameters"] == {
         "headers": {
             "Content-Type": "application/json",
+            "Content-Length": "123",
+            "Content-Encoding": "gzip",
+            "Content-MD5": "checksum",
+            "X-Amz-Content-Sha256": "sha256-checksum",
         },
         "extra_headers": [
             ["Content-Type", "application/json"],
             "Content-Type: application/json",
+            "Content-Length: 123",
         ],
     }
 
@@ -551,6 +567,9 @@ def test_build_conversion_audit_log_allows_response_format_schema_property_names
                         "type": "object",
                         "properties": {
                             "text": {"type": "string"},
+                            "token": {"type": "string"},
+                            "password": {"type": "string"},
+                            "api_key": {"type": "string"},
                             "attachment": {
                                 "type": "string",
                                 "contentMediaType": "application/pdf",
@@ -590,6 +609,7 @@ def test_build_conversion_audit_log_allows_tool_function_schema_property_names()
                             "contentMediaType": "text/plain",
                         },
                         "content": {"type": "string"},
+                        "token": {"type": "string"},
                     },
                 },
             },

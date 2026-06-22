@@ -99,6 +99,7 @@ _SECRET_PARAMETER_KEYS = frozenset(
         "cookie",
         "credential",
         "credentials",
+        "connection_string",
         "jwt",
         "password",
         "private_key",
@@ -136,6 +137,7 @@ _SECRET_PARAMETER_KEY_PHRASES = (
     "apikey",
     "private_key",
     "secret",
+    "connection_string",
 )
 _SECRET_PARAMETER_KEY_COMPONENTS = frozenset(
     {
@@ -153,6 +155,7 @@ _SECRET_PARAMETER_KEY_COMPONENTS = frozenset(
     }
 )
 _SECRET_PARAMETER_KEY_COMPONENT_SEQUENCES = (
+    ("account", "key"),
     ("api", "key"),
     ("access", "key"),
     ("functions", "key"),
@@ -166,6 +169,7 @@ _PARAMETER_INDEX_SUFFIX_RE = re.compile(r"\[\d+\]$")
 _CONTENT_BEARING_AUDIT_PARAMETER_KEYS = frozenset(
     {
         "content",
+        "body",
         "document",
         "input",
         "instructions",
@@ -174,6 +178,8 @@ _CONTENT_BEARING_AUDIT_PARAMETER_KEYS = frozenset(
         "previous_response",
         "prompt",
         "output",
+        "payload",
+        "request_body",
         "source",
         "source_bytes",
         "synthetic_text",
@@ -183,7 +189,11 @@ _CONTENT_BEARING_AUDIT_PARAMETER_KEYS = frozenset(
 _SAFE_CONTENT_WORD_AUDIT_PARAMETER_KEYS = frozenset(
     {
         "content_type",
+        "content_encoding",
+        "content_length",
+        "content_md5",
         "max_prompt_tokens",
+        "x_amz_content_sha256",
     }
 )
 _SAFE_AUDIT_PARAMETER_SEQUENCE_KEYS = frozenset(
@@ -194,11 +204,13 @@ _SAFE_AUDIT_PARAMETER_SEQUENCE_KEYS = frozenset(
 _CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENTS = frozenset(
     {
         "content",
+        "body",
         "document",
         "input",
         "instructions",
         "messages",
         "prompt",
+        "payload",
         "text",
     }
 )
@@ -425,7 +437,11 @@ def _build_conversion_plan_payload(
 
 
 def _redact_audit_parameters(value: object, *, key_path: str = "") -> object:
-    if key_path and _is_secret_parameter_key(key_path):
+    if (
+        key_path
+        and _is_secret_parameter_key(key_path)
+        and not _is_safe_json_schema_audit_parameter_key(key_path)
+    ):
         return _REDACTED_VALUE
     if isinstance(value, Mapping):
         key_value_entry = _mapping_key_value_parameter_entry(value)
