@@ -95,6 +95,7 @@ _SECRET_PARAMETER_KEYS = frozenset(
         "apikey",
         "authorization",
         "credential",
+        "credentials",
         "password",
         "secret",
         "token",
@@ -105,6 +106,7 @@ _SECRET_PARAMETER_KEY_SUFFIXES = (
     "_apikey",
     "_authorization",
     "_credential",
+    "_credentials",
     "_password",
     "_secret",
     "_token",
@@ -114,6 +116,7 @@ _SECRET_PARAMETER_KEY_PREFIXES = (
     "apikey_",
     "authorization_",
     "credential_",
+    "credentials_",
     "password_",
     "secret_",
     "token_",
@@ -125,6 +128,13 @@ _SECRET_PARAMETER_KEY_PHRASES = (
 _CAMEL_ACRONYM_BOUNDARY_RE = re.compile(r"(.)([A-Z][a-z]+)")
 _CAMEL_CASE_BOUNDARY_RE = re.compile(r"([a-z0-9])([A-Z])")
 _PARAMETER_KEY_SEPARATOR_RE = re.compile(r"[^A-Za-z0-9]+")
+_CONTENT_BEARING_AUDIT_PARAMETER_KEYS = frozenset(
+    {
+        "content",
+        "messages",
+        "previous_response",
+    }
+)
 CONVERSION_TASK_PROMPTS = {
     "text_pdf": (
         "For text PDF conversion, use embedded text and page/table cues from the synthetic input; "
@@ -255,6 +265,7 @@ def build_conversion_audit_log(
         raise ValueError("ir_version is required")
     if not isinstance(parameters, Mapping):
         raise TypeError("parameters must be a mapping")
+    _reject_content_bearing_audit_parameters(parameters)
 
     return {
         "schema_version": _AUDIT_LOG_SCHEMA_VERSION,
@@ -340,6 +351,23 @@ def _redact_audit_parameters(value: object, *, key_path: str = "") -> object:
     if isinstance(value, tuple):
         return [_redact_audit_parameters(item, key_path=key_path) for item in value]
     return value
+
+
+def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "parameters") -> None:
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            key_string = str(key)
+            item_path = f"{key_path}.{key_string}"
+            if _is_content_bearing_audit_parameter_key(key_string):
+                raise ValueError(f"{item_path} must not include document or request content")
+            _reject_content_bearing_audit_parameters(item, key_path=item_path)
+    elif isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            _reject_content_bearing_audit_parameters(item, key_path=f"{key_path}[{index}]")
+
+
+def _is_content_bearing_audit_parameter_key(key: str) -> bool:
+    return _normalize_parameter_key(key) in _CONTENT_BEARING_AUDIT_PARAMETER_KEYS
 
 
 def _is_secret_parameter_key(key: str) -> bool:

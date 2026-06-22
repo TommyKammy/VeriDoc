@@ -120,6 +120,7 @@ def test_build_conversion_audit_log_records_hashes_metadata_and_redacts_secrets(
             "max_tokens": 1024,
             "api_key": "operator-runtime-token",
             "apiKey": "operator-runtime-api-key",
+            "credentials": "operator-runtime-credentials",
             "accessToken": "operator-runtime-access-token",
             "nested": {
                 "authorization": "Bearer operator-runtime-token",
@@ -144,6 +145,7 @@ def test_build_conversion_audit_log_records_hashes_metadata_and_redacts_secrets(
             "max_tokens": 1024,
             "api_key": "[REDACTED]",
             "apiKey": "[REDACTED]",
+            "credentials": "[REDACTED]",
             "accessToken": "[REDACTED]",
             "nested": {
                 "authorization": "[REDACTED]",
@@ -155,10 +157,36 @@ def test_build_conversion_audit_log_records_hashes_metadata_and_redacts_secrets(
     rendered = json.dumps(audit_log, sort_keys=True)
     assert "operator-runtime-token" not in rendered
     assert "operator-runtime-api-key" not in rendered
+    assert "operator-runtime-credentials" not in rendered
     assert "operator-runtime-access-token" not in rendered
     assert "operator-runtime-refresh-token" not in rendered
     assert "operator-runtime-client-secret" not in rendered
     assert "Bearer" not in rendered
+
+
+@pytest.mark.parametrize(
+    ("parameters", "message"),
+    [
+        ({"messages": [{"role": "user", "content": "Lot: ABC-123"}]}, r"parameters\.messages"),
+        ({"generation": {"previous_response": {"choices": []}}}, r"parameters\.generation\.previous_response"),
+        ({"tools": [{"content": "Lot: ABC-123"}]}, r"parameters\.tools\[0\]\.content"),
+        ({"previousResponse": {"choices": []}}, r"parameters\.previousResponse"),
+    ],
+)
+def test_build_conversion_audit_log_rejects_content_bearing_parameters(
+    parameters: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        build_conversion_audit_log(
+            source_bytes=b"Lot: ABC-123\n",
+            output_bytes=b'{"lot_number":"ABC-123"}\n',
+            model="local-json-model",
+            prompt_id="veridoc_conversion_plan",
+            prompt_version="poc-08",
+            ir_version="document-ir-v1",
+            parameters=parameters,
+        )
 
 
 def test_schema_incompatible_conversion_plan_fails_closed() -> None:
