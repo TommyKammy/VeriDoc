@@ -747,7 +747,7 @@ def _is_safe_message_metadata_audit_parameter_key(normalized_leaf: str) -> bool:
     if normalized_leaf in _SAFE_MESSAGE_METADATA_AUDIT_PARAMETER_KEYS:
         return True
     components = tuple(normalized_leaf.split("_"))
-    if "message" not in components:
+    if "message" not in components and "messages" not in components:
         return False
     if _has_disallowed_content_component(
         components,

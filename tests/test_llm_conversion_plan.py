@@ -385,6 +385,7 @@ def test_build_conversion_audit_log_allows_safe_message_metadata_fields() -> Non
             "messageType": "assistant",
             "messageStatus": "complete",
             "messageCount": 2,
+            "assistantMessagesCount": 2,
             "lastMessageAt": "2026-06-23T00:00:00Z",
         },
     )
@@ -398,6 +399,7 @@ def test_build_conversion_audit_log_allows_safe_message_metadata_fields() -> Non
         "messageType": "assistant",
         "messageStatus": "complete",
         "messageCount": 2,
+        "assistantMessagesCount": 2,
         "lastMessageAt": "2026-06-23T00:00:00Z",
     }
 
