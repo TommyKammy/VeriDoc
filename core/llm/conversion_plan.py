@@ -268,6 +268,16 @@ _JSON_ENCODED_AUDIT_METADATA_KEYS = frozenset(
         "metadata_json",
     }
 )
+_SAFE_JSON_ENCODED_METADATA_SCALAR_KEYS = frozenset(
+    {
+        "format",
+        "id",
+        "path",
+        "status",
+        "type",
+        "version",
+    }
+)
 _SAFE_FORM_DATA_METADATA_AUDIT_PARAMETER_KEYS = frozenset(
     {
         "form_data_content_type",
@@ -672,6 +682,8 @@ def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "
         if _is_file_audit_parameter_container_path(key_path):
             raise ValueError(f"{key_path} must not include document or request content")
         if _is_content_bearing_schema_value_path(key_path) or _is_content_bearing_url(value):
+            raise ValueError(f"{key_path} must not include document or request content")
+        if _is_unsafe_json_encoded_metadata_scalar_path(key_path):
             raise ValueError(f"{key_path} must not include document or request content")
         decoded_json_value = _json_encoded_audit_metadata_value(value, key_path)
         if decoded_json_value is not _JSON_METADATA_NOT_DECODED:
@@ -1193,6 +1205,17 @@ def _json_encoded_audit_metadata_value(value: str, key_path: str) -> object:
         return json.loads(value)
     except json.JSONDecodeError:
         return _JSON_METADATA_NOT_DECODED
+
+
+def _is_unsafe_json_encoded_metadata_scalar_path(key_path: str) -> bool:
+    components = _audit_parameter_path_components(key_path)
+    if not any(component in _JSON_ENCODED_AUDIT_METADATA_KEYS for component in components):
+        return False
+    leaf = key_path.rsplit(".", 1)[-1]
+    normalized_leaf = _normalize_parameter_key(_PARAMETER_INDEX_SUFFIX_RE.sub("", leaf))
+    if normalized_leaf in _JSON_ENCODED_AUDIT_METADATA_KEYS and not _PARAMETER_INDEX_SUFFIX_RE.search(leaf):
+        return False
+    return normalized_leaf not in _SAFE_JSON_ENCODED_METADATA_SCALAR_KEYS
 
 
 def _redact_json_encoded_audit_metadata_value(value: str, key_path: str) -> str | None:

@@ -531,6 +531,33 @@ def test_build_conversion_audit_log_rejects_json_encoded_metadata_scalars(
         )
 
 
+@pytest.mark.parametrize(
+    ("metadata_json", "message"),
+    [
+        ('["Lot: ABC-123"]', r"parameters\.metadataJson\[0\]"),
+        ('{"note":"Lot: ABC-123"}', r"parameters\.metadataJson\.note"),
+        (
+            '["https://example.invalid/cb?api_key=operator-runtime-api-key"]',
+            r"parameters\.metadataJson\[0\]",
+        ),
+    ],
+)
+def test_build_conversion_audit_log_rejects_nested_json_encoded_metadata_scalars(
+    metadata_json: str,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        build_conversion_audit_log(
+            source_bytes=b"Lot: ABC-123\n",
+            output_bytes=b'{"lot_number":"ABC-123"}\n',
+            model="local-json-model",
+            prompt_id="veridoc_conversion_plan",
+            prompt_version="poc-08",
+            ir_version="document-ir-v1",
+            parameters={"metadataJson": metadata_json},
+        )
+
+
 def test_build_conversion_audit_log_redacts_tuple_parameter_entries() -> None:
     audit_log = build_conversion_audit_log(
         source_bytes=b"Lot: ABC-123\n",
