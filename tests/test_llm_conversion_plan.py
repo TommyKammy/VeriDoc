@@ -832,6 +832,25 @@ def test_build_conversion_audit_log_redacts_multi_entry_raw_parameter_strings() 
     assert "Bearer" not in rendered
 
 
+def test_build_conversion_audit_log_preserves_recursive_raw_parameter_redaction() -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={
+            "queryParameters": "version=1&params=api_key%3Doperator-runtime-api-key",
+        },
+    )
+
+    assert audit_log["parameters"] == {
+        "queryParameters": "version=1&params=api_key=[REDACTED]",
+    }
+    assert "operator-runtime-api-key" not in json.dumps(audit_log, sort_keys=True)
+
+
 @pytest.mark.parametrize(
     ("parameters", "message"),
     [
