@@ -540,6 +540,7 @@ def _redact_audit_parameters(value: object, *, key_path: str = "") -> object:
         redacted_raw_value = _redact_raw_key_value_parameter_text(value, key_path)
         if redacted_raw_value is not None:
             return redacted_raw_value
+        return value
     if isinstance(value, list):
         return [
             _redact_audit_parameters(item, key_path=f"{key_path}[{index}]")
@@ -560,7 +561,10 @@ def _redact_audit_parameters(value: object, *, key_path: str = "") -> object:
         return os.fsdecode(value)
     if isinstance(value, Decimal):
         return str(value)
-    return value
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    display_path = f"parameters.{key_path}" if key_path else "parameters"
+    raise TypeError(f"{display_path} must be JSON-serializable audit metadata")
 
 
 def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "parameters") -> None:

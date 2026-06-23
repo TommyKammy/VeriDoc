@@ -1442,6 +1442,19 @@ def test_build_conversion_audit_log_decodes_bytes_pathlike_metadata_values() -> 
     json.dumps(audit_log, sort_keys=True)
 
 
+def test_build_conversion_audit_log_rejects_unsupported_non_json_metadata_values() -> None:
+    with pytest.raises(TypeError, match=r"parameters\.metadata\.opaque"):
+        build_conversion_audit_log(
+            source_bytes=b"Lot: ABC-123\n",
+            output_bytes=b'{"lot_number":"ABC-123"}\n',
+            model="local-json-model",
+            prompt_id="veridoc_conversion_plan",
+            prompt_version="poc-08",
+            ir_version="document-ir-v1",
+            parameters={"metadata": {"opaque": object()}},
+        )
+
+
 @pytest.mark.parametrize(
     ("container_key", "container_value"),
     [
