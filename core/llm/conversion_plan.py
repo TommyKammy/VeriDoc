@@ -226,8 +226,11 @@ _SAFE_CONTENT_WORD_AUDIT_PARAMETER_KEYS = frozenset(
 )
 _SAFE_MESSAGE_METADATA_AUDIT_PARAMETER_KEYS = frozenset(
     {
+        "assistant_message_id",
         "message_count",
         "message_id",
+        "message_role",
+        "system_message_id",
         "user_message_id",
     }
 )
@@ -239,8 +242,12 @@ _SAFE_DATA_METADATA_AUDIT_PARAMETER_KEYS = frozenset(
 )
 _SAFE_FORM_DATA_METADATA_AUDIT_PARAMETER_KEYS = frozenset(
     {
+        "form_data_content_type",
         "form_data_description",
+        "form_data_type",
+        "multipart_form_data_content_type",
         "multipart_form_data_description",
+        "request_form_data_content_type",
         "request_form_data_description",
     }
 )

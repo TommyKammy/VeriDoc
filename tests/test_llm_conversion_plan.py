@@ -375,6 +375,9 @@ def test_build_conversion_audit_log_allows_safe_message_metadata_fields() -> Non
         parameters={
             "message_id": "provider-message-1",
             "userMessageId": "provider-user-message-1",
+            "assistantMessageId": "provider-assistant-message-1",
+            "systemMessageId": "provider-system-message-1",
+            "messageRole": "assistant",
             "messageCount": 2,
         },
     )
@@ -382,6 +385,9 @@ def test_build_conversion_audit_log_allows_safe_message_metadata_fields() -> Non
     assert audit_log["parameters"] == {
         "message_id": "provider-message-1",
         "userMessageId": "provider-user-message-1",
+        "assistantMessageId": "provider-assistant-message-1",
+        "systemMessageId": "provider-system-message-1",
+        "messageRole": "assistant",
         "messageCount": 2,
     }
 
@@ -418,15 +424,23 @@ def test_build_conversion_audit_log_allows_form_data_descriptor_metadata() -> No
         ir_version="document-ir-v1",
         parameters={
             "formDataDescription": "provider form-data descriptor",
+            "formDataType": "multipart/form-data",
+            "formDataContentType": "application/pdf",
             "multipartFormDataDescription": "multipart descriptor",
+            "multipartFormDataContentType": "application/pdf",
             "requestFormDataDescription": "request form-data descriptor",
+            "requestFormDataContentType": "application/pdf",
         },
     )
 
     assert audit_log["parameters"] == {
         "formDataDescription": "provider form-data descriptor",
+        "formDataType": "multipart/form-data",
+        "formDataContentType": "application/pdf",
         "multipartFormDataDescription": "multipart descriptor",
+        "multipartFormDataContentType": "application/pdf",
         "requestFormDataDescription": "request form-data descriptor",
+        "requestFormDataContentType": "application/pdf",
     }
 
 
