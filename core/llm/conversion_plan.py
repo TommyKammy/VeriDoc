@@ -4,6 +4,7 @@ import hashlib
 import ipaddress
 import json
 import http.client
+import os
 import re
 import socket
 import ssl
@@ -11,6 +12,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Any
 from urllib.parse import parse_qsl, unquote_plus, urlparse
 
@@ -185,9 +187,13 @@ _CONTENT_BEARING_AUDIT_PARAMETER_KEYS = frozenset(
         "attachment",
         "attachments",
         "body",
+        "data",
         "document",
+        "form_data",
         "input",
         "instructions",
+        "json",
+        "message",
         "messages",
         "output_bytes",
         "previous_response",
@@ -225,9 +231,12 @@ _CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENTS = frozenset(
         "attachment",
         "attachments",
         "body",
+        "data",
         "document",
+        "form_data",
         "input",
         "instructions",
+        "message",
         "messages",
         "prompt",
         "payload",
@@ -523,6 +532,16 @@ def _redact_audit_parameters(value: object, *, key_path: str = "") -> object:
             _redact_audit_parameters(item, key_path=f"{key_path}[{index}]")
             for index, item in enumerate(value)
         ]
+    if isinstance(value, (set, frozenset)):
+        redacted_items = [
+            _redact_audit_parameters(item, key_path=f"{key_path}[{index}]")
+            for index, item in enumerate(value)
+        ]
+        return sorted(redacted_items, key=_json_sort_key)
+    if isinstance(value, os.PathLike):
+        return os.fspath(value)
+    if isinstance(value, Decimal):
+        return str(value)
     return value
 
 
@@ -572,6 +591,9 @@ def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "
             if _is_content_bearing_url(_entry_value):
                 raise ValueError(f"{item_path} must not include document or request content")
     elif isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            _reject_content_bearing_audit_parameters(item, key_path=f"{key_path}[{index}]")
+    elif isinstance(value, (set, frozenset)):
         for index, item in enumerate(value):
             _reject_content_bearing_audit_parameters(item, key_path=f"{key_path}[{index}]")
 
@@ -662,7 +684,7 @@ def _is_content_bearing_schema_value_path(key: str) -> bool:
 
 def _is_invalid_json_schema_field_value_path(key: str, value: object) -> bool:
     components = _audit_parameter_path_components(key)
-    return _is_json_schema_field_name_path(components) and not isinstance(value, Mapping)
+    return _is_json_schema_field_name_path(components) and not isinstance(value, (Mapping, bool))
 
 
 def _is_content_bearing_schema_field_name(name: str) -> bool:
@@ -846,7 +868,7 @@ def _redact_raw_key_value_parameter_text(value: str, key_path: str) -> str | Non
 def _raw_key_value_parameter_chunks(value: str, normalized_leaf: str) -> list[str]:
     if "\n" in value or "\r" in value:
         return value.splitlines()
-    if normalized_leaf in {"params", "query_params"} and ("&" in value or ";" in value):
+    if _is_query_audit_parameter_container_leaf(normalized_leaf) and ("&" in value or ";" in value):
         return re.split(r"[&;]", value)
     if _is_cookie_audit_parameter_container_leaf(normalized_leaf) and ";" in value:
         return [chunk.strip() for chunk in value.split(";")]
@@ -856,9 +878,9 @@ def _raw_key_value_parameter_chunks(value: str, normalized_leaf: str) -> list[st
 def _raw_key_value_parameter_joiner(value: str, normalized_leaf: str) -> str:
     if "\n" in value or "\r" in value:
         return "\n"
-    if normalized_leaf in {"params", "query_params"} and "&" in value:
+    if _is_query_audit_parameter_container_leaf(normalized_leaf) and "&" in value:
         return "&"
-    if normalized_leaf in {"params", "query_params"} and ";" in value:
+    if _is_query_audit_parameter_container_leaf(normalized_leaf) and ";" in value:
         return ";"
     if _is_cookie_audit_parameter_container_leaf(normalized_leaf) and ";" in value:
         return "; "
@@ -880,7 +902,7 @@ def _redact_raw_key_value_parameter_line(
 
 def _raw_key_value_parameter_entry_path(key_path: str, entry_key: str) -> str:
     normalized_leaf = _normalize_parameter_key(_parameter_key_leaf(key_path))
-    if normalized_leaf in {"params", "query_params"}:
+    if _is_query_audit_parameter_container_leaf(normalized_leaf):
         return _join_parameter_key_path(key_path, unquote_plus(entry_key))
     return _join_parameter_key_path(key_path, entry_key)
 
@@ -910,11 +932,28 @@ def _is_key_value_audit_parameter_sequence_container_key(key_path: str) -> bool:
         normalized_leaf in _KEY_VALUE_AUDIT_PARAMETER_SEQUENCE_CONTAINER_KEYS
         or normalized_leaf.endswith("_headers")
         or normalized_leaf.endswith("_cookies")
+        or normalized_leaf.endswith("_params")
+        or normalized_leaf.endswith("_parameters")
+    )
+
+
+def _is_query_audit_parameter_container_leaf(normalized_leaf: str) -> bool:
+    return (
+        normalized_leaf in {"params", "query_params", "query_parameters"}
+        or normalized_leaf.endswith("_params")
+        or normalized_leaf.endswith("_parameters")
     )
 
 
 def _is_cookie_audit_parameter_container_leaf(normalized_leaf: str) -> bool:
     return normalized_leaf in {"cookies", "extra_cookies"} or normalized_leaf.endswith("_cookies")
+
+
+def _json_sort_key(value: object) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    except TypeError:
+        return repr(value)
 
 
 def _is_content_bearing_url(value: str, *, _depth: int = 0) -> bool:

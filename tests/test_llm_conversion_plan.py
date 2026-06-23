@@ -4,6 +4,8 @@ import json
 import socket
 import urllib.error
 import urllib.request
+from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
@@ -244,8 +246,13 @@ def test_build_conversion_audit_log_redacts_signature_credentials(
     ("parameters", "message"),
     [
         ({"messages": [{"role": "user", "content": "Lot: ABC-123"}]}, r"parameters\.messages"),
+        ({"message": "Lot: ABC-123"}, r"parameters\.message"),
+        ({"userMessage": "Lot: ABC-123"}, r"parameters\.userMessage"),
         ({"body": "Lot: ABC-123"}, r"parameters\.body"),
         ({"requestBody": "Lot: ABC-123"}, r"parameters\.requestBody"),
+        ({"data": "Lot: ABC-123"}, r"parameters\.data"),
+        ({"json": {"input": "Lot: ABC-123"}}, r"parameters\.json"),
+        ({"formData": {"upload": "Lot: ABC-123"}}, r"parameters\.formData"),
         ({"payload": "Lot: ABC-123"}, r"parameters\.payload"),
         ({"generation": {"previous_response": {"choices": []}}}, r"parameters\.generation\.previous_response"),
         ({"tools": [{"content": "Lot: ABC-123"}]}, r"parameters\.tools\[0\]\.content"),
@@ -618,6 +625,55 @@ def test_build_conversion_audit_log_rejects_semicolon_raw_query_content_paramete
         )
 
 
+@pytest.mark.parametrize(
+    ("parameters", "message"),
+    [
+        (
+            {"default_params": "version=1&prompt=Lot: ABC-123"},
+            r"parameters\.default_params\.prompt",
+        ),
+        (
+            {"queryParameters": "version=1&api_key=operator-runtime-api-key"},
+            r"parameters\.queryParameters\.api_key",
+        ),
+        (
+            {"queryParameters": "redirect=https://example.invalid/cb?prompt=Lot%3A+ABC-123"},
+            r"parameters\.queryParameters\.redirect",
+        ),
+    ],
+)
+def test_build_conversion_audit_log_splits_raw_query_container_aliases(
+    parameters: dict[str, object],
+    message: str,
+) -> None:
+    if "api_key" in message:
+        audit_log = build_conversion_audit_log(
+            source_bytes=b"Lot: ABC-123\n",
+            output_bytes=b'{"lot_number":"ABC-123"}\n',
+            model="local-json-model",
+            prompt_id="veridoc_conversion_plan",
+            prompt_version="poc-08",
+            ir_version="document-ir-v1",
+            parameters=parameters,
+        )
+
+        rendered = json.dumps(audit_log, sort_keys=True)
+        assert "operator-runtime-api-key" not in rendered
+        assert audit_log["parameters"] == {"queryParameters": "version=1&api_key=[REDACTED]"}
+        return
+
+    with pytest.raises(ValueError, match=message):
+        build_conversion_audit_log(
+            source_bytes=b"Lot: ABC-123\n",
+            output_bytes=b'{"lot_number":"ABC-123"}\n',
+            model="local-json-model",
+            prompt_id="veridoc_conversion_plan",
+            prompt_version="poc-08",
+            ir_version="document-ir-v1",
+            parameters=parameters,
+        )
+
+
 def test_build_conversion_audit_log_allows_content_type_header_metadata() -> None:
     audit_log = build_conversion_audit_log(
         source_bytes=b"Lot: ABC-123\n",
@@ -843,6 +899,37 @@ def test_build_conversion_audit_log_allows_response_format_schema_defs_names() -
                 },
                 "properties": {
                     "result": {"$ref": "#/$defs/output"},
+                },
+            },
+        },
+    }
+
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={"response_format": response_format},
+    )
+
+    assert audit_log["parameters"] == {"response_format": response_format}
+
+
+def test_build_conversion_audit_log_allows_boolean_json_schema_entries() -> None:
+    response_format = {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "veridoc_conversion_plan",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "output": True,
+                    "input": False,
+                },
+                "$defs": {
+                    "content": True,
                 },
             },
         },
@@ -1140,6 +1227,33 @@ def test_build_conversion_audit_log_rejects_openai_request_payload_parameters() 
             ir_version="document-ir-v1",
             parameters=request_payload,
         )
+
+
+def test_build_conversion_audit_log_returns_json_safe_parameter_values() -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={
+            "metadata": {
+                "path": Path("fixtures") / "source.pdf",
+                "ratio": Decimal("0.25"),
+                "labels": {"safe", "metadata"},
+            },
+        },
+    )
+
+    assert audit_log["parameters"] == {
+        "metadata": {
+            "path": "fixtures/source.pdf",
+            "ratio": "0.25",
+            "labels": ["metadata", "safe"],
+        },
+    }
+    json.dumps(audit_log, sort_keys=True)
 
 
 def test_schema_incompatible_conversion_plan_fails_closed() -> None:
