@@ -1340,9 +1340,9 @@ def _is_content_bearing_url(value: str, *, _depth: int = 0) -> bool:
         for key, _value in url_pairs
     ) or any(
         _is_content_bearing_url(parameter_value, _depth=_depth + 1)
-        or _is_content_bearing_raw_query_text(parameter_value)
+        or _is_content_bearing_raw_query_text(parameter_value, _depth=_depth + 1)
         for _key, parameter_value in url_pairs
-        if _depth < 3
+        if _depth < _MAX_AUDIT_PARAMETER_DECODE_DEPTH
     )
 
 
@@ -1357,9 +1357,9 @@ def _is_credential_bearing_url(value: str, *, _depth: int = 0) -> bool:
         return True
     return any(
         _is_credential_bearing_url(parameter_value, _depth=_depth + 1)
-        or _is_credential_bearing_raw_query_text(parameter_value)
+        or _is_credential_bearing_raw_query_text(parameter_value, _depth=_depth + 1)
         for _key, parameter_value in url_pairs
-        if _depth < 3
+        if _depth < _MAX_AUDIT_PARAMETER_DECODE_DEPTH
     )
 
 
@@ -1372,28 +1372,34 @@ def _is_secret_url_parameter_key(key: str) -> bool:
     return _is_secret_parameter_key(key) or _normalize_parameter_key(key) in {"code", "key"}
 
 
-def _is_content_bearing_raw_query_text(value: str) -> bool:
+def _is_content_bearing_raw_query_text(value: str, *, _depth: int = 0) -> bool:
     if not _has_raw_query_key_value_separator(value):
+        return False
+    if _depth >= _MAX_AUDIT_PARAMETER_DECODE_DEPTH:
+        # Let the redaction pass handle overly deep raw-query chains.
         return False
     return any(
         _is_content_bearing_audit_parameter_key(key)
         for key, _parameter_value in _url_parameter_pairs(value)
     ) or any(
-        _is_content_bearing_url(parameter_value)
-        or _is_content_bearing_raw_query_text(parameter_value)
+        _is_content_bearing_url(parameter_value, _depth=_depth + 1)
+        or _is_content_bearing_raw_query_text(parameter_value, _depth=_depth + 1)
         for _key, parameter_value in _url_parameter_pairs(value)
     )
 
 
-def _is_credential_bearing_raw_query_text(value: str) -> bool:
+def _is_credential_bearing_raw_query_text(value: str, *, _depth: int = 0) -> bool:
     if not _has_raw_query_key_value_separator(value):
         return False
+    if _depth >= _MAX_AUDIT_PARAMETER_DECODE_DEPTH:
+        # Redact ambiguous raw-query chains instead of recursing without a bound.
+        return True
     return any(
         _is_secret_url_parameter_key(key)
         for key, _parameter_value in _url_parameter_pairs(value)
     ) or any(
-        _is_credential_bearing_url(parameter_value)
-        or _is_credential_bearing_raw_query_text(parameter_value)
+        _is_credential_bearing_url(parameter_value, _depth=_depth + 1)
+        or _is_credential_bearing_raw_query_text(parameter_value, _depth=_depth + 1)
         for _key, parameter_value in _url_parameter_pairs(value)
     )
 
