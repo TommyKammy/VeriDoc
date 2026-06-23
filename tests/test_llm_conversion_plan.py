@@ -978,6 +978,33 @@ def test_build_conversion_audit_log_redacts_nested_raw_query_entry_credentials()
     assert "operator-runtime-provider-key" not in rendered
 
 
+def test_build_conversion_audit_log_redacts_structured_nested_raw_query_entry_credentials() -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={
+            "queryParameters": [
+                ["next", "api_key=operator-runtime-key"],
+                {"key": "next", "value": "api_key=operator-runtime-map-key"},
+            ],
+        },
+    )
+
+    assert audit_log["parameters"] == {
+        "queryParameters": [
+            ["next", "[REDACTED]"],
+            {"key": "next", "value": "[REDACTED]"},
+        ],
+    }
+    rendered = json.dumps(audit_log, sort_keys=True)
+    assert "operator-runtime-key" not in rendered
+    assert "operator-runtime-map-key" not in rendered
+
+
 def test_build_conversion_audit_log_redacts_structured_provider_encoded_raw_payloads() -> None:
     audit_log = build_conversion_audit_log(
         source_bytes=b"Lot: ABC-123\n",
@@ -1020,6 +1047,21 @@ def test_build_conversion_audit_log_rejects_nested_raw_query_entry_content() -> 
         )
 
 
+def test_build_conversion_audit_log_rejects_structured_nested_raw_query_entry_content() -> None:
+    with pytest.raises(ValueError, match=r"parameters\.queryParameters\[0\]\.next"):
+        build_conversion_audit_log(
+            source_bytes=b"Lot: ABC-123\n",
+            output_bytes=b'{"lot_number":"ABC-123"}\n',
+            model="local-json-model",
+            prompt_id="veridoc_conversion_plan",
+            prompt_version="poc-08",
+            ir_version="document-ir-v1",
+            parameters={
+                "queryParameters": [["next", "prompt=Lot: ABC-123"]],
+            },
+        )
+
+
 def test_build_conversion_audit_log_redacts_encoded_raw_query_container_text() -> None:
     audit_log = build_conversion_audit_log(
         source_bytes=b"Lot: ABC-123\n",
@@ -1041,6 +1083,25 @@ def test_build_conversion_audit_log_redacts_encoded_raw_query_container_text() -
     rendered = json.dumps(audit_log, sort_keys=True)
     assert "operator-runtime-api-key" not in rendered
     assert "operator-runtime-token" not in rendered
+
+
+def test_build_conversion_audit_log_preserves_encoded_plus_in_raw_query_values() -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={
+            "queryParameters": "language=C%2B%2B&expr=a%2Bb&api_key=operator-runtime-key",
+        },
+    )
+
+    assert audit_log["parameters"] == {
+        "queryParameters": "language=C++&expr=a+b&api_key=[REDACTED]",
+    }
+    assert "operator-runtime-key" not in json.dumps(audit_log, sort_keys=True)
 
 
 def test_build_conversion_audit_log_rejects_encoded_raw_query_container_content() -> None:
@@ -1280,6 +1341,26 @@ def test_build_conversion_audit_log_redacts_encoded_url_parameter_credentials() 
     rendered = json.dumps(audit_log, sort_keys=True)
     assert "operator-runtime-api-key" not in rendered
     assert "https%3A" not in rendered
+
+
+@pytest.mark.parametrize("parameter_key", ["callback_url", "image_url"])
+def test_build_conversion_audit_log_rejects_encoded_data_url_parameters(
+    parameter_key: str,
+) -> None:
+    with pytest.raises(ValueError, match=rf"parameters\.{parameter_key}"):
+        build_conversion_audit_log(
+            source_bytes=b"Lot: ABC-123\n",
+            output_bytes=b'{"lot_number":"ABC-123"}\n',
+            model="local-json-model",
+            prompt_id="veridoc_conversion_plan",
+            prompt_version="poc-08",
+            ir_version="document-ir-v1",
+            parameters={
+                parameter_key: (
+                    "data%3Aapplication%2Fpdf%3Bbase64%2CTG90OiBBQkMtMTIz"
+                ),
+            },
+        )
 
 
 def test_build_conversion_audit_log_redacts_url_credentials_with_encoded_keys() -> None:
@@ -1999,6 +2080,14 @@ def test_build_conversion_audit_log_allows_schema_json_string_boolean_roots(
         (
             '{"anyOf":["Lot: ABC-123"]}',
             r"parameters\.schema_json\.anyOf\[0\]",
+        ),
+        (
+            '{"patternProperties":{".*":["Lot: ABC-123"]}}',
+            r"parameters\.schema_json\.patternProperties\.\.\*",
+        ),
+        (
+            '{"dependentSchemas":{"foo":["Lot: ABC-123"]}}',
+            r"parameters\.schema_json\.dependentSchemas\.foo",
         ),
     ],
 )

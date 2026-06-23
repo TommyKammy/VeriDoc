@@ -14,7 +14,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any
-from urllib.parse import parse_qsl, unquote_plus, urlparse
+from urllib.parse import parse_qsl, unquote, unquote_plus, urlparse
 
 
 CONVERSION_PLAN_SCHEMA: dict[str, Any] = {
@@ -633,20 +633,21 @@ def _redact_audit_parameters(value: object, *, key_path: str = "") -> object:
     if isinstance(value, Mapping):
         key_value_entry = _mapping_key_value_parameter_entry(value)
         return {
-            str(key): _redact_audit_parameters(
+            str(key): _redact_mapping_audit_parameter_item(
+                key,
                 item,
-                key_path=(
-                    _join_parameter_key_path(key_path, key_value_entry[1])
-                    if key_value_entry is not None and str(key) == key_value_entry[2]
-                    else _join_parameter_key_path(key_path, str(key))
-                ),
+                key_path=key_path,
+                key_value_entry=key_value_entry,
             )
             for key, item in value.items()
         }
     if _is_key_value_parameter_entry(value, key_path):
         entry_key = str(value[0])
         entry_path = _join_parameter_key_path(key_path, entry_key)
-        return [entry_key, _redact_audit_parameters(value[1], key_path=entry_path)]
+        return [
+            entry_key,
+            _redact_key_value_parameter_entry_value(value[1], key_path, entry_path),
+        ]
     if isinstance(value, str):
         parameter_value = _security_checked_audit_parameter_string(value, key_path)
         if any(
@@ -687,6 +688,62 @@ def _redact_audit_parameters(value: object, *, key_path: str = "") -> object:
     raise TypeError(f"{display_path} must be JSON-serializable audit metadata")
 
 
+def _redact_mapping_audit_parameter_item(
+    key: object,
+    item: object,
+    *,
+    key_path: str,
+    key_value_entry: tuple[str, str, str] | None,
+) -> object:
+    if key_value_entry is None:
+        return _redact_audit_parameters(
+            item,
+            key_path=_join_parameter_key_path(key_path, str(key)),
+        )
+    if str(key) == key_value_entry[0]:
+        return item
+    if str(key) == key_value_entry[2]:
+        entry_path = _join_parameter_key_path(key_path, key_value_entry[1])
+        return _redact_key_value_parameter_entry_value(item, key_path, entry_path)
+    return _redact_audit_parameters(
+        item,
+        key_path=_join_parameter_key_path(key_path, str(key)),
+    )
+
+
+def _redact_key_value_parameter_entry_value(
+    value: object,
+    key_path: str,
+    entry_path: str,
+) -> object:
+    if not isinstance(value, str):
+        return _redact_audit_parameters(value, key_path=entry_path)
+    entry_parameter_value = _raw_key_value_parameter_entry_value(key_path, value)
+    if (
+        not _is_key_value_audit_parameter_sequence_container_key(entry_path)
+        and _is_credential_bearing_raw_query_text(entry_parameter_value)
+    ):
+        return _REDACTED_VALUE
+    return _redact_audit_parameters(entry_parameter_value, key_path=entry_path)
+
+
+def _reject_key_value_parameter_entry_value(
+    value: object,
+    key_path: str,
+    entry_path: str,
+) -> None:
+    if not isinstance(value, str):
+        _reject_content_bearing_audit_parameters(value, key_path=entry_path)
+        return
+    entry_parameter_value = _raw_key_value_parameter_entry_value(key_path, value)
+    if _is_content_bearing_url(entry_parameter_value) or (
+        not _is_key_value_audit_parameter_sequence_container_key(entry_path)
+        and _is_content_bearing_raw_query_text(entry_parameter_value)
+    ):
+        raise ValueError(f"{entry_path} must not include document or request content")
+    _reject_content_bearing_audit_parameters(entry_parameter_value, key_path=entry_path)
+
+
 def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "parameters") -> None:
     if isinstance(value, (bytes, bytearray, memoryview)):
         raise ValueError(f"{key_path} must not include document or request content")
@@ -709,10 +766,16 @@ def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "
                 raise ValueError(f"{item_path} must not include document or request content")
             if _is_content_bearing_audit_parameter_key(item_path):
                 raise ValueError(f"{item_path} must not include document or request content")
-            _reject_content_bearing_audit_parameters(value[value_field], key_path=item_path)
+            _reject_key_value_parameter_entry_value(
+                value[value_field],
+                key_path,
+                item_path,
+            )
         for key, item in value.items():
             key_string = str(key)
             item_path = f"{key_path}.{key_string}"
+            if _is_json_schema_schema_map_path(key_path) and not isinstance(item, (Mapping, bool)):
+                raise ValueError(f"{item_path} must not include document or request content")
             if _is_content_bearing_schema_value_path(item_path):
                 raise ValueError(f"{item_path} must not include document or request content")
             if _is_content_bearing_audit_parameter_key(item_path):
@@ -725,7 +788,7 @@ def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "
             raise ValueError(f"{item_path} must not include document or request content")
         if _is_content_bearing_audit_parameter_key(item_path):
             raise ValueError(f"{item_path} must not include document or request content")
-        _reject_content_bearing_audit_parameters(value[1], key_path=item_path)
+        _reject_key_value_parameter_entry_value(value[1], key_path, item_path)
     elif isinstance(value, str):
         parameter_value = _security_checked_audit_parameter_string(value, key_path)
         if _is_file_audit_parameter_container_path(key_path):
@@ -911,7 +974,7 @@ def _is_json_schema_audit_parameter_path(components: tuple[str, ...]) -> bool:
     return (
         _is_root_schema_json_audit_parameter_path(components)
         or (
-            {"properties", "defs", "definitions"}.intersection(components)
+            _JSON_SCHEMA_SCHEMA_MAP_KEYS.intersection(components)
             and (
                 _is_response_format_json_schema_path(components)
                 or _is_tool_function_json_schema_path(components)
@@ -937,7 +1000,16 @@ def _is_schema_json_root_key_path(key_path: str) -> bool:
 def _is_json_schema_field_name_path(components: tuple[str, ...]) -> bool:
     return (
         len(components) >= 2
-        and components[-2] in {"properties", "defs", "definitions"}
+        and components[-2] in _JSON_SCHEMA_SCHEMA_MAP_KEYS
+    )
+
+
+def _is_json_schema_schema_map_path(key: str) -> bool:
+    components = _audit_parameter_path_components(key)
+    return (
+        bool(components)
+        and _is_json_schema_audit_parameter_path(components)
+        and components[-1] in _JSON_SCHEMA_SCHEMA_MAP_KEYS
     )
 
 
@@ -1226,7 +1298,7 @@ def _raw_key_value_parameter_entry_value(key_path: str, entry_value: str) -> str
 def _fully_decode_query_parameter_value(value: str) -> str:
     decoded_value = value
     for _index in range(_MAX_AUDIT_PARAMETER_DECODE_DEPTH):
-        next_value = unquote_plus(decoded_value)
+        next_value = unquote(decoded_value)
         if next_value == decoded_value:
             break
         decoded_value = next_value
@@ -1243,7 +1315,9 @@ def _audit_parameter_url_value_forms(value: str, key_path: str) -> tuple[str, ..
     decoded_value = _fully_decode_query_parameter_value(value)
     if decoded_value == value:
         return (value,)
-    if _is_absolute_url(decoded_value) and _should_decode_url_audit_parameter_value(key_path):
+    if _should_decode_url_audit_parameter_value(key_path) and (
+        _is_absolute_url(decoded_value) or _is_data_url(decoded_value)
+    ):
         return (value, decoded_value)
     return (value,)
 
@@ -1452,6 +1526,10 @@ def _is_credential_bearing_url(value: str, *, _depth: int = 0) -> bool:
 def _is_absolute_url(value: str) -> bool:
     parsed_url = urlparse(value)
     return bool(parsed_url.scheme and parsed_url.netloc)
+
+
+def _is_data_url(value: str) -> bool:
+    return urlparse(value).scheme.lower() == "data"
 
 
 def _is_secret_url_parameter_key(key: str) -> bool:
