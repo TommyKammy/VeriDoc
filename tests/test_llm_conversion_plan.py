@@ -1272,11 +1272,53 @@ def test_build_conversion_audit_log_redacts_double_encoded_query_nested_url_cred
     assert "https%253A" not in rendered
 
 
+def test_build_conversion_audit_log_redacts_url_embedded_raw_query_credentials() -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={
+            "callback_url": (
+                "https://example.invalid/cb?"
+                "next=params%3Dapi_key%253Doperator-runtime-api-key"
+            ),
+        },
+    )
+
+    assert audit_log["parameters"] == {"callback_url": "[REDACTED]"}
+    rendered = json.dumps(audit_log, sort_keys=True)
+    assert "operator-runtime-api-key" not in rendered
+    assert "params%3D" not in rendered
+
+
+def test_build_conversion_audit_log_rejects_url_embedded_raw_query_content() -> None:
+    with pytest.raises(ValueError, match=r"parameters\.callback_url"):
+        build_conversion_audit_log(
+            source_bytes=b"Lot: ABC-123\n",
+            output_bytes=b'{"lot_number":"ABC-123"}\n',
+            model="local-json-model",
+            prompt_id="veridoc_conversion_plan",
+            prompt_version="poc-08",
+            ir_version="document-ir-v1",
+            parameters={
+                "callback_url": (
+                    "https://example.invalid/cb?"
+                    "next=params%3Dprompt%253DLot%25253A%252BABC-123"
+                ),
+            },
+        )
+
+
 @pytest.mark.parametrize(
     "callback_url",
     [
         "https://example.invalid/cb?view=message",
         "https://example.invalid/cb?state=token",
+        "https://example.invalid/cb?next=message",
+        "https://example.invalid/cb?next=output",
     ],
 )
 def test_build_conversion_audit_log_allows_nested_url_bare_word_query_values(

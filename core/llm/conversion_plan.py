@@ -1378,6 +1378,10 @@ def _is_content_bearing_raw_query_text(value: str) -> bool:
     return any(
         _is_content_bearing_audit_parameter_key(key)
         for key, _parameter_value in _url_parameter_pairs(value)
+    ) or any(
+        _is_content_bearing_url(parameter_value)
+        or _is_content_bearing_raw_query_text(parameter_value)
+        for _key, parameter_value in _url_parameter_pairs(value)
     )
 
 
@@ -1387,6 +1391,10 @@ def _is_credential_bearing_raw_query_text(value: str) -> bool:
     return any(
         _is_secret_url_parameter_key(key)
         for key, _parameter_value in _url_parameter_pairs(value)
+    ) or any(
+        _is_credential_bearing_url(parameter_value)
+        or _is_credential_bearing_raw_query_text(parameter_value)
+        for _key, parameter_value in _url_parameter_pairs(value)
     )
 
 
