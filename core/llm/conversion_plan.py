@@ -277,6 +277,8 @@ _CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENTS = frozenset(
 )
 _CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENT_SEQUENCES = (
     ("form", "data"),
+    ("json", "data"),
+    ("json", "request"),
     ("raw", "source"),
     ("raw", "output"),
 )
