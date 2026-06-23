@@ -570,6 +570,12 @@ def _redact_audit_parameters(value: object, *, key_path: str = "") -> object:
 def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "parameters") -> None:
     if isinstance(value, (bytes, bytearray, memoryview)):
         raise ValueError(f"{key_path} must not include document or request content")
+    if (
+        key_path
+        and _is_secret_parameter_key(key_path)
+        and not _is_safe_json_schema_audit_parameter_key(key_path)
+    ):
+        return
     if isinstance(value, Mapping):
         key_value_entry = _mapping_key_value_parameter_entry(value)
         if key_value_entry is None and _is_file_audit_parameter_container_path(key_path):
@@ -931,13 +937,17 @@ def _redact_raw_key_value_parameter_line(
 ) -> str:
     entry_key, separator, entry_value = raw_entry
     entry_path = _raw_key_value_parameter_entry_path(key_path, entry_key)
+    entry_parameter_value = _raw_key_value_parameter_entry_value(key_path, entry_value)
     redacted_value = _redact_audit_parameters(
-        _raw_key_value_parameter_entry_value(key_path, entry_value),
+        entry_parameter_value,
         key_path=entry_path,
     )
     if redacted_value == _REDACTED_VALUE:
         redacted_separator = ": " if separator == ":" else separator
         return f"{entry_key}{redacted_separator}{_REDACTED_VALUE}"
+    if isinstance(redacted_value, str) and redacted_value != entry_parameter_value:
+        separator_text = ": " if separator == ":" else separator
+        return f"{entry_key}{separator_text}{redacted_value}"
     separator_text = ": " if separator == ":" else separator
     return f"{entry_key}{separator_text}{entry_value}"
 

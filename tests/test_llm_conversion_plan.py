@@ -772,6 +772,25 @@ def test_build_conversion_audit_log_redacts_secret_suffixed_params_alias_values(
     assert "operator-runtime-token" not in rendered
 
 
+def test_build_conversion_audit_log_redacts_secret_parameters_alias_before_raw_parsing() -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={
+            "auth_parameters": "prompt=consent&token=operator-runtime-token",
+        },
+    )
+
+    assert audit_log["parameters"] == {"auth_parameters": "[REDACTED]"}
+    rendered = json.dumps(audit_log, sort_keys=True)
+    assert "operator-runtime-token" not in rendered
+    assert "prompt=consent" not in rendered
+
+
 def test_build_conversion_audit_log_redacts_url_values_before_query_alias_parsing() -> None:
     audit_log = build_conversion_audit_log(
         source_bytes=b"Lot: ABC-123\n",
@@ -813,6 +832,25 @@ def test_build_conversion_audit_log_redacts_encoded_query_nested_url_credentials
     rendered = json.dumps(audit_log, sort_keys=True)
     assert "operator-runtime-api-key" not in rendered
     assert "https%3A" not in rendered
+
+
+def test_build_conversion_audit_log_preserves_recursive_raw_query_redactions() -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={
+            "queryParameters": "params=api_key%3Doperator-runtime-api-key",
+        },
+    )
+
+    assert audit_log["parameters"] == {"queryParameters": "params=api_key=[REDACTED]"}
+    rendered = json.dumps(audit_log, sort_keys=True)
+    assert "operator-runtime-api-key" not in rendered
+    assert "api_key%3D" not in rendered
 
 
 def test_build_conversion_audit_log_allows_content_type_header_metadata() -> None:
