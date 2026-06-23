@@ -322,8 +322,11 @@ _CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENTS = frozenset(
 _CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENT_SEQUENCES = (
     ("form", "data"),
     ("json", "data"),
+    ("json", "output"),
     ("json", "raw"),
     ("json", "request"),
+    ("json", "response"),
+    ("json", "result"),
     ("raw", "source"),
     ("raw", "output"),
 )
@@ -616,7 +619,10 @@ def _redact_audit_parameters(value: object, *, key_path: str = "") -> object:
         return [entry_key, _redact_audit_parameters(value[1], key_path=entry_path)]
     if isinstance(value, str):
         parameter_value = _security_checked_audit_parameter_string(value, key_path)
-        if _is_credential_bearing_url(parameter_value):
+        if any(
+            _is_credential_bearing_url(url_value)
+            for url_value in _audit_parameter_url_value_forms(parameter_value, key_path)
+        ):
             return _REDACTED_VALUE
         redacted_json_value = _redact_json_encoded_audit_metadata_value(parameter_value, key_path)
         if redacted_json_value is not None:
@@ -694,7 +700,10 @@ def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "
         parameter_value = _security_checked_audit_parameter_string(value, key_path)
         if _is_file_audit_parameter_container_path(key_path):
             raise ValueError(f"{key_path} must not include document or request content")
-        if _is_content_bearing_schema_value_path(key_path) or _is_content_bearing_url(parameter_value):
+        if _is_content_bearing_schema_value_path(key_path) or any(
+            _is_content_bearing_url(url_value)
+            for url_value in _audit_parameter_url_value_forms(parameter_value, key_path)
+        ):
             raise ValueError(f"{key_path} must not include document or request content")
         if _is_unsafe_json_encoded_metadata_scalar_path(key_path):
             raise ValueError(f"{key_path} must not include document or request content")
@@ -925,6 +934,7 @@ def _is_secret_parameter_key(key: str) -> bool:
             and (
                 "query" in path_components
                 or "params" in path_components
+                or "parameters" in path_components
                 or _is_query_audit_parameter_entry_key(key)
             )
         )
@@ -1144,6 +1154,27 @@ def _security_checked_audit_parameter_string(value: str, key_path: str) -> str:
     return _fully_decode_query_parameter_value(value)
 
 
+def _audit_parameter_url_value_forms(value: str, key_path: str) -> tuple[str, ...]:
+    decoded_value = _fully_decode_query_parameter_value(value)
+    if decoded_value == value:
+        return (value,)
+    if _is_absolute_url(decoded_value) and _should_decode_url_audit_parameter_value(key_path):
+        return (value, decoded_value)
+    return (value,)
+
+
+def _should_decode_url_audit_parameter_value(key_path: str) -> bool:
+    leaf = _normalize_parameter_key(_parameter_key_leaf(key_path))
+    parent_key = key_path.rsplit(".", 1)[0] if "." in key_path else ""
+    parent_leaf = _normalize_parameter_key(_parameter_key_leaf(parent_key))
+    return (
+        _is_query_audit_parameter_container_leaf(parent_leaf)
+        or _is_raw_audit_parameter_container_leaf(parent_leaf)
+        or _is_query_audit_parameter_container_leaf(leaf)
+        or _is_raw_audit_parameter_container_leaf(leaf)
+    )
+
+
 def _is_structured_query_audit_parameter_entry_key(key_path: str) -> bool:
     if "." not in key_path:
         return False
@@ -1300,6 +1331,7 @@ def _is_content_bearing_url(value: str, *, _depth: int = 0) -> bool:
         for key, _value in url_pairs
     ) or any(
         _is_content_bearing_url(parameter_value, _depth=_depth + 1)
+        or _is_content_bearing_raw_query_text(parameter_value)
         for _key, parameter_value in url_pairs
         if _depth < 3
     )
@@ -1316,6 +1348,7 @@ def _is_credential_bearing_url(value: str, *, _depth: int = 0) -> bool:
         return True
     return any(
         _is_credential_bearing_url(parameter_value, _depth=_depth + 1)
+        or _is_credential_bearing_raw_query_text(parameter_value)
         for _key, parameter_value in url_pairs
         if _depth < 3
     )
@@ -1328,6 +1361,20 @@ def _is_absolute_url(value: str) -> bool:
 
 def _is_secret_url_parameter_key(key: str) -> bool:
     return _is_secret_parameter_key(key) or _normalize_parameter_key(key) in {"code", "key"}
+
+
+def _is_content_bearing_raw_query_text(value: str) -> bool:
+    return any(
+        _is_content_bearing_audit_parameter_key(key)
+        for key, _parameter_value in _url_parameter_pairs(value)
+    )
+
+
+def _is_credential_bearing_raw_query_text(value: str) -> bool:
+    return any(
+        _is_secret_url_parameter_key(key)
+        for key, _parameter_value in _url_parameter_pairs(value)
+    )
 
 
 def _url_parameter_pairs(value: str) -> list[tuple[str, str]]:

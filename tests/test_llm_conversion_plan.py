@@ -357,6 +357,29 @@ def test_build_conversion_audit_log_rejects_content_bearing_parameters(
         )
 
 
+@pytest.mark.parametrize(
+    ("parameters", "message"),
+    [
+        ({"jsonOutput": '{"lot_number":"ABC-123"}'}, r"parameters\.jsonOutput"),
+        ({"json_response": '{"lot_number":"ABC-123"}'}, r"parameters\.json_response"),
+    ],
+)
+def test_build_conversion_audit_log_rejects_json_first_output_aliases(
+    parameters: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        build_conversion_audit_log(
+            source_bytes=b"Lot: ABC-123\n",
+            output_bytes=b'{"lot_number":"ABC-123"}\n',
+            model="local-json-model",
+            prompt_id="veridoc_conversion_plan",
+            prompt_version="poc-08",
+            ir_version="document-ir-v1",
+            parameters=parameters,
+        )
+
+
 def test_build_conversion_audit_log_allows_scalar_prompt_token_limits() -> None:
     audit_log = build_conversion_audit_log(
         source_bytes=b"Lot: ABC-123\n",
@@ -723,6 +746,29 @@ def test_build_conversion_audit_log_sanitizes_mapping_key_value_parameter_entrie
     assert "Bearer" not in rendered
 
 
+def test_build_conversion_audit_log_redacts_bare_provider_parameter_key_values() -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={
+            "provider_parameters": {"key": "operator-runtime-provider-key"},
+            "request_parameters": {"code": "operator-runtime-request-code"},
+        },
+    )
+
+    assert audit_log["parameters"] == {
+        "provider_parameters": {"key": "[REDACTED]"},
+        "request_parameters": {"code": "[REDACTED]"},
+    }
+    rendered = json.dumps(audit_log, sort_keys=True)
+    assert "operator-runtime-provider-key" not in rendered
+    assert "operator-runtime-request-code" not in rendered
+
+
 def test_build_conversion_audit_log_normalizes_mapping_key_value_field_labels() -> None:
     audit_log = build_conversion_audit_log(
         source_bytes=b"Lot: ABC-123\n",
@@ -1077,6 +1123,54 @@ def test_build_conversion_audit_log_redacts_url_values_before_query_alias_parsin
     rendered = json.dumps(audit_log, sort_keys=True)
     assert "operator-runtime-api-key" not in rendered
     assert "https:" not in rendered
+
+
+def test_build_conversion_audit_log_redacts_url_parameters_with_decoded_raw_query_credentials() -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={
+            "callback_url": (
+                "https://example.invalid/cb?"
+                "redirect=version%3D1%26api_key%3Doperator-runtime-api-key"
+            ),
+        },
+    )
+
+    assert audit_log["parameters"] == {"callback_url": "[REDACTED]"}
+    rendered = json.dumps(audit_log, sort_keys=True)
+    assert "operator-runtime-api-key" not in rendered
+    assert "redirect=version" not in rendered
+
+
+def test_build_conversion_audit_log_redacts_encoded_provider_parameter_url_credentials() -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={
+            "provider_parameters": {
+                "redirect": (
+                    "https%3A%2F%2Fexample.invalid%2Fcb"
+                    "%3Fapi_key%3Doperator-runtime-provider-key"
+                ),
+            },
+        },
+    )
+
+    assert audit_log["parameters"] == {
+        "provider_parameters": {"redirect": "[REDACTED]"},
+    }
+    rendered = json.dumps(audit_log, sort_keys=True)
+    assert "operator-runtime-provider-key" not in rendered
+    assert "https%3A" not in rendered
 
 
 def test_build_conversion_audit_log_redacts_encoded_query_nested_url_credentials() -> None:
