@@ -258,7 +258,11 @@ def test_build_conversion_audit_log_redacts_signature_credentials(
         ({"requestBody": "Lot: ABC-123"}, r"parameters\.requestBody"),
         ({"data": "Lot: ABC-123"}, r"parameters\.data"),
         ({"json": {"input": "Lot: ABC-123"}}, r"parameters\.json"),
+        ({"requestJson": "Lot: ABC-123"}, r"parameters\.requestJson"),
+        ({"rawJson": '{"lot_number":"ABC-123"}'}, r"parameters\.rawJson"),
         ({"formData": {"upload": "Lot: ABC-123"}}, r"parameters\.formData"),
+        ({"requestFormData": "Lot: ABC-123"}, r"parameters\.requestFormData"),
+        ({"multipartFormData": "Lot: ABC-123"}, r"parameters\.multipartFormData"),
         ({"payload": "Lot: ABC-123"}, r"parameters\.payload"),
         ({"generation": {"previous_response": {"choices": []}}}, r"parameters\.generation\.previous_response"),
         ({"tools": [{"content": "Lot: ABC-123"}]}, r"parameters\.tools\[0\]\.content"),
@@ -589,6 +593,7 @@ def test_build_conversion_audit_log_redacts_multi_entry_raw_parameter_strings() 
         ir_version="document-ir-v1",
         parameters={
             "query_params": "version=1&api%5Fkey=operator-runtime-api-key",
+            "default_parameters": "version=1&code=operator-runtime-code&key=operator-runtime-key",
             "params_semicolon": "version=1;token=not-a-container",
             "params": [
                 "callback=https://example.invalid/callback?sig=operator-runtime-signature",
@@ -606,6 +611,7 @@ def test_build_conversion_audit_log_redacts_multi_entry_raw_parameter_strings() 
 
     assert audit_log["parameters"] == {
         "query_params": "version=1&api%5Fkey=[REDACTED]",
+        "default_parameters": "version=1&code=[REDACTED]&key=[REDACTED]",
         "params_semicolon": "version=1;token=not-a-container",
         "params": ["callback=[REDACTED]", "?key=[REDACTED]", "code=[REDACTED]", "version=1;api_key=[REDACTED]"],
         "headers": "X-Test: ok\nAuthorization: [REDACTED]",
@@ -615,6 +621,8 @@ def test_build_conversion_audit_log_redacts_multi_entry_raw_parameter_strings() 
     rendered = json.dumps(audit_log, sort_keys=True)
     assert "operator-runtime-api-key" not in rendered
     assert "operator-runtime-api-key-2" not in rendered
+    assert "operator-runtime-code" not in rendered
+    assert "operator-runtime-key" not in rendered
     assert "operator-runtime-query-key" not in rendered
     assert "operator-runtime-function-code" not in rendered
     assert "operator-runtime-signature" not in rendered

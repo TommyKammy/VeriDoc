@@ -262,6 +262,7 @@ _CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENTS = frozenset(
     }
 )
 _CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENT_SEQUENCES = (
+    ("form", "data"),
     ("raw", "source"),
     ("raw", "output"),
 )
@@ -629,6 +630,8 @@ def _is_content_bearing_audit_parameter_key(key: str) -> bool:
         return False
     if normalized_leaf in _SAFE_CONTENT_WORD_AUDIT_PARAMETER_KEYS:
         return False
+    if _is_secret_parameter_key(key):
+        return False
     leaf_components = tuple(normalized_leaf.split("_"))
     singular_leaf_components = tuple(
         _singular_parameter_component(component) for component in leaf_components
@@ -636,6 +639,7 @@ def _is_content_bearing_audit_parameter_key(key: str) -> bool:
     path_components = tuple(_normalize_parameter_key(key).split("_"))
     return (
         normalized_leaf in _CONTENT_BEARING_AUDIT_PARAMETER_KEYS
+        or normalized_leaf.endswith("_json")
         or "previous_response" in normalized_leaf
         or any(component in _CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENTS for component in leaf_components)
         or any(
@@ -748,7 +752,11 @@ def _is_secret_parameter_key(key: str) -> bool:
         any(candidate in _SECRET_PARAMETER_KEYS for candidate in key_candidates)
         or (
             normalized_leaf in {"code", "key"}
-            and ("query" in path_components or "params" in path_components)
+            and (
+                "query" in path_components
+                or "params" in path_components
+                or _is_query_audit_parameter_entry_key(key)
+            )
         )
         or any(
             candidate.endswith(suffix)
@@ -1000,6 +1008,12 @@ def _is_query_audit_parameter_container_leaf(normalized_leaf: str) -> bool:
         or normalized_leaf.endswith("_params")
         or normalized_leaf.endswith("_parameters")
     )
+
+
+def _is_query_audit_parameter_entry_key(key: str) -> bool:
+    parent_key = key.rsplit(".", 1)[0]
+    parent_leaf = _normalize_parameter_key(_parameter_key_leaf(parent_key))
+    return _is_query_audit_parameter_container_leaf(parent_leaf)
 
 
 def _is_cookie_audit_parameter_container_leaf(normalized_leaf: str) -> bool:
