@@ -385,6 +385,11 @@ _QUERY_AUDIT_PARAMETER_CONTAINER_PREFIX_COMPONENTS = frozenset(
         "url",
     }
 )
+_RAW_AUDIT_PARAMETER_CONTAINER_PREFIX_COMPONENTS = frozenset(
+    {
+        "provider",
+    }
+)
 _FILE_AUDIT_PARAMETER_CONTAINER_KEYS = frozenset({"file", "files"})
 _CONTENT_BYTE_AUDIT_PARAMETER_ANCESTOR_COMPONENTS = frozenset(
     {
@@ -858,11 +863,13 @@ def _is_tool_function_json_schema_path(components: tuple[str, ...]) -> bool:
 
 def _is_json_schema_audit_parameter_path(components: tuple[str, ...]) -> bool:
     return (
-        {"properties", "defs", "definitions"}.intersection(components)
-        and (
-            _is_response_format_json_schema_path(components)
-            or _is_tool_function_json_schema_path(components)
-            or "schema_json" in components
+        "schema_json" in components
+        or (
+            {"properties", "defs", "definitions"}.intersection(components)
+            and (
+                _is_response_format_json_schema_path(components)
+                or _is_tool_function_json_schema_path(components)
+            )
         )
     )
 
@@ -1073,7 +1080,9 @@ def _redact_raw_key_value_parameter_text(value: str, key_path: str) -> str | Non
 def _raw_key_value_parameter_chunks(value: str, normalized_leaf: str) -> list[str]:
     if "\n" in value or "\r" in value:
         return value.splitlines()
-    if _is_query_audit_parameter_container_leaf(normalized_leaf) and ("&" in value or ";" in value):
+    if _is_multi_entry_raw_parameter_container_leaf(normalized_leaf) and (
+        "&" in value or ";" in value
+    ):
         return re.split(r"[&;]", value)
     if _is_cookie_audit_parameter_container_leaf(normalized_leaf) and ";" in value:
         return [chunk.strip() for chunk in value.split(";")]
@@ -1083,9 +1092,9 @@ def _raw_key_value_parameter_chunks(value: str, normalized_leaf: str) -> list[st
 def _raw_key_value_parameter_joiner(value: str, normalized_leaf: str) -> str:
     if "\n" in value or "\r" in value:
         return "\n"
-    if _is_query_audit_parameter_container_leaf(normalized_leaf) and "&" in value:
+    if _is_multi_entry_raw_parameter_container_leaf(normalized_leaf) and "&" in value:
         return "&"
-    if _is_query_audit_parameter_container_leaf(normalized_leaf) and ";" in value:
+    if _is_multi_entry_raw_parameter_container_leaf(normalized_leaf) and ";" in value:
         return ";"
     if _is_cookie_audit_parameter_container_leaf(normalized_leaf) and ";" in value:
         return "; "
@@ -1175,12 +1184,8 @@ def _is_key_value_audit_parameter_sequence_container_key(key_path: str) -> bool:
         normalized_leaf in _KEY_VALUE_AUDIT_PARAMETER_SEQUENCE_CONTAINER_KEYS
         or normalized_leaf.endswith("_headers")
         or normalized_leaf.endswith("_cookies")
-        or normalized_leaf.endswith("_params")
-        or (
-            normalized_leaf.endswith("_parameters")
-            and normalized_leaf not in _SAFE_TWO_STRING_AUDIT_PARAMETER_LIST_KEYS
-        )
         or _is_query_audit_parameter_container_leaf(normalized_leaf)
+        or _is_raw_audit_parameter_container_leaf(normalized_leaf)
     )
 
 
@@ -1192,11 +1197,8 @@ def _is_structured_key_value_audit_parameter_sequence_container_key(key_path: st
         or normalized_leaf == "default_parameters"
         or normalized_leaf.endswith("_headers")
         or normalized_leaf.endswith("_cookies")
-        or normalized_leaf.endswith("_params")
-        or (
-            normalized_leaf.endswith("_parameters")
-            and normalized_leaf not in _SAFE_TWO_STRING_AUDIT_PARAMETER_LIST_KEYS
-        )
+        or _is_query_audit_parameter_container_leaf(normalized_leaf)
+        or _is_raw_audit_parameter_container_leaf(normalized_leaf)
     )
 
 
@@ -1222,6 +1224,24 @@ def _is_query_audit_parameter_container_leaf(normalized_leaf: str) -> bool:
             )
         )
     )
+
+
+def _is_raw_audit_parameter_container_leaf(normalized_leaf: str) -> bool:
+    components = tuple(normalized_leaf.split("_"))
+    return (
+        len(components) >= 2
+        and components[-1] in {"params", "parameters"}
+        and any(
+            component in _RAW_AUDIT_PARAMETER_CONTAINER_PREFIX_COMPONENTS
+            for component in components[:-1]
+        )
+    )
+
+
+def _is_multi_entry_raw_parameter_container_leaf(normalized_leaf: str) -> bool:
+    return _is_query_audit_parameter_container_leaf(
+        normalized_leaf
+    ) or _is_raw_audit_parameter_container_leaf(normalized_leaf)
 
 
 def _is_query_audit_parameter_entry_key(key: str) -> bool:

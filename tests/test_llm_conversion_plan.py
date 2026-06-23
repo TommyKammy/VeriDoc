@@ -635,13 +635,17 @@ def test_build_conversion_audit_log_preserves_safe_generation_parameter_strings(
         prompt_version="poc-08",
         ir_version="document-ir-v1",
         parameters={
+            "generationParams": "input_tokens=100&output_tokens=20",
             "generationParameters": "input_tokens=100&output_tokens=20",
+            "modelParams": "messages=2&tool_calls=0",
             "model_parameters": "messages=2",
         },
     )
 
     assert audit_log["parameters"] == {
+        "generationParams": "input_tokens=100&output_tokens=20",
         "generationParameters": "input_tokens=100&output_tokens=20",
+        "modelParams": "messages=2&tool_calls=0",
         "model_parameters": "messages=2",
     }
 
@@ -856,14 +860,14 @@ def test_build_conversion_audit_log_redacts_raw_provider_parameter_strings() -> 
         prompt_version="poc-08",
         ir_version="document-ir-v1",
         parameters={
-            "provider_parameters": "api_key=operator-runtime-api-key",
-            "providerParams": "token=operator-runtime-token",
+            "provider_parameters": "version=1&api_key=operator-runtime-api-key",
+            "providerParams": "version=1&token=operator-runtime-token",
         },
     )
 
     assert audit_log["parameters"] == {
-        "provider_parameters": "api_key=[REDACTED]",
-        "providerParams": "token=[REDACTED]",
+        "provider_parameters": "version=1&api_key=[REDACTED]",
+        "providerParams": "version=1&token=[REDACTED]",
     }
     rendered = json.dumps(audit_log, sort_keys=True)
     assert "operator-runtime-api-key" not in rendered
@@ -1580,6 +1584,28 @@ def test_build_conversion_audit_log_allows_schema_json_string_property_metadata(
                     "type": "string",
                 },
             },
+        }
+    )
+
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={"schema_json": schema_json},
+    )
+
+    assert audit_log["parameters"] == {"schema_json": schema_json}
+
+
+def test_build_conversion_audit_log_allows_schema_json_string_root_metadata() -> None:
+    schema_json = json.dumps(
+        {
+            "title": "Extraction schema",
+            "type": "object",
+            "required": ["prompt"],
         }
     )
 
