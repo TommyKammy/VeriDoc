@@ -349,6 +349,7 @@ _JSON_SCHEMA_SINGLE_SCHEMA_KEYS = frozenset(
         "not",
         "property_names",
         "then",
+        "unevaluated_items",
         "unevaluated_properties",
     }
 )
@@ -698,10 +699,20 @@ def _redact_mapping_audit_parameter_item(
     key_path: str,
     key_value_entry: tuple[str, str, str] | None,
 ) -> object:
+    item_path = _join_parameter_key_path(
+        key_path,
+        _raw_key_value_parameter_entry_key(key_path, str(key)),
+    )
     if key_value_entry is None:
+        if (
+            isinstance(item, str)
+            and _is_raw_query_audit_parameter_value_key(key_path)
+            and not _is_json_encoded_audit_metadata_key_path(item_path)
+        ):
+            return _redact_key_value_parameter_entry_value(item, key_path, item_path)
         return _redact_audit_parameters(
             item,
-            key_path=_join_parameter_key_path(key_path, str(key)),
+            key_path=item_path,
         )
     if str(key) == key_value_entry[0]:
         return _redact_key_value_parameter_entry_name(str(item), key_path)
@@ -711,7 +722,7 @@ def _redact_mapping_audit_parameter_item(
         return _redact_key_value_parameter_entry_value(item, key_path, entry_path)
     return _redact_audit_parameters(
         item,
-        key_path=_join_parameter_key_path(key_path, str(key)),
+        key_path=item_path,
     )
 
 
@@ -796,13 +807,23 @@ def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "
             )
         for key, item in value.items():
             key_string = str(key)
-            item_path = f"{key_path}.{key_string}"
+            item_path = _join_parameter_key_path(
+                key_path,
+                _raw_key_value_parameter_entry_key(key_path, key_string),
+            )
             if _is_json_schema_schema_map_path(key_path) and not isinstance(item, (Mapping, bool)):
                 raise ValueError(f"{item_path} must not include document or request content")
             if _is_content_bearing_schema_value_path(item_path):
                 raise ValueError(f"{item_path} must not include document or request content")
             if _is_content_bearing_audit_parameter_key(item_path):
                 raise ValueError(f"{item_path} must not include document or request content")
+            if (
+                isinstance(item, str)
+                and _is_raw_query_audit_parameter_value_key(key_path)
+                and not _is_json_encoded_audit_metadata_key_path(item_path)
+            ):
+                _reject_key_value_parameter_entry_value(item, key_path, item_path)
+                continue
             _reject_content_bearing_audit_parameters(item, key_path=item_path)
     elif _is_key_value_parameter_entry(value, key_path):
         entry_key = _raw_key_value_parameter_entry_key(key_path, str(value[0]))
@@ -912,7 +933,7 @@ def _is_safe_message_metadata_audit_parameter_key(normalized_leaf: str) -> bool:
         return False
     if _has_disallowed_content_component(
         components,
-        allowed_components=frozenset({"message", "messages"}),
+        allowed_components=frozenset({"content", "message", "messages"}),
     ):
         return False
     return any(component in _SAFE_MESSAGE_METADATA_DESCRIPTOR_COMPONENTS for component in components)
@@ -1009,7 +1030,7 @@ def _is_json_schema_audit_parameter_path(components: tuple[str, ...]) -> bool:
 
 
 def _is_root_schema_json_audit_parameter_path(components: tuple[str, ...]) -> bool:
-    first_real_component = 1 if components[:1] == ("parameters",) else 0
+    first_real_component = _first_non_parameter_component_index(components)
     return (
         len(components) > first_real_component
         and components[first_real_component] == "schema_json"
@@ -1018,8 +1039,15 @@ def _is_root_schema_json_audit_parameter_path(components: tuple[str, ...]) -> bo
 
 def _is_schema_json_root_key_path(key_path: str) -> bool:
     components = _audit_parameter_path_components(key_path)
-    first_real_component = 1 if components[:1] == ("parameters",) else 0
+    first_real_component = _first_non_parameter_component_index(components)
     return components[first_real_component:] == ("schema_json",)
+
+
+def _first_non_parameter_component_index(components: tuple[str, ...]) -> int:
+    index = 0
+    while index < len(components) and components[index] == "parameters":
+        index += 1
+    return index
 
 
 def _is_json_schema_field_name_path(components: tuple[str, ...]) -> bool:
@@ -1049,6 +1077,8 @@ def _is_invalid_json_schema_value_path(key: str, value: object) -> bool:
     components = _audit_parameter_path_components(key)
     if not _is_json_schema_audit_parameter_path(components):
         return False
+    if _is_schema_json_root_key_path(key) and not isinstance(value, (str, Mapping, bool)):
+        return True
     if _is_json_schema_field_name_path(components) and not isinstance(value, (Mapping, bool)):
         return True
 
@@ -1494,9 +1524,15 @@ def _is_multi_entry_raw_parameter_container_leaf(normalized_leaf: str) -> bool:
 
 def _is_raw_query_audit_parameter_value_key(key_path: str) -> bool:
     normalized_leaf = _normalize_parameter_key(_parameter_key_leaf(key_path))
-    return normalized_leaf == "parameters" or _is_multi_entry_raw_parameter_container_leaf(
+    return _is_real_parameters_audit_parameter_container_key(
+        key_path
+    ) or _is_multi_entry_raw_parameter_container_leaf(
         normalized_leaf
     )
+
+
+def _is_real_parameters_audit_parameter_container_key(key_path: str) -> bool:
+    return _audit_parameter_path_components(key_path) == ("parameters", "parameters")
 
 
 def _is_query_audit_parameter_entry_key(key: str) -> bool:
@@ -1524,6 +1560,13 @@ def _json_encoded_audit_metadata_value(value: str, key_path: str) -> object:
         return json.loads(value)
     except json.JSONDecodeError as exc:
         raise ValueError(f"{key_path} must include valid JSON audit metadata") from exc
+
+
+def _is_json_encoded_audit_metadata_key_path(key_path: str) -> bool:
+    return (
+        _normalize_parameter_key(_parameter_key_leaf(key_path))
+        in _JSON_ENCODED_AUDIT_METADATA_KEYS
+    )
 
 
 def _is_unsafe_json_encoded_metadata_scalar_path(key_path: str) -> bool:
