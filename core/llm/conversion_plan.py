@@ -862,6 +862,7 @@ def _is_json_schema_audit_parameter_path(components: tuple[str, ...]) -> bool:
         and (
             _is_response_format_json_schema_path(components)
             or _is_tool_function_json_schema_path(components)
+            or "schema_json" in components
         )
     )
 
@@ -1174,6 +1175,11 @@ def _is_key_value_audit_parameter_sequence_container_key(key_path: str) -> bool:
         normalized_leaf in _KEY_VALUE_AUDIT_PARAMETER_SEQUENCE_CONTAINER_KEYS
         or normalized_leaf.endswith("_headers")
         or normalized_leaf.endswith("_cookies")
+        or normalized_leaf.endswith("_params")
+        or (
+            normalized_leaf.endswith("_parameters")
+            and normalized_leaf not in _SAFE_TWO_STRING_AUDIT_PARAMETER_LIST_KEYS
+        )
         or _is_query_audit_parameter_container_leaf(normalized_leaf)
     )
 
@@ -1249,10 +1255,15 @@ def _is_unsafe_json_encoded_metadata_scalar_path(key_path: str) -> bool:
     components = _audit_parameter_path_components(key_path)
     if not any(component in _JSON_ENCODED_AUDIT_METADATA_KEYS for component in components):
         return False
-    leaf = key_path.rsplit(".", 1)[-1]
-    normalized_leaf = _normalize_parameter_key(_PARAMETER_INDEX_SUFFIX_RE.sub("", leaf))
-    if normalized_leaf in _JSON_ENCODED_AUDIT_METADATA_KEYS and not _PARAMETER_INDEX_SUFFIX_RE.search(leaf):
+    if _is_json_schema_audit_parameter_path(components):
         return False
+    leaf = key_path.rsplit(".", 1)[-1]
+    has_index_suffix = _PARAMETER_INDEX_SUFFIX_RE.search(leaf) is not None
+    normalized_leaf = _normalize_parameter_key(_PARAMETER_INDEX_SUFFIX_RE.sub("", leaf))
+    if normalized_leaf in _JSON_ENCODED_AUDIT_METADATA_KEYS and not has_index_suffix:
+        return False
+    if has_index_suffix:
+        return True
     return normalized_leaf not in _SAFE_JSON_ENCODED_METADATA_SCALAR_KEYS
 
 

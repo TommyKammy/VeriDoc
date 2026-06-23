@@ -557,6 +557,7 @@ def test_build_conversion_audit_log_rejects_json_encoded_metadata_scalars(
         ('["Lot: ABC-123"]', r"parameters\.metadataJson\[0\]"),
         ('{"note":"Lot: ABC-123"}', r"parameters\.metadataJson\.note"),
         ('{"notes":["Lot: ABC-123"]}', r"parameters\.metadataJson\.notes\[0\]"),
+        ('{"path":["Lot: ABC-123"]}', r"parameters\.metadataJson\.path\[0\]"),
         (
             '["https://example.invalid/cb?api_key=operator-runtime-api-key"]',
             r"parameters\.metadataJson\[0\]",
@@ -844,6 +845,29 @@ def test_build_conversion_audit_log_redacts_multi_entry_raw_parameter_strings() 
     assert "operator-runtime-session" not in rendered
     assert "operator-runtime-token" not in rendered
     assert "Bearer" not in rendered
+
+
+def test_build_conversion_audit_log_redacts_raw_provider_parameter_strings() -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={
+            "provider_parameters": "api_key=operator-runtime-api-key",
+            "providerParams": "token=operator-runtime-token",
+        },
+    )
+
+    assert audit_log["parameters"] == {
+        "provider_parameters": "api_key=[REDACTED]",
+        "providerParams": "token=[REDACTED]",
+    }
+    rendered = json.dumps(audit_log, sort_keys=True)
+    assert "operator-runtime-api-key" not in rendered
+    assert "operator-runtime-token" not in rendered
 
 
 def test_build_conversion_audit_log_preserves_recursive_raw_parameter_redaction() -> None:
@@ -1535,6 +1559,41 @@ def test_build_conversion_audit_log_rejects_schema_json_string_content_values() 
             ir_version="document-ir-v1",
             parameters={"schema_json": schema_json},
         )
+
+
+def test_build_conversion_audit_log_allows_schema_json_string_property_metadata() -> None:
+    schema_json = json.dumps(
+        {
+            "type": "object",
+            "properties": {
+                "prompt": {
+                    "type": "string",
+                    "title": "Prompt",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Safe schema descriptor",
+                },
+            },
+            "$defs": {
+                "content": {
+                    "type": "string",
+                },
+            },
+        }
+    )
+
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={"schema_json": schema_json},
+    )
+
+    assert audit_log["parameters"] == {"schema_json": schema_json}
 
 
 @pytest.mark.parametrize(
