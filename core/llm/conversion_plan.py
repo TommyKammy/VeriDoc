@@ -338,6 +338,36 @@ _JSON_SCHEMA_VALUE_AUDIT_PARAMETER_KEYS = frozenset(
         "examples",
     }
 )
+_JSON_SCHEMA_SINGLE_SCHEMA_KEYS = frozenset(
+    {
+        "additional_properties",
+        "contains",
+        "else",
+        "if",
+        "items",
+        "not",
+        "property_names",
+        "then",
+        "unevaluated_properties",
+    }
+)
+_JSON_SCHEMA_SCHEMA_ARRAY_KEYS = frozenset(
+    {
+        "all_of",
+        "any_of",
+        "one_of",
+        "prefix_items",
+    }
+)
+_JSON_SCHEMA_SCHEMA_MAP_KEYS = frozenset(
+    {
+        "defs",
+        "definitions",
+        "dependent_schemas",
+        "pattern_properties",
+        "properties",
+    }
+)
 _SAFE_JSON_SCHEMA_AUDIT_PARAMETER_METADATA_KEYS = frozenset(
     {
         "content_encoding",
@@ -709,9 +739,12 @@ def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "
             raise ValueError(f"{key_path} must not include document or request content")
         decoded_json_value = _json_encoded_audit_metadata_value(parameter_value, key_path)
         if decoded_json_value is not _JSON_METADATA_NOT_DECODED:
-            if not isinstance(decoded_json_value, (Mapping, list)):
+            if isinstance(decoded_json_value, bool) and _is_schema_json_root_key_path(key_path):
+                pass
+            elif not isinstance(decoded_json_value, (Mapping, list)):
                 raise ValueError(f"{key_path} must not include document or request content")
-            _reject_content_bearing_audit_parameters(decoded_json_value, key_path=key_path)
+            else:
+                _reject_content_bearing_audit_parameters(decoded_json_value, key_path=key_path)
         for raw_entry in _raw_key_value_parameter_entries(parameter_value, key_path):
             entry_key, _separator, _entry_value = raw_entry
             item_path = _raw_key_value_parameter_entry_path(key_path, entry_key)
@@ -895,6 +928,12 @@ def _is_root_schema_json_audit_parameter_path(components: tuple[str, ...]) -> bo
     )
 
 
+def _is_schema_json_root_key_path(key_path: str) -> bool:
+    components = _audit_parameter_path_components(key_path)
+    first_real_component = 1 if components[:1] == ("parameters",) else 0
+    return components[first_real_component:] == ("schema_json",)
+
+
 def _is_json_schema_field_name_path(components: tuple[str, ...]) -> bool:
     return (
         len(components) >= 2
@@ -919,13 +958,19 @@ def _is_invalid_json_schema_value_path(key: str, value: object) -> bool:
     leaf = key.rsplit(".", 1)[-1]
     has_index_suffix = _PARAMETER_INDEX_SUFFIX_RE.search(leaf) is not None
     normalized_leaf = _normalize_parameter_key(_PARAMETER_INDEX_SUFFIX_RE.sub("", leaf))
-    if normalized_leaf in {"properties", "defs", "definitions"} and not has_index_suffix:
+    schema_types = (Mapping, bool)
+    if normalized_leaf in _JSON_SCHEMA_SCHEMA_MAP_KEYS and not has_index_suffix:
         return not isinstance(value, Mapping)
-    if normalized_leaf == "items":
-        schema_types = (Mapping, bool)
+    if normalized_leaf in _JSON_SCHEMA_SINGLE_SCHEMA_KEYS:
         if has_index_suffix:
             return not isinstance(value, schema_types)
-        return not isinstance(value, (*schema_types, list))
+        if normalized_leaf == "items":
+            return not isinstance(value, (Mapping, bool, list))
+        return not isinstance(value, schema_types)
+    if normalized_leaf in _JSON_SCHEMA_SCHEMA_ARRAY_KEYS:
+        if has_index_suffix:
+            return not isinstance(value, schema_types)
+        return not isinstance(value, list)
     return False
 
 
@@ -1189,7 +1234,7 @@ def _fully_decode_query_parameter_value(value: str) -> str:
 
 
 def _security_checked_audit_parameter_string(value: str, key_path: str) -> str:
-    if not _is_structured_query_audit_parameter_entry_key(key_path):
+    if not _should_decode_raw_audit_parameter_value(key_path):
         return value
     return _fully_decode_query_parameter_value(value)
 
@@ -1212,15 +1257,25 @@ def _should_decode_url_audit_parameter_value(key_path: str) -> bool:
         or _is_raw_audit_parameter_container_leaf(parent_leaf)
         or _is_query_audit_parameter_container_leaf(leaf)
         or _is_raw_audit_parameter_container_leaf(leaf)
+        or _is_url_value_audit_parameter_leaf(leaf)
     )
 
 
-def _is_structured_query_audit_parameter_entry_key(key_path: str) -> bool:
-    if "." not in key_path:
-        return False
+def _should_decode_raw_audit_parameter_value(key_path: str) -> bool:
+    leaf = _normalize_parameter_key(_parameter_key_leaf(key_path))
     parent_key = key_path.rsplit(".", 1)[0]
     parent_leaf = _normalize_parameter_key(_parameter_key_leaf(parent_key))
-    return _is_query_audit_parameter_container_leaf(parent_leaf)
+    return (
+        _is_query_audit_parameter_container_leaf(parent_leaf)
+        or _is_raw_audit_parameter_container_leaf(parent_leaf)
+        or _is_query_audit_parameter_container_leaf(leaf)
+        or _is_raw_audit_parameter_container_leaf(leaf)
+    )
+
+
+def _is_url_value_audit_parameter_leaf(normalized_leaf: str) -> bool:
+    components = tuple(normalized_leaf.split("_"))
+    return bool(components) and components[-1] in {"url", "uri"}
 
 
 def _mapping_key_value_parameter_entry(value: Mapping[object, object]) -> tuple[str, str, str] | None:
@@ -1446,7 +1501,8 @@ def _url_parameter_pairs(value: str) -> list[tuple[str, str]]:
     for chunk in re.split(r"[&;]", value):
         for key, parameter_value in parse_qsl(chunk, keep_blank_values=True):
             pairs.extend(
-                (key, decoded_value)
+                (decoded_key, decoded_value)
+                for decoded_key in _decoded_query_parameter_value_forms(key)
                 for decoded_value in _decoded_query_parameter_value_forms(parameter_value)
             )
     return pairs
