@@ -558,6 +558,10 @@ def test_build_conversion_audit_log_rejects_json_encoded_metadata_scalars(
         ('{"note":"Lot: ABC-123"}', r"parameters\.metadataJson\.note"),
         ('{"path":"fixtures/source.pdf"}', r"parameters\.metadataJson\.path"),
         ('{"status":"complete"}', r"parameters\.metadataJson\.status"),
+        ('{"lotNumber":12345}', r"parameters\.metadataJson\.lotNumber"),
+        ('[12345]', r"parameters\.metadataJson\[0\]"),
+        ('{"verified":true}', r"parameters\.metadataJson\.verified"),
+        ('{"optional":null}', r"parameters\.metadataJson\.optional"),
         ('{"notes":["Lot: ABC-123"]}', r"parameters\.metadataJson\.notes\[0\]"),
         ('{"path":["Lot: ABC-123"]}', r"parameters\.metadataJson\.path\[0\]"),
         (

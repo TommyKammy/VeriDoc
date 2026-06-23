@@ -722,6 +722,9 @@ def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "
         if _is_file_audit_parameter_container_path(key_path):
             raise ValueError(f"{key_path} must not include document or request content")
         _reject_content_bearing_audit_parameters(os.fsdecode(value), key_path=key_path)
+    elif value is None or isinstance(value, (bool, int, float, Decimal)):
+        if _is_unsafe_json_encoded_metadata_scalar_path(key_path):
+            raise ValueError(f"{key_path} must not include document or request content")
 
 
 def _is_content_bearing_audit_parameter_key(key: str) -> bool:
