@@ -400,6 +400,28 @@ def test_build_conversion_audit_log_allows_camel_case_audit_metadata_keys() -> N
     }
 
 
+def test_build_conversion_audit_log_allows_form_data_descriptor_metadata() -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={
+            "formDataDescription": "provider form-data descriptor",
+            "multipartFormDataDescription": "multipart descriptor",
+            "requestFormDataDescription": "request form-data descriptor",
+        },
+    )
+
+    assert audit_log["parameters"] == {
+        "formDataDescription": "provider form-data descriptor",
+        "multipartFormDataDescription": "multipart descriptor",
+        "requestFormDataDescription": "request form-data descriptor",
+    }
+
+
 def test_build_conversion_audit_log_redacts_tuple_parameter_entries() -> None:
     audit_log = build_conversion_audit_log(
         source_bytes=b"Lot: ABC-123\n",

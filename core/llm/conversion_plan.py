@@ -237,6 +237,13 @@ _SAFE_DATA_METADATA_AUDIT_PARAMETER_KEYS = frozenset(
         "model_data",
     }
 )
+_SAFE_FORM_DATA_METADATA_AUDIT_PARAMETER_KEYS = frozenset(
+    {
+        "form_data_description",
+        "multipart_form_data_description",
+        "request_form_data_description",
+    }
+)
 _SAFE_AUDIT_PARAMETER_SEQUENCE_KEYS = frozenset(
     {
         "stop",
@@ -635,6 +642,8 @@ def _is_content_bearing_audit_parameter_key(key: str) -> bool:
     if _is_safe_json_schema_audit_parameter_key(key):
         return False
     if normalized_leaf in _SAFE_DATA_METADATA_AUDIT_PARAMETER_KEYS:
+        return False
+    if normalized_leaf in _SAFE_FORM_DATA_METADATA_AUDIT_PARAMETER_KEYS:
         return False
     if normalized_leaf in _SAFE_MESSAGE_METADATA_AUDIT_PARAMETER_KEYS:
         return False
