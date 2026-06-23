@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import json
+import math
 import http.client
 import os
 import re
@@ -682,6 +683,8 @@ def _redact_audit_parameters(value: object, *, key_path: str = "") -> object:
         return _redact_audit_parameters(os.fsdecode(value), key_path=key_path)
     if isinstance(value, Decimal):
         return str(value)
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError(f"{key_path} must include finite JSON number audit metadata")
     if value is None or isinstance(value, (bool, int, float)):
         return value
     display_path = f"parameters.{key_path}" if key_path else "parameters"
@@ -728,7 +731,8 @@ def _redact_key_value_parameter_entry_value(
         return _redact_audit_parameters(value, key_path=entry_path)
     entry_parameter_value = _raw_key_value_parameter_entry_value(key_path, value)
     if (
-        not _is_key_value_audit_parameter_sequence_container_key(entry_path)
+        _is_raw_query_audit_parameter_value_key(key_path)
+        and not _is_key_value_audit_parameter_sequence_container_key(entry_path)
         and _is_credential_bearing_raw_query_text(entry_parameter_value)
     ):
         return _REDACTED_VALUE
@@ -745,7 +749,8 @@ def _reject_key_value_parameter_entry_value(
         return
     entry_parameter_value = _raw_key_value_parameter_entry_value(key_path, value)
     if _is_content_bearing_url(entry_parameter_value) or (
-        not _is_key_value_audit_parameter_sequence_container_key(entry_path)
+        _is_raw_query_audit_parameter_value_key(key_path)
+        and not _is_key_value_audit_parameter_sequence_container_key(entry_path)
         and _is_content_bearing_raw_query_text(entry_parameter_value)
     ):
         raise ValueError(f"{entry_path} must not include document or request content")
@@ -832,7 +837,8 @@ def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "
                 raise ValueError(f"{item_path} must not include document or request content")
             entry_value = _raw_key_value_parameter_entry_value(key_path, _entry_value)
             if _is_content_bearing_url(entry_value) or (
-                not _is_key_value_audit_parameter_sequence_container_key(item_path)
+                _is_raw_query_audit_parameter_value_key(key_path)
+                and not _is_key_value_audit_parameter_sequence_container_key(item_path)
                 and _is_content_bearing_raw_query_text(entry_value)
             ):
                 raise ValueError(f"{item_path} must not include document or request content")
@@ -847,6 +853,8 @@ def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "
         if _is_file_audit_parameter_container_path(key_path):
             raise ValueError(f"{key_path} must not include document or request content")
         _reject_content_bearing_audit_parameters(os.fsdecode(value), key_path=key_path)
+    elif isinstance(value, float) and not math.isfinite(value):
+        raise ValueError(f"{key_path} must include finite JSON number audit metadata")
     elif value is None or isinstance(value, (bool, int, float, Decimal)):
         if _is_unsafe_json_encoded_metadata_scalar_path(key_path):
             raise ValueError(f"{key_path} must not include document or request content")
@@ -1304,7 +1312,8 @@ def _redact_raw_key_value_parameter_line(
     entry_parameter_value = _raw_key_value_parameter_entry_value(key_path, entry_value)
     separator_text = ": " if separator == ":" else separator
     if (
-        not _is_key_value_audit_parameter_sequence_container_key(entry_path)
+        _is_raw_query_audit_parameter_value_key(key_path)
+        and not _is_key_value_audit_parameter_sequence_container_key(entry_path)
         and _is_credential_bearing_raw_query_text(entry_parameter_value)
     ):
         return f"{entry_key}{separator_text}{_REDACTED_VALUE}"
@@ -1481,6 +1490,13 @@ def _is_multi_entry_raw_parameter_container_leaf(normalized_leaf: str) -> bool:
     return _is_query_audit_parameter_container_leaf(
         normalized_leaf
     ) or _is_raw_audit_parameter_container_leaf(normalized_leaf)
+
+
+def _is_raw_query_audit_parameter_value_key(key_path: str) -> bool:
+    normalized_leaf = _normalize_parameter_key(_parameter_key_leaf(key_path))
+    return normalized_leaf == "parameters" or _is_multi_entry_raw_parameter_container_leaf(
+        normalized_leaf
+    )
 
 
 def _is_query_audit_parameter_entry_key(key: str) -> bool:

@@ -780,6 +780,40 @@ def test_build_conversion_audit_log_redacts_structured_entry_names() -> None:
     assert "operator-runtime-key" not in json.dumps(audit_log, sort_keys=True)
 
 
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf")])
+def test_build_conversion_audit_log_rejects_non_finite_float_metadata(value: float) -> None:
+    with pytest.raises(ValueError, match=r"parameters\.temperature"):
+        build_conversion_audit_log(
+            source_bytes=b"Lot: ABC-123\n",
+            output_bytes=b'{"lot_number":"ABC-123"}\n',
+            model="local-json-model",
+            prompt_id="veridoc_conversion_plan",
+            prompt_version="poc-08",
+            ir_version="document-ir-v1",
+            parameters={"temperature": value},
+        )
+
+
+def test_build_conversion_audit_log_allows_non_raw_structured_key_value_tokens() -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={
+            "headers": [["X-Meta", "message=complete"]],
+            "options": [{"key": "mode", "value": "output=summary"}],
+        },
+    )
+
+    assert audit_log["parameters"] == {
+        "headers": [["X-Meta", "message=complete"]],
+        "options": [{"key": "mode", "value": "output=summary"}],
+    }
+
+
 def test_build_conversion_audit_log_redacts_bare_provider_parameter_key_values() -> None:
     audit_log = build_conversion_audit_log(
         source_bytes=b"Lot: ABC-123\n",
