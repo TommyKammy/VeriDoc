@@ -364,6 +364,26 @@ def test_build_conversion_audit_log_allows_safe_message_metadata_fields() -> Non
     }
 
 
+def test_build_conversion_audit_log_allows_camel_case_audit_metadata_keys() -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={
+            "metaData": {"path": "fixtures/source.pdf"},
+            "modelData": {"path": "fixtures/model.json"},
+        },
+    )
+
+    assert audit_log["parameters"] == {
+        "metaData": {"path": "fixtures/source.pdf"},
+        "modelData": {"path": "fixtures/model.json"},
+    }
+
+
 def test_build_conversion_audit_log_redacts_tuple_parameter_entries() -> None:
     audit_log = build_conversion_audit_log(
         source_bytes=b"Lot: ABC-123\n",

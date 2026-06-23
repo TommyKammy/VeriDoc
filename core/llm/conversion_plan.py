@@ -227,6 +227,12 @@ _SAFE_MESSAGE_METADATA_AUDIT_PARAMETER_KEYS = frozenset(
         "user_message_id",
     }
 )
+_SAFE_DATA_METADATA_AUDIT_PARAMETER_KEYS = frozenset(
+    {
+        "meta_data",
+        "model_data",
+    }
+)
 _SAFE_AUDIT_PARAMETER_SEQUENCE_KEYS = frozenset(
     {
         "stop",
@@ -611,6 +617,8 @@ def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "
 def _is_content_bearing_audit_parameter_key(key: str) -> bool:
     normalized_leaf = _normalize_parameter_key(_parameter_key_leaf(key))
     if _is_safe_json_schema_audit_parameter_key(key):
+        return False
+    if normalized_leaf in _SAFE_DATA_METADATA_AUDIT_PARAMETER_KEYS:
         return False
     if normalized_leaf in _SAFE_MESSAGE_METADATA_AUDIT_PARAMETER_KEYS:
         return False
