@@ -274,7 +274,9 @@ def test_build_conversion_audit_log_redacts_signature_credentials(
         ({"rawJson": '{"lot_number":"ABC-123"}'}, r"parameters\.rawJson"),
         ({"formData": {"upload": "Lot: ABC-123"}}, r"parameters\.formData"),
         ({"requestFormData": "Lot: ABC-123"}, r"parameters\.requestFormData"),
+        ({"request_form_data": "Lot: ABC-123"}, r"parameters\.request_form_data"),
         ({"multipartFormData": "Lot: ABC-123"}, r"parameters\.multipartFormData"),
+        ({"multipart_form_data": "Lot: ABC-123"}, r"parameters\.multipart_form_data"),
         ({"payload": "Lot: ABC-123"}, r"parameters\.payload"),
         ({"generation": {"previous_response": {"choices": []}}}, r"parameters\.generation\.previous_response"),
         ({"tools": [{"content": "Lot: ABC-123"}]}, r"parameters\.tools\[0\]\.content"),
@@ -386,6 +388,8 @@ def test_build_conversion_audit_log_allows_safe_message_metadata_fields() -> Non
             "messageStatus": "complete",
             "messageCount": 2,
             "assistantMessagesCount": 2,
+            "userMessagesCount": 1,
+            "systemMessagesCount": 1,
             "lastMessageAt": "2026-06-23T00:00:00Z",
         },
     )
@@ -400,6 +404,8 @@ def test_build_conversion_audit_log_allows_safe_message_metadata_fields() -> Non
         "messageStatus": "complete",
         "messageCount": 2,
         "assistantMessagesCount": 2,
+        "userMessagesCount": 1,
+        "systemMessagesCount": 1,
         "lastMessageAt": "2026-06-23T00:00:00Z",
     }
 
@@ -536,6 +542,7 @@ def test_build_conversion_audit_log_rejects_json_encoded_metadata_scalars(
     [
         ('["Lot: ABC-123"]', r"parameters\.metadataJson\[0\]"),
         ('{"note":"Lot: ABC-123"}', r"parameters\.metadataJson\.note"),
+        ('{"notes":["Lot: ABC-123"]}', r"parameters\.metadataJson\.notes\[0\]"),
         (
             '["https://example.invalid/cb?api_key=operator-runtime-api-key"]',
             r"parameters\.metadataJson\[0\]",
@@ -638,6 +645,8 @@ def test_build_conversion_audit_log_sanitizes_list_key_value_parameter_entries()
             "extra": [["privateKey", "operator-runtime-private-key"]],
             "default_parameters": ["api_key", "operator-runtime-api-key"],
             "requestParameters": ["api_key", "operator-runtime-request-api-key"],
+            "custom_parameters": ["api_key", "operator-runtime-custom-api-key"],
+            "provider_parameters": ["api_key", "operator-runtime-provider-api-key"],
         },
     )
 
@@ -647,12 +656,16 @@ def test_build_conversion_audit_log_sanitizes_list_key_value_parameter_entries()
         "extra": [["privateKey", "[REDACTED]"]],
         "default_parameters": ["api_key", "[REDACTED]"],
         "requestParameters": ["api_key", "[REDACTED]"],
+        "custom_parameters": ["api_key", "[REDACTED]"],
+        "provider_parameters": ["api_key", "[REDACTED]"],
     }
     rendered = json.dumps(audit_log, sort_keys=True)
     assert "operator-runtime-token" not in rendered
     assert "operator-runtime-private-key" not in rendered
     assert "operator-runtime-api-key" not in rendered
     assert "operator-runtime-request-api-key" not in rendered
+    assert "operator-runtime-custom-api-key" not in rendered
+    assert "operator-runtime-provider-api-key" not in rendered
     assert "Bearer" not in rendered
 
 
@@ -1016,6 +1029,30 @@ def test_build_conversion_audit_log_redacts_encoded_query_nested_url_credentials
     )
 
     assert audit_log["parameters"] == {"queryParameters": "redirect=[REDACTED]"}
+    rendered = json.dumps(audit_log, sort_keys=True)
+    assert "operator-runtime-api-key" not in rendered
+    assert "https%3A" not in rendered
+
+
+def test_build_conversion_audit_log_redacts_encoded_query_nested_url_credentials_with_sibling_params() -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={
+            "queryParameters": (
+                "redirect=https%3A%2F%2Fexample.invalid%2Fcb"
+                "%3Fapi_key%3Doperator-runtime-api-key&version=1"
+            ),
+        },
+    )
+
+    assert audit_log["parameters"] == {
+        "queryParameters": "redirect=[REDACTED]&version=1",
+    }
     rendered = json.dumps(audit_log, sort_keys=True)
     assert "operator-runtime-api-key" not in rendered
     assert "https%3A" not in rendered
