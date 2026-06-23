@@ -865,7 +865,7 @@ def _is_tool_function_json_schema_path(components: tuple[str, ...]) -> bool:
 
 def _is_json_schema_audit_parameter_path(components: tuple[str, ...]) -> bool:
     return (
-        "schema_json" in components
+        _is_root_schema_json_audit_parameter_path(components)
         or (
             {"properties", "defs", "definitions"}.intersection(components)
             and (
@@ -873,6 +873,14 @@ def _is_json_schema_audit_parameter_path(components: tuple[str, ...]) -> bool:
                 or _is_tool_function_json_schema_path(components)
             )
         )
+    )
+
+
+def _is_root_schema_json_audit_parameter_path(components: tuple[str, ...]) -> bool:
+    first_real_component = 1 if components[:1] == ("parameters",) else 0
+    return (
+        len(components) > first_real_component
+        and components[first_real_component] == "schema_json"
     )
 
 
@@ -926,15 +934,16 @@ def _is_secret_parameter_key(key: str) -> bool:
     key_candidates = (normalized, normalized_leaf)
     components = tuple(normalized_leaf.split("_"))
     path_components = tuple(normalized.split("_"))
+    real_path_components = path_components[1:] if path_components[:1] == ("parameters",) else path_components
     singular_components = tuple(_singular_parameter_component(component) for component in components)
     return (
         any(candidate in _SECRET_PARAMETER_KEYS for candidate in key_candidates)
         or (
             normalized_leaf in {"code", "key"}
             and (
-                "query" in path_components
-                or "params" in path_components
-                or "parameters" in path_components
+                "query" in real_path_components
+                or "params" in real_path_components
+                or "parameters" in real_path_components
                 or _is_query_audit_parameter_entry_key(key)
             )
         )
@@ -1364,6 +1373,8 @@ def _is_secret_url_parameter_key(key: str) -> bool:
 
 
 def _is_content_bearing_raw_query_text(value: str) -> bool:
+    if not _has_raw_query_key_value_separator(value):
+        return False
     return any(
         _is_content_bearing_audit_parameter_key(key)
         for key, _parameter_value in _url_parameter_pairs(value)
@@ -1371,9 +1382,17 @@ def _is_content_bearing_raw_query_text(value: str) -> bool:
 
 
 def _is_credential_bearing_raw_query_text(value: str) -> bool:
+    if not _has_raw_query_key_value_separator(value):
+        return False
     return any(
         _is_secret_url_parameter_key(key)
         for key, _parameter_value in _url_parameter_pairs(value)
+    )
+
+
+def _has_raw_query_key_value_separator(value: str) -> bool:
+    return any(
+        "=" in value_form for value_form in _decoded_query_parameter_value_forms(value)
     )
 
 

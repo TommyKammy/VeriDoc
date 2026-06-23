@@ -588,6 +588,10 @@ def test_build_conversion_audit_log_rejects_json_encoded_metadata_scalars(
         ('{"notes":["Lot: ABC-123"]}', r"parameters\.metadataJson\.notes\[0\]"),
         ('{"path":["Lot: ABC-123"]}', r"parameters\.metadataJson\.path\[0\]"),
         (
+            '{"schema_json":{"items":["Lot: ABC-123"]}}',
+            r"parameters\.metadataJson\.schema_json\.items\[0\]",
+        ),
+        (
             '["https://example.invalid/cb?api_key=operator-runtime-api-key"]',
             r"parameters\.metadataJson\[0\]",
         ),
@@ -1268,6 +1272,29 @@ def test_build_conversion_audit_log_redacts_double_encoded_query_nested_url_cred
     assert "https%253A" not in rendered
 
 
+@pytest.mark.parametrize(
+    "callback_url",
+    [
+        "https://example.invalid/cb?view=message",
+        "https://example.invalid/cb?state=token",
+    ],
+)
+def test_build_conversion_audit_log_allows_nested_url_bare_word_query_values(
+    callback_url: str,
+) -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={"callback_url": callback_url},
+    )
+
+    assert audit_log["parameters"] == {"callback_url": callback_url}
+
+
 def test_build_conversion_audit_log_preserves_recursive_raw_query_redactions() -> None:
     audit_log = build_conversion_audit_log(
         source_bytes=b"Lot: ABC-123\n",
@@ -1941,6 +1968,23 @@ def test_build_conversion_audit_log_preserves_parent_keys_for_nested_secret_path
     rendered = json.dumps(audit_log, sort_keys=True)
     assert "operator-runtime-api-key" not in rendered
     assert "operator-runtime-private-key" not in rendered
+
+
+def test_build_conversion_audit_log_rejects_root_metadata_key_content_url() -> None:
+    with pytest.raises(ValueError, match=r"parameters\.metadata\.key"):
+        build_conversion_audit_log(
+            source_bytes=b"Lot: ABC-123\n",
+            output_bytes=b'{"lot_number":"ABC-123"}\n',
+            model="local-json-model",
+            prompt_id="veridoc_conversion_plan",
+            prompt_version="poc-08",
+            ir_version="document-ir-v1",
+            parameters={
+                "metadata": {
+                    "key": "https://example.invalid/cb?prompt=Lot%3A+ABC-123",
+                },
+            },
+        )
 
 
 def test_build_conversion_audit_log_rejects_openai_request_payload_parameters() -> None:
