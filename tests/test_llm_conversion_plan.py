@@ -421,13 +421,17 @@ def test_build_conversion_audit_log_preserves_two_string_generation_parameter_li
         prompt_version="poc-08",
         ir_version="document-ir-v1",
         parameters={
+            "generationParameters": ["prompt", "END"],
             "metadata": ["prompt", "END"],
+            "model_parameters": ["messages", "END"],
             "stop": ["prompt", "END"],
         },
     )
 
     assert audit_log["parameters"] == {
+        "generationParameters": ["prompt", "END"],
         "metadata": ["prompt", "END"],
+        "model_parameters": ["messages", "END"],
         "stop": ["prompt", "END"],
     }
 
@@ -688,6 +692,15 @@ def test_build_conversion_audit_log_rejects_semicolon_raw_query_content_paramete
             {"queryParameters": "redirect=https://example.invalid/cb?prompt=Lot%3A+ABC-123"},
             r"parameters\.queryParameters\.redirect",
         ),
+        (
+            {
+                "default_params": (
+                    "redirect=https%3A%2F%2Fexample.invalid%2Fcb"
+                    "%3Fprompt%3DLot%253A%2BABC-123"
+                )
+            },
+            r"parameters\.default_params\.redirect",
+        ),
     ],
 )
 def test_build_conversion_audit_log_splits_raw_query_container_aliases(
@@ -764,6 +777,28 @@ def test_build_conversion_audit_log_redacts_url_values_before_query_alias_parsin
     rendered = json.dumps(audit_log, sort_keys=True)
     assert "operator-runtime-api-key" not in rendered
     assert "https:" not in rendered
+
+
+def test_build_conversion_audit_log_redacts_encoded_query_nested_url_credentials() -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={
+            "queryParameters": (
+                "redirect=https%3A%2F%2Fexample.invalid%2Fcb"
+                "%3Fapi_key%3Doperator-runtime-api-key"
+            ),
+        },
+    )
+
+    assert audit_log["parameters"] == {"queryParameters": "redirect=[REDACTED]"}
+    rendered = json.dumps(audit_log, sort_keys=True)
+    assert "operator-runtime-api-key" not in rendered
+    assert "https%3A" not in rendered
 
 
 def test_build_conversion_audit_log_allows_content_type_header_metadata() -> None:

@@ -602,7 +602,9 @@ def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "
             item_path = _raw_key_value_parameter_entry_path(key_path, entry_key)
             if _is_content_bearing_audit_parameter_key(item_path):
                 raise ValueError(f"{item_path} must not include document or request content")
-            if _is_content_bearing_url(_entry_value):
+            if _is_content_bearing_url(
+                _raw_key_value_parameter_entry_value(key_path, _entry_value)
+            ):
                 raise ValueError(f"{item_path} must not include document or request content")
     elif isinstance(value, (list, tuple)):
         for index, item in enumerate(value):
@@ -807,7 +809,7 @@ def _is_key_value_parameter_entry(value: object, key_path: str) -> bool:
         return False
     entry_path = _join_parameter_key_path(key_path, value[0])
     return (
-        _is_key_value_audit_parameter_sequence_container_key(key_path)
+        _is_structured_key_value_audit_parameter_sequence_container_key(key_path)
         or (
             _is_parameter_sequence_item_key(key_path)
             and (
@@ -914,7 +916,10 @@ def _redact_raw_key_value_parameter_line(
 ) -> str:
     entry_key, separator, entry_value = raw_entry
     entry_path = _raw_key_value_parameter_entry_path(key_path, entry_key)
-    redacted_value = _redact_audit_parameters(entry_value, key_path=entry_path)
+    redacted_value = _redact_audit_parameters(
+        _raw_key_value_parameter_entry_value(key_path, entry_value),
+        key_path=entry_path,
+    )
     if redacted_value == _REDACTED_VALUE:
         redacted_separator = ": " if separator == ":" else separator
         return f"{entry_key}{redacted_separator}{_REDACTED_VALUE}"
@@ -927,6 +932,13 @@ def _raw_key_value_parameter_entry_path(key_path: str, entry_key: str) -> str:
     if _is_query_audit_parameter_container_leaf(normalized_leaf):
         return _join_parameter_key_path(key_path, unquote_plus(entry_key))
     return _join_parameter_key_path(key_path, entry_key)
+
+
+def _raw_key_value_parameter_entry_value(key_path: str, entry_value: str) -> str:
+    normalized_leaf = _normalize_parameter_key(_parameter_key_leaf(key_path))
+    if _is_query_audit_parameter_container_leaf(normalized_leaf):
+        return unquote_plus(entry_value)
+    return entry_value
 
 
 def _mapping_key_value_parameter_entry(value: Mapping[object, object]) -> tuple[str, str, str] | None:
@@ -956,6 +968,17 @@ def _is_key_value_audit_parameter_sequence_container_key(key_path: str) -> bool:
         or normalized_leaf.endswith("_cookies")
         or normalized_leaf.endswith("_params")
         or normalized_leaf.endswith("_parameters")
+    )
+
+
+def _is_structured_key_value_audit_parameter_sequence_container_key(key_path: str) -> bool:
+    normalized_leaf = _normalize_parameter_key(_parameter_key_leaf(key_path))
+    return (
+        normalized_leaf in _KEY_VALUE_AUDIT_PARAMETER_SEQUENCE_CONTAINER_KEYS
+        or normalized_leaf == "query_parameters"
+        or normalized_leaf.endswith("_headers")
+        or normalized_leaf.endswith("_cookies")
+        or normalized_leaf.endswith("_params")
     )
 
 
