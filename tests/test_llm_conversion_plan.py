@@ -674,6 +674,50 @@ def test_build_conversion_audit_log_splits_raw_query_container_aliases(
         )
 
 
+def test_build_conversion_audit_log_redacts_secret_suffixed_params_alias_values() -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={
+            "client_secret_params": "operator-runtime-client-secret",
+            "auth_params": "Bearer operator-runtime-token",
+        },
+    )
+
+    assert audit_log["parameters"] == {
+        "client_secret_params": "[REDACTED]",
+        "auth_params": "[REDACTED]",
+    }
+    rendered = json.dumps(audit_log, sort_keys=True)
+    assert "operator-runtime-client-secret" not in rendered
+    assert "operator-runtime-token" not in rendered
+
+
+def test_build_conversion_audit_log_redacts_url_values_before_query_alias_parsing() -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={
+            "default_params": (
+                "https://example.invalid/callback?api_key=operator-runtime-api-key"
+            ),
+        },
+    )
+
+    assert audit_log["parameters"] == {"default_params": "[REDACTED]"}
+    rendered = json.dumps(audit_log, sort_keys=True)
+    assert "operator-runtime-api-key" not in rendered
+    assert "https:" not in rendered
+
+
 def test_build_conversion_audit_log_allows_content_type_header_metadata() -> None:
     audit_log = build_conversion_audit_log(
         source_bytes=b"Lot: ABC-123\n",
@@ -930,6 +974,36 @@ def test_build_conversion_audit_log_allows_boolean_json_schema_entries() -> None
                 },
                 "$defs": {
                     "content": True,
+                },
+            },
+        },
+    }
+
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={"response_format": response_format},
+    )
+
+    assert audit_log["parameters"] == {"response_format": response_format}
+
+
+def test_build_conversion_audit_log_allows_camel_case_json_schema_metadata_keys() -> None:
+    response_format = {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "veridoc_conversion_plan",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "result": {
+                        "type": "string",
+                        "dataType": "string",
+                    },
                 },
             },
         },
@@ -1254,6 +1328,29 @@ def test_build_conversion_audit_log_returns_json_safe_parameter_values() -> None
         },
     }
     json.dumps(audit_log, sort_keys=True)
+
+
+@pytest.mark.parametrize(
+    ("container_key", "container_value"),
+    [
+        ("file", Path("fixtures") / "source.pdf"),
+        ("files", [Path("fixtures") / "source.pdf"]),
+    ],
+)
+def test_build_conversion_audit_log_rejects_pathlike_file_container_values(
+    container_key: str,
+    container_value: object,
+) -> None:
+    with pytest.raises(ValueError, match=rf"parameters\.{container_key}"):
+        build_conversion_audit_log(
+            source_bytes=b"Lot: ABC-123\n",
+            output_bytes=b'{"lot_number":"ABC-123"}\n',
+            model="local-json-model",
+            prompt_id="veridoc_conversion_plan",
+            prompt_version="poc-08",
+            ir_version="document-ir-v1",
+            parameters={container_key: container_value},
+        )
 
 
 def test_schema_incompatible_conversion_plan_fails_closed() -> None:

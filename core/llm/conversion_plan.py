@@ -261,6 +261,7 @@ _SAFE_JSON_SCHEMA_AUDIT_PARAMETER_METADATA_KEYS = frozenset(
     {
         "content_encoding",
         "content_media_type",
+        "data_type",
         "description",
         "format",
         "title",
@@ -517,11 +518,11 @@ def _redact_audit_parameters(value: object, *, key_path: str = "") -> object:
         entry_path = _join_parameter_key_path(key_path, entry_key)
         return [entry_key, _redact_audit_parameters(value[1], key_path=entry_path)]
     if isinstance(value, str):
+        if _is_credential_bearing_url(value):
+            return _REDACTED_VALUE
         redacted_raw_value = _redact_raw_key_value_parameter_text(value, key_path)
         if redacted_raw_value is not None:
             return redacted_raw_value
-        if _is_credential_bearing_url(value):
-            return _REDACTED_VALUE
     if isinstance(value, list):
         return [
             _redact_audit_parameters(item, key_path=f"{key_path}[{index}]")
@@ -596,6 +597,8 @@ def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "
     elif isinstance(value, (set, frozenset)):
         for index, item in enumerate(value):
             _reject_content_bearing_audit_parameters(item, key_path=f"{key_path}[{index}]")
+    elif isinstance(value, os.PathLike) and _is_file_audit_parameter_container_path(key_path):
+        raise ValueError(f"{key_path} must not include document or request content")
 
 
 def _is_content_bearing_audit_parameter_key(key: str) -> bool:
@@ -712,7 +715,7 @@ def _is_secret_parameter_key(key: str) -> bool:
     if (
         normalized in _SAFE_CONTENT_WORD_AUDIT_PARAMETER_KEYS
         or normalized_leaf in _SAFE_CONTENT_WORD_AUDIT_PARAMETER_KEYS
-        or _is_key_value_audit_parameter_sequence_container_key(key)
+        or _is_secret_exempt_key_value_audit_parameter_container_key(key)
     ):
         return False
     key_candidates = (normalized, normalized_leaf)
@@ -808,6 +811,8 @@ def _is_safe_audit_parameter_sequence_key(key: str) -> bool:
 
 def _raw_key_value_parameter_line(value: str, key_path: str) -> tuple[str, str, str] | None:
     if not _is_key_value_audit_parameter_sequence_container_key(key_path):
+        return None
+    if _is_absolute_url(value):
         return None
     separator = _raw_key_value_parameter_separator(value)
     if separator is not None:
@@ -937,6 +942,15 @@ def _is_key_value_audit_parameter_sequence_container_key(key_path: str) -> bool:
     )
 
 
+def _is_secret_exempt_key_value_audit_parameter_container_key(key_path: str) -> bool:
+    normalized_leaf = _normalize_parameter_key(_parameter_key_leaf(key_path))
+    return (
+        normalized_leaf in _KEY_VALUE_AUDIT_PARAMETER_SEQUENCE_CONTAINER_KEYS
+        or normalized_leaf.endswith("_headers")
+        or normalized_leaf.endswith("_cookies")
+    )
+
+
 def _is_query_audit_parameter_container_leaf(normalized_leaf: str) -> bool:
     return (
         normalized_leaf in {"params", "query_params", "query_parameters"}
@@ -987,6 +1001,11 @@ def _is_credential_bearing_url(value: str, *, _depth: int = 0) -> bool:
         for _key, parameter_value in url_pairs
         if _depth < 3
     )
+
+
+def _is_absolute_url(value: str) -> bool:
+    parsed_url = urlparse(value)
+    return bool(parsed_url.scheme and parsed_url.netloc)
 
 
 def _is_secret_url_parameter_key(key: str) -> bool:
