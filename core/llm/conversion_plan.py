@@ -553,7 +553,7 @@ def _redact_audit_parameters(value: object, *, key_path: str = "") -> object:
         ]
         return sorted(redacted_items, key=_json_sort_key)
     if isinstance(value, os.PathLike):
-        return os.fspath(value)
+        return os.fsdecode(value)
     if isinstance(value, Decimal):
         return str(value)
     return value

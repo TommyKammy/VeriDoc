@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import socket
 import urllib.error
 import urllib.request
@@ -20,6 +21,11 @@ from core.llm.conversion_plan import (
     _urllib_transport,
     validate_conversion_plan,
 )
+
+
+class _BytesPathLike(os.PathLike[bytes]):
+    def __fspath__(self) -> bytes:
+        return b"fixtures/source.pdf"
 
 
 def _valid_plan() -> dict[str, object]:
@@ -1369,6 +1375,21 @@ def test_build_conversion_audit_log_returns_json_safe_parameter_values() -> None
             "labels": ["metadata", "safe"],
         },
     }
+    json.dumps(audit_log, sort_keys=True)
+
+
+def test_build_conversion_audit_log_decodes_bytes_pathlike_metadata_values() -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={"metadata": {"path": _BytesPathLike()}},
+    )
+
+    assert audit_log["parameters"] == {"metadata": {"path": "fixtures/source.pdf"}}
     json.dumps(audit_log, sort_keys=True)
 
 
