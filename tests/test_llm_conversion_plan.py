@@ -509,6 +509,9 @@ def test_build_conversion_audit_log_allows_json_descriptor_metadata_fields() -> 
             "jsonRequestId": "req_123",
             "jsonRequestStatus": "complete",
             "jsonDataType": "schema",
+            "jsonResponseId": "resp_123",
+            "jsonOutputStatus": "complete",
+            "jsonResultType": "object",
         },
     )
 
@@ -523,6 +526,9 @@ def test_build_conversion_audit_log_allows_json_descriptor_metadata_fields() -> 
         "jsonRequestId": "req_123",
         "jsonRequestStatus": "complete",
         "jsonDataType": "schema",
+        "jsonResponseId": "resp_123",
+        "jsonOutputStatus": "complete",
+        "jsonResultType": "object",
     }
 
 
@@ -947,6 +953,44 @@ def test_build_conversion_audit_log_preserves_recursive_raw_parameter_redaction(
         "queryParameters": "version=1&params=api_key=[REDACTED]",
     }
     assert "operator-runtime-api-key" not in json.dumps(audit_log, sort_keys=True)
+
+
+def test_build_conversion_audit_log_redacts_nested_raw_query_entry_credentials() -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={
+            "queryParameters": "next=api_key=operator-runtime-key",
+            "provider_parameters": "next=api_key%3Doperator-runtime-provider-key",
+        },
+    )
+
+    assert audit_log["parameters"] == {
+        "queryParameters": "next=[REDACTED]",
+        "provider_parameters": "next=[REDACTED]",
+    }
+    rendered = json.dumps(audit_log, sort_keys=True)
+    assert "operator-runtime-key" not in rendered
+    assert "operator-runtime-provider-key" not in rendered
+
+
+def test_build_conversion_audit_log_rejects_nested_raw_query_entry_content() -> None:
+    with pytest.raises(ValueError, match=r"parameters\.queryParameters\.next"):
+        build_conversion_audit_log(
+            source_bytes=b"Lot: ABC-123\n",
+            output_bytes=b'{"lot_number":"ABC-123"}\n',
+            model="local-json-model",
+            prompt_id="veridoc_conversion_plan",
+            prompt_version="poc-08",
+            ir_version="document-ir-v1",
+            parameters={
+                "queryParameters": "next=prompt=Lot: ABC-123",
+            },
+        )
 
 
 @pytest.mark.parametrize(
@@ -1807,6 +1851,35 @@ def test_build_conversion_audit_log_allows_schema_json_string_root_metadata() ->
     )
 
     assert audit_log["parameters"] == {"schema_json": schema_json}
+
+
+@pytest.mark.parametrize(
+    ("schema_json", "message"),
+    [
+        (
+            '{"items":["Lot: ABC-123"]}',
+            r"parameters\.schema_json\.items\[0\]",
+        ),
+        (
+            '{"properties":["Lot: ABC-123"]}',
+            r"parameters\.schema_json\.properties",
+        ),
+    ],
+)
+def test_build_conversion_audit_log_rejects_malformed_schema_json_scalars(
+    schema_json: str,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        build_conversion_audit_log(
+            source_bytes=b"Lot: ABC-123\n",
+            output_bytes=b'{"lot_number":"ABC-123"}\n',
+            model="local-json-model",
+            prompt_id="veridoc_conversion_plan",
+            prompt_version="poc-08",
+            ir_version="document-ir-v1",
+            parameters={"schema_json": schema_json},
+        )
 
 
 @pytest.mark.parametrize(

@@ -666,6 +666,8 @@ def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "
         and not _is_safe_json_schema_audit_parameter_key(key_path)
     ):
         return
+    if _is_invalid_json_schema_value_path(key_path, value):
+        raise ValueError(f"{key_path} must not include document or request content")
     if isinstance(value, Mapping):
         key_value_entry = _mapping_key_value_parameter_entry(value)
         if key_value_entry is None and _is_file_audit_parameter_container_path(key_path):
@@ -682,8 +684,6 @@ def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "
             key_string = str(key)
             item_path = f"{key_path}.{key_string}"
             if _is_content_bearing_schema_value_path(item_path):
-                raise ValueError(f"{item_path} must not include document or request content")
-            if _is_invalid_json_schema_field_value_path(item_path, item):
                 raise ValueError(f"{item_path} must not include document or request content")
             if _is_content_bearing_audit_parameter_key(item_path):
                 raise ValueError(f"{item_path} must not include document or request content")
@@ -718,7 +718,10 @@ def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "
             if _is_content_bearing_audit_parameter_key(item_path):
                 raise ValueError(f"{item_path} must not include document or request content")
             entry_value = _raw_key_value_parameter_entry_value(key_path, _entry_value)
-            if _is_content_bearing_url(entry_value):
+            if _is_content_bearing_url(entry_value) or (
+                not _is_key_value_audit_parameter_sequence_container_key(item_path)
+                and _is_content_bearing_raw_query_text(entry_value)
+            ):
                 raise ValueError(f"{item_path} must not include document or request content")
             _reject_content_bearing_audit_parameters(entry_value, key_path=item_path)
     elif isinstance(value, (list, tuple)):
@@ -804,8 +807,16 @@ def _is_safe_json_metadata_audit_parameter_key(normalized_leaf: str) -> bool:
     ):
         return False
     return (
-        _contains_component_sequence(components, ("json", "request"))
-        or _contains_component_sequence(components, ("json", "data"))
+        any(
+            _contains_component_sequence(components, sequence)
+            for sequence in (
+                ("json", "data"),
+                ("json", "output"),
+                ("json", "request"),
+                ("json", "response"),
+                ("json", "result"),
+            )
+        )
     ) and _ends_with_component_sequence(components, _SAFE_DESCRIPTOR_COMPONENT_SEQUENCES)
 
 
@@ -898,9 +909,24 @@ def _is_content_bearing_schema_value_path(key: str) -> bool:
     return components[-1] in _JSON_SCHEMA_VALUE_AUDIT_PARAMETER_KEYS
 
 
-def _is_invalid_json_schema_field_value_path(key: str, value: object) -> bool:
+def _is_invalid_json_schema_value_path(key: str, value: object) -> bool:
     components = _audit_parameter_path_components(key)
-    return _is_json_schema_field_name_path(components) and not isinstance(value, (Mapping, bool))
+    if not _is_json_schema_audit_parameter_path(components):
+        return False
+    if _is_json_schema_field_name_path(components) and not isinstance(value, (Mapping, bool)):
+        return True
+
+    leaf = key.rsplit(".", 1)[-1]
+    has_index_suffix = _PARAMETER_INDEX_SUFFIX_RE.search(leaf) is not None
+    normalized_leaf = _normalize_parameter_key(_PARAMETER_INDEX_SUFFIX_RE.sub("", leaf))
+    if normalized_leaf in {"properties", "defs", "definitions"} and not has_index_suffix:
+        return not isinstance(value, Mapping)
+    if normalized_leaf == "items":
+        schema_types = (Mapping, bool)
+        if has_index_suffix:
+            return not isinstance(value, schema_types)
+        return not isinstance(value, (*schema_types, list))
+    return False
 
 
 def _is_content_bearing_schema_field_name(name: str) -> bool:
@@ -1119,17 +1145,20 @@ def _redact_raw_key_value_parameter_line(
     entry_key, separator, entry_value = raw_entry
     entry_path = _raw_key_value_parameter_entry_path(key_path, entry_key)
     entry_parameter_value = _raw_key_value_parameter_entry_value(key_path, entry_value)
+    separator_text = ": " if separator == ":" else separator
+    if (
+        not _is_key_value_audit_parameter_sequence_container_key(entry_path)
+        and _is_credential_bearing_raw_query_text(entry_parameter_value)
+    ):
+        return f"{entry_key}{separator_text}{_REDACTED_VALUE}"
     redacted_value = _redact_audit_parameters(
         entry_parameter_value,
         key_path=entry_path,
     )
     if redacted_value == _REDACTED_VALUE:
-        redacted_separator = ": " if separator == ":" else separator
-        return f"{entry_key}{redacted_separator}{_REDACTED_VALUE}"
+        return f"{entry_key}{separator_text}{_REDACTED_VALUE}"
     if isinstance(redacted_value, str) and redacted_value != entry_parameter_value:
-        separator_text = ": " if separator == ":" else separator
         return f"{entry_key}{separator_text}{redacted_value}"
-    separator_text = ": " if separator == ":" else separator
     return f"{entry_key}{separator_text}{entry_value}"
 
 
@@ -1142,7 +1171,9 @@ def _raw_key_value_parameter_entry_path(key_path: str, entry_key: str) -> str:
 
 def _raw_key_value_parameter_entry_value(key_path: str, entry_value: str) -> str:
     normalized_leaf = _normalize_parameter_key(_parameter_key_leaf(key_path))
-    if _is_query_audit_parameter_container_leaf(normalized_leaf):
+    if _is_query_audit_parameter_container_leaf(
+        normalized_leaf
+    ) or _is_raw_audit_parameter_container_leaf(normalized_leaf):
         return _fully_decode_query_parameter_value(entry_value)
     return entry_value
 
