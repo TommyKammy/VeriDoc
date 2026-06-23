@@ -510,7 +510,9 @@ def test_build_conversion_audit_log_allows_json_descriptor_metadata_fields() -> 
             "jsonRequestStatus": "complete",
             "jsonDataType": "schema",
             "jsonResponseId": "resp_123",
+            "jsonResponseStatusCode": 200,
             "jsonOutputStatus": "complete",
+            "jsonOutputStatusCode": 200,
             "jsonResultType": "object",
         },
     )
@@ -527,7 +529,9 @@ def test_build_conversion_audit_log_allows_json_descriptor_metadata_fields() -> 
         "jsonRequestStatus": "complete",
         "jsonDataType": "schema",
         "jsonResponseId": "resp_123",
+        "jsonResponseStatusCode": 200,
         "jsonOutputStatus": "complete",
+        "jsonOutputStatusCode": 200,
         "jsonResultType": "object",
     }
 
@@ -543,12 +547,18 @@ def test_build_conversion_audit_log_allows_message_content_type_descriptors() ->
         parameters={
             "messageContentType": "application/json",
             "assistantMessageContentType": "application/json",
+            "messageIndex": 0,
+            "messageName": "assistant-1",
+            "assistantMessageName": "assistant-1",
         },
     )
 
     assert audit_log["parameters"] == {
         "messageContentType": "application/json",
         "assistantMessageContentType": "application/json",
+        "messageIndex": 0,
+        "messageName": "assistant-1",
+        "assistantMessageName": "assistant-1",
     }
 
 
@@ -1235,6 +1245,29 @@ def test_build_conversion_audit_log_redacts_real_parameters_raw_container() -> N
 
     assert audit_log["parameters"] == {"parameters": "key=[REDACTED]"}
     assert "operator-runtime-key" not in json.dumps(audit_log, sort_keys=True)
+
+
+@pytest.mark.parametrize(
+    "nested_parameters",
+    [
+        {"status": "message=complete"},
+        {"mode": "output=summary"},
+    ],
+)
+def test_build_conversion_audit_log_allows_real_parameters_benign_key_value_tokens(
+    nested_parameters: dict[str, str],
+) -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={"parameters": nested_parameters},
+    )
+
+    assert audit_log["parameters"] == {"parameters": nested_parameters}
 
 
 def test_build_conversion_audit_log_redacts_raw_mapping_parameter_values() -> None:
@@ -2264,6 +2297,32 @@ def test_build_conversion_audit_log_allows_schema_json_string_property_metadata(
     assert audit_log["parameters"] == {"schema_json": schema_json}
 
 
+@pytest.mark.parametrize("property_name", ["anyOf", "properties", "patternProperties"])
+def test_build_conversion_audit_log_allows_schema_json_keyword_property_names(
+    property_name: str,
+) -> None:
+    schema_json = {
+        "type": "object",
+        "properties": {
+            property_name: {
+                "type": "string",
+            },
+        },
+    }
+
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={"schema_json": schema_json},
+    )
+
+    assert audit_log["parameters"] == {"schema_json": schema_json}
+
+
 def test_build_conversion_audit_log_allows_schema_json_string_root_metadata() -> None:
     schema_json = json.dumps(
         {
@@ -2273,6 +2332,29 @@ def test_build_conversion_audit_log_allows_schema_json_string_root_metadata() ->
         }
     )
 
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={"schema_json": schema_json},
+    )
+
+    assert audit_log["parameters"] == {"schema_json": schema_json}
+
+
+@pytest.mark.parametrize(
+    "schema_json",
+    [
+        {"type": "string", "enum": ["pending", "complete"]},
+        {"const": 1},
+    ],
+)
+def test_build_conversion_audit_log_allows_safe_schema_json_literal_constraints(
+    schema_json: dict[str, object],
+) -> None:
     audit_log = build_conversion_audit_log(
         source_bytes=b"Lot: ABC-123\n",
         output_bytes=b'{"lot_number":"ABC-123"}\n',
