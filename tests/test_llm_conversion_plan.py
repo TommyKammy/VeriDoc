@@ -342,6 +342,28 @@ def test_build_conversion_audit_log_allows_scalar_prompt_token_limits() -> None:
     assert audit_log["parameters"] == {"max_prompt_tokens": 4096}
 
 
+def test_build_conversion_audit_log_allows_safe_message_metadata_fields() -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={
+            "message_id": "provider-message-1",
+            "userMessageId": "provider-user-message-1",
+            "messageCount": 2,
+        },
+    )
+
+    assert audit_log["parameters"] == {
+        "message_id": "provider-message-1",
+        "userMessageId": "provider-user-message-1",
+        "messageCount": 2,
+    }
+
+
 def test_build_conversion_audit_log_redacts_tuple_parameter_entries() -> None:
     audit_log = build_conversion_audit_log(
         source_bytes=b"Lot: ABC-123\n",
