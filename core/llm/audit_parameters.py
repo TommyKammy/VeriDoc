@@ -207,13 +207,34 @@ _SAFE_FORM_DATA_METADATA_AUDIT_PARAMETER_KEYS = frozenset(
     }
 )
 _SAFE_DESCRIPTOR_COMPONENT_SEQUENCES = (
-    ("code",),
     ("content", "type"),
     ("description",),
     ("id",),
     ("status",),
     ("status", "code"),
     ("type",),
+)
+_SAFE_SCHEMA_LITERAL_STRINGS = frozenset(
+    {
+        "accepted",
+        "active",
+        "approved",
+        "closed",
+        "complete",
+        "completed",
+        "draft",
+        "error",
+        "failed",
+        "final",
+        "inactive",
+        "open",
+        "optional",
+        "pending",
+        "rejected",
+        "required",
+        "success",
+        "unknown",
+    }
 )
 _SAFE_AUDIT_PARAMETER_SEQUENCE_KEYS = frozenset(
     {
@@ -379,7 +400,13 @@ class AuditParameterContext:
 
     @property
     def is_raw_query_value(self) -> bool:
-        return _is_multi_entry_raw_parameter_container_leaf(self.normalized_leaf)
+        return self.is_real_parameters_container or _is_multi_entry_raw_parameter_container_leaf(
+            self.normalized_leaf
+        )
+
+    @property
+    def is_real_parameters_container(self) -> bool:
+        return self.components == ("parameters", "parameters")
 
     def child_path(self, key: object, *, decode_raw_key: bool = False) -> str:
         key_string = str(key)
@@ -531,7 +558,7 @@ def _reject_key_value_parameter_entry_value(
         return
     entry_parameter_value = _raw_key_value_parameter_entry_value(key_path, value)
     if _is_content_bearing_url(entry_parameter_value) or (
-        _is_raw_query_audit_parameter_value_key(key_path)
+        _is_raw_content_query_audit_parameter_value_key(key_path)
         and not _is_key_value_audit_parameter_sequence_container_key(entry_path)
         and _is_content_bearing_raw_query_text(entry_parameter_value)
     ):
@@ -896,11 +923,18 @@ def _is_safe_schema_literal_value(value: object, *, _depth: int = 0) -> bool:
 
 
 def _is_safe_schema_literal_string(value: str) -> bool:
-    if not value or len(value) > 64:
+    if not value or len(value) > 32:
         return False
-    if _is_content_bearing_url(value) or _is_credential_bearing_url(value):
+    if (
+        _is_secret_parameter_key(value)
+        or _is_content_bearing_audit_parameter_key(value)
+        or _is_content_bearing_url(value)
+        or _is_credential_bearing_url(value)
+        or _is_credential_bearing_raw_query_text(value)
+    ):
         return False
-    return re.fullmatch(r"[a-z][a-z0-9_:-]*", value) is not None
+    normalized = _normalize_parameter_key(value)
+    return normalized in _SAFE_SCHEMA_LITERAL_STRINGS
 
 
 def _is_content_bearing_schema_field_name(name: str) -> bool:
@@ -1326,6 +1360,14 @@ def _is_multi_entry_raw_parameter_container_leaf(normalized_leaf: str) -> bool:
 
 def _is_raw_query_audit_parameter_value_key(key_path: str) -> bool:
     return AuditParameterContext(key_path).is_raw_query_value
+
+
+def _is_raw_content_query_audit_parameter_value_key(key_path: str) -> bool:
+    context = AuditParameterContext(key_path)
+    return (
+        not context.is_real_parameters_container
+        and _is_multi_entry_raw_parameter_container_leaf(context.normalized_leaf)
+    )
 
 
 def _is_query_audit_parameter_entry_key(key: str) -> bool:

@@ -562,6 +562,19 @@ def test_build_conversion_audit_log_allows_message_content_type_descriptors() ->
     }
 
 
+def test_build_conversion_audit_log_rejects_json_code_payload_descriptors() -> None:
+    with pytest.raises(ValueError, match=r"parameters\.jsonOutputCode"):
+        build_conversion_audit_log(
+            source_bytes=b"Lot: ABC-123\n",
+            output_bytes=b'{"lot_number":"ABC-123"}\n',
+            model="local-json-model",
+            prompt_id="veridoc_conversion_plan",
+            prompt_version="poc-08",
+            ir_version="document-ir-v1",
+            parameters={"jsonOutputCode": '{"lot_number":"ABC"}'},
+        )
+
+
 def test_build_conversion_audit_log_rejects_json_encoded_metadata_content() -> None:
     with pytest.raises(ValueError, match=r"parameters\.metadataJson\.prompt"):
         build_conversion_audit_log(
@@ -1268,6 +1281,29 @@ def test_build_conversion_audit_log_allows_real_parameters_benign_key_value_toke
     )
 
     assert audit_log["parameters"] == {"parameters": nested_parameters}
+
+
+def test_build_conversion_audit_log_redacts_real_parameters_nested_raw_credentials() -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={
+            "parameters": {
+                "next": "api_key=operator-runtime-key",
+            },
+        },
+    )
+
+    assert audit_log["parameters"] == {
+        "parameters": {
+            "next": "[REDACTED]",
+        },
+    }
+    assert "operator-runtime-key" not in json.dumps(audit_log, sort_keys=True)
 
 
 def test_build_conversion_audit_log_redacts_raw_mapping_parameter_values() -> None:
@@ -2366,6 +2402,29 @@ def test_build_conversion_audit_log_allows_safe_schema_json_literal_constraints(
     )
 
     assert audit_log["parameters"] == {"schema_json": schema_json}
+
+
+@pytest.mark.parametrize(
+    ("schema_json", "message"),
+    [
+        ({"default": "operator-runtime-token"}, r"parameters\.schema_json\.default"),
+        ({"enum": ["sk-proj-secret"]}, r"parameters\.schema_json\.enum"),
+    ],
+)
+def test_build_conversion_audit_log_rejects_sensitive_schema_json_literal_constraints(
+    schema_json: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        build_conversion_audit_log(
+            source_bytes=b"Lot: ABC-123\n",
+            output_bytes=b'{"lot_number":"ABC-123"}\n',
+            model="local-json-model",
+            prompt_id="veridoc_conversion_plan",
+            prompt_version="poc-08",
+            ir_version="document-ir-v1",
+            parameters={"schema_json": schema_json},
+        )
 
 
 def test_build_conversion_audit_log_allows_real_parameters_schema_json() -> None:
