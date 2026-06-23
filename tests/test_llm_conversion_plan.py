@@ -604,6 +604,26 @@ def test_build_conversion_audit_log_preserves_two_string_generation_parameter_li
     }
 
 
+def test_build_conversion_audit_log_preserves_safe_generation_parameter_strings() -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={
+            "generationParameters": "input_tokens=100&output_tokens=20",
+            "model_parameters": "messages=2",
+        },
+    )
+
+    assert audit_log["parameters"] == {
+        "generationParameters": "input_tokens=100&output_tokens=20",
+        "model_parameters": "messages=2",
+    }
+
+
 def test_build_conversion_audit_log_sanitizes_list_key_value_parameter_entries() -> None:
     audit_log = build_conversion_audit_log(
         source_bytes=b"Lot: ABC-123\n",
@@ -758,6 +778,7 @@ def test_build_conversion_audit_log_redacts_multi_entry_raw_parameter_strings() 
         parameters={
             "query_params": "version=1&api%5Fkey=operator-runtime-api-key",
             "default_parameters": "version=1&code=operator-runtime-code&key=operator-runtime-key",
+            "requestParameters": "version=1&api_key=operator-runtime-request-api-key",
             "params_semicolon": "version=1;token=not-a-container",
             "params": [
                 "callback=https://example.invalid/callback?sig=operator-runtime-signature",
@@ -776,6 +797,7 @@ def test_build_conversion_audit_log_redacts_multi_entry_raw_parameter_strings() 
     assert audit_log["parameters"] == {
         "query_params": "version=1&api%5Fkey=[REDACTED]",
         "default_parameters": "version=1&code=[REDACTED]&key=[REDACTED]",
+        "requestParameters": "version=1&api_key=[REDACTED]",
         "params_semicolon": "version=1;token=not-a-container",
         "params": ["callback=[REDACTED]", "?key=[REDACTED]", "code=[REDACTED]", "version=1;api_key=[REDACTED]"],
         "headers": "X-Test: ok\nAuthorization: [REDACTED]",
@@ -785,6 +807,7 @@ def test_build_conversion_audit_log_redacts_multi_entry_raw_parameter_strings() 
     rendered = json.dumps(audit_log, sort_keys=True)
     assert "operator-runtime-api-key" not in rendered
     assert "operator-runtime-api-key-2" not in rendered
+    assert "operator-runtime-request-api-key" not in rendered
     assert "operator-runtime-code" not in rendered
     assert "operator-runtime-key" not in rendered
     assert "operator-runtime-query-key" not in rendered

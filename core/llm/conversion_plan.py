@@ -369,6 +369,20 @@ _KEY_VALUE_AUDIT_PARAMETER_SEQUENCE_CONTAINER_KEYS = frozenset(
         "request_headers",
     }
 )
+_QUERY_AUDIT_PARAMETER_CONTAINER_PREFIX_COMPONENTS = frozenset(
+    {
+        "callback",
+        "custom",
+        "default",
+        "extra",
+        "query",
+        "redirect",
+        "request",
+        "search",
+        "uri",
+        "url",
+    }
+)
 _FILE_AUDIT_PARAMETER_CONTAINER_KEYS = frozenset({"file", "files"})
 _CONTENT_BYTE_AUDIT_PARAMETER_ANCESTOR_COMPONENTS = frozenset(
     {
@@ -1142,8 +1156,7 @@ def _is_key_value_audit_parameter_sequence_container_key(key_path: str) -> bool:
         normalized_leaf in _KEY_VALUE_AUDIT_PARAMETER_SEQUENCE_CONTAINER_KEYS
         or normalized_leaf.endswith("_headers")
         or normalized_leaf.endswith("_cookies")
-        or normalized_leaf.endswith("_params")
-        or normalized_leaf.endswith("_parameters")
+        or _is_query_audit_parameter_container_leaf(normalized_leaf)
     )
 
 
@@ -1173,10 +1186,17 @@ def _is_secret_exempt_key_value_audit_parameter_container_key(key_path: str) -> 
 
 
 def _is_query_audit_parameter_container_leaf(normalized_leaf: str) -> bool:
+    components = tuple(normalized_leaf.split("_"))
     return (
         normalized_leaf in {"params", "query_params", "query_parameters"}
-        or normalized_leaf.endswith("_params")
-        or normalized_leaf.endswith("_parameters")
+        or (
+            len(components) >= 2
+            and components[-1] in {"params", "parameters"}
+            and any(
+                component in _QUERY_AUDIT_PARAMETER_CONTAINER_PREFIX_COMPONENTS
+                for component in components[:-1]
+            )
+        )
     )
 
 
