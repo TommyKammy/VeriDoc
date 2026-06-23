@@ -264,9 +264,13 @@ def test_build_conversion_audit_log_redacts_signature_credentials(
         ({"tools": [{"content": "Lot: ABC-123"}]}, r"parameters\.tools\[0\]\.content"),
         ({"previousResponse": {"choices": []}}, r"parameters\.previousResponse"),
         ({"source": "Lot: ABC-123"}, r"parameters\.source"),
+        ({"sourceData": "Lot: ABC-123"}, r"parameters\.sourceData"),
         ({"raw_source": "Lot: ABC-123"}, r"parameters\.raw_source"),
+        ({"rawData": "Lot: ABC-123"}, r"parameters\.rawData"),
         ({"rawOutput": '{"lot_number":"ABC-123"}'}, r"parameters\.rawOutput"),
         ({"output": '{"lot_number":"ABC-123"}'}, r"parameters\.output"),
+        ({"outputData": '{"lot_number":"ABC-123"}'}, r"parameters\.outputData"),
+        ({"requestData": "Lot: ABC-123"}, r"parameters\.requestData"),
         ({"input": "Lot: ABC-123"}, r"parameters\.input"),
         ({"instructions": "Use the source document exactly."}, r"parameters\.instructions"),
         ({"prompt": "Lot: ABC-123"}, r"parameters\.prompt"),
@@ -381,12 +385,14 @@ def test_build_conversion_audit_log_allows_camel_case_audit_metadata_keys() -> N
         parameters={
             "metaData": {"path": "fixtures/source.pdf"},
             "modelData": {"path": "fixtures/model.json"},
+            "metadata": {"dataPath": "fixtures/metadata.json"},
         },
     )
 
     assert audit_log["parameters"] == {
         "metaData": {"path": "fixtures/source.pdf"},
         "modelData": {"path": "fixtures/model.json"},
+        "metadata": {"dataPath": "fixtures/metadata.json"},
     }
 
 
