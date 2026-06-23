@@ -756,6 +756,30 @@ def test_build_conversion_audit_log_sanitizes_mapping_key_value_parameter_entrie
     assert "Bearer" not in rendered
 
 
+def test_build_conversion_audit_log_redacts_structured_entry_names() -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={
+            "headers": [
+                {
+                    "key": "https://example.invalid/cb?api_key=operator-runtime-key",
+                    "value": "v",
+                }
+            ],
+        },
+    )
+
+    assert audit_log["parameters"] == {
+        "headers": [{"key": "[REDACTED]", "value": "v"}],
+    }
+    assert "operator-runtime-key" not in json.dumps(audit_log, sort_keys=True)
+
+
 def test_build_conversion_audit_log_redacts_bare_provider_parameter_key_values() -> None:
     audit_log = build_conversion_audit_log(
         source_bytes=b"Lot: ABC-123\n",
@@ -889,7 +913,7 @@ def test_build_conversion_audit_log_redacts_multi_entry_raw_parameter_strings() 
     )
 
     assert audit_log["parameters"] == {
-        "query_params": "version=1&api_key=[REDACTED]",
+        "query_params": "version=1&api%5Fkey=[REDACTED]",
         "default_parameters": "version=1&code=[REDACTED]&key=[REDACTED]",
         "requestParameters": "version=1&api_key=[REDACTED]",
         "params_semicolon": "version=1;token=not-a-container",
@@ -1005,6 +1029,25 @@ def test_build_conversion_audit_log_redacts_structured_nested_raw_query_entry_cr
     assert "operator-runtime-map-key" not in rendered
 
 
+def test_build_conversion_audit_log_redacts_structured_encoded_entry_names() -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={
+            "provider_parameters": [["api%255Fkey", "operator-runtime-key"]],
+        },
+    )
+
+    assert audit_log["parameters"] == {
+        "provider_parameters": [["api_key", "[REDACTED]"]],
+    }
+    assert "operator-runtime-key" not in json.dumps(audit_log, sort_keys=True)
+
+
 def test_build_conversion_audit_log_redacts_structured_provider_encoded_raw_payloads() -> None:
     audit_log = build_conversion_audit_log(
         source_bytes=b"Lot: ABC-123\n",
@@ -1062,6 +1105,21 @@ def test_build_conversion_audit_log_rejects_structured_nested_raw_query_entry_co
         )
 
 
+def test_build_conversion_audit_log_rejects_structured_encoded_content_entry_names() -> None:
+    with pytest.raises(ValueError, match=r"parameters\.queryParameters\[0\]\.raw_source"):
+        build_conversion_audit_log(
+            source_bytes=b"Lot: ABC-123\n",
+            output_bytes=b'{"lot_number":"ABC-123"}\n',
+            model="local-json-model",
+            prompt_id="veridoc_conversion_plan",
+            prompt_version="poc-08",
+            ir_version="document-ir-v1",
+            parameters={
+                "queryParameters": [["raw%255Fsource", "Lot: ABC-123"]],
+            },
+        )
+
+
 def test_build_conversion_audit_log_redacts_encoded_raw_query_container_text() -> None:
     audit_log = build_conversion_audit_log(
         source_bytes=b"Lot: ABC-123\n",
@@ -1085,6 +1143,46 @@ def test_build_conversion_audit_log_redacts_encoded_raw_query_container_text() -
     assert "operator-runtime-token" not in rendered
 
 
+def test_build_conversion_audit_log_redacts_real_parameters_containers() -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={
+            "parameters": {
+                "key": "operator-runtime-key",
+            },
+        },
+    )
+
+    assert audit_log["parameters"] == {
+        "parameters": {
+            "key": "[REDACTED]",
+        },
+    }
+    assert "operator-runtime-key" not in json.dumps(audit_log, sort_keys=True)
+
+
+def test_build_conversion_audit_log_redacts_real_parameters_raw_container() -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={
+            "parameters": "key=operator-runtime-key",
+        },
+    )
+
+    assert audit_log["parameters"] == {"parameters": "key=[REDACTED]"}
+    assert "operator-runtime-key" not in json.dumps(audit_log, sort_keys=True)
+
+
 def test_build_conversion_audit_log_preserves_encoded_plus_in_raw_query_values() -> None:
     audit_log = build_conversion_audit_log(
         source_bytes=b"Lot: ABC-123\n",
@@ -1099,7 +1197,26 @@ def test_build_conversion_audit_log_preserves_encoded_plus_in_raw_query_values()
     )
 
     assert audit_log["parameters"] == {
-        "queryParameters": "language=C++&expr=a+b&api_key=[REDACTED]",
+        "queryParameters": "language=C%2B%2B&expr=a%2Bb&api_key=[REDACTED]",
+    }
+    assert "operator-runtime-key" not in json.dumps(audit_log, sort_keys=True)
+
+
+def test_build_conversion_audit_log_preserves_encoded_raw_value_separators() -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={
+            "queryParameters": "expr=a%26b&api_key=operator-runtime-key",
+        },
+    )
+
+    assert audit_log["parameters"] == {
+        "queryParameters": "expr=a%26b&api_key=[REDACTED]",
     }
     assert "operator-runtime-key" not in json.dumps(audit_log, sort_keys=True)
 
@@ -1115,6 +1232,40 @@ def test_build_conversion_audit_log_rejects_encoded_raw_query_container_content(
             ir_version="document-ir-v1",
             parameters={
                 "queryParameters": "prompt%3DLot%3A+ABC-123",
+            },
+        )
+
+
+def test_build_conversion_audit_log_redacts_colon_nested_raw_query_credentials() -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={
+            "queryParameters": "next=api_key:operator-runtime-key",
+        },
+    )
+
+    assert audit_log["parameters"] == {"queryParameters": "next=[REDACTED]"}
+    assert "operator-runtime-key" not in json.dumps(audit_log, sort_keys=True)
+
+
+def test_build_conversion_audit_log_rejects_colon_nested_raw_query_content() -> None:
+    with pytest.raises(ValueError, match=r"parameters\.callback_url"):
+        build_conversion_audit_log(
+            source_bytes=b"Lot: ABC-123\n",
+            output_bytes=b'{"lot_number":"ABC-123"}\n',
+            model="local-json-model",
+            prompt_id="veridoc_conversion_plan",
+            prompt_version="poc-08",
+            ir_version="document-ir-v1",
+            parameters={
+                "callback_url": (
+                    "https://example.invalid/cb?params=prompt:Lot%3A+ABC-123"
+                ),
             },
         )
 

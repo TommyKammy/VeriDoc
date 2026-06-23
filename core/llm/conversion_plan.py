@@ -562,7 +562,7 @@ def build_conversion_audit_log(
             "version": prompt_version,
         },
         "ir_version": ir_version,
-        "parameters": _redact_audit_parameters(parameters),
+        "parameters": _redact_audit_parameters(parameters, key_path="parameters"),
     }
 
 
@@ -642,10 +642,10 @@ def _redact_audit_parameters(value: object, *, key_path: str = "") -> object:
             for key, item in value.items()
         }
     if _is_key_value_parameter_entry(value, key_path):
-        entry_key = str(value[0])
-        entry_path = _join_parameter_key_path(key_path, entry_key)
+        entry_name = _redact_key_value_parameter_entry_name(str(value[0]), key_path)
+        entry_path = _join_parameter_key_path(key_path, entry_name)
         return [
-            entry_key,
+            entry_name,
             _redact_key_value_parameter_entry_value(value[1], key_path, entry_path),
         ]
     if isinstance(value, str):
@@ -701,14 +701,22 @@ def _redact_mapping_audit_parameter_item(
             key_path=_join_parameter_key_path(key_path, str(key)),
         )
     if str(key) == key_value_entry[0]:
-        return item
+        return _redact_key_value_parameter_entry_name(str(item), key_path)
     if str(key) == key_value_entry[2]:
-        entry_path = _join_parameter_key_path(key_path, key_value_entry[1])
+        entry_name = _redact_key_value_parameter_entry_name(key_value_entry[1], key_path)
+        entry_path = _join_parameter_key_path(key_path, entry_name)
         return _redact_key_value_parameter_entry_value(item, key_path, entry_path)
     return _redact_audit_parameters(
         item,
         key_path=_join_parameter_key_path(key_path, str(key)),
     )
+
+
+def _redact_key_value_parameter_entry_name(entry_key: str, key_path: str) -> str:
+    decoded_key = _raw_key_value_parameter_entry_key(key_path, entry_key)
+    if _is_credential_bearing_url(decoded_key) or _is_credential_bearing_raw_query_text(decoded_key):
+        return _REDACTED_VALUE
+    return decoded_key
 
 
 def _redact_key_value_parameter_entry_value(
@@ -744,6 +752,14 @@ def _reject_key_value_parameter_entry_value(
     _reject_content_bearing_audit_parameters(entry_parameter_value, key_path=entry_path)
 
 
+def _reject_key_value_parameter_entry_name(entry_key: str, key_path: str, entry_path: str) -> None:
+    decoded_key = _raw_key_value_parameter_entry_key(key_path, entry_key)
+    if _is_content_bearing_audit_parameter_key(entry_path):
+        raise ValueError(f"{entry_path} must not include document or request content")
+    if _is_content_bearing_url(decoded_key) or _is_content_bearing_raw_query_text(decoded_key):
+        raise ValueError(f"{entry_path} must not include document or request content")
+
+
 def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "parameters") -> None:
     if isinstance(value, (bytes, bytearray, memoryview)):
         raise ValueError(f"{key_path} must not include document or request content")
@@ -761,11 +777,13 @@ def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "
             raise ValueError(f"{key_path} must not include document or request content")
         if key_value_entry is not None:
             _key_field, entry_key, value_field = key_value_entry
-            item_path = _join_parameter_key_path(key_path, entry_key)
+            item_path = _join_parameter_key_path(
+                key_path,
+                _raw_key_value_parameter_entry_key(key_path, entry_key),
+            )
             if _is_file_audit_parameter_container_path(key_path):
                 raise ValueError(f"{item_path} must not include document or request content")
-            if _is_content_bearing_audit_parameter_key(item_path):
-                raise ValueError(f"{item_path} must not include document or request content")
+            _reject_key_value_parameter_entry_name(entry_key, key_path, item_path)
             _reject_key_value_parameter_entry_value(
                 value[value_field],
                 key_path,
@@ -782,12 +800,11 @@ def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "
                 raise ValueError(f"{item_path} must not include document or request content")
             _reject_content_bearing_audit_parameters(item, key_path=item_path)
     elif _is_key_value_parameter_entry(value, key_path):
-        entry_key = str(value[0])
+        entry_key = _raw_key_value_parameter_entry_key(key_path, str(value[0]))
         item_path = f"{key_path}.{entry_key}"
         if _is_file_audit_parameter_container_path(key_path):
             raise ValueError(f"{item_path} must not include document or request content")
-        if _is_content_bearing_audit_parameter_key(item_path):
-            raise ValueError(f"{item_path} must not include document or request content")
+        _reject_key_value_parameter_entry_name(str(value[0]), key_path, item_path)
         _reject_key_value_parameter_entry_value(value[1], key_path, item_path)
     elif isinstance(value, str):
         parameter_value = _security_checked_audit_parameter_string(value, key_path)
@@ -1202,7 +1219,14 @@ def _raw_key_value_parameter_entries(value: str, key_path: str) -> list[tuple[st
     return [
         entry
         for chunk in _raw_key_value_parameter_chunks(value, normalized_leaf)
-        if (entry := _raw_key_value_parameter_line(chunk, key_path)) is not None
+        if (
+            entry := _raw_key_value_parameter_chunk_entry(
+                chunk,
+                key_path,
+                normalized_leaf,
+            )
+        )
+        is not None
     ]
 
 
@@ -1212,7 +1236,7 @@ def _redact_raw_key_value_parameter_text(value: str, key_path: str) -> str | Non
         return None
     chunks = _raw_key_value_parameter_chunks(value, normalized_leaf)
     if len(chunks) == 1 and chunks[0] == value:
-        raw_entry = _raw_key_value_parameter_line(value, key_path)
+        raw_entry = _raw_key_value_parameter_chunk_entry(value, key_path, normalized_leaf)
         if raw_entry is None:
             return None
         return _redact_raw_key_value_parameter_line(raw_entry, key_path)
@@ -1220,7 +1244,7 @@ def _redact_raw_key_value_parameter_text(value: str, key_path: str) -> str | Non
     redacted_chunks = []
     changed = False
     for chunk in chunks:
-        raw_entry = _raw_key_value_parameter_line(chunk, key_path)
+        raw_entry = _raw_key_value_parameter_chunk_entry(chunk, key_path, normalized_leaf)
         if raw_entry is None:
             redacted_chunks.append(chunk)
             continue
@@ -1230,6 +1254,22 @@ def _redact_raw_key_value_parameter_text(value: str, key_path: str) -> str | Non
     if not changed:
         return None
     return _raw_key_value_parameter_joiner(value, normalized_leaf).join(redacted_chunks)
+
+
+def _raw_key_value_parameter_chunk_entry(
+    chunk: str,
+    key_path: str,
+    normalized_leaf: str,
+) -> tuple[str, str, str] | None:
+    raw_entry = _raw_key_value_parameter_line(chunk, key_path)
+    if raw_entry is not None:
+        return raw_entry
+    if not _is_multi_entry_raw_parameter_container_leaf(normalized_leaf):
+        return None
+    decoded_chunk = _fully_decode_query_parameter_value(chunk)
+    if decoded_chunk == chunk:
+        return None
+    return _raw_key_value_parameter_line(decoded_chunk, key_path)
 
 
 def _raw_key_value_parameter_chunks(value: str, normalized_leaf: str) -> list[str]:
@@ -1280,10 +1320,19 @@ def _redact_raw_key_value_parameter_line(
 
 
 def _raw_key_value_parameter_entry_path(key_path: str, entry_key: str) -> str:
+    return _join_parameter_key_path(
+        key_path,
+        _raw_key_value_parameter_entry_key(key_path, entry_key),
+    )
+
+
+def _raw_key_value_parameter_entry_key(key_path: str, entry_key: str) -> str:
     normalized_leaf = _normalize_parameter_key(_parameter_key_leaf(key_path))
     if _is_query_audit_parameter_container_leaf(normalized_leaf):
-        return _join_parameter_key_path(key_path, _fully_decode_query_parameter_value(entry_key))
-    return _join_parameter_key_path(key_path, entry_key)
+        return _fully_decode_query_parameter_value(entry_key)
+    if _is_raw_audit_parameter_container_leaf(normalized_leaf):
+        return _fully_decode_query_parameter_value(entry_key)
+    return entry_key
 
 
 def _raw_key_value_parameter_entry_value(key_path: str, entry_value: str) -> str:
@@ -1306,7 +1355,7 @@ def _fully_decode_query_parameter_value(value: str) -> str:
 
 
 def _security_checked_audit_parameter_string(value: str, key_path: str) -> str:
-    if not _should_decode_raw_audit_parameter_value(key_path):
+    if not _should_decode_structured_raw_audit_parameter_value(key_path):
         return value
     return _fully_decode_query_parameter_value(value)
 
@@ -1335,15 +1384,12 @@ def _should_decode_url_audit_parameter_value(key_path: str) -> bool:
     )
 
 
-def _should_decode_raw_audit_parameter_value(key_path: str) -> bool:
-    leaf = _normalize_parameter_key(_parameter_key_leaf(key_path))
+def _should_decode_structured_raw_audit_parameter_value(key_path: str) -> bool:
     parent_key = key_path.rsplit(".", 1)[0]
     parent_leaf = _normalize_parameter_key(_parameter_key_leaf(parent_key))
     return (
         _is_query_audit_parameter_container_leaf(parent_leaf)
         or _is_raw_audit_parameter_container_leaf(parent_leaf)
-        or _is_query_audit_parameter_container_leaf(leaf)
-        or _is_raw_audit_parameter_container_leaf(leaf)
     )
 
 
@@ -1542,13 +1588,14 @@ def _is_content_bearing_raw_query_text(value: str, *, _depth: int = 0) -> bool:
     if _depth >= _MAX_AUDIT_PARAMETER_DECODE_DEPTH:
         # Let the redaction pass handle overly deep raw-query chains.
         return False
+    raw_pairs = _raw_query_parameter_pairs(value)
     return any(
         _is_content_bearing_audit_parameter_key(key)
-        for key, _parameter_value in _url_parameter_pairs(value)
+        for key, _parameter_value in raw_pairs
     ) or any(
         _is_content_bearing_url(parameter_value, _depth=_depth + 1)
         or _is_content_bearing_raw_query_text(parameter_value, _depth=_depth + 1)
-        for _key, parameter_value in _url_parameter_pairs(value)
+        for _key, parameter_value in raw_pairs
     )
 
 
@@ -1558,20 +1605,35 @@ def _is_credential_bearing_raw_query_text(value: str, *, _depth: int = 0) -> boo
     if _depth >= _MAX_AUDIT_PARAMETER_DECODE_DEPTH:
         # Redact ambiguous raw-query chains instead of recursing without a bound.
         return True
+    raw_pairs = _raw_query_parameter_pairs(value)
     return any(
         _is_secret_url_parameter_key(key)
-        for key, _parameter_value in _url_parameter_pairs(value)
+        for key, _parameter_value in raw_pairs
     ) or any(
         _is_credential_bearing_url(parameter_value, _depth=_depth + 1)
         or _is_credential_bearing_raw_query_text(parameter_value, _depth=_depth + 1)
-        for _key, parameter_value in _url_parameter_pairs(value)
+        for _key, parameter_value in raw_pairs
     )
 
 
 def _has_raw_query_key_value_separator(value: str) -> bool:
     return any(
-        "=" in value_form for value_form in _decoded_query_parameter_value_forms(value)
+        _raw_key_value_parameter_separator(value_form) is not None
+        for value_form in _decoded_query_parameter_value_forms(value)
     )
+
+
+def _raw_query_parameter_pairs(value: str) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    for chunk in re.split(r"[&;]", value):
+        for value_form in _decoded_query_parameter_value_forms(chunk):
+            separator = _raw_key_value_parameter_separator(value_form)
+            if separator is None:
+                continue
+            key, found, parameter_value = value_form.partition(separator)
+            if found and key.strip() and parameter_value.strip():
+                pairs.append((key.strip(), parameter_value.strip()))
+    return pairs
 
 
 def _url_parameter_pairs(value: str) -> list[tuple[str, str]]:
