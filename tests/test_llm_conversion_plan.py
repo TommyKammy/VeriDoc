@@ -476,7 +476,7 @@ def test_build_conversion_audit_log_allows_json_descriptor_metadata_fields() -> 
         prompt_version="poc-08",
         ir_version="document-ir-v1",
         parameters={
-            "metadataJson": '{"path":"fixtures/source.pdf"}',
+            "metadataJson": '{"descriptor":{}}',
             "schema_json": {
                 "type": "object",
                 "properties": {
@@ -490,7 +490,7 @@ def test_build_conversion_audit_log_allows_json_descriptor_metadata_fields() -> 
     )
 
     assert audit_log["parameters"] == {
-        "metadataJson": '{"path":"fixtures/source.pdf"}',
+        "metadataJson": '{"descriptor":{}}',
         "schema_json": {
             "type": "object",
             "properties": {
@@ -556,6 +556,8 @@ def test_build_conversion_audit_log_rejects_json_encoded_metadata_scalars(
     [
         ('["Lot: ABC-123"]', r"parameters\.metadataJson\[0\]"),
         ('{"note":"Lot: ABC-123"}', r"parameters\.metadataJson\.note"),
+        ('{"path":"fixtures/source.pdf"}', r"parameters\.metadataJson\.path"),
+        ('{"status":"complete"}', r"parameters\.metadataJson\.status"),
         ('{"notes":["Lot: ABC-123"]}', r"parameters\.metadataJson\.notes\[0\]"),
         ('{"path":["Lot: ABC-123"]}', r"parameters\.metadataJson\.path\[0\]"),
         (

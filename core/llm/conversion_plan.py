@@ -269,16 +269,6 @@ _JSON_ENCODED_AUDIT_METADATA_KEYS = frozenset(
         "schema_json",
     }
 )
-_SAFE_JSON_ENCODED_METADATA_SCALAR_KEYS = frozenset(
-    {
-        "format",
-        "id",
-        "path",
-        "status",
-        "type",
-        "version",
-    }
-)
 _SAFE_FORM_DATA_METADATA_AUDIT_PARAMETER_KEYS = frozenset(
     {
         "form_data_content_type",
@@ -1282,9 +1272,7 @@ def _is_unsafe_json_encoded_metadata_scalar_path(key_path: str) -> bool:
     normalized_leaf = _normalize_parameter_key(_PARAMETER_INDEX_SUFFIX_RE.sub("", leaf))
     if normalized_leaf in _JSON_ENCODED_AUDIT_METADATA_KEYS and not has_index_suffix:
         return False
-    if has_index_suffix:
-        return True
-    return normalized_leaf not in _SAFE_JSON_ENCODED_METADATA_SCALAR_KEYS
+    return True
 
 
 def _redact_json_encoded_audit_metadata_value(value: str, key_path: str) -> str | None:
