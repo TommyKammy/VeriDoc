@@ -507,6 +507,28 @@ def test_build_conversion_audit_log_rejects_json_encoded_metadata_content() -> N
         )
 
 
+@pytest.mark.parametrize(
+    "metadata_json",
+    [
+        '"https://example.invalid/cb?api_key=operator-runtime-api-key"',
+        '"Lot: ABC-123"',
+    ],
+)
+def test_build_conversion_audit_log_rejects_json_encoded_metadata_scalars(
+    metadata_json: str,
+) -> None:
+    with pytest.raises(ValueError, match=r"parameters\.metadataJson"):
+        build_conversion_audit_log(
+            source_bytes=b"Lot: ABC-123\n",
+            output_bytes=b'{"lot_number":"ABC-123"}\n',
+            model="local-json-model",
+            prompt_id="veridoc_conversion_plan",
+            prompt_version="poc-08",
+            ir_version="document-ir-v1",
+            parameters={"metadataJson": metadata_json},
+        )
+
+
 def test_build_conversion_audit_log_redacts_tuple_parameter_entries() -> None:
     audit_log = build_conversion_audit_log(
         source_bytes=b"Lot: ABC-123\n",
@@ -566,6 +588,7 @@ def test_build_conversion_audit_log_sanitizes_list_key_value_parameter_entries()
             "options": [["max_prompt_tokens", 4096]],
             "extra": [["privateKey", "operator-runtime-private-key"]],
             "default_parameters": ["api_key", "operator-runtime-api-key"],
+            "requestParameters": ["api_key", "operator-runtime-request-api-key"],
         },
     )
 
@@ -574,11 +597,13 @@ def test_build_conversion_audit_log_sanitizes_list_key_value_parameter_entries()
         "options": [["max_prompt_tokens", 4096]],
         "extra": [["privateKey", "[REDACTED]"]],
         "default_parameters": ["api_key", "[REDACTED]"],
+        "requestParameters": ["api_key", "[REDACTED]"],
     }
     rendered = json.dumps(audit_log, sort_keys=True)
     assert "operator-runtime-token" not in rendered
     assert "operator-runtime-private-key" not in rendered
     assert "operator-runtime-api-key" not in rendered
+    assert "operator-runtime-request-api-key" not in rendered
     assert "Bearer" not in rendered
 
 
@@ -942,6 +967,28 @@ def test_build_conversion_audit_log_redacts_encoded_query_nested_url_credentials
     rendered = json.dumps(audit_log, sort_keys=True)
     assert "operator-runtime-api-key" not in rendered
     assert "https%3A" not in rendered
+
+
+def test_build_conversion_audit_log_redacts_double_encoded_query_nested_url_credentials() -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={
+            "queryParameters": (
+                "redirect=https%253A%252F%252Fexample.invalid%252Fcb"
+                "%253Fapi_key%253Doperator-runtime-api-key"
+            ),
+        },
+    )
+
+    assert audit_log["parameters"] == {"queryParameters": "redirect=[REDACTED]"}
+    rendered = json.dumps(audit_log, sort_keys=True)
+    assert "operator-runtime-api-key" not in rendered
+    assert "https%253A" not in rendered
 
 
 def test_build_conversion_audit_log_preserves_recursive_raw_query_redactions() -> None:

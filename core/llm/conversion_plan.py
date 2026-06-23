@@ -91,6 +91,8 @@ _BLOCKED_LOCAL_RUNTIME_ADDRESSES = frozenset(
 _SUPPORTED_ACTIONS = {"extract_field", "extract_table", "normalize_value", "flag_review"}
 _AUDIT_LOG_SCHEMA_VERSION = "veridoc-conversion-audit-log/v0"
 _REDACTED_VALUE = "[REDACTED]"
+_JSON_METADATA_NOT_DECODED = object()
+_MAX_AUDIT_PARAMETER_DECODE_DEPTH = 3
 _SECRET_PARAMETER_KEYS = frozenset(
     {
         "api_key",
@@ -289,6 +291,12 @@ _SAFE_DESCRIPTOR_COMPONENT_SEQUENCES = (
 _SAFE_AUDIT_PARAMETER_SEQUENCE_KEYS = frozenset(
     {
         "stop",
+    }
+)
+_SAFE_TWO_STRING_AUDIT_PARAMETER_LIST_KEYS = frozenset(
+    {
+        "generation_parameters",
+        "model_parameters",
     }
 )
 _CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENTS = frozenset(
@@ -666,7 +674,9 @@ def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "
         if _is_content_bearing_schema_value_path(key_path) or _is_content_bearing_url(value):
             raise ValueError(f"{key_path} must not include document or request content")
         decoded_json_value = _json_encoded_audit_metadata_value(value, key_path)
-        if decoded_json_value is not None:
+        if decoded_json_value is not _JSON_METADATA_NOT_DECODED:
+            if not isinstance(decoded_json_value, (Mapping, list)):
+                raise ValueError(f"{key_path} must not include document or request content")
             _reject_content_bearing_audit_parameters(decoded_json_value, key_path=key_path)
         for raw_entry in _raw_key_value_parameter_entries(value, key_path):
             entry_key, _separator, _entry_value = raw_entry
@@ -1074,15 +1084,25 @@ def _redact_raw_key_value_parameter_line(
 def _raw_key_value_parameter_entry_path(key_path: str, entry_key: str) -> str:
     normalized_leaf = _normalize_parameter_key(_parameter_key_leaf(key_path))
     if _is_query_audit_parameter_container_leaf(normalized_leaf):
-        return _join_parameter_key_path(key_path, unquote_plus(entry_key))
+        return _join_parameter_key_path(key_path, _fully_decode_query_parameter_value(entry_key))
     return _join_parameter_key_path(key_path, entry_key)
 
 
 def _raw_key_value_parameter_entry_value(key_path: str, entry_value: str) -> str:
     normalized_leaf = _normalize_parameter_key(_parameter_key_leaf(key_path))
     if _is_query_audit_parameter_container_leaf(normalized_leaf):
-        return unquote_plus(entry_value)
+        return _fully_decode_query_parameter_value(entry_value)
     return entry_value
+
+
+def _fully_decode_query_parameter_value(value: str) -> str:
+    decoded_value = value
+    for _index in range(_MAX_AUDIT_PARAMETER_DECODE_DEPTH):
+        next_value = unquote_plus(decoded_value)
+        if next_value == decoded_value:
+            break
+        decoded_value = next_value
+    return decoded_value
 
 
 def _mapping_key_value_parameter_entry(value: Mapping[object, object]) -> tuple[str, str, str] | None:
@@ -1124,6 +1144,10 @@ def _is_structured_key_value_audit_parameter_sequence_container_key(key_path: st
         or normalized_leaf.endswith("_headers")
         or normalized_leaf.endswith("_cookies")
         or normalized_leaf.endswith("_params")
+        or (
+            normalized_leaf.endswith("_parameters")
+            and normalized_leaf not in _SAFE_TWO_STRING_AUDIT_PARAMETER_LIST_KEYS
+        )
     )
 
 
@@ -1161,22 +1185,19 @@ def _json_sort_key(value: object) -> str:
         return repr(value)
 
 
-def _json_encoded_audit_metadata_value(value: str, key_path: str) -> object | None:
+def _json_encoded_audit_metadata_value(value: str, key_path: str) -> object:
     normalized_leaf = _normalize_parameter_key(_parameter_key_leaf(key_path))
     if normalized_leaf not in _JSON_ENCODED_AUDIT_METADATA_KEYS:
-        return None
+        return _JSON_METADATA_NOT_DECODED
     try:
-        decoded_value = json.loads(value)
+        return json.loads(value)
     except json.JSONDecodeError:
-        return None
-    if isinstance(decoded_value, (Mapping, list)):
-        return decoded_value
-    return None
+        return _JSON_METADATA_NOT_DECODED
 
 
 def _redact_json_encoded_audit_metadata_value(value: str, key_path: str) -> str | None:
     decoded_value = _json_encoded_audit_metadata_value(value, key_path)
-    if decoded_value is None:
+    if decoded_value is _JSON_METADATA_NOT_DECODED or not isinstance(decoded_value, (Mapping, list)):
         return None
     redacted_value = _redact_audit_parameters(decoded_value, key_path=key_path)
     if redacted_value == decoded_value:
@@ -1229,8 +1250,22 @@ def _is_secret_url_parameter_key(key: str) -> bool:
 def _url_parameter_pairs(value: str) -> list[tuple[str, str]]:
     pairs: list[tuple[str, str]] = []
     for chunk in re.split(r"[&;]", value):
-        pairs.extend(parse_qsl(chunk, keep_blank_values=True))
+        for key, parameter_value in parse_qsl(chunk, keep_blank_values=True):
+            pairs.extend(
+                (key, decoded_value)
+                for decoded_value in _decoded_query_parameter_value_forms(parameter_value)
+            )
     return pairs
+
+
+def _decoded_query_parameter_value_forms(value: str) -> tuple[str, ...]:
+    decoded_values = [value]
+    for _index in range(_MAX_AUDIT_PARAMETER_DECODE_DEPTH):
+        decoded_value = unquote_plus(decoded_values[-1])
+        if decoded_value == decoded_values[-1]:
+            break
+        decoded_values.append(decoded_value)
+    return tuple(decoded_values)
 
 
 def _contains_component_sequence(components: tuple[str, ...], sequence: tuple[str, ...]) -> bool:
