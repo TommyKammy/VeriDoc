@@ -382,7 +382,10 @@ def test_build_conversion_audit_log_allows_safe_message_metadata_fields() -> Non
             "assistantMessageId": "provider-assistant-message-1",
             "systemMessageId": "provider-system-message-1",
             "messageRole": "assistant",
+            "messageType": "assistant",
+            "messageStatus": "complete",
             "messageCount": 2,
+            "lastMessageAt": "2026-06-23T00:00:00Z",
         },
     )
 
@@ -392,7 +395,10 @@ def test_build_conversion_audit_log_allows_safe_message_metadata_fields() -> Non
         "assistantMessageId": "provider-assistant-message-1",
         "systemMessageId": "provider-system-message-1",
         "messageRole": "assistant",
+        "messageType": "assistant",
+        "messageStatus": "complete",
         "messageCount": 2,
+        "lastMessageAt": "2026-06-23T00:00:00Z",
     }
 
 
@@ -432,8 +438,10 @@ def test_build_conversion_audit_log_allows_form_data_descriptor_metadata() -> No
             "formDataContentType": "application/pdf",
             "multipartFormDataDescription": "multipart descriptor",
             "multipartFormDataContentType": "application/pdf",
+            "multipartFormDataType": "multipart/form-data",
             "requestFormDataDescription": "request form-data descriptor",
             "requestFormDataContentType": "application/pdf",
+            "requestFormDataType": "multipart/form-data",
         },
     )
 
@@ -443,9 +451,60 @@ def test_build_conversion_audit_log_allows_form_data_descriptor_metadata() -> No
         "formDataContentType": "application/pdf",
         "multipartFormDataDescription": "multipart descriptor",
         "multipartFormDataContentType": "application/pdf",
+        "multipartFormDataType": "multipart/form-data",
         "requestFormDataDescription": "request form-data descriptor",
         "requestFormDataContentType": "application/pdf",
+        "requestFormDataType": "multipart/form-data",
     }
+
+
+def test_build_conversion_audit_log_allows_json_descriptor_metadata_fields() -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={
+            "metadataJson": '{"path":"fixtures/source.pdf"}',
+            "schema_json": {
+                "type": "object",
+                "properties": {
+                    "status": {"type": "string"},
+                },
+            },
+            "jsonRequestId": "req_123",
+            "jsonRequestStatus": "complete",
+            "jsonDataType": "schema",
+        },
+    )
+
+    assert audit_log["parameters"] == {
+        "metadataJson": '{"path":"fixtures/source.pdf"}',
+        "schema_json": {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string"},
+            },
+        },
+        "jsonRequestId": "req_123",
+        "jsonRequestStatus": "complete",
+        "jsonDataType": "schema",
+    }
+
+
+def test_build_conversion_audit_log_rejects_json_encoded_metadata_content() -> None:
+    with pytest.raises(ValueError, match=r"parameters\.metadataJson\.prompt"):
+        build_conversion_audit_log(
+            source_bytes=b"Lot: ABC-123\n",
+            output_bytes=b'{"lot_number":"ABC-123"}\n',
+            model="local-json-model",
+            prompt_id="veridoc_conversion_plan",
+            prompt_version="poc-08",
+            ir_version="document-ir-v1",
+            parameters={"metadataJson": '{"prompt":"Lot: ABC-123"}'},
+        )
 
 
 def test_build_conversion_audit_log_redacts_tuple_parameter_entries() -> None:
@@ -506,6 +565,7 @@ def test_build_conversion_audit_log_sanitizes_list_key_value_parameter_entries()
             "headers": [["Authorization", "Bearer operator-runtime-token"]],
             "options": [["max_prompt_tokens", 4096]],
             "extra": [["privateKey", "operator-runtime-private-key"]],
+            "default_parameters": ["api_key", "operator-runtime-api-key"],
         },
     )
 
@@ -513,10 +573,12 @@ def test_build_conversion_audit_log_sanitizes_list_key_value_parameter_entries()
         "headers": [["Authorization", "[REDACTED]"]],
         "options": [["max_prompt_tokens", 4096]],
         "extra": [["privateKey", "[REDACTED]"]],
+        "default_parameters": ["api_key", "[REDACTED]"],
     }
     rendered = json.dumps(audit_log, sort_keys=True)
     assert "operator-runtime-token" not in rendered
     assert "operator-runtime-private-key" not in rendered
+    assert "operator-runtime-api-key" not in rendered
     assert "Bearer" not in rendered
 
 

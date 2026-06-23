@@ -227,17 +227,43 @@ _SAFE_CONTENT_WORD_AUDIT_PARAMETER_KEYS = frozenset(
 _SAFE_MESSAGE_METADATA_AUDIT_PARAMETER_KEYS = frozenset(
     {
         "assistant_message_id",
+        "last_message_at",
         "message_count",
         "message_id",
         "message_role",
+        "message_status",
+        "message_type",
         "system_message_id",
         "user_message_id",
+    }
+)
+_SAFE_MESSAGE_METADATA_DESCRIPTOR_COMPONENTS = frozenset(
+    {
+        "at",
+        "count",
+        "id",
+        "ids",
+        "role",
+        "status",
+        "timestamp",
+        "type",
     }
 )
 _SAFE_DATA_METADATA_AUDIT_PARAMETER_KEYS = frozenset(
     {
         "meta_data",
         "model_data",
+    }
+)
+_SAFE_JSON_METADATA_AUDIT_PARAMETER_KEYS = frozenset(
+    {
+        "metadata_json",
+        "schema_json",
+    }
+)
+_JSON_ENCODED_AUDIT_METADATA_KEYS = frozenset(
+    {
+        "metadata_json",
     }
 )
 _SAFE_FORM_DATA_METADATA_AUDIT_PARAMETER_KEYS = frozenset(
@@ -247,9 +273,18 @@ _SAFE_FORM_DATA_METADATA_AUDIT_PARAMETER_KEYS = frozenset(
         "form_data_type",
         "multipart_form_data_content_type",
         "multipart_form_data_description",
+        "multipart_form_data_type",
         "request_form_data_content_type",
         "request_form_data_description",
+        "request_form_data_type",
     }
+)
+_SAFE_DESCRIPTOR_COMPONENT_SEQUENCES = (
+    ("content", "type"),
+    ("description",),
+    ("id",),
+    ("status",),
+    ("type",),
 )
 _SAFE_AUDIT_PARAMETER_SEQUENCE_KEYS = frozenset(
     {
@@ -553,6 +588,9 @@ def _redact_audit_parameters(value: object, *, key_path: str = "") -> object:
     if isinstance(value, str):
         if _is_credential_bearing_url(value):
             return _REDACTED_VALUE
+        redacted_json_value = _redact_json_encoded_audit_metadata_value(value, key_path)
+        if redacted_json_value is not None:
+            return redacted_json_value
         redacted_raw_value = _redact_raw_key_value_parameter_text(value, key_path)
         if redacted_raw_value is not None:
             return redacted_raw_value
@@ -627,6 +665,9 @@ def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "
             raise ValueError(f"{key_path} must not include document or request content")
         if _is_content_bearing_schema_value_path(key_path) or _is_content_bearing_url(value):
             raise ValueError(f"{key_path} must not include document or request content")
+        decoded_json_value = _json_encoded_audit_metadata_value(value, key_path)
+        if decoded_json_value is not None:
+            _reject_content_bearing_audit_parameters(decoded_json_value, key_path=key_path)
         for raw_entry in _raw_key_value_parameter_entries(value, key_path):
             entry_key, _separator, _entry_value = raw_entry
             item_path = _raw_key_value_parameter_entry_path(key_path, entry_key)
@@ -654,9 +695,11 @@ def _is_content_bearing_audit_parameter_key(key: str) -> bool:
         return False
     if normalized_leaf in _SAFE_DATA_METADATA_AUDIT_PARAMETER_KEYS:
         return False
-    if normalized_leaf in _SAFE_FORM_DATA_METADATA_AUDIT_PARAMETER_KEYS:
+    if _is_safe_json_metadata_audit_parameter_key(normalized_leaf):
         return False
-    if normalized_leaf in _SAFE_MESSAGE_METADATA_AUDIT_PARAMETER_KEYS:
+    if _is_safe_form_data_metadata_audit_parameter_key(normalized_leaf):
+        return False
+    if _is_safe_message_metadata_audit_parameter_key(normalized_leaf):
         return False
     if normalized_leaf in _SAFE_CONTENT_WORD_AUDIT_PARAMETER_KEYS:
         return False
@@ -687,6 +730,62 @@ def _is_content_bearing_audit_parameter_key(key: str) -> bool:
                 for component in path_components
             )
         )
+    )
+
+
+def _is_safe_message_metadata_audit_parameter_key(normalized_leaf: str) -> bool:
+    if normalized_leaf in _SAFE_MESSAGE_METADATA_AUDIT_PARAMETER_KEYS:
+        return True
+    components = tuple(normalized_leaf.split("_"))
+    if "message" not in components:
+        return False
+    if _has_disallowed_content_component(
+        components,
+        allowed_components=frozenset({"message", "messages"}),
+    ):
+        return False
+    return any(component in _SAFE_MESSAGE_METADATA_DESCRIPTOR_COMPONENTS for component in components)
+
+
+def _is_safe_json_metadata_audit_parameter_key(normalized_leaf: str) -> bool:
+    if normalized_leaf in _SAFE_JSON_METADATA_AUDIT_PARAMETER_KEYS:
+        return True
+    components = tuple(normalized_leaf.split("_"))
+    if _has_disallowed_content_component(
+        components,
+        allowed_components=frozenset({"content"}),
+    ):
+        return False
+    return (
+        _contains_component_sequence(components, ("json", "request"))
+        or _contains_component_sequence(components, ("json", "data"))
+    ) and _ends_with_component_sequence(components, _SAFE_DESCRIPTOR_COMPONENT_SEQUENCES)
+
+
+def _is_safe_form_data_metadata_audit_parameter_key(normalized_leaf: str) -> bool:
+    if normalized_leaf in _SAFE_FORM_DATA_METADATA_AUDIT_PARAMETER_KEYS:
+        return True
+    components = tuple(normalized_leaf.split("_"))
+    if _has_disallowed_content_component(
+        components,
+        allowed_components=frozenset({"content"}),
+    ):
+        return False
+    return _contains_component_sequence(
+        components,
+        ("form", "data"),
+    ) and _ends_with_component_sequence(components, _SAFE_DESCRIPTOR_COMPONENT_SEQUENCES)
+
+
+def _has_disallowed_content_component(
+    components: tuple[str, ...],
+    *,
+    allowed_components: frozenset[str],
+) -> bool:
+    disallowed_components = _CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENTS - allowed_components
+    singular_components = tuple(_singular_parameter_component(component) for component in components)
+    return any(component in disallowed_components for component in components) or any(
+        component in disallowed_components for component in singular_components
     )
 
 
@@ -1021,6 +1120,7 @@ def _is_structured_key_value_audit_parameter_sequence_container_key(key_path: st
     return (
         normalized_leaf in _KEY_VALUE_AUDIT_PARAMETER_SEQUENCE_CONTAINER_KEYS
         or normalized_leaf == "query_parameters"
+        or normalized_leaf == "default_parameters"
         or normalized_leaf.endswith("_headers")
         or normalized_leaf.endswith("_cookies")
         or normalized_leaf.endswith("_params")
@@ -1059,6 +1159,29 @@ def _json_sort_key(value: object) -> str:
         return json.dumps(value, ensure_ascii=False, sort_keys=True)
     except TypeError:
         return repr(value)
+
+
+def _json_encoded_audit_metadata_value(value: str, key_path: str) -> object | None:
+    normalized_leaf = _normalize_parameter_key(_parameter_key_leaf(key_path))
+    if normalized_leaf not in _JSON_ENCODED_AUDIT_METADATA_KEYS:
+        return None
+    try:
+        decoded_value = json.loads(value)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(decoded_value, (Mapping, list)):
+        return decoded_value
+    return None
+
+
+def _redact_json_encoded_audit_metadata_value(value: str, key_path: str) -> str | None:
+    decoded_value = _json_encoded_audit_metadata_value(value, key_path)
+    if decoded_value is None:
+        return None
+    redacted_value = _redact_audit_parameters(decoded_value, key_path=key_path)
+    if redacted_value == decoded_value:
+        return value
+    return json.dumps(redacted_value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def _is_content_bearing_url(value: str, *, _depth: int = 0) -> bool:
@@ -1116,6 +1239,16 @@ def _contains_component_sequence(components: tuple[str, ...], sequence: tuple[st
     return any(
         components[index : index + len(sequence)] == sequence
         for index in range(len(components) - len(sequence) + 1)
+    )
+
+
+def _ends_with_component_sequence(
+    components: tuple[str, ...],
+    sequences: tuple[tuple[str, ...], ...],
+) -> bool:
+    return any(
+        len(sequence) <= len(components) and components[-len(sequence) :] == sequence
+        for sequence in sequences
     )
 
 
