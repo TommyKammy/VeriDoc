@@ -269,6 +269,7 @@ def test_build_conversion_audit_log_redacts_signature_credentials(
         ({"requestJson": "Lot: ABC-123"}, r"parameters\.requestJson"),
         ({"jsonRequest": "Lot: ABC-123"}, r"parameters\.jsonRequest"),
         ({"jsonData": "Lot: ABC-123"}, r"parameters\.jsonData"),
+        ({"jsonRaw": "Lot: ABC-123"}, r"parameters\.jsonRaw"),
         ({"json_request": "Lot: ABC-123"}, r"parameters\.json_request"),
         ({"json_data": "Lot: ABC-123"}, r"parameters\.json_data"),
         ({"rawJson": '{"lot_number":"ABC-123"}'}, r"parameters\.rawJson"),
@@ -512,6 +513,19 @@ def test_build_conversion_audit_log_rejects_json_encoded_metadata_content() -> N
             prompt_version="poc-08",
             ir_version="document-ir-v1",
             parameters={"metadataJson": '{"prompt":"Lot: ABC-123"}'},
+        )
+
+
+def test_build_conversion_audit_log_rejects_malformed_json_encoded_metadata() -> None:
+    with pytest.raises(ValueError, match=r"parameters\.metadataJson"):
+        build_conversion_audit_log(
+            source_bytes=b"Lot: ABC-123\n",
+            output_bytes=b'{"lot_number":"ABC-123"}\n',
+            model="local-json-model",
+            prompt_id="veridoc_conversion_plan",
+            prompt_version="poc-08",
+            ir_version="document-ir-v1",
+            parameters={"metadataJson": '{"path":'},
         )
 
 
@@ -1053,6 +1067,33 @@ def test_build_conversion_audit_log_redacts_encoded_query_nested_url_credentials
     assert "https%3A" not in rendered
 
 
+def test_build_conversion_audit_log_redacts_structured_query_encoded_url_credentials() -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={
+            "queryParameters": [
+                [
+                    "redirect",
+                    (
+                        "https%3A%2F%2Fexample.invalid%2Fcb"
+                        "%3Fapi_key%3Doperator-runtime-api-key"
+                    ),
+                ]
+            ],
+        },
+    )
+
+    assert audit_log["parameters"] == {"queryParameters": [["redirect", "[REDACTED]"]]}
+    rendered = json.dumps(audit_log, sort_keys=True)
+    assert "operator-runtime-api-key" not in rendered
+    assert "https%3A" not in rendered
+
+
 def test_build_conversion_audit_log_redacts_encoded_query_nested_url_credentials_with_sibling_params() -> None:
     audit_log = build_conversion_audit_log(
         source_bytes=b"Lot: ABC-123\n",
@@ -1469,6 +1510,30 @@ def test_build_conversion_audit_log_rejects_schema_content_values(
             prompt_version="poc-08",
             ir_version="document-ir-v1",
             parameters={"response_format": response_format},
+        )
+
+
+def test_build_conversion_audit_log_rejects_schema_json_string_content_values() -> None:
+    schema_json = json.dumps(
+        {
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "default": "Lot: ABC-123",
+                },
+            },
+        }
+    )
+
+    with pytest.raises(ValueError, match=r"parameters\.schema_json\.properties\.status\.default"):
+        build_conversion_audit_log(
+            source_bytes=b"Lot: ABC-123\n",
+            output_bytes=b'{"lot_number":"ABC-123"}\n',
+            model="local-json-model",
+            prompt_id="veridoc_conversion_plan",
+            prompt_version="poc-08",
+            ir_version="document-ir-v1",
+            parameters={"schema_json": schema_json},
         )
 
 

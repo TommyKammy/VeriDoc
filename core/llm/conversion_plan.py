@@ -266,6 +266,7 @@ _SAFE_JSON_METADATA_AUDIT_PARAMETER_KEYS = frozenset(
 _JSON_ENCODED_AUDIT_METADATA_KEYS = frozenset(
     {
         "metadata_json",
+        "schema_json",
     }
 )
 _SAFE_JSON_ENCODED_METADATA_SCALAR_KEYS = frozenset(
@@ -331,6 +332,7 @@ _CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENTS = frozenset(
 _CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENT_SEQUENCES = (
     ("form", "data"),
     ("json", "data"),
+    ("json", "raw"),
     ("json", "request"),
     ("raw", "source"),
     ("raw", "output"),
@@ -618,12 +620,13 @@ def _redact_audit_parameters(value: object, *, key_path: str = "") -> object:
         entry_path = _join_parameter_key_path(key_path, entry_key)
         return [entry_key, _redact_audit_parameters(value[1], key_path=entry_path)]
     if isinstance(value, str):
-        if _is_credential_bearing_url(value):
+        parameter_value = _security_checked_audit_parameter_string(value, key_path)
+        if _is_credential_bearing_url(parameter_value):
             return _REDACTED_VALUE
-        redacted_json_value = _redact_json_encoded_audit_metadata_value(value, key_path)
+        redacted_json_value = _redact_json_encoded_audit_metadata_value(parameter_value, key_path)
         if redacted_json_value is not None:
             return redacted_json_value
-        redacted_raw_value = _redact_raw_key_value_parameter_text(value, key_path)
+        redacted_raw_value = _redact_raw_key_value_parameter_text(parameter_value, key_path)
         if redacted_raw_value is not None:
             return redacted_raw_value
         return value
@@ -693,18 +696,19 @@ def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "
             raise ValueError(f"{item_path} must not include document or request content")
         _reject_content_bearing_audit_parameters(value[1], key_path=item_path)
     elif isinstance(value, str):
+        parameter_value = _security_checked_audit_parameter_string(value, key_path)
         if _is_file_audit_parameter_container_path(key_path):
             raise ValueError(f"{key_path} must not include document or request content")
-        if _is_content_bearing_schema_value_path(key_path) or _is_content_bearing_url(value):
+        if _is_content_bearing_schema_value_path(key_path) or _is_content_bearing_url(parameter_value):
             raise ValueError(f"{key_path} must not include document or request content")
         if _is_unsafe_json_encoded_metadata_scalar_path(key_path):
             raise ValueError(f"{key_path} must not include document or request content")
-        decoded_json_value = _json_encoded_audit_metadata_value(value, key_path)
+        decoded_json_value = _json_encoded_audit_metadata_value(parameter_value, key_path)
         if decoded_json_value is not _JSON_METADATA_NOT_DECODED:
             if not isinstance(decoded_json_value, (Mapping, list)):
                 raise ValueError(f"{key_path} must not include document or request content")
             _reject_content_bearing_audit_parameters(decoded_json_value, key_path=key_path)
-        for raw_entry in _raw_key_value_parameter_entries(value, key_path):
+        for raw_entry in _raw_key_value_parameter_entries(parameter_value, key_path):
             entry_key, _separator, _entry_value = raw_entry
             item_path = _raw_key_value_parameter_entry_path(key_path, entry_key)
             if _is_content_bearing_audit_parameter_key(item_path):
@@ -1131,6 +1135,20 @@ def _fully_decode_query_parameter_value(value: str) -> str:
     return decoded_value
 
 
+def _security_checked_audit_parameter_string(value: str, key_path: str) -> str:
+    if not _is_structured_query_audit_parameter_entry_key(key_path):
+        return value
+    return _fully_decode_query_parameter_value(value)
+
+
+def _is_structured_query_audit_parameter_entry_key(key_path: str) -> bool:
+    if "." not in key_path:
+        return False
+    parent_key = key_path.rsplit(".", 1)[0]
+    parent_leaf = _normalize_parameter_key(_parameter_key_leaf(parent_key))
+    return _is_query_audit_parameter_container_leaf(parent_leaf)
+
+
 def _mapping_key_value_parameter_entry(value: Mapping[object, object]) -> tuple[str, str, str] | None:
     normalized_fields: dict[str, object] = {}
     for field in value:
@@ -1223,8 +1241,8 @@ def _json_encoded_audit_metadata_value(value: str, key_path: str) -> object:
         return _JSON_METADATA_NOT_DECODED
     try:
         return json.loads(value)
-    except json.JSONDecodeError:
-        return _JSON_METADATA_NOT_DECODED
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{key_path} must include valid JSON audit metadata") from exc
 
 
 def _is_unsafe_json_encoded_metadata_scalar_path(key_path: str) -> bool:
