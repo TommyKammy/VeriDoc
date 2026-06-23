@@ -901,6 +901,21 @@ def test_build_conversion_audit_log_preserves_recursive_raw_query_redactions() -
     assert "api_key%3D" not in rendered
 
 
+def test_build_conversion_audit_log_rejects_recursive_raw_query_content_entries() -> None:
+    with pytest.raises(ValueError, match=r"parameters\.queryParameters\.params\.prompt"):
+        build_conversion_audit_log(
+            source_bytes=b"Lot: ABC-123\n",
+            output_bytes=b'{"lot_number":"ABC-123"}\n',
+            model="local-json-model",
+            prompt_id="veridoc_conversion_plan",
+            prompt_version="poc-08",
+            ir_version="document-ir-v1",
+            parameters={
+                "queryParameters": "params=prompt%3DLot%253A%2BABC-123",
+            },
+        )
+
+
 def test_build_conversion_audit_log_allows_content_type_header_metadata() -> None:
     audit_log = build_conversion_audit_log(
         source_bytes=b"Lot: ABC-123\n",

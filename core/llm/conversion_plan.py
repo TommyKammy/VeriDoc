@@ -632,10 +632,10 @@ def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "
             item_path = _raw_key_value_parameter_entry_path(key_path, entry_key)
             if _is_content_bearing_audit_parameter_key(item_path):
                 raise ValueError(f"{item_path} must not include document or request content")
-            if _is_content_bearing_url(
-                _raw_key_value_parameter_entry_value(key_path, _entry_value)
-            ):
+            entry_value = _raw_key_value_parameter_entry_value(key_path, _entry_value)
+            if _is_content_bearing_url(entry_value):
                 raise ValueError(f"{item_path} must not include document or request content")
+            _reject_content_bearing_audit_parameters(entry_value, key_path=item_path)
     elif isinstance(value, (list, tuple)):
         for index, item in enumerate(value):
             _reject_content_bearing_audit_parameters(item, key_path=f"{key_path}[{index}]")
