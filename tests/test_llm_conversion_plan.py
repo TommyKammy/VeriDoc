@@ -28,6 +28,14 @@ class _BytesPathLike(os.PathLike[bytes]):
         return b"fixtures/source.pdf"
 
 
+class _StringPathLike(os.PathLike[str]):
+    def __init__(self, value: str) -> None:
+        self._value = value
+
+    def __fspath__(self) -> str:
+        return self._value
+
+
 def _valid_plan() -> dict[str, object]:
     return {
         "schema_version": 1,
@@ -1500,6 +1508,44 @@ def test_build_conversion_audit_log_decodes_bytes_pathlike_metadata_values() -> 
 
     assert audit_log["parameters"] == {"metadata": {"path": "fixtures/source.pdf"}}
     json.dumps(audit_log, sort_keys=True)
+
+
+def test_build_conversion_audit_log_redacts_pathlike_url_credentials_after_decoding() -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={
+            "metadata_url": _StringPathLike(
+                "https://example.invalid/callback?api_key=operator-runtime-api-key"
+            ),
+        },
+    )
+
+    assert audit_log["parameters"] == {"metadata_url": "[REDACTED]"}
+    rendered = json.dumps(audit_log, sort_keys=True)
+    assert "operator-runtime-api-key" not in rendered
+    assert "https:" not in rendered
+
+
+def test_build_conversion_audit_log_rejects_pathlike_content_url_after_decoding() -> None:
+    with pytest.raises(ValueError, match=r"parameters\.metadata_url"):
+        build_conversion_audit_log(
+            source_bytes=b"Lot: ABC-123\n",
+            output_bytes=b'{"lot_number":"ABC-123"}\n',
+            model="local-json-model",
+            prompt_id="veridoc_conversion_plan",
+            prompt_version="poc-08",
+            ir_version="document-ir-v1",
+            parameters={
+                "metadata_url": _StringPathLike(
+                    "https://example.invalid/callback?prompt=Lot%3A+ABC-123"
+                ),
+            },
+        )
 
 
 def test_build_conversion_audit_log_rejects_unsupported_non_json_metadata_values() -> None:

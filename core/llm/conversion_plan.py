@@ -565,7 +565,7 @@ def _redact_audit_parameters(value: object, *, key_path: str = "") -> object:
         ]
         return sorted(redacted_items, key=_json_sort_key)
     if isinstance(value, os.PathLike):
-        return os.fsdecode(value)
+        return _redact_audit_parameters(os.fsdecode(value), key_path=key_path)
     if isinstance(value, Decimal):
         return str(value)
     if value is None or isinstance(value, (bool, int, float)):
@@ -633,8 +633,10 @@ def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "
     elif isinstance(value, (set, frozenset)):
         for index, item in enumerate(value):
             _reject_content_bearing_audit_parameters(item, key_path=f"{key_path}[{index}]")
-    elif isinstance(value, os.PathLike) and _is_file_audit_parameter_container_path(key_path):
-        raise ValueError(f"{key_path} must not include document or request content")
+    elif isinstance(value, os.PathLike):
+        if _is_file_audit_parameter_container_path(key_path):
+            raise ValueError(f"{key_path} must not include document or request content")
+        _reject_content_bearing_audit_parameters(os.fsdecode(value), key_path=key_path)
 
 
 def _is_content_bearing_audit_parameter_key(key: str) -> bool:
