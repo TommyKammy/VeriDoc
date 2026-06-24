@@ -2516,6 +2516,62 @@ def test_build_conversion_audit_log_allows_schema_json_descriptor_like_field_nam
     assert audit_log["parameters"] == {"schema_json": schema_json}
 
 
+def test_build_conversion_audit_log_rejects_nested_schema_map_scalar_under_keyword_field() -> None:
+    schema_json = {
+        "type": "object",
+        "properties": {
+            "properties": {
+                "type": "object",
+                "properties": {
+                    "lotNumber": "Lot: ABC-123",
+                },
+            },
+        },
+    }
+
+    with pytest.raises(
+        ValueError,
+        match=r"parameters\.schema_json\.properties\.properties\.properties\.lotNumber",
+    ):
+        build_conversion_audit_log(
+            source_bytes=b"Lot: ABC-123\n",
+            output_bytes=b'{"lot_number":"ABC-123"}\n',
+            model="local-json-model",
+            prompt_id="veridoc_conversion_plan",
+            prompt_version="poc-08",
+            ir_version="document-ir-v1",
+            parameters={"schema_json": schema_json},
+        )
+
+
+def test_build_conversion_audit_log_allows_nested_schema_map_under_keyword_field() -> None:
+    schema_json = {
+        "type": "object",
+        "properties": {
+            "properties": {
+                "type": "object",
+                "properties": {
+                    "lotNumber": {
+                        "type": "string",
+                    },
+                },
+            },
+        },
+    }
+
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={"schema_json": schema_json},
+    )
+
+    assert audit_log["parameters"] == {"schema_json": schema_json}
+
+
 def test_build_conversion_audit_log_allows_schema_json_string_root_metadata() -> None:
     schema_json = json.dumps(
         {

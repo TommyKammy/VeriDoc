@@ -859,21 +859,49 @@ def _first_non_parameter_component_index(components: tuple[str, ...]) -> int:
 
 
 def _is_json_schema_field_name_path(components: tuple[str, ...]) -> bool:
-    return (
-        len(components) >= 2
-        and components[-2] in _JSON_SCHEMA_SCHEMA_MAP_KEYS
-        and (len(components) < 3 or components[-3] not in _JSON_SCHEMA_SCHEMA_MAP_KEYS)
-    )
+    return _json_schema_path_leaf_role(components) == "field_name"
 
 
 def _is_json_schema_schema_map_path(key: str) -> bool:
     components = _audit_parameter_path_components(key)
-    return (
-        bool(components)
-        and _is_json_schema_audit_parameter_path(components)
-        and components[-1] in _JSON_SCHEMA_SCHEMA_MAP_KEYS
-        and (len(components) < 2 or components[-2] not in _JSON_SCHEMA_SCHEMA_MAP_KEYS)
-    )
+    return _json_schema_path_leaf_role(components) == "schema_map"
+
+
+def _json_schema_path_leaf_role(components: tuple[str, ...]) -> str | None:
+    if not _is_json_schema_audit_parameter_path(components):
+        return None
+    tail = _json_schema_path_components(components)
+    if not tail:
+        return None
+    role = "schema_keyword"
+    next_component_is_field_name = False
+    for component in tail:
+        if next_component_is_field_name:
+            role = "field_name"
+            next_component_is_field_name = False
+            continue
+        if component in _JSON_SCHEMA_SCHEMA_MAP_KEYS:
+            role = "schema_map"
+            next_component_is_field_name = True
+        else:
+            role = "schema_keyword"
+    return role
+
+
+def _json_schema_path_components(components: tuple[str, ...]) -> tuple[str, ...]:
+    first_real_component = _first_non_parameter_component_index(components)
+    if (
+        len(components) > first_real_component
+        and components[first_real_component] == "schema_json"
+    ):
+        return components[first_real_component + 1 :]
+    for index in range(first_real_component, len(components) - 1):
+        if components[index] == "json_schema" and components[index + 1] == "schema":
+            return components[index + 2 :]
+    for index in range(first_real_component, len(components) - 1):
+        if components[index] == "function" and components[index + 1] == "parameters":
+            return components[index + 2 :]
+    return ()
 
 
 def _is_content_bearing_schema_value_path(key: str, value: object) -> bool:
