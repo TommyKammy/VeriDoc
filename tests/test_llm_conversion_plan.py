@@ -649,6 +649,14 @@ def test_build_conversion_audit_log_rejects_invalid_message_index_descriptors(
             {"assistantMessageName": "api_key=operator-runtime-key"},
             r"parameters\.assistantMessageName",
         ),
+        (
+            {"assistantMessageName": "sk-proj-abc123"},
+            r"parameters\.assistantMessageName",
+        ),
+        (
+            {"assistantMessageName": "ghp_abcdef"},
+            r"parameters\.assistantMessageName",
+        ),
     ],
 )
 def test_build_conversion_audit_log_rejects_unsafe_message_name_descriptors(
@@ -1408,6 +1416,8 @@ def test_build_conversion_audit_log_redacts_real_parameters_raw_container() -> N
     [
         "message=complete",
         "output=summary",
+        "message=complete&output=summary",
+        "message=complete;output=summary",
     ],
 )
 def test_build_conversion_audit_log_allows_real_parameters_benign_raw_tokens(
@@ -1452,6 +1462,8 @@ def test_build_conversion_audit_log_allows_real_parameters_nested_benign_raw_tok
 @pytest.mark.parametrize(
     "nested_parameters",
     [
+        {"message": "complete"},
+        {"output": "summary"},
         {"status": "message=complete"},
         {"mode": "output=summary"},
     ],
@@ -1491,6 +1503,23 @@ def test_build_conversion_audit_log_redacts_real_parameters_nested_raw_credentia
         "parameters": {
             "next": "[REDACTED]",
         },
+    }
+    assert "operator-runtime-key" not in json.dumps(audit_log, sort_keys=True)
+
+
+def test_build_conversion_audit_log_redacts_real_parameters_multi_raw_credentials() -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={"parameters": "message=complete&api_key=operator-runtime-key"},
+    )
+
+    assert audit_log["parameters"] == {
+        "parameters": "message=complete&api_key=[REDACTED]",
     }
     assert "operator-runtime-key" not in json.dumps(audit_log, sort_keys=True)
 

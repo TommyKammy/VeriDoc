@@ -105,6 +105,9 @@ _CAMEL_ACRONYM_BOUNDARY_RE = re.compile(r"(.)([A-Z][a-z]+)")
 _CAMEL_CASE_BOUNDARY_RE = re.compile(r"([a-z0-9])([A-Z])")
 _PARAMETER_KEY_SEPARATOR_RE = re.compile(r"[^A-Za-z0-9]+")
 _PARAMETER_INDEX_SUFFIX_RE = re.compile(r"\[\d+\]$")
+_CREDENTIAL_SHAPED_PARAMETER_VALUE_RE = re.compile(
+    r"^(?:sk-[A-Za-z0-9]|ghp_[A-Za-z0-9]|github_pat_[A-Za-z0-9_])"
+)
 _CONTENT_BEARING_AUDIT_PARAMETER_KEYS = frozenset(
     {
         "content",
@@ -619,11 +622,20 @@ def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "
                 key_path,
                 _raw_key_value_parameter_entry_key(key_path, key_string),
             )
+            context = AuditParameterContext(key_path)
+            is_safe_real_metadata_pair = (
+                context.is_real_parameters_container
+                and isinstance(item, str)
+                and _is_safe_real_raw_query_metadata_pair(
+                    _raw_key_value_parameter_entry_key(key_path, key_string),
+                    item,
+                )
+            )
             if _is_schema_like_schema_map_path(key_path) and not isinstance(item, (Mapping, bool)):
                 raise ValueError(f"{item_path} must not include document or request content")
             if _is_content_bearing_schema_value_path(item_path, item):
                 raise ValueError(f"{item_path} must not include document or request content")
-            if _is_content_bearing_audit_parameter_key(item_path):
+            if _is_content_bearing_audit_parameter_key(item_path) and not is_safe_real_metadata_pair:
                 raise ValueError(f"{item_path} must not include document or request content")
             if (
                 isinstance(item, str)
@@ -1108,9 +1120,17 @@ def _is_message_name_metadata_key(key_path: str) -> bool:
 def _is_safe_message_name_metadata_value(value: object) -> bool:
     if not isinstance(value, str) or not value or len(value) > 64:
         return False
-    if _is_secret_parameter_key(value) or _is_credential_bearing_raw_query_text(value):
+    if (
+        _is_secret_parameter_key(value)
+        or _is_credential_shaped_parameter_value(value)
+        or _is_credential_bearing_raw_query_text(value)
+    ):
         return False
     return re.fullmatch(r"[a-z][a-z0-9_.-]*", value) is not None
+
+
+def _is_credential_shaped_parameter_value(value: str) -> bool:
+    return _CREDENTIAL_SHAPED_PARAMETER_VALUE_RE.match(value) is not None
 
 
 def _is_message_index_metadata_key(key_path: str) -> bool:
@@ -1285,9 +1305,14 @@ def _raw_key_value_parameter_entries(value: str, key_path: str) -> list[tuple[st
     normalized_leaf = _normalize_parameter_key(_parameter_key_leaf(key_path))
     if not _is_key_value_audit_parameter_sequence_container_key(key_path):
         return []
+    split_query_pairs = AuditParameterContext(key_path).is_real_parameters_container
     return [
         entry
-        for chunk in _raw_key_value_parameter_chunks(value, normalized_leaf)
+        for chunk in _raw_key_value_parameter_chunks(
+            value,
+            normalized_leaf,
+            split_query_pairs=split_query_pairs,
+        )
         if (
             entry := _raw_key_value_parameter_chunk_entry(
                 chunk,
@@ -1303,7 +1328,12 @@ def _redact_raw_key_value_parameter_text(value: str, key_path: str) -> str | Non
     normalized_leaf = _normalize_parameter_key(_parameter_key_leaf(key_path))
     if not _is_key_value_audit_parameter_sequence_container_key(key_path):
         return None
-    chunks = _raw_key_value_parameter_chunks(value, normalized_leaf)
+    split_query_pairs = AuditParameterContext(key_path).is_real_parameters_container
+    chunks = _raw_key_value_parameter_chunks(
+        value,
+        normalized_leaf,
+        split_query_pairs=split_query_pairs,
+    )
     if len(chunks) == 1 and chunks[0] == value:
         raw_entry = _raw_key_value_parameter_chunk_entry(value, key_path, normalized_leaf)
         if raw_entry is None:
@@ -1322,7 +1352,11 @@ def _redact_raw_key_value_parameter_text(value: str, key_path: str) -> str | Non
         redacted_chunks.append(redacted_chunk)
     if not changed:
         return None
-    return _raw_key_value_parameter_joiner(value, normalized_leaf).join(redacted_chunks)
+    return _raw_key_value_parameter_joiner(
+        value,
+        normalized_leaf,
+        split_query_pairs=split_query_pairs,
+    ).join(redacted_chunks)
 
 
 def _raw_key_value_parameter_chunk_entry(
@@ -1341,24 +1375,38 @@ def _raw_key_value_parameter_chunk_entry(
     return _raw_key_value_parameter_line(decoded_chunk, key_path)
 
 
-def _raw_key_value_parameter_chunks(value: str, normalized_leaf: str) -> list[str]:
+def _raw_key_value_parameter_chunks(
+    value: str,
+    normalized_leaf: str,
+    *,
+    split_query_pairs: bool = False,
+) -> list[str]:
     if "\n" in value or "\r" in value:
         return value.splitlines()
-    if _is_multi_entry_raw_parameter_container_leaf(normalized_leaf) and (
-        "&" in value or ";" in value
-    ):
+    can_split_query_pairs = split_query_pairs or _is_multi_entry_raw_parameter_container_leaf(
+        normalized_leaf
+    )
+    if can_split_query_pairs and ("&" in value or ";" in value):
         return re.split(r"[&;]", value)
     if _is_cookie_audit_parameter_container_leaf(normalized_leaf) and ";" in value:
         return [chunk.strip() for chunk in value.split(";")]
     return [value]
 
 
-def _raw_key_value_parameter_joiner(value: str, normalized_leaf: str) -> str:
+def _raw_key_value_parameter_joiner(
+    value: str,
+    normalized_leaf: str,
+    *,
+    split_query_pairs: bool = False,
+) -> str:
     if "\n" in value or "\r" in value:
         return "\n"
-    if _is_multi_entry_raw_parameter_container_leaf(normalized_leaf) and "&" in value:
+    can_split_query_pairs = split_query_pairs or _is_multi_entry_raw_parameter_container_leaf(
+        normalized_leaf
+    )
+    if can_split_query_pairs and "&" in value:
         return "&"
-    if _is_multi_entry_raw_parameter_container_leaf(normalized_leaf) and ";" in value:
+    if can_split_query_pairs and ";" in value:
         return ";"
     if _is_cookie_audit_parameter_container_leaf(normalized_leaf) and ";" in value:
         return "; "
