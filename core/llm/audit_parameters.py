@@ -744,7 +744,12 @@ def _is_safe_message_metadata_audit_parameter_key(normalized_leaf: str) -> bool:
         allowed_components=frozenset({"content", "message", "messages"}),
     ):
         return False
-    return any(component in _SAFE_MESSAGE_METADATA_DESCRIPTOR_COMPONENTS for component in components)
+    if "content" in components and not _ends_with_component_sequence(
+        components,
+        (("content", "type"),),
+    ):
+        return False
+    return components[-1] in _SAFE_MESSAGE_METADATA_DESCRIPTOR_COMPONENTS
 
 
 def _is_safe_json_metadata_audit_parameter_key(normalized_leaf: str) -> bool:
@@ -950,20 +955,31 @@ def _is_safe_schema_literal_string(value: str) -> bool:
 
 
 def _is_invalid_safe_metadata_value(key_path: str, value: object) -> bool:
+    if _is_json_schema_field_name_audit_parameter_key(key_path):
+        return False
     return (
-        _is_json_status_code_metadata_key(key_path)
+        _is_status_code_metadata_key(key_path)
         and not _is_safe_status_code_metadata_value(value)
     ) or (
         _is_message_name_metadata_key(key_path)
         and not _is_safe_message_name_metadata_value(value)
+    ) or (
+        _is_message_index_metadata_key(key_path)
+        and not _is_safe_message_index_metadata_value(value)
     )
 
 
-def _is_json_status_code_metadata_key(key_path: str) -> bool:
+def _is_json_schema_field_name_audit_parameter_key(key_path: str) -> bool:
+    components = _audit_parameter_path_components(key_path)
+    return _is_json_schema_audit_parameter_path(components) and _is_json_schema_field_name_path(
+        components
+    )
+
+
+def _is_status_code_metadata_key(key_path: str) -> bool:
     components = tuple(AuditParameterContext(key_path).normalized_leaf.split("_"))
-    return "json" in components and len(components) >= 3 and components[-2:] == (
-        "status",
-        "code",
+    return len(components) >= 3 and components[-2:] == ("status", "code") and (
+        "json" in components or _contains_component_sequence(components, ("form", "data"))
     )
 
 
@@ -992,6 +1008,25 @@ def _is_safe_message_name_metadata_value(value: object) -> bool:
     if _is_secret_parameter_key(value) or _is_credential_bearing_raw_query_text(value):
         return False
     return re.fullmatch(r"[a-z][a-z0-9_.-]*", value) is not None
+
+
+def _is_message_index_metadata_key(key_path: str) -> bool:
+    components = tuple(AuditParameterContext(key_path).normalized_leaf.split("_"))
+    return (
+        len(components) >= 2
+        and components[-1] == "index"
+        and ("message" in components or "messages" in components)
+    )
+
+
+def _is_safe_message_index_metadata_value(value: object) -> bool:
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return 0 <= value <= 1_000_000
+    if isinstance(value, str) and re.fullmatch(r"[0-9]{1,7}", value):
+        return int(value) <= 1_000_000
+    return False
 
 
 def _is_content_bearing_schema_field_name(name: str) -> bool:
