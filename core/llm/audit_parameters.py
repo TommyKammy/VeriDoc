@@ -106,7 +106,7 @@ _CAMEL_CASE_BOUNDARY_RE = re.compile(r"([a-z0-9])([A-Z])")
 _PARAMETER_KEY_SEPARATOR_RE = re.compile(r"[^A-Za-z0-9]+")
 _PARAMETER_INDEX_SUFFIX_RE = re.compile(r"\[\d+\]$")
 _CREDENTIAL_SHAPED_PARAMETER_VALUE_RE = re.compile(
-    r"^(?:sk-[A-Za-z0-9]|ghp_[A-Za-z0-9]|github_pat_[A-Za-z0-9_])"
+    r"^(?:sk[-_][A-Za-z0-9]|hf_[A-Za-z0-9]|ghp_[A-Za-z0-9]|github_pat_[A-Za-z0-9_])"
 )
 _CONTENT_BEARING_AUDIT_PARAMETER_KEYS = frozenset(
     {

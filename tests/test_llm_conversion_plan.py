@@ -654,6 +654,14 @@ def test_build_conversion_audit_log_rejects_invalid_message_index_descriptors(
             r"parameters\.assistantMessageName",
         ),
         (
+            {"messageName": "sk_live_abcdef"},
+            r"parameters\.messageName",
+        ),
+        (
+            {"messageName": "hf_abcdef"},
+            r"parameters\.messageName",
+        ),
+        (
             {"assistantMessageName": "ghp_abcdef"},
             r"parameters\.assistantMessageName",
         ),
