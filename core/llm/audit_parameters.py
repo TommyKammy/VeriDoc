@@ -619,7 +619,7 @@ def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "
                 key_path,
                 _raw_key_value_parameter_entry_key(key_path, key_string),
             )
-            if _is_json_schema_schema_map_path(key_path) and not isinstance(item, (Mapping, bool)):
+            if _is_schema_like_schema_map_path(key_path) and not isinstance(item, (Mapping, bool)):
                 raise ValueError(f"{item_path} must not include document or request content")
             if _is_content_bearing_schema_value_path(item_path, item):
                 raise ValueError(f"{item_path} must not include document or request content")
@@ -833,13 +833,11 @@ def _audit_parameter_path_components(key: str) -> tuple[str, ...]:
 
 
 def _is_response_format_json_schema_path(components: tuple[str, ...]) -> bool:
-    return "response_format" in components and (
-        "json_schema" in components or "schema" in components
-    )
+    return _response_format_json_schema_path_components(components) is not None
 
 
 def _is_tool_function_json_schema_path(components: tuple[str, ...]) -> bool:
-    return "tools" in components and "function" in components and "parameters" in components
+    return _tool_function_json_schema_path_components(components) is not None
 
 
 def _is_json_schema_audit_parameter_path(components: tuple[str, ...]) -> bool:
@@ -883,6 +881,34 @@ def _is_json_schema_schema_map_path(key: str) -> bool:
     return _json_schema_path_leaf_role(components) == "schema_map"
 
 
+def _is_schema_like_schema_map_path(key: str) -> bool:
+    components = _audit_parameter_path_components(key)
+    return _json_schema_path_leaf_role(components) == "schema_map" or (
+        components[-1] in _JSON_SCHEMA_SCHEMA_MAP_KEYS
+        and _is_misplaced_json_schema_map_path(components)
+    )
+
+
+def _is_misplaced_json_schema_map_path(components: tuple[str, ...]) -> bool:
+    return _response_format_schema_like_path(components) or _tool_function_schema_like_path(
+        components
+    )
+
+
+def _response_format_schema_like_path(components: tuple[str, ...]) -> bool:
+    return (
+        _response_format_json_schema_path_components(components) is None
+        and _contains_component_sequence(components, ("response_format", "json_schema"))
+    )
+
+
+def _tool_function_schema_like_path(components: tuple[str, ...]) -> bool:
+    return (
+        _tool_function_json_schema_path_components(components) is None
+        and _contains_component_sequence(components, ("tools", "function"))
+    )
+
+
 def _json_schema_path_leaf_role(components: tuple[str, ...]) -> str | None:
     if not _is_json_schema_audit_parameter_path(components):
         return None
@@ -911,13 +937,41 @@ def _json_schema_path_components(components: tuple[str, ...]) -> tuple[str, ...]
         and components[first_real_component] == "schema_json"
     ):
         return components[first_real_component + 1 :]
-    for index in range(first_real_component, len(components) - 1):
-        if components[index] == "json_schema" and components[index + 1] == "schema":
-            return components[index + 2 :]
-    for index in range(first_real_component, len(components) - 1):
-        if components[index] == "function" and components[index + 1] == "parameters":
-            return components[index + 2 :]
+    response_format_components = _response_format_json_schema_path_components(components)
+    if response_format_components is not None:
+        return response_format_components
+    tool_function_components = _tool_function_json_schema_path_components(components)
+    if tool_function_components is not None:
+        return tool_function_components
     return ()
+
+
+def _response_format_json_schema_path_components(
+    components: tuple[str, ...],
+) -> tuple[str, ...] | None:
+    first_real_component = _first_non_parameter_component_index(components)
+    for index in range(first_real_component, len(components) - 1):
+        if components[index] != "response_format":
+            continue
+        if components[index + 1] == "schema":
+            return components[index + 2 :]
+        if (
+            index + 2 < len(components)
+            and components[index + 1] == "json_schema"
+            and components[index + 2] == "schema"
+        ):
+            return components[index + 3 :]
+    return None
+
+
+def _tool_function_json_schema_path_components(
+    components: tuple[str, ...],
+) -> tuple[str, ...] | None:
+    first_real_component = _first_non_parameter_component_index(components)
+    for index in range(first_real_component, len(components) - 2):
+        if components[index : index + 3] == ("tools", "function", "parameters"):
+            return components[index + 3 :]
+    return None
 
 
 def _is_content_bearing_schema_value_path(key: str, value: object) -> bool:
@@ -1646,6 +1700,8 @@ def _is_content_bearing_real_raw_query_text(value: str, *, _depth: int = 0) -> b
 
 
 def _is_content_bearing_query_parameter_pair(key: str, value: str) -> bool:
+    if _is_secret_url_parameter_key(key):
+        return False
     return _is_content_bearing_audit_parameter_key(key) or _is_invalid_safe_metadata_value(
         key,
         value,
