@@ -684,6 +684,34 @@ def test_build_conversion_audit_log_rejects_unsafe_message_name_descriptors(
 
 
 @pytest.mark.parametrize(
+    ("entry", "message"),
+    [
+        (["messageName", "Lot: ABC-123"], r"parameters\.metadata\[0\]\.messageName"),
+        (["messageName", "sk_live_abcdef"], r"parameters\.metadata\[0\]\.messageName"),
+        (["messageIndex", "Lot: ABC-123"], r"parameters\.metadata\[0\]\.messageIndex"),
+        (
+            ["jsonOutputStatusCode", "Lot: ABC-123"],
+            r"parameters\.metadata\[0\]\.jsonOutputStatusCode",
+        ),
+    ],
+)
+def test_build_conversion_audit_log_rejects_invalid_descriptor_tuple_entries(
+    entry: list[str],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        build_conversion_audit_log(
+            source_bytes=b"Lot: ABC-123\n",
+            output_bytes=b'{"lot_number":"ABC-123"}\n',
+            model="local-json-model",
+            prompt_id="veridoc_conversion_plan",
+            prompt_version="poc-08",
+            ir_version="document-ir-v1",
+            parameters={"metadata": [entry]},
+        )
+
+
+@pytest.mark.parametrize(
     "parameters",
     [
         {"messageApiKeyName": "operator-runtime-token"},

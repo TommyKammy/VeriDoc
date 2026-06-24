@@ -1084,6 +1084,14 @@ def _is_invalid_safe_metadata_value(key_path: str, value: object) -> bool:
     )
 
 
+def _is_safe_metadata_value_validated_key(key_path: str) -> bool:
+    return (
+        _is_status_code_metadata_key(key_path)
+        or _is_message_name_metadata_key(key_path)
+        or _is_message_index_metadata_key(key_path)
+    )
+
+
 def _is_json_schema_field_name_audit_parameter_key(key_path: str) -> bool:
     components = _audit_parameter_path_components(key_path)
     return _is_json_schema_audit_parameter_path(components) and _is_json_schema_field_name_path(
@@ -1264,6 +1272,7 @@ def _is_key_value_parameter_entry(value: object, key_path: str) -> bool:
             and (
                 _is_secret_parameter_key(entry_path)
                 or _is_content_bearing_audit_parameter_key(entry_path)
+                or _is_safe_metadata_value_validated_key(entry_path)
             )
         )
     )
