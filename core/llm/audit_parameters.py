@@ -1333,6 +1333,7 @@ def _raw_key_value_parameter_entries(value: str, key_path: str) -> list[tuple[st
                 chunk,
                 key_path,
                 normalized_leaf,
+                split_query_pairs=split_query_pairs,
             )
         )
         is not None
@@ -1350,7 +1351,12 @@ def _redact_raw_key_value_parameter_text(value: str, key_path: str) -> str | Non
         split_query_pairs=split_query_pairs,
     )
     if len(chunks) == 1 and chunks[0] == value:
-        raw_entry = _raw_key_value_parameter_chunk_entry(value, key_path, normalized_leaf)
+        raw_entry = _raw_key_value_parameter_chunk_entry(
+            value,
+            key_path,
+            normalized_leaf,
+            split_query_pairs=split_query_pairs,
+        )
         if raw_entry is None:
             return None
         return _redact_raw_key_value_parameter_line(raw_entry, key_path)
@@ -1358,7 +1364,12 @@ def _redact_raw_key_value_parameter_text(value: str, key_path: str) -> str | Non
     redacted_chunks = []
     changed = False
     for chunk in chunks:
-        raw_entry = _raw_key_value_parameter_chunk_entry(chunk, key_path, normalized_leaf)
+        raw_entry = _raw_key_value_parameter_chunk_entry(
+            chunk,
+            key_path,
+            normalized_leaf,
+            split_query_pairs=split_query_pairs,
+        )
         if raw_entry is None:
             redacted_chunks.append(chunk)
             continue
@@ -1378,11 +1389,13 @@ def _raw_key_value_parameter_chunk_entry(
     chunk: str,
     key_path: str,
     normalized_leaf: str,
+    *,
+    split_query_pairs: bool = False,
 ) -> tuple[str, str, str] | None:
     raw_entry = _raw_key_value_parameter_line(chunk, key_path)
     if raw_entry is not None:
         return raw_entry
-    if not _is_multi_entry_raw_parameter_container_leaf(normalized_leaf):
+    if not (split_query_pairs or _is_multi_entry_raw_parameter_container_leaf(normalized_leaf)):
         return None
     decoded_chunk = _fully_decode_query_parameter_value(chunk)
     if decoded_chunk == chunk:
