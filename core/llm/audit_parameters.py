@@ -233,6 +233,7 @@ _SAFE_SCHEMA_LITERAL_STRINGS = frozenset(
         "rejected",
         "required",
         "success",
+        "summary",
         "unknown",
     }
 )
@@ -557,10 +558,17 @@ def _reject_key_value_parameter_entry_value(
         _reject_content_bearing_audit_parameters(value, key_path=entry_path)
         return
     entry_parameter_value = _raw_key_value_parameter_entry_value(key_path, value)
-    if _is_content_bearing_url(entry_parameter_value) or (
-        _is_raw_content_query_audit_parameter_value_key(key_path)
-        and not _is_key_value_audit_parameter_sequence_container_key(entry_path)
-        and _is_content_bearing_raw_query_text(entry_parameter_value)
+    if (
+        _is_content_bearing_url(entry_parameter_value)
+        or (
+            AuditParameterContext(key_path).is_real_parameters_container
+            and _is_content_bearing_real_raw_query_text(entry_parameter_value)
+        )
+        or (
+            _is_raw_content_query_audit_parameter_value_key(key_path)
+            and not _is_key_value_audit_parameter_sequence_container_key(entry_path)
+            and _is_content_bearing_raw_query_text(entry_parameter_value)
+        )
     ):
         raise ValueError(f"{entry_path} must not include document or request content")
     _reject_content_bearing_audit_parameters(entry_parameter_value, key_path=entry_path)
@@ -576,6 +584,8 @@ def _reject_key_value_parameter_entry_name(entry_key: str, key_path: str, entry_
 
 def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "parameters") -> None:
     if isinstance(value, (bytes, bytearray, memoryview)):
+        raise ValueError(f"{key_path} must not include document or request content")
+    if _is_invalid_safe_metadata_value(key_path, value):
         raise ValueError(f"{key_path} must not include document or request content")
     if (
         key_path
@@ -909,10 +919,12 @@ def _is_safe_schema_literal_constraint(key: str, value: object) -> bool:
 def _is_safe_schema_literal_value(value: object, *, _depth: int = 0) -> bool:
     if _depth > _MAX_AUDIT_PARAMETER_DECODE_DEPTH:
         return False
-    if value is None or isinstance(value, (bool, int)):
+    if value is None or isinstance(value, bool):
         return True
+    if isinstance(value, int):
+        return value in {0, 1}
     if isinstance(value, float):
-        return math.isfinite(value)
+        return math.isfinite(value) and value in {0.0, 1.0}
     if isinstance(value, str):
         return _is_safe_schema_literal_string(value)
     if isinstance(value, (list, tuple)):
@@ -935,6 +947,51 @@ def _is_safe_schema_literal_string(value: str) -> bool:
         return False
     normalized = _normalize_parameter_key(value)
     return normalized in _SAFE_SCHEMA_LITERAL_STRINGS
+
+
+def _is_invalid_safe_metadata_value(key_path: str, value: object) -> bool:
+    return (
+        _is_json_status_code_metadata_key(key_path)
+        and not _is_safe_status_code_metadata_value(value)
+    ) or (
+        _is_message_name_metadata_key(key_path)
+        and not _is_safe_message_name_metadata_value(value)
+    )
+
+
+def _is_json_status_code_metadata_key(key_path: str) -> bool:
+    components = tuple(AuditParameterContext(key_path).normalized_leaf.split("_"))
+    return "json" in components and len(components) >= 3 and components[-2:] == (
+        "status",
+        "code",
+    )
+
+
+def _is_safe_status_code_metadata_value(value: object) -> bool:
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return 100 <= value <= 599
+    if isinstance(value, str) and re.fullmatch(r"[1-5][0-9]{2}", value):
+        return True
+    return False
+
+
+def _is_message_name_metadata_key(key_path: str) -> bool:
+    components = tuple(AuditParameterContext(key_path).normalized_leaf.split("_"))
+    return (
+        len(components) >= 2
+        and components[-1] == "name"
+        and ("message" in components or "messages" in components)
+    )
+
+
+def _is_safe_message_name_metadata_value(value: object) -> bool:
+    if not isinstance(value, str) or not value or len(value) > 64:
+        return False
+    if _is_secret_parameter_key(value) or _is_credential_bearing_raw_query_text(value):
+        return False
+    return re.fullmatch(r"[a-z][a-z0-9_.-]*", value) is not None
 
 
 def _is_content_bearing_schema_field_name(name: str) -> bool:
@@ -1487,6 +1544,30 @@ def _is_content_bearing_raw_query_text(value: str, *, _depth: int = 0) -> bool:
         _is_content_bearing_url(parameter_value, _depth=_depth + 1)
         or _is_content_bearing_raw_query_text(parameter_value, _depth=_depth + 1)
         for _key, parameter_value in raw_pairs
+    )
+
+
+def _is_content_bearing_real_raw_query_text(value: str, *, _depth: int = 0) -> bool:
+    if not _has_raw_query_key_value_separator(value):
+        return False
+    if _depth >= _MAX_AUDIT_PARAMETER_DECODE_DEPTH:
+        return False
+    raw_pairs = _raw_query_parameter_pairs(value)
+    return any(
+        (
+            _is_content_bearing_audit_parameter_key(key)
+            and not _is_safe_real_raw_query_metadata_pair(key, parameter_value)
+        )
+        or _is_content_bearing_url(parameter_value, _depth=_depth + 1)
+        or _is_content_bearing_real_raw_query_text(parameter_value, _depth=_depth + 1)
+        for key, parameter_value in raw_pairs
+    )
+
+
+def _is_safe_real_raw_query_metadata_pair(key: str, value: str) -> bool:
+    normalized_key = _normalize_parameter_key(key)
+    return normalized_key in {"message", "mode", "output", "status"} and (
+        _is_safe_schema_literal_string(value)
     )
 
 

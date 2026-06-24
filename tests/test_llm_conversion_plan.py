@@ -536,6 +536,29 @@ def test_build_conversion_audit_log_allows_json_descriptor_metadata_fields() -> 
     }
 
 
+@pytest.mark.parametrize(
+    ("parameters", "message"),
+    [
+        ({"jsonResponseStatusCode": "Lot: ABC-123"}, r"parameters\.jsonResponseStatusCode"),
+        ({"jsonOutputStatusCode": ["Lot: ABC-123"]}, r"parameters\.jsonOutputStatusCode"),
+    ],
+)
+def test_build_conversion_audit_log_rejects_invalid_json_status_code_descriptors(
+    parameters: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        build_conversion_audit_log(
+            source_bytes=b"Lot: ABC-123\n",
+            output_bytes=b'{"lot_number":"ABC-123"}\n',
+            model="local-json-model",
+            prompt_id="veridoc_conversion_plan",
+            prompt_version="poc-08",
+            ir_version="document-ir-v1",
+            parameters=parameters,
+        )
+
+
 def test_build_conversion_audit_log_allows_message_content_type_descriptors() -> None:
     audit_log = build_conversion_audit_log(
         source_bytes=b"Lot: ABC-123\n",
@@ -560,6 +583,32 @@ def test_build_conversion_audit_log_allows_message_content_type_descriptors() ->
         "messageName": "assistant-1",
         "assistantMessageName": "assistant-1",
     }
+
+
+@pytest.mark.parametrize(
+    ("parameters", "message"),
+    [
+        ({"messageName": "Lot: ABC-123"}, r"parameters\.messageName"),
+        (
+            {"assistantMessageName": "api_key=operator-runtime-key"},
+            r"parameters\.assistantMessageName",
+        ),
+    ],
+)
+def test_build_conversion_audit_log_rejects_unsafe_message_name_descriptors(
+    parameters: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        build_conversion_audit_log(
+            source_bytes=b"Lot: ABC-123\n",
+            output_bytes=b'{"lot_number":"ABC-123"}\n',
+            model="local-json-model",
+            prompt_id="veridoc_conversion_plan",
+            prompt_version="poc-08",
+            ir_version="document-ir-v1",
+            parameters=parameters,
+        )
 
 
 def test_build_conversion_audit_log_rejects_json_code_payload_descriptors() -> None:
@@ -1304,6 +1353,19 @@ def test_build_conversion_audit_log_redacts_real_parameters_nested_raw_credentia
         },
     }
     assert "operator-runtime-key" not in json.dumps(audit_log, sort_keys=True)
+
+
+def test_build_conversion_audit_log_rejects_real_parameters_nested_raw_content() -> None:
+    with pytest.raises(ValueError, match=r"parameters\.parameters\.next"):
+        build_conversion_audit_log(
+            source_bytes=b"Lot: ABC-123\n",
+            output_bytes=b'{"lot_number":"ABC-123"}\n',
+            model="local-json-model",
+            prompt_id="veridoc_conversion_plan",
+            prompt_version="poc-08",
+            ir_version="document-ir-v1",
+            parameters={"parameters": {"next": "prompt=Lot: ABC-123"}},
+        )
 
 
 def test_build_conversion_audit_log_redacts_raw_mapping_parameter_values() -> None:
@@ -2412,6 +2474,29 @@ def test_build_conversion_audit_log_allows_safe_schema_json_literal_constraints(
     ],
 )
 def test_build_conversion_audit_log_rejects_sensitive_schema_json_literal_constraints(
+    schema_json: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        build_conversion_audit_log(
+            source_bytes=b"Lot: ABC-123\n",
+            output_bytes=b'{"lot_number":"ABC-123"}\n',
+            model="local-json-model",
+            prompt_id="veridoc_conversion_plan",
+            prompt_version="poc-08",
+            ir_version="document-ir-v1",
+            parameters={"schema_json": schema_json},
+        )
+
+
+@pytest.mark.parametrize(
+    ("schema_json", "message"),
+    [
+        ({"default": 12345}, r"parameters\.schema_json\.default"),
+        ({"enum": [12345]}, r"parameters\.schema_json\.enum"),
+    ],
+)
+def test_build_conversion_audit_log_rejects_numeric_schema_json_identifier_literals(
     schema_json: dict[str, object],
     message: str,
 ) -> None:
