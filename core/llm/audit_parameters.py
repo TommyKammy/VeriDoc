@@ -631,7 +631,13 @@ def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "
                     item,
                 )
             )
-            if _is_schema_like_schema_map_path(key_path) and not isinstance(item, (Mapping, bool)):
+            if (
+                (
+                    _is_schema_like_schema_map_path(key_path)
+                    or _is_schema_like_schema_map_path(item_path)
+                )
+                and not isinstance(item, (Mapping, bool))
+            ):
                 raise ValueError(f"{item_path} must not include document or request content")
             if _is_content_bearing_schema_value_path(item_path, item):
                 raise ValueError(f"{item_path} must not include document or request content")

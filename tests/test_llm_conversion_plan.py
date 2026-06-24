@@ -3247,6 +3247,31 @@ def test_build_conversion_audit_log_rejects_non_schema_response_format_schema_ma
         )
 
 
+def test_build_conversion_audit_log_rejects_scalar_non_schema_response_format_schema_maps() -> None:
+    response_format = {
+        "type": "json_schema",
+        "json_schema": {
+            "name": {
+                "properties": "Lot: ABC-123",
+            },
+        },
+    }
+
+    with pytest.raises(
+        ValueError,
+        match=r"parameters\.response_format\.json_schema\.name\.properties",
+    ):
+        build_conversion_audit_log(
+            source_bytes=b"Lot: ABC-123\n",
+            output_bytes=b'{"lot_number":"ABC-123"}\n',
+            model="local-json-model",
+            prompt_id="veridoc_conversion_plan",
+            prompt_version="poc-08",
+            ir_version="document-ir-v1",
+            parameters={"response_format": response_format},
+        )
+
+
 def test_build_conversion_audit_log_rejects_non_parameter_tool_function_schema_maps() -> None:
     tools = [
         {
@@ -3263,6 +3288,32 @@ def test_build_conversion_audit_log_rejects_non_parameter_tool_function_schema_m
     with pytest.raises(
         ValueError,
         match=r"parameters\.tools\[0\]\.function\.properties\.lotNumber",
+    ):
+        build_conversion_audit_log(
+            source_bytes=b"Lot: ABC-123\n",
+            output_bytes=b'{"lot_number":"ABC-123"}\n',
+            model="local-json-model",
+            prompt_id="veridoc_conversion_plan",
+            prompt_version="poc-08",
+            ir_version="document-ir-v1",
+            parameters={"tools": tools},
+        )
+
+
+def test_build_conversion_audit_log_rejects_scalar_non_parameter_tool_function_schema_maps() -> None:
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "extract_field",
+                "properties": "Lot: ABC-123",
+            },
+        }
+    ]
+
+    with pytest.raises(
+        ValueError,
+        match=r"parameters\.tools\[0\]\.function\.properties",
     ):
         build_conversion_audit_log(
             source_bytes=b"Lot: ABC-123\n",
