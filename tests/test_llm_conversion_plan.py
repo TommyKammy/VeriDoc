@@ -1658,6 +1658,53 @@ def test_build_conversion_audit_log_rejects_raw_content_url_parameter_values(
         )
 
 
+@pytest.mark.parametrize(
+    "callback_url",
+    [
+        "https://example.invalid/cb?jsonOutputStatusCode=200",
+        "https://example.invalid/cb?messageName=assistant-1",
+        "https://example.invalid/cb?messageIndex=0",
+    ],
+)
+def test_build_conversion_audit_log_allows_url_descriptor_query_values(
+    callback_url: str,
+) -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={"callback_url": callback_url},
+    )
+
+    assert audit_log["parameters"] == {"callback_url": callback_url}
+
+
+@pytest.mark.parametrize(
+    "callback_url",
+    [
+        "https://example.invalid/cb?jsonOutputStatusCode=Lot%3A%20ABC-123",
+        "https://example.invalid/cb?messageName=Lot%3A%20ABC-123",
+        "https://example.invalid/cb?messageIndex=Lot%3A%20ABC-123",
+    ],
+)
+def test_build_conversion_audit_log_rejects_url_descriptor_query_content(
+    callback_url: str,
+) -> None:
+    with pytest.raises(ValueError, match=r"parameters\.callback_url"):
+        build_conversion_audit_log(
+            source_bytes=b"Lot: ABC-123\n",
+            output_bytes=b'{"lot_number":"ABC-123"}\n',
+            model="local-json-model",
+            prompt_id="veridoc_conversion_plan",
+            prompt_version="poc-08",
+            ir_version="document-ir-v1",
+            parameters={"callback_url": callback_url},
+        )
+
+
 def test_build_conversion_audit_log_rejects_multi_entry_raw_content_parameters() -> None:
     with pytest.raises(ValueError, match=r"parameters\.query_params\.prompt"):
         build_conversion_audit_log(
@@ -1668,6 +1715,53 @@ def test_build_conversion_audit_log_rejects_multi_entry_raw_content_parameters()
             prompt_version="poc-08",
             ir_version="document-ir-v1",
             parameters={"query_params": "version=1&prompt=Lot: ABC-123"},
+        )
+
+
+@pytest.mark.parametrize(
+    "query_parameters",
+    [
+        "next=messageName=assistant-1",
+        "next=jsonOutputStatusCode=200",
+        "next=messageIndex=0",
+    ],
+)
+def test_build_conversion_audit_log_allows_nested_raw_descriptor_query_values(
+    query_parameters: str,
+) -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={"queryParameters": query_parameters},
+    )
+
+    assert audit_log["parameters"] == {"queryParameters": query_parameters}
+
+
+@pytest.mark.parametrize(
+    "query_parameters",
+    [
+        "next=messageName=Lot%3AABC",
+        "next=jsonOutputStatusCode=Lot%3AABC",
+        "next=messageIndex=Lot%3AABC",
+    ],
+)
+def test_build_conversion_audit_log_rejects_nested_raw_descriptor_query_content(
+    query_parameters: str,
+) -> None:
+    with pytest.raises(ValueError, match=r"parameters\.queryParameters\.next"):
+        build_conversion_audit_log(
+            source_bytes=b"Lot: ABC-123\n",
+            output_bytes=b'{"lot_number":"ABC-123"}\n',
+            model="local-json-model",
+            prompt_id="veridoc_conversion_plan",
+            prompt_version="poc-08",
+            ir_version="document-ir-v1",
+            parameters={"queryParameters": query_parameters},
         )
 
 
@@ -2525,7 +2619,10 @@ def test_build_conversion_audit_log_allows_schema_json_string_property_metadata(
     assert audit_log["parameters"] == {"schema_json": schema_json}
 
 
-@pytest.mark.parametrize("property_name", ["anyOf", "properties", "patternProperties"])
+@pytest.mark.parametrize(
+    "property_name",
+    ["anyOf", "default", "enum", "properties", "patternProperties"],
+)
 def test_build_conversion_audit_log_allows_schema_json_keyword_property_names(
     property_name: str,
 ) -> None:
@@ -2663,6 +2760,45 @@ def test_build_conversion_audit_log_allows_schema_json_string_root_metadata() ->
     ],
 )
 def test_build_conversion_audit_log_allows_safe_schema_json_literal_constraints(
+    schema_json: dict[str, object],
+) -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={"schema_json": schema_json},
+    )
+
+    assert audit_log["parameters"] == {"schema_json": schema_json}
+
+
+@pytest.mark.parametrize(
+    "schema_json",
+    [
+        {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "enum": ["pending", "complete"]},
+            },
+        },
+        {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "default": "pending"},
+            },
+        },
+        {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "const": "complete"},
+            },
+        },
+    ],
+)
+def test_build_conversion_audit_log_allows_safe_schema_json_property_literal_constraints(
     schema_json: dict[str, object],
 ) -> None:
     audit_log = build_conversion_audit_log(

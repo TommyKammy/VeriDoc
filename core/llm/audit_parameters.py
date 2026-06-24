@@ -916,9 +916,7 @@ def _json_schema_path_components(components: tuple[str, ...]) -> tuple[str, ...]
 
 def _is_content_bearing_schema_value_path(key: str, value: object) -> bool:
     components = _audit_parameter_path_components(key)
-    if not _is_json_schema_audit_parameter_path(components):
-        return False
-    if components[-1] not in _JSON_SCHEMA_VALUE_AUDIT_PARAMETER_KEYS:
+    if not _is_json_schema_literal_value_path(components):
         return False
     return not _is_safe_schema_literal_constraint(key, value)
 
@@ -953,10 +951,17 @@ def _is_invalid_json_schema_value_path(key: str, value: object) -> bool:
 
 def _is_safe_schema_literal_constraint(key: str, value: object) -> bool:
     components = _audit_parameter_path_components(key)
-    first_real_component = _first_non_parameter_component_index(components)
-    if components[first_real_component:-1] != ("schema_json",):
+    if not _is_json_schema_literal_value_path(components):
         return False
     return _is_safe_schema_literal_value(value)
+
+
+def _is_json_schema_literal_value_path(components: tuple[str, ...]) -> bool:
+    return (
+        _is_json_schema_audit_parameter_path(components)
+        and _json_schema_path_leaf_role(components) == "schema_keyword"
+        and components[-1] in _JSON_SCHEMA_VALUE_AUDIT_PARAMETER_KEYS
+    )
 
 
 def _is_safe_schema_literal_value(value: object, *, _depth: int = 0) -> bool:
@@ -1563,8 +1568,8 @@ def _is_content_bearing_url(value: str, *, _depth: int = 0) -> bool:
         return False
     url_pairs = _url_parameter_pairs(parsed_url.query) + _url_parameter_pairs(parsed_url.fragment)
     return any(
-        _is_content_bearing_audit_parameter_key(key)
-        for key, _value in url_pairs
+        _is_content_bearing_query_parameter_pair(key, parameter_value)
+        for key, parameter_value in url_pairs
     ) or any(
         _is_content_bearing_url(parameter_value, _depth=_depth + 1)
         or _is_content_bearing_raw_query_text(parameter_value, _depth=_depth + 1)
@@ -1611,8 +1616,8 @@ def _is_content_bearing_raw_query_text(value: str, *, _depth: int = 0) -> bool:
         return False
     raw_pairs = _raw_query_parameter_pairs(value)
     return any(
-        _is_content_bearing_audit_parameter_key(key)
-        for key, _parameter_value in raw_pairs
+        _is_content_bearing_query_parameter_pair(key, parameter_value)
+        for key, parameter_value in raw_pairs
     ) or any(
         _is_content_bearing_url(parameter_value, _depth=_depth + 1)
         or _is_content_bearing_raw_query_text(parameter_value, _depth=_depth + 1)
@@ -1627,14 +1632,24 @@ def _is_content_bearing_real_raw_query_text(value: str, *, _depth: int = 0) -> b
         return False
     raw_pairs = _raw_query_parameter_pairs(value)
     return any(
-        (
-            _is_content_bearing_audit_parameter_key(key)
-            and not _is_safe_real_raw_query_metadata_pair(key, parameter_value)
-        )
+        _is_content_bearing_real_raw_query_parameter_pair(key, parameter_value)
         or _is_content_bearing_url(parameter_value, _depth=_depth + 1)
         or _is_content_bearing_real_raw_query_text(parameter_value, _depth=_depth + 1)
         for key, parameter_value in raw_pairs
     )
+
+
+def _is_content_bearing_query_parameter_pair(key: str, value: str) -> bool:
+    return _is_content_bearing_audit_parameter_key(key) or _is_invalid_safe_metadata_value(
+        key,
+        value,
+    )
+
+
+def _is_content_bearing_real_raw_query_parameter_pair(key: str, value: str) -> bool:
+    if _is_safe_real_raw_query_metadata_pair(key, value):
+        return False
+    return _is_content_bearing_query_parameter_pair(key, value)
 
 
 def _is_safe_real_raw_query_metadata_pair(key: str, value: str) -> bool:
