@@ -585,14 +585,14 @@ def _reject_key_value_parameter_entry_name(entry_key: str, key_path: str, entry_
 def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "parameters") -> None:
     if isinstance(value, (bytes, bytearray, memoryview)):
         raise ValueError(f"{key_path} must not include document or request content")
-    if _is_invalid_safe_metadata_value(key_path, value):
-        raise ValueError(f"{key_path} must not include document or request content")
     if (
         key_path
         and _is_secret_parameter_key(key_path)
         and not _is_safe_json_schema_audit_parameter_key(key_path)
     ):
         return
+    if _is_invalid_safe_metadata_value(key_path, value):
+        raise ValueError(f"{key_path} must not include document or request content")
     if _is_invalid_json_schema_value_path(key_path, value):
         raise ValueError(f"{key_path} must not include document or request content")
     if isinstance(value, Mapping):
@@ -662,9 +662,19 @@ def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "
         for raw_entry in _raw_key_value_parameter_entries(parameter_value, key_path):
             entry_key, _separator, _entry_value = raw_entry
             item_path = _raw_key_value_parameter_entry_path(key_path, entry_key)
-            if _is_content_bearing_audit_parameter_key(item_path):
-                raise ValueError(f"{item_path} must not include document or request content")
             entry_value = _raw_key_value_parameter_entry_value(key_path, _entry_value)
+            is_safe_real_metadata_pair = (
+                AuditParameterContext(key_path).is_real_parameters_container
+                and _is_safe_real_raw_query_metadata_pair(
+                    _raw_key_value_parameter_entry_key(key_path, entry_key),
+                    entry_value,
+                )
+            )
+            if (
+                _is_content_bearing_audit_parameter_key(item_path)
+                and not is_safe_real_metadata_pair
+            ):
+                raise ValueError(f"{item_path} must not include document or request content")
             if _is_content_bearing_url(entry_value) or (
                 _is_raw_query_audit_parameter_value_key(key_path)
                 and not _is_key_value_audit_parameter_sequence_container_key(item_path)
