@@ -663,8 +663,9 @@ def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "
             entry_key, _separator, _entry_value = raw_entry
             item_path = _raw_key_value_parameter_entry_path(key_path, entry_key)
             entry_value = _raw_key_value_parameter_entry_value(key_path, _entry_value)
+            context = AuditParameterContext(key_path)
             is_safe_real_metadata_pair = (
-                AuditParameterContext(key_path).is_real_parameters_container
+                context.is_real_parameters_container
                 and _is_safe_real_raw_query_metadata_pair(
                     _raw_key_value_parameter_entry_key(key_path, entry_key),
                     entry_value,
@@ -675,11 +676,16 @@ def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "
                 and not is_safe_real_metadata_pair
             ):
                 raise ValueError(f"{item_path} must not include document or request content")
-            if _is_content_bearing_url(entry_value) or (
-                _is_raw_query_audit_parameter_value_key(key_path)
+            is_content_bearing_raw_query_value = (
+                context.is_real_parameters_container
+                and _is_content_bearing_real_raw_query_text(entry_value)
+            ) or (
+                not context.is_real_parameters_container
+                and _is_raw_query_audit_parameter_value_key(key_path)
                 and not _is_key_value_audit_parameter_sequence_container_key(item_path)
                 and _is_content_bearing_raw_query_text(entry_value)
-            ):
+            )
+            if _is_content_bearing_url(entry_value) or is_content_bearing_raw_query_value:
                 raise ValueError(f"{item_path} must not include document or request content")
             _reject_content_bearing_audit_parameters(entry_value, key_path=item_path)
     elif isinstance(value, (list, tuple)):

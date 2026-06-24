@@ -1427,6 +1427,29 @@ def test_build_conversion_audit_log_allows_real_parameters_benign_raw_tokens(
 
 
 @pytest.mark.parametrize(
+    "raw_parameters",
+    [
+        "next=message=complete",
+        "next=output=summary",
+    ],
+)
+def test_build_conversion_audit_log_allows_real_parameters_nested_benign_raw_tokens(
+    raw_parameters: str,
+) -> None:
+    audit_log = build_conversion_audit_log(
+        source_bytes=b"Lot: ABC-123\n",
+        output_bytes=b'{"lot_number":"ABC-123"}\n',
+        model="local-json-model",
+        prompt_id="veridoc_conversion_plan",
+        prompt_version="poc-08",
+        ir_version="document-ir-v1",
+        parameters={"parameters": raw_parameters},
+    )
+
+    assert audit_log["parameters"] == {"parameters": raw_parameters}
+
+
+@pytest.mark.parametrize(
     "nested_parameters",
     [
         {"status": "message=complete"},
@@ -1495,6 +1518,19 @@ def test_build_conversion_audit_log_rejects_real_parameters_raw_content() -> Non
             prompt_version="poc-08",
             ir_version="document-ir-v1",
             parameters={"parameters": "prompt=Lot: ABC-123"},
+        )
+
+
+def test_build_conversion_audit_log_rejects_real_parameters_nested_raw_string_content() -> None:
+    with pytest.raises(ValueError, match=r"parameters\.parameters\.next"):
+        build_conversion_audit_log(
+            source_bytes=b"Lot: ABC-123\n",
+            output_bytes=b'{"lot_number":"ABC-123"}\n',
+            model="local-json-model",
+            prompt_id="veridoc_conversion_plan",
+            prompt_version="poc-08",
+            ir_version="document-ir-v1",
+            parameters={"parameters": "next=prompt=Lot: ABC-123"},
         )
 
 
