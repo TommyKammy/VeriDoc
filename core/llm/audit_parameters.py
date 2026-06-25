@@ -488,6 +488,20 @@ class JsonSchemaAuditPath:
 
 
 @dataclass(frozen=True)
+class JsonSchemaLeaf:
+    normalized: str
+    has_index_suffix: bool
+
+    @classmethod
+    def from_key_path(cls, key_path: str) -> JsonSchemaLeaf:
+        leaf = key_path.rsplit(".", 1)[-1]
+        return cls(
+            normalized=_normalize_parameter_key(_PARAMETER_INDEX_SUFFIX_RE.sub("", leaf)),
+            has_index_suffix=_PARAMETER_INDEX_SUFFIX_RE.search(leaf) is not None,
+        )
+
+
+@dataclass(frozen=True)
 class NormalizedParameterKey:
     normalized: str
     normalized_leaf: str
@@ -1184,23 +1198,40 @@ def _is_invalid_json_schema_value_path(key: str, value: object) -> bool:
     if schema_path.is_field_name:
         return not isinstance(value, (Mapping, bool))
 
-    leaf = key.rsplit(".", 1)[-1]
-    has_index_suffix = _PARAMETER_INDEX_SUFFIX_RE.search(leaf) is not None
-    normalized_leaf = _normalize_parameter_key(_PARAMETER_INDEX_SUFFIX_RE.sub("", leaf))
+    schema_leaf = JsonSchemaLeaf.from_key_path(key)
+    return (
+        _is_invalid_json_schema_map_value(schema_leaf, value)
+        or _is_invalid_single_json_schema_value(schema_leaf, value)
+        or _is_invalid_json_schema_array_value(schema_leaf, value)
+    )
+
+
+def _is_invalid_json_schema_map_value(schema_leaf: JsonSchemaLeaf, value: object) -> bool:
+    return (
+        schema_leaf.normalized in _JSON_SCHEMA_SCHEMA_MAP_KEYS
+        and not schema_leaf.has_index_suffix
+        and not isinstance(value, Mapping)
+    )
+
+
+def _is_invalid_single_json_schema_value(schema_leaf: JsonSchemaLeaf, value: object) -> bool:
+    if schema_leaf.normalized not in _JSON_SCHEMA_SINGLE_SCHEMA_KEYS:
+        return False
     schema_types = (Mapping, bool)
-    if normalized_leaf in _JSON_SCHEMA_SCHEMA_MAP_KEYS and not has_index_suffix:
-        return not isinstance(value, Mapping)
-    if normalized_leaf in _JSON_SCHEMA_SINGLE_SCHEMA_KEYS:
-        if has_index_suffix:
-            return not isinstance(value, schema_types)
-        if normalized_leaf == "items":
-            return not isinstance(value, (Mapping, bool, list))
+    if schema_leaf.has_index_suffix:
         return not isinstance(value, schema_types)
-    if normalized_leaf in _JSON_SCHEMA_SCHEMA_ARRAY_KEYS:
-        if has_index_suffix:
-            return not isinstance(value, schema_types)
-        return not isinstance(value, list)
-    return False
+    if schema_leaf.normalized == "items":
+        return not isinstance(value, (Mapping, bool, list))
+    return not isinstance(value, schema_types)
+
+
+def _is_invalid_json_schema_array_value(schema_leaf: JsonSchemaLeaf, value: object) -> bool:
+    if schema_leaf.normalized not in _JSON_SCHEMA_SCHEMA_ARRAY_KEYS:
+        return False
+    schema_types = (Mapping, bool)
+    if schema_leaf.has_index_suffix:
+        return not isinstance(value, schema_types)
+    return not isinstance(value, list)
 
 
 def _is_safe_schema_literal_value(value: object, *, _depth: int = 0) -> bool:
