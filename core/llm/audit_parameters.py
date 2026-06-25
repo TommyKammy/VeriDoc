@@ -487,6 +487,52 @@ class JsonSchemaAuditPath:
         )
 
 
+@dataclass(frozen=True)
+class NormalizedParameterKey:
+    normalized: str
+    normalized_leaf: str
+    leaf_components: tuple[str, ...]
+    singular_leaf_components: tuple[str, ...]
+    path_components: tuple[str, ...]
+
+    @classmethod
+    def from_key(cls, key: str) -> NormalizedParameterKey:
+        normalized = _normalize_parameter_key(key)
+        normalized_leaf = _normalize_parameter_key(_parameter_key_leaf(key))
+        leaf_components = tuple(normalized_leaf.split("_"))
+        return cls(
+            normalized=normalized,
+            normalized_leaf=normalized_leaf,
+            leaf_components=leaf_components,
+            singular_leaf_components=tuple(
+                _singular_parameter_component(component) for component in leaf_components
+            ),
+            path_components=tuple(normalized.split("_")),
+        )
+
+    @property
+    def candidates(self) -> tuple[str, str]:
+        return (self.normalized, self.normalized_leaf)
+
+    @property
+    def real_path_components(self) -> tuple[str, ...]:
+        if self.path_components[:1] == ("parameters",):
+            return self.path_components[1:]
+        return self.path_components
+
+    def has_leaf_component_in(self, components: frozenset[str]) -> bool:
+        return any(component in components for component in self.leaf_components)
+
+    def has_singular_leaf_component_in(self, components: frozenset[str]) -> bool:
+        return any(component in components for component in self.singular_leaf_components)
+
+    def contains_leaf_sequence(self, sequences: tuple[tuple[str, ...], ...]) -> bool:
+        return any(
+            _contains_component_sequence(self.leaf_components, sequence)
+            for sequence in sequences
+        )
+
+
 def sanitize_audit_parameters(parameters: Mapping[str, object]) -> JsonObject:
     _reject_content_bearing_audit_parameters(parameters)
     sanitized = _redact_audit_parameters(parameters, key_path=AuditParameterContext().key_path)
@@ -827,44 +873,37 @@ def _reject_sequence_content_bearing_audit_parameters(
 
 
 def _is_content_bearing_audit_parameter_key(key: str) -> bool:
-    normalized_leaf = _normalize_parameter_key(_parameter_key_leaf(key))
+    normalized_key = NormalizedParameterKey.from_key(key)
     if _is_safe_json_schema_audit_parameter_key(key):
         return False
-    if normalized_leaf in _SAFE_DATA_METADATA_AUDIT_PARAMETER_KEYS:
+    if normalized_key.normalized_leaf in _SAFE_DATA_METADATA_AUDIT_PARAMETER_KEYS:
         return False
-    if _is_safe_json_metadata_audit_parameter_key(normalized_leaf):
+    if _is_safe_json_metadata_audit_parameter_key(normalized_key.normalized_leaf):
         return False
-    if _is_safe_form_data_metadata_audit_parameter_key(normalized_leaf):
+    if _is_safe_form_data_metadata_audit_parameter_key(normalized_key.normalized_leaf):
         return False
-    if _is_safe_message_metadata_audit_parameter_key(normalized_leaf):
+    if _is_safe_message_metadata_audit_parameter_key(normalized_key.normalized_leaf):
         return False
-    if normalized_leaf in _SAFE_CONTENT_WORD_AUDIT_PARAMETER_KEYS:
+    if normalized_key.normalized_leaf in _SAFE_CONTENT_WORD_AUDIT_PARAMETER_KEYS:
         return False
     if _is_secret_parameter_key(key):
         return False
-    leaf_components = tuple(normalized_leaf.split("_"))
-    singular_leaf_components = tuple(
-        _singular_parameter_component(component) for component in leaf_components
-    )
-    path_components = tuple(_normalize_parameter_key(key).split("_"))
     return (
-        normalized_leaf in _CONTENT_BEARING_AUDIT_PARAMETER_KEYS
-        or normalized_leaf.endswith("_json")
-        or "previous_response" in normalized_leaf
-        or any(component in _CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENTS for component in leaf_components)
-        or any(
-            component in _CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENTS
-            for component in singular_leaf_components
+        normalized_key.normalized_leaf in _CONTENT_BEARING_AUDIT_PARAMETER_KEYS
+        or normalized_key.normalized_leaf.endswith("_json")
+        or "previous_response" in normalized_key.normalized_leaf
+        or normalized_key.has_leaf_component_in(_CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENTS)
+        or normalized_key.has_singular_leaf_component_in(
+            _CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENTS
         )
-        or any(
-            _contains_component_sequence(leaf_components, sequence)
-            for sequence in _CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENT_SEQUENCES
+        or normalized_key.contains_leaf_sequence(
+            _CONTENT_BEARING_AUDIT_PARAMETER_KEY_COMPONENT_SEQUENCES
         )
         or (
-            normalized_leaf == "bytes"
+            normalized_key.normalized_leaf == "bytes"
             and any(
                 component in _CONTENT_BYTE_AUDIT_PARAMETER_ANCESTOR_COMPONENTS
-                for component in path_components
+                for component in normalized_key.path_components
             )
         )
     )
@@ -1272,51 +1311,42 @@ def _is_content_bearing_schema_field_name(name: str) -> bool:
 
 
 def _is_secret_parameter_key(key: str) -> bool:
-    normalized = _normalize_parameter_key(key)
-    normalized_leaf = _normalize_parameter_key(_parameter_key_leaf(key))
+    normalized_key = NormalizedParameterKey.from_key(key)
     if (
-        normalized in _SAFE_CONTENT_WORD_AUDIT_PARAMETER_KEYS
-        or normalized_leaf in _SAFE_CONTENT_WORD_AUDIT_PARAMETER_KEYS
+        normalized_key.normalized in _SAFE_CONTENT_WORD_AUDIT_PARAMETER_KEYS
+        or normalized_key.normalized_leaf in _SAFE_CONTENT_WORD_AUDIT_PARAMETER_KEYS
         or _is_secret_exempt_key_value_audit_parameter_container_key(key)
     ):
         return False
-    key_candidates = (normalized, normalized_leaf)
-    components = tuple(normalized_leaf.split("_"))
-    path_components = tuple(normalized.split("_"))
-    real_path_components = path_components[1:] if path_components[:1] == ("parameters",) else path_components
-    singular_components = tuple(_singular_parameter_component(component) for component in components)
     return (
-        any(candidate in _SECRET_PARAMETER_KEYS for candidate in key_candidates)
+        any(candidate in _SECRET_PARAMETER_KEYS for candidate in normalized_key.candidates)
         or (
-            normalized_leaf in {"code", "key"}
+            normalized_key.normalized_leaf in {"code", "key"}
             and (
-                "query" in real_path_components
-                or "params" in real_path_components
-                or "parameters" in real_path_components
+                "query" in normalized_key.real_path_components
+                or "params" in normalized_key.real_path_components
+                or "parameters" in normalized_key.real_path_components
                 or _is_query_audit_parameter_entry_key(key)
             )
         )
         or any(
             candidate.endswith(suffix)
-            for candidate in key_candidates
+            for candidate in normalized_key.candidates
             for suffix in _SECRET_PARAMETER_KEY_SUFFIXES
         )
         or any(
             candidate.startswith(prefix)
-            for candidate in key_candidates
+            for candidate in normalized_key.candidates
             for prefix in _SECRET_PARAMETER_KEY_PREFIXES
         )
         or any(
             phrase in candidate
-            for candidate in key_candidates
+            for candidate in normalized_key.candidates
             for phrase in _SECRET_PARAMETER_KEY_PHRASES
         )
-        or any(component in _SECRET_PARAMETER_KEY_COMPONENTS for component in components)
-        or any(component in _SECRET_PARAMETER_KEY_COMPONENTS for component in singular_components)
-        or any(
-            _contains_component_sequence(components, sequence)
-            for sequence in _SECRET_PARAMETER_KEY_COMPONENT_SEQUENCES
-        )
+        or normalized_key.has_leaf_component_in(_SECRET_PARAMETER_KEY_COMPONENTS)
+        or normalized_key.has_singular_leaf_component_in(_SECRET_PARAMETER_KEY_COMPONENTS)
+        or normalized_key.contains_leaf_sequence(_SECRET_PARAMETER_KEY_COMPONENT_SEQUENCES)
     )
 
 
