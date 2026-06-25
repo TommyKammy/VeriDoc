@@ -449,6 +449,42 @@ class RawKeyValueParameterContext:
         return _is_cookie_audit_parameter_container_leaf(self.normalized_leaf)
 
 
+@dataclass(frozen=True)
+class JsonSchemaAuditPath:
+    components: tuple[str, ...]
+    tail: tuple[str, ...]
+    is_schema_path: bool
+    leaf_role: str | None
+
+    @classmethod
+    def from_components(cls, components: tuple[str, ...]) -> JsonSchemaAuditPath:
+        is_schema_path = _is_json_schema_audit_parameter_path(components)
+        tail = _json_schema_path_components(components) if is_schema_path else ()
+        return cls(
+            components=components,
+            tail=tail,
+            is_schema_path=is_schema_path,
+            leaf_role=_json_schema_leaf_role(tail),
+        )
+
+    @property
+    def is_field_name(self) -> bool:
+        return self.leaf_role == "field_name"
+
+    @property
+    def is_schema_map(self) -> bool:
+        return self.leaf_role == "schema_map"
+
+    @property
+    def is_literal_value(self) -> bool:
+        return (
+            self.is_schema_path
+            and self.leaf_role == "schema_keyword"
+            and bool(self.components)
+            and self.components[-1] in _JSON_SCHEMA_VALUE_AUDIT_PARAMETER_KEYS
+        )
+
+
 def sanitize_audit_parameters(parameters: Mapping[str, object]) -> JsonObject:
     _reject_content_bearing_audit_parameters(parameters)
     sanitized = _redact_audit_parameters(parameters, key_path=AuditParameterContext().key_path)
@@ -902,11 +938,11 @@ def _has_disallowed_content_component(
 
 
 def _is_safe_json_schema_audit_parameter_key(key: str) -> bool:
-    components = _audit_parameter_path_components(key)
-    if not _is_json_schema_audit_parameter_path(components):
+    schema_path = JsonSchemaAuditPath.from_components(_audit_parameter_path_components(key))
+    if not schema_path.is_schema_path:
         return False
-    leaf = components[-1]
-    return _is_json_schema_field_name_path(components) or (
+    leaf = schema_path.components[-1]
+    return schema_path.is_field_name or (
         leaf in _SAFE_JSON_SCHEMA_AUDIT_PARAMETER_METADATA_KEYS
     )
 
@@ -956,17 +992,13 @@ def _first_non_parameter_component_index(components: tuple[str, ...]) -> int:
 
 
 def _is_json_schema_field_name_path(components: tuple[str, ...]) -> bool:
-    return _json_schema_path_leaf_role(components) == "field_name"
-
-
-def _is_json_schema_schema_map_path(key: str) -> bool:
-    components = _audit_parameter_path_components(key)
-    return _json_schema_path_leaf_role(components) == "schema_map"
+    return JsonSchemaAuditPath.from_components(components).is_field_name
 
 
 def _is_schema_like_schema_map_path(key: str) -> bool:
     components = _audit_parameter_path_components(key)
-    return _json_schema_path_leaf_role(components) == "schema_map" or (
+    schema_path = JsonSchemaAuditPath.from_components(components)
+    return schema_path.is_schema_map or (
         components[-1] in _JSON_SCHEMA_SCHEMA_MAP_KEYS
         and _is_misplaced_json_schema_map_path(components)
     )
@@ -992,10 +1024,7 @@ def _tool_function_schema_like_path(components: tuple[str, ...]) -> bool:
     )
 
 
-def _json_schema_path_leaf_role(components: tuple[str, ...]) -> str | None:
-    if not _is_json_schema_audit_parameter_path(components):
-        return None
-    tail = _json_schema_path_components(components)
+def _json_schema_leaf_role(tail: tuple[str, ...]) -> str | None:
     if not tail:
         return None
     role = "schema_keyword"
@@ -1058,19 +1087,19 @@ def _tool_function_json_schema_path_components(
 
 
 def _is_content_bearing_schema_value_path(key: str, value: object) -> bool:
-    components = _audit_parameter_path_components(key)
-    if not _is_json_schema_literal_value_path(components):
+    schema_path = JsonSchemaAuditPath.from_components(_audit_parameter_path_components(key))
+    if not schema_path.is_literal_value:
         return False
-    return not _is_safe_schema_literal_constraint(key, value)
+    return not _is_safe_schema_literal_value(value)
 
 
 def _is_invalid_json_schema_value_path(key: str, value: object) -> bool:
-    components = _audit_parameter_path_components(key)
-    if not _is_json_schema_audit_parameter_path(components):
+    schema_path = JsonSchemaAuditPath.from_components(_audit_parameter_path_components(key))
+    if not schema_path.is_schema_path:
         return False
     if _is_schema_json_root_key_path(key) and not isinstance(value, (str, Mapping, bool)):
         return True
-    if _is_json_schema_field_name_path(components):
+    if schema_path.is_field_name:
         return not isinstance(value, (Mapping, bool))
 
     leaf = key.rsplit(".", 1)[-1]
@@ -1090,21 +1119,6 @@ def _is_invalid_json_schema_value_path(key: str, value: object) -> bool:
             return not isinstance(value, schema_types)
         return not isinstance(value, list)
     return False
-
-
-def _is_safe_schema_literal_constraint(key: str, value: object) -> bool:
-    components = _audit_parameter_path_components(key)
-    if not _is_json_schema_literal_value_path(components):
-        return False
-    return _is_safe_schema_literal_value(value)
-
-
-def _is_json_schema_literal_value_path(components: tuple[str, ...]) -> bool:
-    return (
-        _is_json_schema_audit_parameter_path(components)
-        and _json_schema_path_leaf_role(components) == "schema_keyword"
-        and components[-1] in _JSON_SCHEMA_VALUE_AUDIT_PARAMETER_KEYS
-    )
 
 
 def _is_safe_schema_literal_value(value: object, *, _depth: int = 0) -> bool:
