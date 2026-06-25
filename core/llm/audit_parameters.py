@@ -772,31 +772,45 @@ def _reject_mapping_content_bearing_audit_parameters(
 
     context = AuditParameterContext(key_path)
     for key, item in value.items():
-        key_string = str(key)
-        entry_key = _raw_key_value_parameter_entry_key(key_path, key_string)
-        item_path = _join_parameter_key_path(key_path, entry_key)
-        is_safe_real_metadata_pair = (
-            context.is_real_parameters_container
-            and isinstance(item, str)
-            and _is_safe_real_raw_query_metadata_pair(entry_key, item)
+        _reject_mapping_audit_parameter_item_content(
+            key,
+            item,
+            key_path=key_path,
+            context=context,
         )
-        if (
-            (_is_schema_like_schema_map_path(key_path) or _is_schema_like_schema_map_path(item_path))
-            and not isinstance(item, (Mapping, bool))
-        ):
-            raise ValueError(f"{item_path} must not include document or request content")
-        if _is_content_bearing_schema_value_path(item_path, item):
-            raise ValueError(f"{item_path} must not include document or request content")
-        if _is_content_bearing_audit_parameter_key(item_path) and not is_safe_real_metadata_pair:
-            raise ValueError(f"{item_path} must not include document or request content")
-        if (
-            isinstance(item, str)
-            and _is_raw_query_audit_parameter_value_key(key_path)
-            and not _is_json_encoded_audit_metadata_key_path(item_path)
-        ):
-            _reject_key_value_parameter_entry_value(item, key_path, item_path)
-            continue
-        _reject_content_bearing_audit_parameters(item, key_path=item_path)
+
+
+def _reject_mapping_audit_parameter_item_content(
+    key: object,
+    item: object,
+    *,
+    key_path: str,
+    context: AuditParameterContext,
+) -> None:
+    entry_key = _raw_key_value_parameter_entry_key(key_path, str(key))
+    item_path = _join_parameter_key_path(key_path, entry_key)
+    is_safe_real_metadata_pair = (
+        context.is_real_parameters_container
+        and isinstance(item, str)
+        and _is_safe_real_raw_query_metadata_pair(entry_key, item)
+    )
+    if (
+        (_is_schema_like_schema_map_path(key_path) or _is_schema_like_schema_map_path(item_path))
+        and not isinstance(item, (Mapping, bool))
+    ):
+        raise ValueError(f"{item_path} must not include document or request content")
+    if _is_content_bearing_schema_value_path(item_path, item):
+        raise ValueError(f"{item_path} must not include document or request content")
+    if _is_content_bearing_audit_parameter_key(item_path) and not is_safe_real_metadata_pair:
+        raise ValueError(f"{item_path} must not include document or request content")
+    if (
+        isinstance(item, str)
+        and _is_raw_query_audit_parameter_value_key(key_path)
+        and not _is_json_encoded_audit_metadata_key_path(item_path)
+    ):
+        _reject_key_value_parameter_entry_value(item, key_path, item_path)
+        return
+    _reject_content_bearing_audit_parameters(item, key_path=item_path)
 
 
 def _reject_mapping_key_value_parameter_entry(
