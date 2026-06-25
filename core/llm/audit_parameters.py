@@ -419,6 +419,36 @@ class AuditParameterContext:
         return _join_parameter_key_path(self.key_path, key_string)
 
 
+@dataclass(frozen=True)
+class RawKeyValueParameterContext:
+    key_path: str
+    normalized_leaf: str
+    split_query_pairs: bool = False
+
+    @classmethod
+    def from_key_path(cls, key_path: str) -> RawKeyValueParameterContext:
+        context = AuditParameterContext(key_path)
+        return cls(
+            key_path=key_path,
+            normalized_leaf=context.normalized_leaf,
+            split_query_pairs=context.is_real_parameters_container,
+        )
+
+    @property
+    def can_split_query_pairs(self) -> bool:
+        return self.split_query_pairs or _is_multi_entry_raw_parameter_container_leaf(
+            self.normalized_leaf
+        )
+
+    @property
+    def can_decode_encoded_pairs(self) -> bool:
+        return self.can_split_query_pairs
+
+    @property
+    def is_cookie_container(self) -> bool:
+        return _is_cookie_audit_parameter_container_leaf(self.normalized_leaf)
+
+
 def sanitize_audit_parameters(parameters: Mapping[str, object]) -> JsonObject:
     _reject_content_bearing_audit_parameters(parameters)
     sanitized = _redact_audit_parameters(parameters, key_path=AuditParameterContext().key_path)
@@ -1317,126 +1347,81 @@ def _raw_key_value_parameter_separator(value: str) -> str | None:
 
 
 def _raw_key_value_parameter_entries(value: str, key_path: str) -> list[tuple[str, str, str]]:
-    normalized_leaf = _normalize_parameter_key(_parameter_key_leaf(key_path))
     if not _is_key_value_audit_parameter_sequence_container_key(key_path):
         return []
-    split_query_pairs = AuditParameterContext(key_path).is_real_parameters_container
+    raw_context = RawKeyValueParameterContext.from_key_path(key_path)
     return [
         entry
-        for chunk in _raw_key_value_parameter_chunks(
-            value,
-            normalized_leaf,
-            split_query_pairs=split_query_pairs,
-        )
-        if (
-            entry := _raw_key_value_parameter_chunk_entry(
-                chunk,
-                key_path,
-                normalized_leaf,
-                split_query_pairs=split_query_pairs,
-            )
-        )
-        is not None
+        for chunk in _raw_key_value_parameter_chunks(value, raw_context)
+        if (entry := _raw_key_value_parameter_chunk_entry(chunk, raw_context)) is not None
     ]
 
 
 def _redact_raw_key_value_parameter_text(value: str, key_path: str) -> str | None:
-    normalized_leaf = _normalize_parameter_key(_parameter_key_leaf(key_path))
     if not _is_key_value_audit_parameter_sequence_container_key(key_path):
         return None
-    split_query_pairs = AuditParameterContext(key_path).is_real_parameters_container
-    chunks = _raw_key_value_parameter_chunks(
-        value,
-        normalized_leaf,
-        split_query_pairs=split_query_pairs,
-    )
+    raw_context = RawKeyValueParameterContext.from_key_path(key_path)
+    chunks = _raw_key_value_parameter_chunks(value, raw_context)
     if len(chunks) == 1 and chunks[0] == value:
-        raw_entry = _raw_key_value_parameter_chunk_entry(
-            value,
-            key_path,
-            normalized_leaf,
-            split_query_pairs=split_query_pairs,
-        )
+        raw_entry = _raw_key_value_parameter_chunk_entry(value, raw_context)
         if raw_entry is None:
             return None
-        return _redact_raw_key_value_parameter_line(raw_entry, key_path)
+        return _redact_raw_key_value_parameter_line(raw_entry, raw_context.key_path)
 
     redacted_chunks = []
     changed = False
     for chunk in chunks:
-        raw_entry = _raw_key_value_parameter_chunk_entry(
-            chunk,
-            key_path,
-            normalized_leaf,
-            split_query_pairs=split_query_pairs,
-        )
+        raw_entry = _raw_key_value_parameter_chunk_entry(chunk, raw_context)
         if raw_entry is None:
             redacted_chunks.append(chunk)
             continue
-        redacted_chunk = _redact_raw_key_value_parameter_line(raw_entry, key_path)
+        redacted_chunk = _redact_raw_key_value_parameter_line(raw_entry, raw_context.key_path)
         changed = changed or redacted_chunk != chunk
         redacted_chunks.append(redacted_chunk)
     if not changed:
         return None
-    return _raw_key_value_parameter_joiner(
-        value,
-        normalized_leaf,
-        split_query_pairs=split_query_pairs,
-    ).join(redacted_chunks)
+    return _raw_key_value_parameter_joiner(value, raw_context).join(redacted_chunks)
 
 
 def _raw_key_value_parameter_chunk_entry(
     chunk: str,
-    key_path: str,
-    normalized_leaf: str,
-    *,
-    split_query_pairs: bool = False,
+    raw_context: RawKeyValueParameterContext,
 ) -> tuple[str, str, str] | None:
-    raw_entry = _raw_key_value_parameter_line(chunk, key_path)
+    raw_entry = _raw_key_value_parameter_line(chunk, raw_context.key_path)
     if raw_entry is not None:
         return raw_entry
-    if not (split_query_pairs or _is_multi_entry_raw_parameter_container_leaf(normalized_leaf)):
+    if not raw_context.can_decode_encoded_pairs:
         return None
     decoded_chunk = _fully_decode_query_parameter_value(chunk)
     if decoded_chunk == chunk:
         return None
-    return _raw_key_value_parameter_line(decoded_chunk, key_path)
+    return _raw_key_value_parameter_line(decoded_chunk, raw_context.key_path)
 
 
 def _raw_key_value_parameter_chunks(
     value: str,
-    normalized_leaf: str,
-    *,
-    split_query_pairs: bool = False,
+    raw_context: RawKeyValueParameterContext,
 ) -> list[str]:
     if "\n" in value or "\r" in value:
         return value.splitlines()
-    can_split_query_pairs = split_query_pairs or _is_multi_entry_raw_parameter_container_leaf(
-        normalized_leaf
-    )
-    if can_split_query_pairs and ("&" in value or ";" in value):
+    if raw_context.can_split_query_pairs and ("&" in value or ";" in value):
         return re.split(r"[&;]", value)
-    if _is_cookie_audit_parameter_container_leaf(normalized_leaf) and ";" in value:
+    if raw_context.is_cookie_container and ";" in value:
         return [chunk.strip() for chunk in value.split(";")]
     return [value]
 
 
 def _raw_key_value_parameter_joiner(
     value: str,
-    normalized_leaf: str,
-    *,
-    split_query_pairs: bool = False,
+    raw_context: RawKeyValueParameterContext,
 ) -> str:
     if "\n" in value or "\r" in value:
         return "\n"
-    can_split_query_pairs = split_query_pairs or _is_multi_entry_raw_parameter_container_leaf(
-        normalized_leaf
-    )
-    if can_split_query_pairs and "&" in value:
+    if raw_context.can_split_query_pairs and "&" in value:
         return "&"
-    if can_split_query_pairs and ";" in value:
+    if raw_context.can_split_query_pairs and ";" in value:
         return ";"
-    if _is_cookie_audit_parameter_container_leaf(normalized_leaf) and ";" in value:
+    if raw_context.is_cookie_container and ";" in value:
         return "; "
     return ""
 
