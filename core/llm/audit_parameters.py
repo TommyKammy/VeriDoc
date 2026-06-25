@@ -1490,11 +1490,25 @@ def _redact_raw_key_value_parameter_text(value: str, key_path: str) -> str | Non
     raw_context = RawKeyValueParameterContext.from_key_path(key_path)
     chunks = _raw_key_value_parameter_chunks(value, raw_context)
     if len(chunks) == 1 and chunks[0] == value:
-        raw_entry = _raw_key_value_parameter_chunk_entry(value, raw_context)
-        if raw_entry is None:
-            return None
-        return _redact_raw_key_value_parameter_line(raw_entry, raw_context.key_path)
+        return _redact_single_raw_key_value_parameter_text(value, raw_context)
+    return _redact_chunked_raw_key_value_parameter_text(value, chunks, raw_context)
 
+
+def _redact_single_raw_key_value_parameter_text(
+    value: str,
+    raw_context: RawKeyValueParameterContext,
+) -> str | None:
+    raw_entry = _raw_key_value_parameter_chunk_entry(value, raw_context)
+    if raw_entry is None:
+        return None
+    return _redact_raw_key_value_parameter_line(raw_entry, raw_context.key_path)
+
+
+def _redact_chunked_raw_key_value_parameter_text(
+    value: str,
+    chunks: list[str],
+    raw_context: RawKeyValueParameterContext,
+) -> str | None:
     redacted_chunks = []
     changed = False
     for chunk in chunks:
