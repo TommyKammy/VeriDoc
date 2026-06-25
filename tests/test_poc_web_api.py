@@ -215,6 +215,43 @@ def test_convert_uploaded_phase0_json_infers_docx_source_type_from_shape() -> No
     assert result["document_ir"]["blocks"][0]["text"] == "DOCX parser block"
 
 
+def test_convert_uploaded_phase0_json_preserves_document_metadata_and_v0_blocks() -> None:
+    parser_output = {
+        "schema_version": "document-ir/v0",
+        "document": {
+            "id": "sample-document-001",
+            "title": "Original Phase0 Document",
+            "source_type": "docx",
+        },
+        "pages": [{"page_number": 1, "width": 612, "height": 792, "unit": "pt"}],
+        "blocks": [
+            {
+                "id": "block-001",
+                "type": "paragraph",
+                "text": "Preserved Phase0 block",
+                "value_metadata": {
+                    "source_page": 1,
+                    "bbox": {"x": 72, "y": 72, "width": 240, "height": 24, "unit": "pt"},
+                    "confidence": 0.95,
+                },
+            }
+        ],
+    }
+
+    result = convert_uploaded_document(
+        filename="phase0-output.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+    )
+
+    assert result["status"] == "converted"
+    assert result["document_ir"]["document"] == {
+        "id": "sample-document-001",
+        "title": "Original Phase0 Document",
+        "source_type": "docx",
+    }
+    assert result["document_ir"]["blocks"][0]["text"] == "Preserved Phase0 block"
+
+
 def test_convert_uploaded_phase0_json_infers_xlsx_source_type_from_source_path() -> None:
     parser_output = {
         "source_path": "phase0-output.xlsx",

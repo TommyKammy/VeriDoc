@@ -18,7 +18,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from core.ir.document_ir_v1 import (
     DocumentIRV1,
-    adapt_pdf_document_ir_v0_blocks,
+    adapt_document_ir_v0_blocks,
     from_parser_output,
     validate_document_ir_v1,
 )
@@ -41,8 +41,8 @@ def convert_uploaded_document(*, filename: str, content: bytes) -> dict[str, Any
     parser_output, input_warnings = _parser_output_from_upload(safe_filename, content)
     document_ir = from_parser_output(
         parser_output,
-        document_id=_document_id(safe_filename),
-        title=safe_filename,
+        document_id=_document_id_from_parser_output(safe_filename, parser_output),
+        title=_document_title_from_parser_output(safe_filename, parser_output),
         source_type=_source_type(safe_filename, parser_output),
     )
     validation = validate_document_ir_v1(document_ir)
@@ -174,7 +174,7 @@ def _parser_output_from_binary_upload(
             if source_type == "xlsx":
                 return extract_xlsx_structure(upload_path).to_dict()
             if source_type == "pdf":
-                return adapt_pdf_document_ir_v0_blocks(
+                return adapt_document_ir_v0_blocks(
                     parse_text_pdf_to_document_ir(
                         upload_path,
                         document_id=_document_id(filename),
@@ -297,6 +297,24 @@ def _document_id(filename: str) -> str:
     stem = Path(filename).stem.lower()
     document_id = re.sub(r"[^a-z0-9]+", "-", stem).strip("-")
     return document_id or "upload"
+
+
+def _document_id_from_parser_output(filename: str, parser_output: dict[str, Any]) -> str:
+    document = parser_output.get("document")
+    if isinstance(document, dict):
+        document_id = str(document.get("id") or "").strip()
+        if document_id:
+            return document_id
+    return _document_id(filename)
+
+
+def _document_title_from_parser_output(filename: str, parser_output: dict[str, Any]) -> str:
+    document = parser_output.get("document")
+    if isinstance(document, dict):
+        title = str(document.get("title") or "").strip()
+        if title:
+            return title
+    return filename
 
 
 def _status(ok: bool, requires_review: bool) -> str:

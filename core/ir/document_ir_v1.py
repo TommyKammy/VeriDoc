@@ -274,9 +274,7 @@ def _list_value(value: Any) -> list[Any]:
 def _parser_pages(data: dict[str, Any], source_type: str) -> list[Any]:
     pages = _list_value(data.get("pages"))
     if pages:
-        if source_type == "pdf":
-            return _list_value(adapt_pdf_document_ir_v0_blocks(data).get("pages"))
-        return pages
+        return _list_value(adapt_document_ir_v0_blocks(data).get("pages"))
     if source_type == "docx":
         blocks = _list_value(data.get("blocks"))
         if blocks:
@@ -299,8 +297,8 @@ def _parser_pages(data: dict[str, Any], source_type: str) -> list[Any]:
     return []
 
 
-def adapt_pdf_document_ir_v0_blocks(parser_output: Any) -> dict[str, Any]:
-    """Return PDF parser output with top-level v0 blocks adapted into page fragments."""
+def adapt_document_ir_v0_blocks(parser_output: Any) -> dict[str, Any]:
+    """Return parser output with top-level Document IR v0 blocks adapted into page fragments."""
     data = dict(_to_mapping(parser_output))
     pages = _list_value(data.get("pages"))
     if not pages:
@@ -320,7 +318,7 @@ def adapt_pdf_document_ir_v0_blocks(parser_output: Any) -> dict[str, Any]:
     for block in top_level_blocks:
         metadata = _to_mapping(block.get("value_metadata"))
         source_page = _page_number_value(metadata.get("source_page"), default=0)
-        fragment = _pdf_document_ir_v0_fragment(block)
+        fragment = _document_ir_v0_block_fragment(block)
         if source_page in known_page_numbers:
             blocks_by_page.setdefault(source_page, []).append(fragment)
         else:
@@ -344,7 +342,7 @@ def adapt_pdf_document_ir_v0_blocks(parser_output: Any) -> dict[str, Any]:
     return data
 
 
-def _pdf_document_ir_v0_fragment(block: dict[str, Any]) -> dict[str, Any]:
+def _document_ir_v0_block_fragment(block: dict[str, Any]) -> dict[str, Any]:
     metadata = _to_mapping(block.get("value_metadata"))
     fragment: dict[str, Any] = {
         "kind": str(block.get("type") or "paragraph"),
