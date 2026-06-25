@@ -629,119 +629,15 @@ def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "
     if _is_invalid_json_schema_value_path(key_path, value):
         raise ValueError(f"{key_path} must not include document or request content")
     if isinstance(value, Mapping):
-        key_value_entry = _mapping_key_value_parameter_entry(value)
-        if key_value_entry is None and _is_file_audit_parameter_container_path(key_path):
-            raise ValueError(f"{key_path} must not include document or request content")
-        if key_value_entry is not None:
-            _key_field, entry_key, value_field = key_value_entry
-            item_path = _join_parameter_key_path(
-                key_path,
-                _raw_key_value_parameter_entry_key(key_path, entry_key),
-            )
-            if _is_file_audit_parameter_container_path(key_path):
-                raise ValueError(f"{item_path} must not include document or request content")
-            _reject_key_value_parameter_entry_name(entry_key, key_path, item_path)
-            _reject_key_value_parameter_entry_value(
-                value[value_field],
-                key_path,
-                item_path,
-            )
-        for key, item in value.items():
-            key_string = str(key)
-            item_path = _join_parameter_key_path(
-                key_path,
-                _raw_key_value_parameter_entry_key(key_path, key_string),
-            )
-            context = AuditParameterContext(key_path)
-            is_safe_real_metadata_pair = (
-                context.is_real_parameters_container
-                and isinstance(item, str)
-                and _is_safe_real_raw_query_metadata_pair(
-                    _raw_key_value_parameter_entry_key(key_path, key_string),
-                    item,
-                )
-            )
-            if (
-                (
-                    _is_schema_like_schema_map_path(key_path)
-                    or _is_schema_like_schema_map_path(item_path)
-                )
-                and not isinstance(item, (Mapping, bool))
-            ):
-                raise ValueError(f"{item_path} must not include document or request content")
-            if _is_content_bearing_schema_value_path(item_path, item):
-                raise ValueError(f"{item_path} must not include document or request content")
-            if _is_content_bearing_audit_parameter_key(item_path) and not is_safe_real_metadata_pair:
-                raise ValueError(f"{item_path} must not include document or request content")
-            if (
-                isinstance(item, str)
-                and _is_raw_query_audit_parameter_value_key(key_path)
-                and not _is_json_encoded_audit_metadata_key_path(item_path)
-            ):
-                _reject_key_value_parameter_entry_value(item, key_path, item_path)
-                continue
-            _reject_content_bearing_audit_parameters(item, key_path=item_path)
+        _reject_mapping_content_bearing_audit_parameters(value, key_path)
     elif _is_key_value_parameter_entry(value, key_path):
-        entry_key = _raw_key_value_parameter_entry_key(key_path, str(value[0]))
-        item_path = f"{key_path}.{entry_key}"
-        if _is_file_audit_parameter_container_path(key_path):
-            raise ValueError(f"{item_path} must not include document or request content")
-        _reject_key_value_parameter_entry_name(str(value[0]), key_path, item_path)
-        _reject_key_value_parameter_entry_value(value[1], key_path, item_path)
+        _reject_sequence_key_value_parameter_entry(value, key_path)
     elif isinstance(value, str):
-        parameter_value = _security_checked_audit_parameter_string(value, key_path)
-        if _is_file_audit_parameter_container_path(key_path):
-            raise ValueError(f"{key_path} must not include document or request content")
-        if _is_content_bearing_schema_value_path(key_path, parameter_value) or any(
-            _is_content_bearing_url(url_value)
-            for url_value in _audit_parameter_url_value_forms(parameter_value, key_path)
-        ):
-            raise ValueError(f"{key_path} must not include document or request content")
-        if _is_unsafe_json_encoded_metadata_scalar_path(key_path):
-            raise ValueError(f"{key_path} must not include document or request content")
-        decoded_json_value = _json_encoded_audit_metadata_value(parameter_value, key_path)
-        if decoded_json_value is not _JSON_METADATA_NOT_DECODED:
-            if isinstance(decoded_json_value, bool) and _is_schema_json_root_key_path(key_path):
-                pass
-            elif not isinstance(decoded_json_value, (Mapping, list)):
-                raise ValueError(f"{key_path} must not include document or request content")
-            else:
-                _reject_content_bearing_audit_parameters(decoded_json_value, key_path=key_path)
-        for raw_entry in _raw_key_value_parameter_entries(parameter_value, key_path):
-            entry_key, _separator, _entry_value = raw_entry
-            item_path = _raw_key_value_parameter_entry_path(key_path, entry_key)
-            entry_value = _raw_key_value_parameter_entry_value(key_path, _entry_value)
-            context = AuditParameterContext(key_path)
-            is_safe_real_metadata_pair = (
-                context.is_real_parameters_container
-                and _is_safe_real_raw_query_metadata_pair(
-                    _raw_key_value_parameter_entry_key(key_path, entry_key),
-                    entry_value,
-                )
-            )
-            if (
-                _is_content_bearing_audit_parameter_key(item_path)
-                and not is_safe_real_metadata_pair
-            ):
-                raise ValueError(f"{item_path} must not include document or request content")
-            is_content_bearing_raw_query_value = (
-                context.is_real_parameters_container
-                and _is_content_bearing_real_raw_query_text(entry_value)
-            ) or (
-                not context.is_real_parameters_container
-                and _is_raw_query_audit_parameter_value_key(key_path)
-                and not _is_key_value_audit_parameter_sequence_container_key(item_path)
-                and _is_content_bearing_raw_query_text(entry_value)
-            )
-            if _is_content_bearing_url(entry_value) or is_content_bearing_raw_query_value:
-                raise ValueError(f"{item_path} must not include document or request content")
-            _reject_content_bearing_audit_parameters(entry_value, key_path=item_path)
+        _reject_string_content_bearing_audit_parameter(value, key_path)
     elif isinstance(value, (list, tuple)):
-        for index, item in enumerate(value):
-            _reject_content_bearing_audit_parameters(item, key_path=f"{key_path}[{index}]")
+        _reject_sequence_content_bearing_audit_parameters(value, key_path)
     elif isinstance(value, (set, frozenset)):
-        for index, item in enumerate(value):
-            _reject_content_bearing_audit_parameters(item, key_path=f"{key_path}[{index}]")
+        _reject_sequence_content_bearing_audit_parameters(value, key_path)
     elif isinstance(value, os.PathLike):
         if _is_file_audit_parameter_container_path(key_path):
             raise ValueError(f"{key_path} must not include document or request content")
@@ -751,6 +647,145 @@ def _reject_content_bearing_audit_parameters(value: object, *, key_path: str = "
     elif value is None or isinstance(value, (bool, int, float, Decimal)):
         if _is_unsafe_json_encoded_metadata_scalar_path(key_path):
             raise ValueError(f"{key_path} must not include document or request content")
+
+
+def _reject_mapping_content_bearing_audit_parameters(
+    value: Mapping[object, object],
+    key_path: str,
+) -> None:
+    key_value_entry = _mapping_key_value_parameter_entry(value)
+    if key_value_entry is None and _is_file_audit_parameter_container_path(key_path):
+        raise ValueError(f"{key_path} must not include document or request content")
+    if key_value_entry is not None:
+        _reject_mapping_key_value_parameter_entry(value, key_path, key_value_entry)
+
+    context = AuditParameterContext(key_path)
+    for key, item in value.items():
+        key_string = str(key)
+        entry_key = _raw_key_value_parameter_entry_key(key_path, key_string)
+        item_path = _join_parameter_key_path(key_path, entry_key)
+        is_safe_real_metadata_pair = (
+            context.is_real_parameters_container
+            and isinstance(item, str)
+            and _is_safe_real_raw_query_metadata_pair(entry_key, item)
+        )
+        if (
+            (_is_schema_like_schema_map_path(key_path) or _is_schema_like_schema_map_path(item_path))
+            and not isinstance(item, (Mapping, bool))
+        ):
+            raise ValueError(f"{item_path} must not include document or request content")
+        if _is_content_bearing_schema_value_path(item_path, item):
+            raise ValueError(f"{item_path} must not include document or request content")
+        if _is_content_bearing_audit_parameter_key(item_path) and not is_safe_real_metadata_pair:
+            raise ValueError(f"{item_path} must not include document or request content")
+        if (
+            isinstance(item, str)
+            and _is_raw_query_audit_parameter_value_key(key_path)
+            and not _is_json_encoded_audit_metadata_key_path(item_path)
+        ):
+            _reject_key_value_parameter_entry_value(item, key_path, item_path)
+            continue
+        _reject_content_bearing_audit_parameters(item, key_path=item_path)
+
+
+def _reject_mapping_key_value_parameter_entry(
+    value: Mapping[object, object],
+    key_path: str,
+    key_value_entry: tuple[str, str, str],
+) -> None:
+    _key_field, entry_key, value_field = key_value_entry
+    item_path = _join_parameter_key_path(
+        key_path,
+        _raw_key_value_parameter_entry_key(key_path, entry_key),
+    )
+    if _is_file_audit_parameter_container_path(key_path):
+        raise ValueError(f"{item_path} must not include document or request content")
+    _reject_key_value_parameter_entry_name(entry_key, key_path, item_path)
+    _reject_key_value_parameter_entry_value(
+        value[value_field],
+        key_path,
+        item_path,
+    )
+
+
+def _reject_sequence_key_value_parameter_entry(
+    value: list[object] | tuple[object, ...],
+    key_path: str,
+) -> None:
+    entry_key = _raw_key_value_parameter_entry_key(key_path, str(value[0]))
+    item_path = f"{key_path}.{entry_key}"
+    if _is_file_audit_parameter_container_path(key_path):
+        raise ValueError(f"{item_path} must not include document or request content")
+    _reject_key_value_parameter_entry_name(str(value[0]), key_path, item_path)
+    _reject_key_value_parameter_entry_value(value[1], key_path, item_path)
+
+
+def _reject_string_content_bearing_audit_parameter(value: str, key_path: str) -> None:
+    parameter_value = _security_checked_audit_parameter_string(value, key_path)
+    if _is_file_audit_parameter_container_path(key_path):
+        raise ValueError(f"{key_path} must not include document or request content")
+    if _is_content_bearing_schema_value_path(key_path, parameter_value) or any(
+        _is_content_bearing_url(url_value)
+        for url_value in _audit_parameter_url_value_forms(parameter_value, key_path)
+    ):
+        raise ValueError(f"{key_path} must not include document or request content")
+    if _is_unsafe_json_encoded_metadata_scalar_path(key_path):
+        raise ValueError(f"{key_path} must not include document or request content")
+
+    decoded_json_value = _json_encoded_audit_metadata_value(parameter_value, key_path)
+    if decoded_json_value is not _JSON_METADATA_NOT_DECODED:
+        _reject_json_encoded_audit_parameter_value(decoded_json_value, key_path)
+
+    context = AuditParameterContext(key_path)
+    for raw_entry in _raw_key_value_parameter_entries(parameter_value, key_path):
+        _reject_raw_key_value_parameter_entry(raw_entry, key_path, context)
+
+
+def _reject_json_encoded_audit_parameter_value(value: object, key_path: str) -> None:
+    if isinstance(value, bool) and _is_schema_json_root_key_path(key_path):
+        return
+    if not isinstance(value, (Mapping, list)):
+        raise ValueError(f"{key_path} must not include document or request content")
+    _reject_content_bearing_audit_parameters(value, key_path=key_path)
+
+
+def _reject_raw_key_value_parameter_entry(
+    raw_entry: tuple[str, str, str],
+    key_path: str,
+    context: AuditParameterContext,
+) -> None:
+    entry_key, _separator, entry_raw_value = raw_entry
+    item_path = _raw_key_value_parameter_entry_path(key_path, entry_key)
+    entry_value = _raw_key_value_parameter_entry_value(key_path, entry_raw_value)
+    is_safe_real_metadata_pair = (
+        context.is_real_parameters_container
+        and _is_safe_real_raw_query_metadata_pair(
+            _raw_key_value_parameter_entry_key(key_path, entry_key),
+            entry_value,
+        )
+    )
+    if _is_content_bearing_audit_parameter_key(item_path) and not is_safe_real_metadata_pair:
+        raise ValueError(f"{item_path} must not include document or request content")
+    is_content_bearing_raw_query_value = (
+        context.is_real_parameters_container
+        and _is_content_bearing_real_raw_query_text(entry_value)
+    ) or (
+        not context.is_real_parameters_container
+        and _is_raw_query_audit_parameter_value_key(key_path)
+        and not _is_key_value_audit_parameter_sequence_container_key(item_path)
+        and _is_content_bearing_raw_query_text(entry_value)
+    )
+    if _is_content_bearing_url(entry_value) or is_content_bearing_raw_query_value:
+        raise ValueError(f"{item_path} must not include document or request content")
+    _reject_content_bearing_audit_parameters(entry_value, key_path=item_path)
+
+
+def _reject_sequence_content_bearing_audit_parameters(
+    value: list[object] | tuple[object, ...] | set[object] | frozenset[object],
+    key_path: str,
+) -> None:
+    for index, item in enumerate(value):
+        _reject_content_bearing_audit_parameters(item, key_path=f"{key_path}[{index}]")
 
 
 def _is_content_bearing_audit_parameter_key(key: str) -> bool:
