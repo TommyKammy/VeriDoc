@@ -327,11 +327,17 @@ def adapt_document_ir_v0_blocks(parser_output: Any) -> dict[str, Any]:
         _page_number_value(_to_mapping(page).get("page_number"), default=index)
         for index, page in enumerate(pages, start=1)
     }
+    page_units_by_number = {
+        _page_number_value(_to_mapping(page).get("page_number"), default=index): str(
+            _to_mapping(page).get("unit") or "pt"
+        )
+        for index, page in enumerate(pages, start=1)
+    }
 
     for block in top_level_blocks:
         metadata = _to_mapping(block.get("value_metadata"))
         source_page = _page_number_value(metadata.get("source_page"), default=0)
-        fragment = _document_ir_v0_block_fragment(block)
+        fragment = _document_ir_v0_block_fragment(block, page_unit=page_units_by_number.get(source_page))
         if source_page in known_page_numbers:
             blocks_by_page.setdefault(source_page, []).append(fragment)
         else:
@@ -355,7 +361,7 @@ def adapt_document_ir_v0_blocks(parser_output: Any) -> dict[str, Any]:
     return data
 
 
-def _document_ir_v0_block_fragment(block: dict[str, Any]) -> dict[str, Any]:
+def _document_ir_v0_block_fragment(block: dict[str, Any], *, page_unit: str | None = None) -> dict[str, Any]:
     metadata = _to_mapping(block.get("value_metadata"))
     fragment: dict[str, Any] = {
         "kind": str(block.get("type") or "paragraph"),
@@ -366,6 +372,8 @@ def _document_ir_v0_block_fragment(block: dict[str, Any]) -> dict[str, Any]:
 
     bbox = _to_mapping(metadata.get("bbox"))
     if bbox:
+        if page_unit and "unit" not in bbox:
+            bbox = {**bbox, "unit": page_unit}
         fragment["bbox"] = bbox
 
     confidence = metadata.get("confidence")

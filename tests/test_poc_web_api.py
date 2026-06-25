@@ -290,6 +290,39 @@ def test_convert_uploaded_phase0_json_preserves_document_metadata_and_v0_blocks(
     }
 
 
+def test_convert_uploaded_phase0_json_inherits_page_unit_for_v0_bbox() -> None:
+    parser_output = {
+        "schema_version": "document-ir/v0",
+        "document": {
+            "id": "sample-document-001",
+            "title": "Pixel Coordinate Document",
+            "source_type": "pdf",
+        },
+        "pages": [{"page_number": 1, "width": 1280, "height": 720, "unit": "px"}],
+        "blocks": [
+            {
+                "id": "block-001",
+                "type": "paragraph",
+                "text": "Pixel coordinate block",
+                "value_metadata": {
+                    "source_page": 1,
+                    "bbox": {"x": 10, "y": 20, "width": 240, "height": 24},
+                    "confidence": 0.95,
+                },
+            }
+        ],
+    }
+
+    result = convert_uploaded_document(
+        filename="phase0-output.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+    )
+
+    assert result["status"] == "converted"
+    assert result["validation"]["errors"] == []
+    assert result["document_ir"]["blocks"][0]["bbox"]["unit"] == "px"
+
+
 def test_convert_uploaded_phase0_json_blocks_invalid_v0_source_page() -> None:
     parser_output = {
         "schema_version": "document-ir/v0",
