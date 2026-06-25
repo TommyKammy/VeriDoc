@@ -247,9 +247,22 @@ def _block_from_fragment(
         text=text,
         source_page=source_page,
         bbox=bbox,
-        extractor=ExtractorRef(name=str(data.get("extractor") or data.get("engine") or fallback_extractor)),
+        extractor=_extractor_ref(data, fallback_extractor),
         confidence=confidence,
         review=ReviewState(requires_review=requires_review, warnings=review_warnings),
+    )
+
+
+def _extractor_ref(data: dict[str, Any], fallback_extractor: str) -> ExtractorRef:
+    extractor = data.get("extractor")
+    if isinstance(extractor, dict):
+        return ExtractorRef(
+            name=str(extractor.get("name") or fallback_extractor),
+            version=str(extractor.get("version") or "unknown"),
+        )
+    return ExtractorRef(
+        name=str(extractor or data.get("engine") or fallback_extractor),
+        version=str(data.get("extractor_version") or "unknown"),
     )
 
 
@@ -361,7 +374,7 @@ def _document_ir_v0_block_fragment(block: dict[str, Any]) -> dict[str, Any]:
 
     extractor = metadata.get("extractor")
     if isinstance(extractor, dict):
-        fragment["extractor"] = str(extractor.get("name") or "unknown")
+        fragment["extractor"] = dict(extractor)
     elif extractor is not None:
         fragment["extractor"] = str(extractor)
 

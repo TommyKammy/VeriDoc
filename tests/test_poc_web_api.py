@@ -166,7 +166,7 @@ def test_binary_pdf_parser_output_adapts_blocks_before_v1_conversion(monkeypatch
                     "value_metadata": {
                         "source_page": 1,
                         "bbox": {"x": 72, "y": 72, "width": 180, "height": 24, "unit": "pt"},
-                        "extractor": {"name": "pymupdf"},
+                        "extractor": {"name": "pymupdf", "version": "1.2.3"},
                         "confidence": 0.9,
                     },
                 }
@@ -188,7 +188,7 @@ def test_binary_pdf_parser_output_adapts_blocks_before_v1_conversion(monkeypatch
             "page_number": 1,
             "bbox": {"x": 72, "y": 72, "width": 180, "height": 24, "unit": "pt"},
             "confidence": 0.9,
-            "extractor": "pymupdf",
+            "extractor": {"name": "pymupdf", "version": "1.2.3"},
         }
     ]
 
@@ -215,6 +215,39 @@ def test_convert_uploaded_phase0_json_infers_docx_source_type_from_shape() -> No
     assert result["document_ir"]["blocks"][0]["text"] == "DOCX parser block"
 
 
+def test_convert_uploaded_phase0_json_preserves_explicit_unknown_source_type() -> None:
+    parser_output = {
+        "schema_version": "document-ir/v0",
+        "document": {
+            "id": "sample-document-001",
+            "title": "Unknown source document",
+            "source_type": "unknown",
+        },
+        "pages": [{"page_number": 1, "width": 612, "height": 792, "unit": "pt"}],
+        "blocks": [
+            {
+                "id": "block-001",
+                "type": "paragraph",
+                "text": "Explicit unknown source block",
+                "value_metadata": {
+                    "source_page": 1,
+                    "bbox": {"x": 72, "y": 72, "width": 240, "height": 24, "unit": "pt"},
+                    "confidence": 0.95,
+                },
+            }
+        ],
+    }
+
+    result = convert_uploaded_document(
+        filename="phase0-output.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+    )
+
+    assert result["status"] == "converted"
+    assert result["document_ir"]["document"]["source_type"] == "unknown"
+    assert result["document_ir"]["blocks"][0]["text"] == "Explicit unknown source block"
+
+
 def test_convert_uploaded_phase0_json_preserves_document_metadata_and_v0_blocks() -> None:
     parser_output = {
         "schema_version": "document-ir/v0",
@@ -232,6 +265,7 @@ def test_convert_uploaded_phase0_json_preserves_document_metadata_and_v0_blocks(
                 "value_metadata": {
                     "source_page": 1,
                     "bbox": {"x": 72, "y": 72, "width": 240, "height": 24, "unit": "pt"},
+                    "extractor": {"name": "docx-parser", "version": "2.3.4"},
                     "confidence": 0.95,
                 },
             }
@@ -250,6 +284,10 @@ def test_convert_uploaded_phase0_json_preserves_document_metadata_and_v0_blocks(
         "source_type": "docx",
     }
     assert result["document_ir"]["blocks"][0]["text"] == "Preserved Phase0 block"
+    assert result["document_ir"]["blocks"][0]["extractor"] == {
+        "name": "docx-parser",
+        "version": "2.3.4",
+    }
 
 
 def test_convert_uploaded_phase0_json_blocks_invalid_v0_source_page() -> None:
@@ -432,6 +470,37 @@ def test_poc_http_api_rejects_unsupported_non_utf8_binary_upload() -> None:
     assert body == {
         "error": "invalid_upload",
         "message": "unsupported binary upload; use .pdf, .docx, .xlsx, or UTF-8 JSON/text",
+    }
+
+
+def test_poc_http_api_rejects_too_long_binary_filename_as_json_error() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = json.dumps(
+            {
+                "filename": f"{'a' * 300}.pdf",
+                "content_base64": base64.b64encode(b"%PDF sample bytes").decode("ascii"),
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/convert",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 400
+    assert body == {
+        "error": "invalid_upload",
+        "message": "PDF parser failed; upload requires a valid PDF file",
     }
 
 

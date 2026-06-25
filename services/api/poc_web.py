@@ -179,8 +179,8 @@ def _parser_output_from_binary_upload(
 ) -> dict[str, Any]:
     with TemporaryDirectory(prefix="veridoc-poc-upload-") as temp_dir:
         upload_path = Path(temp_dir) / filename
-        upload_path.write_bytes(content)
         try:
+            upload_path.write_bytes(content)
             if source_type == "docx":
                 return extract_docx_structure(upload_path).to_dict()
             if source_type == "xlsx":
@@ -271,13 +271,13 @@ def _source_type(filename: str, parser_output: dict[str, Any] | None = None) -> 
 
     data = parser_output if isinstance(parser_output, dict) else {}
     explicit_source_type = str(data.get("source_type") or "")
-    if explicit_source_type in KNOWN_SOURCE_TYPES:
+    if explicit_source_type in SOURCE_TYPES:
         return explicit_source_type
 
     document = data.get("document")
     if isinstance(document, dict):
         document_source_type = str(document.get("source_type") or "")
-        if document_source_type in KNOWN_SOURCE_TYPES:
+        if document_source_type in SOURCE_TYPES:
             return document_source_type
 
     source_path_type = _source_type_from_path(str(data.get("source_path") or ""))
