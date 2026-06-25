@@ -11,6 +11,8 @@ import re
 import sys
 from tempfile import TemporaryDirectory
 from typing import Any
+from xml.etree.ElementTree import ParseError as XmlParseError
+from zipfile import BadZipFile
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -194,7 +196,7 @@ def _parser_output_from_binary_upload(
             raise PocServerDependencyError(
                 "PDF parser dependency is unavailable; install requirements-pdf-eval.txt"
             ) from exc
-        except Exception as exc:
+        except (BadZipFile, KeyError, OSError, TypeError, ValueError, XmlParseError) as exc:
             raise ValueError(
                 f"{source_type.upper()} parser failed; upload requires a valid {source_type.upper()} file"
             ) from exc
