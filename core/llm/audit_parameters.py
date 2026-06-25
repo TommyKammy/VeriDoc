@@ -549,53 +549,15 @@ def _redact_audit_parameters(value: object, *, key_path: str = "") -> object:
     ):
         return _REDACTED_VALUE
     if isinstance(value, Mapping):
-        key_value_entry = _mapping_key_value_parameter_entry(value)
-        return {
-            str(key): _redact_mapping_audit_parameter_item(
-                key,
-                item,
-                key_path=key_path,
-                key_value_entry=key_value_entry,
-            )
-            for key, item in value.items()
-        }
+        return _redact_mapping_audit_parameters(value, key_path)
     if _is_key_value_parameter_entry(value, key_path):
-        entry_name = _redact_key_value_parameter_entry_name(str(value[0]), key_path)
-        entry_path = _join_parameter_key_path(key_path, entry_name)
-        return [
-            entry_name,
-            _redact_key_value_parameter_entry_value(value[1], key_path, entry_path),
-        ]
+        return _redact_sequence_key_value_parameter_entry(value, key_path)
     if isinstance(value, str):
-        parameter_value = _security_checked_audit_parameter_string(value, key_path)
-        if any(
-            _is_credential_bearing_url(url_value)
-            for url_value in _audit_parameter_url_value_forms(parameter_value, key_path)
-        ):
-            return _REDACTED_VALUE
-        redacted_json_value = _redact_json_encoded_audit_metadata_value(parameter_value, key_path)
-        if redacted_json_value is not None:
-            return redacted_json_value
-        redacted_raw_value = _redact_raw_key_value_parameter_text(parameter_value, key_path)
-        if redacted_raw_value is not None:
-            return redacted_raw_value
-        return value
-    if isinstance(value, list):
-        return [
-            _redact_audit_parameters(item, key_path=f"{key_path}[{index}]")
-            for index, item in enumerate(value)
-        ]
-    if isinstance(value, tuple):
-        return [
-            _redact_audit_parameters(item, key_path=f"{key_path}[{index}]")
-            for index, item in enumerate(value)
-        ]
+        return _redact_string_audit_parameter(value, key_path)
+    if isinstance(value, (list, tuple)):
+        return _redact_sequence_audit_parameters(value, key_path)
     if isinstance(value, (set, frozenset)):
-        redacted_items = [
-            _redact_audit_parameters(item, key_path=f"{key_path}[{index}]")
-            for index, item in enumerate(value)
-        ]
-        return sorted(redacted_items, key=_json_sort_key)
+        return _redact_set_audit_parameters(value, key_path)
     if isinstance(value, os.PathLike):
         return _redact_audit_parameters(os.fsdecode(value), key_path=key_path)
     if isinstance(value, Decimal):
@@ -606,6 +568,71 @@ def _redact_audit_parameters(value: object, *, key_path: str = "") -> object:
         return value
     display_path = f"parameters.{key_path}" if key_path else "parameters"
     raise TypeError(f"{display_path} must be JSON-serializable audit metadata")
+
+
+def _redact_mapping_audit_parameters(
+    value: Mapping[object, object],
+    key_path: str,
+) -> dict[str, object]:
+    key_value_entry = _mapping_key_value_parameter_entry(value)
+    return {
+        str(key): _redact_mapping_audit_parameter_item(
+            key,
+            item,
+            key_path=key_path,
+            key_value_entry=key_value_entry,
+        )
+        for key, item in value.items()
+    }
+
+
+def _redact_sequence_key_value_parameter_entry(
+    value: list[object] | tuple[object, ...],
+    key_path: str,
+) -> list[object]:
+    entry_name = _redact_key_value_parameter_entry_name(str(value[0]), key_path)
+    entry_path = _join_parameter_key_path(key_path, entry_name)
+    return [
+        entry_name,
+        _redact_key_value_parameter_entry_value(value[1], key_path, entry_path),
+    ]
+
+
+def _redact_string_audit_parameter(value: str, key_path: str) -> object:
+    parameter_value = _security_checked_audit_parameter_string(value, key_path)
+    if any(
+        _is_credential_bearing_url(url_value)
+        for url_value in _audit_parameter_url_value_forms(parameter_value, key_path)
+    ):
+        return _REDACTED_VALUE
+    redacted_json_value = _redact_json_encoded_audit_metadata_value(parameter_value, key_path)
+    if redacted_json_value is not None:
+        return redacted_json_value
+    redacted_raw_value = _redact_raw_key_value_parameter_text(parameter_value, key_path)
+    if redacted_raw_value is not None:
+        return redacted_raw_value
+    return value
+
+
+def _redact_sequence_audit_parameters(
+    value: list[object] | tuple[object, ...],
+    key_path: str,
+) -> list[object]:
+    return [
+        _redact_audit_parameters(item, key_path=f"{key_path}[{index}]")
+        for index, item in enumerate(value)
+    ]
+
+
+def _redact_set_audit_parameters(
+    value: set[object] | frozenset[object],
+    key_path: str,
+) -> list[object]:
+    redacted_items = [
+        _redact_audit_parameters(item, key_path=f"{key_path}[{index}]")
+        for index, item in enumerate(value)
+    ]
+    return sorted(redacted_items, key=_json_sort_key)
 
 
 def _redact_mapping_audit_parameter_item(
