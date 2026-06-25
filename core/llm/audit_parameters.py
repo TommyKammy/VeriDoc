@@ -4,13 +4,15 @@ import json
 import math
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 from urllib.parse import parse_qsl, unquote, unquote_plus, urlparse
 
 JsonObject = dict[str, Any]
+MetadataKeyPredicate = Callable[[str], bool]
+MetadataValueValidator = Callable[[object], bool]
 
 _REDACTED_VALUE = "[REDACTED]"
 _JSON_METADATA_NOT_DECODED = object()
@@ -1157,24 +1159,19 @@ def _is_safe_schema_literal_string(value: str) -> bool:
 def _is_invalid_safe_metadata_value(key_path: str, value: object) -> bool:
     if _is_json_schema_field_name_audit_parameter_key(key_path):
         return False
-    return (
-        _is_status_code_metadata_key(key_path)
-        and not _is_safe_status_code_metadata_value(value)
-    ) or (
-        _is_message_name_metadata_key(key_path)
-        and not _is_safe_message_name_metadata_value(value)
-    ) or (
-        _is_message_index_metadata_key(key_path)
-        and not _is_safe_message_index_metadata_value(value)
-    )
+    validator = _safe_metadata_value_validator(key_path)
+    return validator is not None and not validator(value)
 
 
 def _is_safe_metadata_value_validated_key(key_path: str) -> bool:
-    return (
-        _is_status_code_metadata_key(key_path)
-        or _is_message_name_metadata_key(key_path)
-        or _is_message_index_metadata_key(key_path)
-    )
+    return _safe_metadata_value_validator(key_path) is not None
+
+
+def _safe_metadata_value_validator(key_path: str) -> MetadataValueValidator | None:
+    for key_matches, value_is_safe in _SAFE_METADATA_VALUE_VALIDATORS:
+        if key_matches(key_path):
+            return value_is_safe
+    return None
 
 
 def _is_json_schema_field_name_audit_parameter_key(key_path: str) -> bool:
@@ -1243,6 +1240,16 @@ def _is_safe_message_index_metadata_value(value: object) -> bool:
     if isinstance(value, str) and re.fullmatch(r"[0-9]{1,7}", value):
         return int(value) <= 1_000_000
     return False
+
+
+_SAFE_METADATA_VALUE_VALIDATORS: tuple[
+    tuple[MetadataKeyPredicate, MetadataValueValidator],
+    ...,
+] = (
+    (_is_status_code_metadata_key, _is_safe_status_code_metadata_value),
+    (_is_message_name_metadata_key, _is_safe_message_name_metadata_value),
+    (_is_message_index_metadata_key, _is_safe_message_index_metadata_value),
+)
 
 
 def _is_content_bearing_schema_field_name(name: str) -> bool:
