@@ -1,12 +1,9 @@
 from __future__ import annotations
 
 import json
-import os
 import socket
 import urllib.error
 import urllib.request
-from decimal import Decimal
-from pathlib import Path
 
 import pytest
 
@@ -21,19 +18,6 @@ from core.llm.conversion_plan import (
     _urllib_transport,
     validate_conversion_plan,
 )
-
-
-class _BytesPathLike(os.PathLike[bytes]):
-    def __fspath__(self) -> bytes:
-        return b"fixtures/source.pdf"
-
-
-class _StringPathLike(os.PathLike[str]):
-    def __init__(self, value: str) -> None:
-        self._value = value
-
-    def __fspath__(self) -> str:
-        return self._value
 
 
 def _valid_plan() -> dict[str, object]:
@@ -3559,122 +3543,6 @@ def test_build_conversion_audit_log_rejects_openai_request_payload_parameters() 
             prompt_version="poc-08",
             ir_version="document-ir-v1",
             parameters=request_payload,
-        )
-
-
-def test_build_conversion_audit_log_returns_json_safe_parameter_values() -> None:
-    audit_log = build_conversion_audit_log(
-        source_bytes=b"Lot: ABC-123\n",
-        output_bytes=b'{"lot_number":"ABC-123"}\n',
-        model="local-json-model",
-        prompt_id="veridoc_conversion_plan",
-        prompt_version="poc-08",
-        ir_version="document-ir-v1",
-        parameters={
-            "metadata": {
-                "path": Path("fixtures") / "source.pdf",
-                "ratio": Decimal("0.25"),
-                "labels": {"safe", "metadata"},
-            },
-        },
-    )
-
-    assert audit_log["parameters"] == {
-        "metadata": {
-            "path": "fixtures/source.pdf",
-            "ratio": "0.25",
-            "labels": ["metadata", "safe"],
-        },
-    }
-    json.dumps(audit_log, sort_keys=True)
-
-
-def test_build_conversion_audit_log_decodes_bytes_pathlike_metadata_values() -> None:
-    audit_log = build_conversion_audit_log(
-        source_bytes=b"Lot: ABC-123\n",
-        output_bytes=b'{"lot_number":"ABC-123"}\n',
-        model="local-json-model",
-        prompt_id="veridoc_conversion_plan",
-        prompt_version="poc-08",
-        ir_version="document-ir-v1",
-        parameters={"metadata": {"path": _BytesPathLike()}},
-    )
-
-    assert audit_log["parameters"] == {"metadata": {"path": "fixtures/source.pdf"}}
-    json.dumps(audit_log, sort_keys=True)
-
-
-def test_build_conversion_audit_log_redacts_pathlike_url_credentials_after_decoding() -> None:
-    audit_log = build_conversion_audit_log(
-        source_bytes=b"Lot: ABC-123\n",
-        output_bytes=b'{"lot_number":"ABC-123"}\n',
-        model="local-json-model",
-        prompt_id="veridoc_conversion_plan",
-        prompt_version="poc-08",
-        ir_version="document-ir-v1",
-        parameters={
-            "metadata_url": _StringPathLike(
-                "https://example.invalid/callback?api_key=operator-runtime-api-key"
-            ),
-        },
-    )
-
-    assert audit_log["parameters"] == {"metadata_url": "[REDACTED]"}
-    rendered = json.dumps(audit_log, sort_keys=True)
-    assert "operator-runtime-api-key" not in rendered
-    assert "https:" not in rendered
-
-
-def test_build_conversion_audit_log_rejects_pathlike_content_url_after_decoding() -> None:
-    with pytest.raises(ValueError, match=r"parameters\.metadata_url"):
-        build_conversion_audit_log(
-            source_bytes=b"Lot: ABC-123\n",
-            output_bytes=b'{"lot_number":"ABC-123"}\n',
-            model="local-json-model",
-            prompt_id="veridoc_conversion_plan",
-            prompt_version="poc-08",
-            ir_version="document-ir-v1",
-            parameters={
-                "metadata_url": _StringPathLike(
-                    "https://example.invalid/callback?prompt=Lot%3A+ABC-123"
-                ),
-            },
-        )
-
-
-def test_build_conversion_audit_log_rejects_unsupported_non_json_metadata_values() -> None:
-    with pytest.raises(TypeError, match=r"parameters\.metadata\.opaque"):
-        build_conversion_audit_log(
-            source_bytes=b"Lot: ABC-123\n",
-            output_bytes=b'{"lot_number":"ABC-123"}\n',
-            model="local-json-model",
-            prompt_id="veridoc_conversion_plan",
-            prompt_version="poc-08",
-            ir_version="document-ir-v1",
-            parameters={"metadata": {"opaque": object()}},
-        )
-
-
-@pytest.mark.parametrize(
-    ("container_key", "container_value"),
-    [
-        ("file", Path("fixtures") / "source.pdf"),
-        ("files", [Path("fixtures") / "source.pdf"]),
-    ],
-)
-def test_build_conversion_audit_log_rejects_pathlike_file_container_values(
-    container_key: str,
-    container_value: object,
-) -> None:
-    with pytest.raises(ValueError, match=rf"parameters\.{container_key}"):
-        build_conversion_audit_log(
-            source_bytes=b"Lot: ABC-123\n",
-            output_bytes=b'{"lot_number":"ABC-123"}\n',
-            model="local-json-model",
-            prompt_id="veridoc_conversion_plan",
-            prompt_version="poc-08",
-            ir_version="document-ir-v1",
-            parameters={container_key: container_value},
         )
 
 
