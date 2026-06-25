@@ -226,7 +226,11 @@ def _block_from_fragment(
         requires_review = True
         review_warnings.append(f"blocks[{block_index - 1}].text empty; block marked requires_review")
 
-    if data.get("confidence") is None and data.get("engine"):
+    if data.get("missing_confidence") is True:
+        confidence = 0.0
+        requires_review = True
+        review_warnings.append(f"blocks[{block_index - 1}].confidence missing; block marked requires_review")
+    elif data.get("confidence") is None and data.get("engine"):
         confidence = 0.0
         requires_review = True
         review_warnings.append(f"blocks[{block_index - 1}].confidence missing; block marked requires_review")
@@ -361,12 +365,17 @@ def adapt_document_ir_v0_blocks(parser_output: Any) -> dict[str, Any]:
     return data
 
 
-def _document_ir_v0_block_fragment(block: dict[str, Any], *, page_unit: str | None = None) -> dict[str, Any]:
+def _document_ir_v0_block_fragment(
+    block: dict[str, Any], *, page_unit: str | None = None
+) -> dict[str, Any]:
     metadata = _to_mapping(block.get("value_metadata"))
+    kind = str(block.get("type") or "paragraph")
     fragment: dict[str, Any] = {
-        "kind": str(block.get("type") or "paragraph"),
+        "kind": kind,
         "text": str(block.get("text") or ""),
     }
+    if kind not in BLOCK_TYPES:
+        fragment["preserve_invalid_type"] = True
 
     fragment["page_number"] = _page_number_value(metadata.get("source_page"), default=0)
 
@@ -379,6 +388,8 @@ def _document_ir_v0_block_fragment(block: dict[str, Any], *, page_unit: str | No
     confidence = metadata.get("confidence")
     if confidence is not None:
         fragment["confidence"] = confidence
+    else:
+        fragment["missing_confidence"] = True
 
     extractor = metadata.get("extractor")
     if isinstance(extractor, dict):
@@ -600,6 +611,8 @@ def _bbox_value(value: Any) -> Optional[BoundingBox]:
 def _block_type(data: dict[str, Any], text: str) -> str:
     raw_type = str(data.get("type") or data.get("kind") or "")
     if raw_type in BLOCK_TYPES:
+        return raw_type
+    if raw_type and data.get("preserve_invalid_type") is True:
         return raw_type
     return "paragraph"
 

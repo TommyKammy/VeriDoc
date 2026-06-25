@@ -271,13 +271,13 @@ def _source_type(filename: str, parser_output: dict[str, Any] | None = None) -> 
 
     data = parser_output if isinstance(parser_output, dict) else {}
     explicit_source_type = str(data.get("source_type") or "")
-    if explicit_source_type in SOURCE_TYPES:
+    if explicit_source_type:
         return explicit_source_type
 
     document = data.get("document")
     if isinstance(document, dict):
         document_source_type = str(document.get("source_type") or "")
-        if document_source_type in SOURCE_TYPES:
+        if document_source_type:
             return document_source_type
 
     source_path_type = _source_type_from_path(str(data.get("source_path") or ""))
