@@ -252,6 +252,38 @@ def test_convert_uploaded_phase0_json_preserves_document_metadata_and_v0_blocks(
     assert result["document_ir"]["blocks"][0]["text"] == "Preserved Phase0 block"
 
 
+def test_convert_uploaded_phase0_json_blocks_invalid_v0_source_page() -> None:
+    parser_output = {
+        "schema_version": "document-ir/v0",
+        "document": {
+            "id": "sample-document-001",
+            "title": "Original Phase0 Document",
+            "source_type": "docx",
+        },
+        "pages": [{"page_number": 1, "width": 612, "height": 792, "unit": "pt"}],
+        "blocks": [
+            {
+                "id": "block-001",
+                "type": "paragraph",
+                "text": "Bad provenance block",
+                "value_metadata": {
+                    "bbox": {"x": 72, "y": 72, "width": 240, "height": 24, "unit": "pt"},
+                    "confidence": 0.95,
+                },
+            }
+        ],
+    }
+
+    result = convert_uploaded_document(
+        filename="phase0-output.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+    )
+
+    assert result["status"] == "blocked"
+    assert result["validation"]["errors"] == ["blocks[0].source_page must be >= 1"]
+    assert result["document_ir"]["blocks"][0]["source_page"] == 0
+
+
 def test_convert_uploaded_phase0_json_infers_xlsx_source_type_from_source_path() -> None:
     parser_output = {
         "source_path": "phase0-output.xlsx",
@@ -400,6 +432,41 @@ def test_poc_http_api_rejects_unsupported_non_utf8_binary_upload() -> None:
     assert body == {
         "error": "invalid_upload",
         "message": "unsupported binary upload; use .pdf, .docx, .xlsx, or UTF-8 JSON/text",
+    }
+
+
+def test_poc_http_api_surfaces_missing_pdf_dependency(monkeypatch) -> None:
+    def missing_pdf_parser(upload_path: Path, *, document_id: str) -> dict:
+        raise poc_web.MissingPdfExtractorDependency("pymupdf unavailable")
+
+    monkeypatch.setattr(poc_web, "parse_text_pdf_to_document_ir", missing_pdf_parser)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = json.dumps(
+            {
+                "filename": "upload.pdf",
+                "content_base64": base64.b64encode(b"%PDF sample bytes").decode("ascii"),
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/convert",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 500
+    assert body == {
+        "error": "server_dependency_unavailable",
+        "message": "PDF parser dependency is unavailable; install requirements-pdf-eval.txt",
     }
 
 

@@ -23,7 +23,7 @@ from core.ir.document_ir_v1 import (
     validate_document_ir_v1,
 )
 from core.parsers.docx_extraction import extract_docx_structure
-from core.parsers.pdf_text_extraction import parse_text_pdf_to_document_ir
+from core.parsers.pdf_text_extraction import MissingPdfExtractorDependency, parse_text_pdf_to_document_ir
 from core.parsers.xlsx_extraction import extract_xlsx_structure
 
 WEB_ROOT = REPO_ROOT / "apps" / "web"
@@ -33,6 +33,10 @@ MAX_UPLOAD_BYTES = 2 * 1024 * 1024
 MAX_UPLOAD_REQUEST_BYTES = (MAX_UPLOAD_BYTES * 4 // 3) + 4096
 SOURCE_TYPES = {"pdf", "docx", "xlsx", "unknown"}
 KNOWN_SOURCE_TYPES = SOURCE_TYPES - {"unknown"}
+
+
+class PocServerDependencyError(RuntimeError):
+    """Raised when the PoC server is missing an optional parser dependency."""
 
 
 def convert_uploaded_document(*, filename: str, content: bytes) -> dict[str, Any]:
@@ -111,6 +115,12 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "upload_too_large"}, status=413)
                 return
             result = convert_uploaded_document(filename=filename, content=content)
+        except PocServerDependencyError as exc:
+            self._send_json(
+                {"error": "server_dependency_unavailable", "message": str(exc)},
+                status=500,
+            )
+            return
         except (json.JSONDecodeError, ValueError) as exc:
             self._send_json({"error": "invalid_upload", "message": str(exc)}, status=400)
             return
@@ -180,6 +190,10 @@ def _parser_output_from_binary_upload(
                         document_id=_document_id(filename),
                     )
                 )
+        except MissingPdfExtractorDependency as exc:
+            raise PocServerDependencyError(
+                "PDF parser dependency is unavailable; install requirements-pdf-eval.txt"
+            ) from exc
         except Exception as exc:
             raise ValueError(
                 f"{source_type.upper()} parser failed; upload requires a valid {source_type.upper()} file"

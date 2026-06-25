@@ -349,9 +349,7 @@ def _document_ir_v0_block_fragment(block: dict[str, Any]) -> dict[str, Any]:
         "text": str(block.get("text") or ""),
     }
 
-    source_page = _page_number_value(metadata.get("source_page"), default=0)
-    if source_page:
-        fragment["page_number"] = source_page
+    fragment["page_number"] = _page_number_value(metadata.get("source_page"), default=0)
 
     bbox = _to_mapping(metadata.get("bbox"))
     if bbox:
