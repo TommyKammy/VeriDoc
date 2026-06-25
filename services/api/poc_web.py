@@ -16,7 +16,12 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from core.ir.document_ir_v1 import DocumentIRV1, from_parser_output, validate_document_ir_v1
+from core.ir.document_ir_v1 import (
+    DocumentIRV1,
+    adapt_pdf_document_ir_v0_blocks,
+    from_parser_output,
+    validate_document_ir_v1,
+)
 from core.parsers.docx_extraction import extract_docx_structure
 from core.parsers.pdf_text_extraction import parse_text_pdf_to_document_ir
 from core.parsers.xlsx_extraction import extract_xlsx_structure
@@ -169,9 +174,11 @@ def _parser_output_from_binary_upload(
             if source_type == "xlsx":
                 return extract_xlsx_structure(upload_path).to_dict()
             if source_type == "pdf":
-                return parse_text_pdf_to_document_ir(
-                    upload_path,
-                    document_id=_document_id(filename),
+                return adapt_pdf_document_ir_v0_blocks(
+                    parse_text_pdf_to_document_ir(
+                        upload_path,
+                        document_id=_document_id(filename),
+                    )
                 )
         except Exception as exc:
             raise ValueError(

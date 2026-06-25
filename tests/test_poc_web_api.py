@@ -147,6 +147,52 @@ def test_convert_uploaded_pdf_adapts_phase0_document_ir_v0_blocks(monkeypatch) -
     ]
 
 
+def test_binary_pdf_parser_output_adapts_blocks_before_v1_conversion(monkeypatch) -> None:
+    def fake_parse_text_pdf_to_document_ir(upload_path: Path, *, document_id: str) -> dict:
+        assert upload_path.read_bytes() == b"%PDF sample bytes"
+        return {
+            "schema_version": "document-ir/v0",
+            "document": {
+                "id": document_id,
+                "title": upload_path.name,
+                "source_type": "pdf",
+            },
+            "pages": [{"page_number": 1, "width": 612, "height": 792, "unit": "pt"}],
+            "blocks": [
+                {
+                    "id": "block-001",
+                    "type": "paragraph",
+                    "text": "Extracted PDF text",
+                    "value_metadata": {
+                        "source_page": 1,
+                        "bbox": {"x": 72, "y": 72, "width": 180, "height": 24, "unit": "pt"},
+                        "extractor": {"name": "pymupdf"},
+                        "confidence": 0.9,
+                    },
+                }
+            ],
+        }
+
+    monkeypatch.setattr(poc_web, "parse_text_pdf_to_document_ir", fake_parse_text_pdf_to_document_ir)
+
+    parser_output = poc_web._parser_output_from_binary_upload(
+        "batch-record.pdf",
+        b"%PDF sample bytes",
+        "pdf",
+    )
+
+    assert parser_output["pages"][0]["fragments"] == [
+        {
+            "kind": "paragraph",
+            "text": "Extracted PDF text",
+            "page_number": 1,
+            "bbox": {"x": 72, "y": 72, "width": 180, "height": 24, "unit": "pt"},
+            "confidence": 0.9,
+            "extractor": "pymupdf",
+        }
+    ]
+
+
 def test_convert_uploaded_phase0_json_infers_docx_source_type_from_shape() -> None:
     parser_output = {
         "blocks": [
