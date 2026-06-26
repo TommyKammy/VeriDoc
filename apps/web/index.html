@@ -611,6 +611,7 @@
         pdfRenderToken: 0,
         directConversionToken: 0,
         latestResult: null,
+        availableReviewActions: [],
         previewPage: 1,
         reviewAuditEvents: [],
         pendingReviewActions: new Map(),
@@ -970,6 +971,9 @@
 
       function renderResult(result) {
         state.latestResult = result;
+        state.availableReviewActions = Array.isArray(result.available_review_actions)
+          ? result.available_review_actions.filter((action) => typeof action === "string")
+          : [];
         status.textContent = result.status;
         status.className = `status ${result.status}`;
         reviewList.replaceChildren(...result.review_items.map(renderReviewItem));
@@ -1021,6 +1025,7 @@
       function clearPreview() {
         state.pdfRenderToken += 1;
         state.latestResult = null;
+        state.availableReviewActions = [];
         state.previewPage = 1;
         pdfPreviewPanel.hidden = true;
         previewPageSelect.replaceChildren();
@@ -1262,14 +1267,16 @@
         approve.type = "button";
         approve.textContent = "Approve";
         approve.dataset.reviewActionKey = reviewActionKey(item);
-        approve.disabled = !reviewActionAvailable(item);
+        approve.dataset.reviewActionName = "approve";
+        approve.disabled = !reviewActionAvailable(item, "approve");
         approve.addEventListener("click", () => requestReviewAction(item, "approve"));
         const requestEdit = document.createElement("button");
         requestEdit.className = "secondary";
         requestEdit.type = "button";
         requestEdit.textContent = "Save edit";
         requestEdit.dataset.reviewActionKey = reviewActionKey(item);
-        requestEdit.disabled = !reviewActionAvailable(item);
+        requestEdit.dataset.reviewActionName = "edit";
+        requestEdit.disabled = !reviewActionAvailable(item, "edit");
         requestEdit.addEventListener("click", () => requestReviewAction(item, "edit"));
         const actions = document.createElement("div");
         actions.className = "review-actions";
@@ -1409,8 +1416,8 @@
         return "";
       }
 
-      function reviewActionAvailable(item) {
-        return !reviewActionBlockReason(item);
+      function reviewActionAvailable(item, action) {
+        return !reviewActionBlockReason(item) && state.availableReviewActions.includes(action);
       }
 
       function reviewActionKey(item) {
@@ -1422,7 +1429,8 @@
           `[data-review-action-key="${CSS.escape(reviewActionKey(item))}"]`
         );
         controls.forEach((control) => {
-          control.disabled = isPending || !reviewActionAvailable(item);
+          control.disabled =
+            isPending || !reviewActionAvailable(item, control.dataset.reviewActionName);
         });
       }
 

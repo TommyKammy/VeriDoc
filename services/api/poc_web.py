@@ -214,7 +214,8 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
         if path != "/api/convert":
             self._send_json({"error": "not_found"}, status=404)
             return
-        if not self._require_permission("convert"):
+        authorized, role = self._authorized_role_for_permission("convert")
+        if not authorized:
             return
         try:
             request = self._read_json_request()
@@ -239,7 +240,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 return
             self._send_json({"error": "invalid_upload", "message": str(exc)}, status=400)
             return
-        self._send_json(_http_result(result))
+        self._send_json(_http_result(result, role=role))
 
     def log_message(self, format: str, *args: Any) -> None:
         return
@@ -290,13 +291,15 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
         self._send_json({"jobs": [_job_response(job, job_queue, role=role) for job in jobs]})
 
     def _handle_job_event(self) -> None:
+        authenticated, role = self._authenticated_role()
+        if not authenticated:
+            return
         try:
             request = self._read_json_request()
             job_id = str(request.get("job_id") or "")
             action = str(request.get("action") or "")
             permission = "jobs:retry" if action == "retry_conversion" else "jobs:read"
-            authorized, role = self._authorized_role_for_permission(permission)
-            if not authorized:
+            if not self._role_has_permission(role, permission):
                 return
             audit_event = request.get("audit_event")
             job_queue = self._job_queue()
@@ -900,11 +903,26 @@ def _review_source_bbox(bbox: Any, page: Any) -> dict[str, Any] | None:
     return asdict(bbox)
 
 
-def _http_result(result: dict[str, Any]) -> dict[str, Any]:
+def _review_actions(role: str | None) -> list[str]:
+    permissions = (
+        {"review_events:approve", "review_events:edit"}
+        if role is None
+        else ROLE_PERMISSIONS[role]
+    )
+    actions: list[str] = []
+    if "review_events:edit" in permissions:
+        actions.append("edit")
+    if "review_events:approve" in permissions:
+        actions.append("approve")
+    return actions
+
+
+def _http_result(result: dict[str, Any], *, role: str | None = None) -> dict[str, Any]:
     download = dict(result["download"])
     content = download.pop("content")
     return {
         **{key: value for key, value in result.items() if key != "download"},
+        "available_review_actions": _review_actions(role),
         "download": {
             **download,
             "content_text": content.decode("utf-8"),

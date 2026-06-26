@@ -807,6 +807,53 @@ def test_poc_http_api_returns_json_safe_download_content() -> None:
     assert downloaded["document_ir"]["document"]["id"] == "upload"
 
 
+def test_poc_http_api_scopes_review_actions_by_conversion_role() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.local_auth_tokens = _local_auth_tokens()
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = json.dumps(
+            {
+                "filename": "upload.txt",
+                "content": "Unstructured OCR fallback text",
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/convert",
+            body=payload,
+            headers={
+                "Authorization": "Bearer reviewer-token",
+                "Content-Type": "application/json",
+                "Content-Length": str(len(payload)),
+            },
+        )
+        reviewer_response = connection.getresponse()
+        reviewer_body = json.loads(reviewer_response.read().decode("utf-8"))
+        connection.request(
+            "POST",
+            "/api/convert",
+            body=payload,
+            headers={
+                "Authorization": "Bearer approver-token",
+                "Content-Type": "application/json",
+                "Content-Length": str(len(payload)),
+            },
+        )
+        approver_response = connection.getresponse()
+        approver_body = json.loads(approver_response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert reviewer_response.status == 200
+    assert reviewer_body["available_review_actions"] == ["edit"]
+    assert approver_response.status == 200
+    assert approver_body["available_review_actions"] == ["edit", "approve"]
+
+
 def test_poc_http_api_accepts_review_action_audit_event() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     thread = Thread(target=server.serve_forever, daemon=True)
@@ -1529,6 +1576,43 @@ def test_poc_http_api_requires_admin_role_for_retry_job_event() -> None:
     assert server.job_queue.get_job(failed_job.job_id).status == "queued"
 
 
+def test_poc_http_api_authenticates_job_events_before_parsing_payload() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue(max_attempts=1)
+    server.local_auth_tokens = _local_auth_tokens()
+    failed_job = server.job_queue.create_job(
+        idempotency_key="failed-1",
+        filename="failed-record.docx",
+        mode="standard",
+    )
+    running = server.job_queue.start_next_job()
+    assert running is not None
+    server.job_queue.mark_failed(failed_job.job_id, error="parser unavailable")
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = b"{not valid json"
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/job-events",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 401
+    assert body == {
+        "error": "auth_required",
+        "message": "Authorization bearer token is required",
+    }
+    assert server.job_queue.get_job(failed_job.job_id).status == "failed"
+
+
 def test_bundled_web_ui_plumbs_local_auth_token_into_api_fetches() -> None:
     html = (Path(__file__).resolve().parents[1] / "apps" / "web" / "index.html").read_text()
 
@@ -1540,6 +1624,36 @@ def test_bundled_web_ui_plumbs_local_auth_token_into_api_fetches() -> None:
     assert "fetch(`/api/jobs${query}`)" not in html
     assert "fetch(\"/api/job-events\"" not in html
     assert "fetch(\"/api/review-events\"" not in html
+
+
+def test_bundled_web_ui_scopes_review_actions_from_api_permissions() -> None:
+    html = Path("apps/web/index.html").read_text(encoding="utf-8")
+
+    render_result = re.search(
+        r"function renderResult\(result\) \{(?P<body>.*?)\n      \}",
+        html,
+        re.DOTALL,
+    )
+    render_item = re.search(
+        r"function renderReviewItem\(item\) \{(?P<body>.*?)\n      \}",
+        html,
+        re.DOTALL,
+    )
+    pending_handler = re.search(
+        r"function setReviewActionPending\(item, isPending\) \{(?P<body>.*?)\n      \}",
+        html,
+        re.DOTALL,
+    )
+
+    assert render_result is not None
+    assert render_item is not None
+    assert pending_handler is not None
+    assert "result.available_review_actions" in render_result.group("body")
+    assert 'approve.dataset.reviewActionName = "approve"' in render_item.group("body")
+    assert 'approve.disabled = !reviewActionAvailable(item, "approve")' in render_item.group("body")
+    assert 'requestEdit.dataset.reviewActionName = "edit"' in render_item.group("body")
+    assert 'requestEdit.disabled = !reviewActionAvailable(item, "edit")' in render_item.group("body")
+    assert "control.dataset.reviewActionName" in pending_handler.group("body")
 
 
 def test_poc_http_api_sanitizes_succeeded_job_result_and_downloads_result() -> None:
