@@ -13,7 +13,11 @@ import pytest
 
 import services.api.poc_web as poc_web
 from services.api.job_queue import JobQueue
-from services.api.poc_web import PocWebRequestHandler, convert_uploaded_document
+from services.api.poc_web import (
+    PocWebRequestHandler,
+    ReviewAuditEventStore,
+    convert_uploaded_document,
+)
 
 
 def _write_docx(path: Path, document_xml: str) -> None:
@@ -73,6 +77,7 @@ def test_convert_uploaded_document_surfaces_review_items_and_download_payload() 
     assert result["validation"]["requires_review"] is True
     assert result["review_items"] == [
         {
+            "document_id": "phase0-output",
             "block_id": "block-0001",
             "source_page": 1,
             "source_bbox": {
@@ -97,6 +102,124 @@ def test_convert_uploaded_document_surfaces_review_items_and_download_payload() 
     downloaded = json.loads(result["download"]["content"].decode("utf-8"))
     assert downloaded["validation"]["requires_review"] is True
     assert downloaded["document_ir"]["blocks"][0]["review"]["requires_review"] is True
+
+
+def test_convert_uploaded_document_treats_unusable_review_bboxes_as_absent() -> None:
+    parser_output = {
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 100,
+                "height": 100,
+                "unit": "pt",
+                "fragments": [
+                    {
+                        "text": "Missing bbox",
+                        "confidence": 0.41,
+                        "low_confidence": True,
+                    },
+                    {
+                        "text": "Outside page",
+                        "bbox": {"x": 90, "y": 10, "width": 20, "height": 12, "unit": "pt"},
+                        "confidence": 0.41,
+                        "low_confidence": True,
+                    },
+                ],
+            }
+        ]
+    }
+
+    result = convert_uploaded_document(
+        filename="phase0-output.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+    )
+
+    assert result["status"] == "blocked"
+    assert result["validation"]["errors"] == ["blocks[1].bbox extends past page 1"]
+    assert [item["block_id"] for item in result["review_items"]] == ["block-0001", "block-0002"]
+    assert all("source_bbox" not in item for item in result["review_items"])
+    assert all("source_page_geometry" not in item for item in result["review_items"])
+
+
+def test_convert_uploaded_document_omits_synthetic_missing_bbox_from_review_item() -> None:
+    parser_output = {
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 100,
+                "height": 100,
+                "unit": "pt",
+                "fragments": [
+                    {
+                        "text": "Missing bbox",
+                        "confidence": 0.41,
+                        "low_confidence": True,
+                    },
+                ],
+            }
+        ]
+    }
+
+    result = convert_uploaded_document(
+        filename="phase0-output.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+    )
+
+    assert result["status"] == "requires_review"
+    assert result["validation"]["errors"] == []
+    assert result["review_items"] == [
+        {
+            "document_id": "phase0-output",
+            "block_id": "block-0001",
+            "source_page": 1,
+            "text": "Missing bbox",
+            "warnings": [
+                "blocks[0].bbox missing; block marked requires_review",
+                "blocks[0].low confidence; block marked requires_review",
+            ],
+        }
+    ]
+
+
+def test_convert_uploaded_document_omits_unsupported_unit_review_bbox() -> None:
+    parser_output = {
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 100,
+                "height": 100,
+                "unit": "em",
+                "fragments": [
+                    {
+                        "text": "Unsupported unit",
+                        "bbox": {"x": 10, "y": 10, "width": 20, "height": 12, "unit": "em"},
+                        "confidence": 0.41,
+                        "low_confidence": True,
+                    },
+                ],
+            }
+        ]
+    }
+
+    result = convert_uploaded_document(
+        filename="phase0-output.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+    )
+
+    assert result["status"] == "blocked"
+    assert result["validation"]["errors"] == [
+        "pages[0].unit is unsupported: em",
+        "blocks[0].bbox unit is unsupported: em",
+    ]
+    assert result["review_items"] == [
+        {
+            "document_id": "phase0-output",
+            "block_id": "block-0001",
+            "source_page": 1,
+            "text": "Unsupported unit",
+            "warnings": ["blocks[0].low confidence; block marked requires_review"],
+        }
+    ]
 
 
 def test_convert_uploaded_docx_uses_real_parser_bytes(tmp_path: Path) -> None:
@@ -157,6 +280,7 @@ def test_convert_uploaded_pdf_adapts_phase0_document_ir_v0_blocks(monkeypatch) -
     assert result["document_ir"]["blocks"][0]["review"]["requires_review"] is True
     assert result["review_items"] == [
         {
+            "document_id": "batch-record",
             "block_id": "block-0001",
             "source_page": 1,
             "source_bbox": {
@@ -575,6 +699,370 @@ def test_poc_http_api_returns_json_safe_download_content() -> None:
     ]
     downloaded = json.loads(body["download"]["content_text"])
     assert downloaded["document_ir"]["document"]["id"] == "upload"
+
+
+def test_poc_http_api_accepts_review_action_audit_event() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = json.dumps(
+            {
+                "audit_event": {
+                    "event_type": "conversion_review.action_requested",
+                    "action": "edit",
+                    "document_id": "phase0-output",
+                    "block_id": "block-0001",
+                    "source_page": 1,
+                    "source_bbox": {
+                        "x": 10,
+                        "y": 20,
+                        "width": 120,
+                        "height": 16,
+                        "unit": "pt",
+                        "origin": "top-left",
+                    },
+                    "original_text": "Lot: SAMPLE-001",
+                    "revised_text": "Lot: SAMPLE-001 corrected",
+                    "warnings": ["blocks[0].low confidence; block marked requires_review"],
+                }
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/review-events",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 202
+    assert body["accepted"] is True
+    assert body["audit_event"]["action"] == "edit"
+    assert body["audit_event"]["document_id"] == "phase0-output"
+    assert body["audit_event"]["block_id"] == "block-0001"
+    assert body["audit_event"]["source_bbox"]["origin"] == "top-left"
+
+
+def test_poc_http_api_persists_review_action_audit_event_server_side() -> None:
+    audit_event = _review_audit_event()
+
+    status, body, events = _post_review_audit_event_with_store(audit_event)
+    audit_event["revised_text"] = "mutated after request"
+
+    assert status == 202
+    assert events == [body["audit_event"]]
+    assert events[0]["revised_text"] == "Lot: SAMPLE-001 corrected"
+
+
+def test_poc_http_api_lists_server_side_review_action_audit_events() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.review_event_store = ReviewAuditEventStore()
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        audit_event = _review_audit_event()
+        payload = json.dumps({"audit_event": audit_event}).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/review-events",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        post_response = connection.getresponse()
+        post_body = json.loads(post_response.read().decode("utf-8"))
+        connection.request("GET", "/api/review-events")
+        list_response = connection.getresponse()
+        list_body = json.loads(list_response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert post_response.status == 202
+    assert list_response.status == 200
+    assert list_body == {"review_events": [post_body["audit_event"]]}
+
+
+def test_poc_http_api_does_not_persist_rejected_review_action_audit_event() -> None:
+    audit_event = _review_audit_event(source_bbox=_review_bbox(origin="bottom-left"))
+
+    status, body, events = _post_review_audit_event_with_store(audit_event)
+
+    assert status == 400
+    assert body == {
+        "error": "invalid_review_event",
+        "message": "audit_event.source_bbox.origin must be top-left",
+    }
+    assert events == []
+
+
+def test_poc_http_api_rejects_malformed_review_action_audit_event() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = json.dumps(
+            {
+                "audit_event": {
+                    "event_type": "conversion_review.action_requested",
+                    "action": "approve",
+                    "document_id": "phase0-output",
+                    "block_id": "block-0001",
+                    "source_page": 1,
+                    "source_bbox": {
+                        "x": 10,
+                        "y": 20,
+                        "width": 120,
+                        "height": 16,
+                        "unit": "pt",
+                        "origin": "bottom-left",
+                    },
+                    "original_text": "Lot: SAMPLE-001",
+                    "revised_text": "Lot: SAMPLE-001",
+                    "warnings": [],
+                }
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/review-events",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 400
+    assert body == {
+        "error": "invalid_review_event",
+        "message": "audit_event.source_bbox.origin must be top-left",
+    }
+
+
+def test_poc_http_api_accepts_approve_review_action_without_duplicate_revised_text() -> None:
+    audit_event = _review_audit_event(
+        action="approve",
+        original_text="Lot: SAMPLE-001",
+    )
+    del audit_event["revised_text"]
+
+    status, body = _post_review_audit_event(audit_event)
+
+    assert status == 202
+    assert body["audit_event"]["action"] == "approve"
+    assert body["audit_event"]["original_text"] == "Lot: SAMPLE-001"
+    assert body["audit_event"]["revised_text"] == "Lot: SAMPLE-001"
+
+
+def test_poc_http_api_accepts_review_action_without_source_bbox() -> None:
+    audit_event = _review_audit_event(source_bbox=None)
+
+    status, body = _post_review_audit_event(audit_event)
+
+    assert status == 202
+    assert body["audit_event"]["source_bbox"] is None
+
+
+def test_poc_http_api_accepts_large_review_edit_event_above_upload_sized_cap() -> None:
+    extracted_text_bytes = poc_web.MAX_UPLOAD_BYTES + (128 * 1024)
+    original_text = '"' * extracted_text_bytes
+    revised_text = '"' * extracted_text_bytes
+    audit_event = _review_audit_event(
+        action="edit",
+        source_bbox=None,
+        original_text=original_text,
+        revised_text=revised_text,
+    )
+    payload_size = len(json.dumps({"audit_event": audit_event}).encode("utf-8"))
+    upload_sized_review_event_cap = (poc_web.MAX_UPLOAD_BYTES * 4) + (64 * 1024)
+
+    assert len(original_text.encode("utf-8")) > poc_web.MAX_UPLOAD_BYTES
+    assert len(original_text.encode("utf-8")) <= poc_web.MAX_REVIEW_EVENT_TEXT_BYTES
+    assert payload_size > upload_sized_review_event_cap
+    assert payload_size < poc_web.MAX_REVIEW_EVENT_REQUEST_BYTES
+
+    status, body = _post_review_audit_event(audit_event)
+
+    assert status == 202
+    assert body["audit_event"]["original_text"] == original_text
+    assert body["audit_event"]["revised_text"] == revised_text
+
+
+def test_poc_http_api_rejects_review_text_over_extracted_text_cap(monkeypatch) -> None:
+    monkeypatch.setattr(poc_web, "MAX_REVIEW_EVENT_TEXT_BYTES", 16)
+    audit_event = _review_audit_event(
+        action="edit",
+        source_bbox=None,
+        original_text="x" * 17,
+        revised_text="corrected",
+    )
+
+    status, body, events = _post_review_audit_event_with_store(audit_event)
+
+    assert status == 400
+    assert body == {
+        "error": "invalid_review_event",
+        "message": "audit_event.original_text exceeds review text limit",
+    }
+    assert events == []
+
+
+def test_poc_http_api_normalizes_review_action_source_bbox_strings() -> None:
+    audit_event = _review_audit_event(
+        source_bbox=_review_bbox(unit="pt ", origin=" top-left")
+    )
+
+    status, body = _post_review_audit_event(audit_event)
+
+    assert status == 202
+    assert body["audit_event"]["source_bbox"] == {
+        "x": 10,
+        "y": 20,
+        "width": 120,
+        "height": 16,
+        "unit": "pt",
+        "origin": "top-left",
+    }
+
+
+def test_poc_http_api_rejects_huge_review_bbox_integer_without_crashing() -> None:
+    audit_event = _review_audit_event(source_bbox=_review_bbox(x=10**400))
+
+    status, body, events = _post_review_audit_event_with_store(audit_event)
+
+    assert status == 400
+    assert body == {
+        "error": "invalid_review_event",
+        "message": "audit_event.source_bbox.x must be finite",
+    }
+    assert events == []
+
+
+def _review_audit_event(**overrides: object) -> dict[str, object]:
+    event: dict[str, object] = {
+        "event_type": "conversion_review.action_requested",
+        "action": "edit",
+        "document_id": "phase0-output",
+        "block_id": "block-0001",
+        "source_page": 1,
+        "source_bbox": {
+            "x": 10,
+            "y": 20,
+            "width": 120,
+            "height": 16,
+            "unit": "pt",
+            "origin": "top-left",
+        },
+        "original_text": "Lot: SAMPLE-001",
+        "revised_text": "Lot: SAMPLE-001 corrected",
+        "warnings": [],
+    }
+    event.update(overrides)
+    return event
+
+
+def _review_bbox(**overrides: object) -> dict[str, object]:
+    bbox: dict[str, object] = {
+        "x": 10,
+        "y": 20,
+        "width": 120,
+        "height": 16,
+        "unit": "pt",
+        "origin": "top-left",
+    }
+    bbox.update(overrides)
+    return bbox
+
+
+def _post_review_audit_event(audit_event: dict[str, object]) -> tuple[int, dict[str, object]]:
+    status, body, _events = _post_review_audit_event_with_store(audit_event)
+    return status, body
+
+
+def _post_review_audit_event_with_store(
+    audit_event: dict[str, object],
+) -> tuple[int, dict[str, object], list[dict[str, object]]]:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    store = ReviewAuditEventStore()
+    server.review_event_store = store
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = json.dumps({"audit_event": audit_event}).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/review-events",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+    return response.status, body, store.list_events()
+
+
+@pytest.mark.parametrize(
+    ("audit_event", "message"),
+    [
+        (
+            _review_audit_event(source_page=True),
+            "audit_event.source_page must be a positive integer",
+        ),
+        (
+            _review_audit_event(action={"name": "approve"}),
+            "audit_event.action is unsupported",
+        ),
+        (
+            _review_audit_event(document_id={"id": "phase0"}),
+            "audit_event.document_id is required",
+        ),
+        (
+            _review_audit_event(block_id=True),
+            "audit_event.block_id is required",
+        ),
+        (
+            _review_audit_event(source_bbox=_review_bbox(unit="em")),
+            "audit_event.source_bbox.unit must be one of mm, pt, px",
+        ),
+        (
+            _review_audit_event(source_bbox=_review_bbox(x=-1)),
+            "audit_event.source_bbox origin coordinates must be non-negative",
+        ),
+        (
+            _review_audit_event(source_bbox=_review_bbox(y=-1)),
+            "audit_event.source_bbox origin coordinates must be non-negative",
+        ),
+        (
+            _review_audit_event(
+                action="approve",
+                original_text="Lot: SAMPLE-001",
+                revised_text="Lot: SAMPLE-001 corrected",
+            ),
+            "audit_event.revised_text must match original_text for approve",
+        ),
+    ],
+)
+def test_poc_http_api_rejects_review_action_audit_event_boundary_drift(
+    audit_event: dict[str, object],
+    message: str,
+) -> None:
+    status, body = _post_review_audit_event(audit_event)
+
+    assert status == 400
+    assert body == {"error": "invalid_review_event", "message": message}
 
 
 def test_poc_http_api_creates_idempotent_conversion_job() -> None:

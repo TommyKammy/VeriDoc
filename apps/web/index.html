@@ -278,6 +278,21 @@
         margin-top: 8px;
       }
 
+      .review-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+        margin-top: 8px;
+      }
+
+      .review-edit {
+        width: 100%;
+        min-height: 70px;
+        margin-top: 8px;
+        resize: vertical;
+      }
+
       .preview-toolbar {
         display: flex;
         flex-wrap: wrap;
@@ -489,6 +504,7 @@
         <div id="result-panel" class="empty" hidden>
           <span id="status" class="status"></span>
           <div id="review-list"></div>
+          <div id="review-action-status" class="page-status" role="status"></div>
           <a id="download-link" download hidden>Download result</a>
         </div>
         <div id="raw-panel" hidden>
@@ -529,8 +545,11 @@
         pdfDocumentPromise: null,
         pdfJsPromise: null,
         pdfRenderToken: 0,
+        directConversionToken: 0,
         latestResult: null,
         previewPage: 1,
+        reviewAuditEvents: [],
+        pendingReviewActions: new Map(),
       };
 
       const PDFJS_MODULE_URL = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.min.mjs";
@@ -565,6 +584,7 @@
       const rawPanel = document.querySelector("#raw-panel");
       const status = document.querySelector("#status");
       const reviewList = document.querySelector("#review-list");
+      const reviewActionStatus = document.querySelector("#review-action-status");
       const downloadLink = document.querySelector("#download-link");
       const rawResult = document.querySelector("#raw-result");
       const pdfPreviewPanel = document.querySelector("#pdf-preview-panel");
@@ -584,8 +604,10 @@
       detailDownload.addEventListener("click", () => downloadSelectedJobResult());
       detailRetry.addEventListener("click", () => retrySelectedConversion());
       input.addEventListener("change", () => {
+        state.directConversionToken += 1;
+        button.disabled = false;
         clearSourcePreview();
-        clearPreview();
+        clearReviewResult();
       });
       previewPageSelect.addEventListener("change", () => {
         state.previewPage = Number(previewPageSelect.value);
@@ -595,9 +617,13 @@
       button.addEventListener("click", async () => {
         const file = input.files[0];
         if (!file) return;
+        const conversionToken = state.directConversionToken + 1;
+        state.directConversionToken = conversionToken;
         button.disabled = true;
+        clearReviewResult();
         try {
           const fileBytes = await file.arrayBuffer();
+          if (!isActiveDirectConversion(conversionToken)) return;
           setSourcePreview(file, fileBytes);
           const contentBase64 = arrayBufferToBase64(fileBytes);
           const response = await fetch("/api/convert", {
@@ -606,10 +632,12 @@
             body: JSON.stringify({ filename: file.name, content_base64: contentBase64 }),
           });
           const result = await response.json();
+          if (!isActiveDirectConversion(conversionToken)) return;
           if (!response.ok) throw new Error(result.message || result.error || "convert failed");
           renderResult(result);
           setPageStatus("Direct conversion finished.");
         } catch (error) {
+          if (!isActiveDirectConversion(conversionToken)) return;
           status.textContent = `blocked: ${error.message}`;
           reviewList.replaceChildren();
           clearDownload();
@@ -618,9 +646,15 @@
           rawPanel.hidden = true;
           setPageStatus(error.message, true);
         } finally {
-          button.disabled = false;
+          if (isActiveDirectConversion(conversionToken)) {
+            button.disabled = false;
+          }
         }
       });
+
+      function isActiveDirectConversion(conversionToken) {
+        return state.directConversionToken === conversionToken;
+      }
 
       async function loadJobs() {
         const filter = statusFilter.value;
@@ -864,6 +898,7 @@
           null,
           2
         );
+        reviewActionStatus.textContent = "";
         resultPanel.hidden = false;
         rawPanel.hidden = false;
         renderSourcePreview(result);
@@ -911,6 +946,20 @@
         clearCanvas(pdfPageCanvas);
         pdfSourceFrame.hidden = true;
         pdfPageSurface.removeAttribute("style");
+      }
+
+      function clearReviewResult() {
+        clearPreview();
+        reviewList.replaceChildren();
+        state.reviewAuditEvents = [];
+        state.pendingReviewActions.clear();
+        reviewActionStatus.textContent = "";
+        status.textContent = "";
+        status.className = "status";
+        rawResult.textContent = "";
+        clearDownload();
+        resultPanel.hidden = true;
+        rawPanel.hidden = true;
       }
 
       async function renderSourcePreview(result) {
@@ -992,7 +1041,7 @@
       }
 
       function validBbox(bbox, page) {
-        if (!bbox || bbox.origin !== "top-left" || bbox.unit !== page.unit) return false;
+        if (!bbox || !page || bbox.origin !== "top-left" || bbox.unit !== page.unit) return false;
         const values = [bbox.x, bbox.y, bbox.width, bbox.height, page.width, page.height];
         if (!values.every((value) => Number.isFinite(value))) return false;
         return (
@@ -1106,20 +1155,169 @@
       function renderReviewItem(item) {
         const wrapper = document.createElement("div");
         wrapper.className = "review-item";
+        wrapper.dataset.blockId = item.block_id;
         const title = document.createElement("strong");
         title.textContent = `${item.block_id} / page ${item.source_page}`;
         const text = document.createElement("div");
         text.textContent = item.text;
         const warnings = document.createElement("div");
         warnings.textContent = item.warnings.join(" / ");
+        const edit = document.createElement("textarea");
+        edit.className = "review-edit";
+        edit.dataset.reviewEditFor = item.block_id;
+        edit.value = item.text;
+        edit.setAttribute("aria-label", `${item.block_id} revised text`);
         const jump = document.createElement("button");
         jump.className = "secondary";
         jump.type = "button";
         jump.textContent = "Jump to bbox";
-        jump.disabled = !item.source_bbox;
+        jump.disabled = !reviewAuditSourceBbox(item);
         jump.addEventListener("click", () => jumpToReviewItem(item));
-        wrapper.append(title, text, warnings, jump);
+        const approve = document.createElement("button");
+        approve.type = "button";
+        approve.textContent = "Approve";
+        approve.dataset.reviewActionKey = reviewActionKey(item);
+        approve.disabled = !reviewActionAvailable(item);
+        approve.addEventListener("click", () => requestReviewAction(item, "approve"));
+        const requestEdit = document.createElement("button");
+        requestEdit.className = "secondary";
+        requestEdit.type = "button";
+        requestEdit.textContent = "Save edit";
+        requestEdit.dataset.reviewActionKey = reviewActionKey(item);
+        requestEdit.disabled = !reviewActionAvailable(item);
+        requestEdit.addEventListener("click", () => requestReviewAction(item, "edit"));
+        const actions = document.createElement("div");
+        actions.className = "review-actions";
+        actions.append(jump, requestEdit, approve);
+        wrapper.append(title, text, warnings, edit, actions);
         return wrapper;
+      }
+
+      function buildReviewAuditEvent(item, action) {
+        const revisedText = reviewDraftText(item);
+        const event = {
+          event_type: "conversion_review.action_requested",
+          action,
+          document_id: item.document_id,
+          block_id: item.block_id,
+          source_page: reviewAuditSourcePage(item),
+          source_bbox: reviewAuditSourceBbox(item),
+          original_text: item.text,
+          warnings: item.warnings || [],
+        };
+        if (action === "edit") {
+          event.revised_text = revisedText;
+        }
+        return event;
+      }
+
+      function reviewAuditSourcePage(item) {
+        if (!Number.isInteger(item.source_page) || item.source_page < 1) return null;
+        return reviewSourcePages().has(item.source_page) ? item.source_page : null;
+      }
+
+      function reviewAuditSourceBbox(item) {
+        if (!reviewAuditSourcePage(item)) return null;
+        return validBbox(item.source_bbox, item.source_page_geometry) ? item.source_bbox : null;
+      }
+
+      function reviewSourcePages() {
+        const pages = state.latestResult?.document_ir?.pages || [];
+        return new Set(
+          pages
+            .map((page) => page.page_number)
+            .filter((pageNumber) => Number.isInteger(pageNumber) && pageNumber >= 1)
+        );
+      }
+
+      function reviewActionBlockReason(item) {
+        if (!state.latestResult || !(state.latestResult.review_items || []).includes(item)) {
+          return "Review result is no longer active.";
+        }
+        if (state.latestResult.status === "blocked") {
+          return "Review actions are disabled for blocked conversions.";
+        }
+        if (!reviewAuditSourcePage(item)) {
+          return "Review item source page is invalid.";
+        }
+        return "";
+      }
+
+      function reviewActionAvailable(item) {
+        return !reviewActionBlockReason(item);
+      }
+
+      function reviewActionKey(item) {
+        return `${item.document_id}:${item.block_id}`;
+      }
+
+      function setReviewActionPending(item, isPending) {
+        const controls = reviewList.querySelectorAll(
+          `[data-review-action-key="${CSS.escape(reviewActionKey(item))}"]`
+        );
+        controls.forEach((control) => {
+          control.disabled = isPending || !reviewActionAvailable(item);
+        });
+      }
+
+      function reviewDraftText(item) {
+        const edit = reviewList.querySelector(
+          `[data-review-edit-for="${CSS.escape(item.block_id)}"]`
+        );
+        return edit ? edit.value : item.text;
+      }
+
+      async function requestReviewAction(item, action) {
+        const actionKey = reviewActionKey(item);
+        const pendingOwner = Symbol(actionKey);
+        let actionStarted = false;
+        try {
+          const blockReason = reviewActionBlockReason(item);
+          if (blockReason) throw new Error(blockReason);
+          if (state.pendingReviewActions.has(actionKey)) return;
+          state.pendingReviewActions.set(actionKey, pendingOwner);
+          actionStarted = true;
+          setReviewActionPending(item, true);
+          const auditEvent = buildReviewAuditEvent(item, action);
+          const response = await fetch("/api/review-events", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ audit_event: auditEvent }),
+          });
+          let body = {};
+          try {
+            const parsedBody = await response.json();
+            body = parsedBody && typeof parsedBody === "object" ? parsedBody : {};
+          } catch (_error) {
+            body = {};
+          }
+          if (!response.ok) {
+            throw new Error(body.message || body.error || "Review action failed.");
+          }
+          if (!body.audit_event) {
+            throw new Error("Review action response did not include an audit event.");
+          }
+          const postResponseBlockReason = reviewActionBlockReason(item);
+          if (postResponseBlockReason) {
+            reviewActionStatus.textContent =
+              "Review action accepted; current review result changed before the response returned.";
+            reviewActionStatus.className = "page-status";
+            return;
+          }
+          state.reviewAuditEvents.push(body.audit_event);
+          reviewActionStatus.textContent = "Review action event queued for audit.";
+          reviewActionStatus.className = "page-status";
+        } catch (error) {
+          if (actionStarted && reviewActionBlockReason(item)) return;
+          reviewActionStatus.textContent =
+            error instanceof Error && error.message ? error.message : "Review action failed.";
+          reviewActionStatus.className = "page-status error";
+        } finally {
+          if (actionStarted && state.pendingReviewActions.get(actionKey) === pendingOwner) {
+            state.pendingReviewActions.delete(actionKey);
+            setReviewActionPending(item, false);
+          }
+        }
       }
 
       loadJobs();

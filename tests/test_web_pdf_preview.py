@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -52,6 +53,114 @@ def test_review_item_can_jump_to_preview_bbox() -> None:
     assert "Jump to bbox" in html
     assert "await renderSourcePreview(state.latestResult)" in html
     assert "state.previewPage = item.source_page" in html
+
+
+def test_review_item_exposes_edit_and_approve_audit_events() -> None:
+    html = _web_html()
+
+    assert "function buildReviewAuditEvent(item, action)" in html
+    assert 'event_type: "conversion_review.action_requested"' in html
+    assert "document_id: item.document_id" in html
+    assert "block_id: item.block_id" in html
+    assert "source_page: reviewAuditSourcePage(item)" in html
+    assert "function reviewAuditSourcePage(item)" in html
+    assert "Number.isInteger(item.source_page)" in html
+    assert "item.source_page < 1" in html
+    assert "function reviewSourcePages()" in html
+    assert "reviewSourcePages().has(item.source_page)" in html
+    assert "function reviewActionBlockReason(item)" in html
+    assert 'state.latestResult.status === "blocked"' in html
+    assert "Review actions are disabled for blocked conversions." in html
+    assert "approve.disabled = !reviewActionAvailable(item)" in html
+    assert "requestEdit.disabled = !reviewActionAvailable(item)" in html
+    assert "source_bbox: reviewAuditSourceBbox(item)" in html
+    assert "function reviewAuditSourceBbox(item)" in html
+    assert "if (!reviewAuditSourcePage(item)) return null;" in html
+    assert "validBbox(item.source_bbox, item.source_page_geometry)" in html
+    assert "jump.disabled = !reviewAuditSourceBbox(item)" in html
+    assert "event.revised_text = revisedText" in html
+    assert "function requestReviewAction(item, action)" in html
+    assert "try {" in html
+    assert "Review item source page is invalid." in html
+    assert 'parsedBody && typeof parsedBody === "object" ? parsedBody : {}' in html
+    assert "catch (_error)" in html
+    assert "Review action failed." in html
+    assert 'requestReviewAction(item, "edit")' in html
+    assert 'requestReviewAction(item, "approve")' in html
+    assert "Review action event queued for audit" in html
+
+
+def test_review_actions_clear_and_reject_stale_file_selection() -> None:
+    html = _web_html()
+
+    assert 'input.addEventListener("change", () => {' in html
+    assert "state.directConversionToken += 1;" in html
+    assert "button.disabled = false;" in html
+    assert "function isActiveDirectConversion(conversionToken)" in html
+    assert "if (!isActiveDirectConversion(conversionToken)) return;" in html
+    assert "clearReviewResult();" in html
+    assert re.search(
+        r'button\.addEventListener\("click", async \(\) => \{.*?'
+        r"button\.disabled = true;\s+clearReviewResult\(\);\s+try \{",
+        html,
+        flags=re.S,
+    )
+    assert "function clearReviewResult()" in html
+    assert "reviewList.replaceChildren();" in html
+    assert "state.reviewAuditEvents = [];" in html
+    assert "resultPanel.hidden = true;" in html
+    assert "rawPanel.hidden = true;" in html
+    assert "!(state.latestResult.review_items || []).includes(item)" in html
+    assert "Review result is no longer active." in html
+    assert "state.pendingReviewActions.clear();" in html
+    assert "const postResponseBlockReason = reviewActionBlockReason(item)" in html
+    assert "if (postResponseBlockReason) throw" not in html
+    assert (
+        "Review action accepted; current review result changed before the response returned."
+        in html
+    )
+    assert re.search(
+        r"if \(postResponseBlockReason\) \{\s+reviewActionStatus\.textContent =\s+"
+        r'"Review action accepted; current review result changed before the response returned\.";\s+'
+        r'reviewActionStatus\.className = "page-status";\s+return;\s+\}\s+'
+        r"state\.reviewAuditEvents\.push\(body\.audit_event\);",
+        html,
+        flags=re.S,
+    )
+
+
+def test_review_actions_are_serialized_while_audit_request_is_pending() -> None:
+    html = _web_html()
+
+    assert "pendingReviewActions: new Map()" in html
+    assert "function reviewActionKey(item)" in html
+    assert "return `${item.document_id}:${item.block_id}`;" in html
+    assert "approve.dataset.reviewActionKey = reviewActionKey(item);" in html
+    assert "requestEdit.dataset.reviewActionKey = reviewActionKey(item);" in html
+    assert "function setReviewActionPending(item, isPending)" in html
+    assert "const controls = reviewList.querySelectorAll(" in html
+    assert "controls.forEach((control) => {" in html
+    assert "state.pendingReviewActions.has(actionKey)" in html
+    assert "const pendingOwner = Symbol(actionKey)" in html
+    assert "state.pendingReviewActions.set(actionKey, pendingOwner)" in html
+    assert "actionStarted = true" in html
+    assert "setReviewActionPending(item, true)" in html
+    assert "state.pendingReviewActions.get(actionKey) === pendingOwner" in html
+    assert "state.pendingReviewActions.delete(actionKey)" in html
+    assert "setReviewActionPending(item, false)" in html
+    assert "reviewActionKey(item, action)" not in html
+
+
+def test_review_actions_ignore_stale_failures_after_result_changes() -> None:
+    html = _web_html()
+
+    assert re.search(
+        r"\} catch \(error\) \{\s+"
+        r"if \(actionStarted && reviewActionBlockReason\(item\)\) return;\s+"
+        r"reviewActionStatus\.textContent =",
+        html,
+        flags=re.S,
+    )
 
 
 def test_pdf_preview_uses_canvas_coordinate_space_for_overlays() -> None:

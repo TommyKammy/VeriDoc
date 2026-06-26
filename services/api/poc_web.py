@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import base64
@@ -10,6 +11,7 @@ from pathlib import Path
 import re
 import sys
 from tempfile import TemporaryDirectory
+from threading import Lock
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 from xml.etree.ElementTree import ParseError as XmlParseError
@@ -21,6 +23,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from core.ir.document_ir_v1 import (
     DocumentIRV1,
+    UNITS,
     adapt_document_ir_v0_blocks,
     from_parser_output,
     validate_document_ir_v1,
@@ -35,6 +38,12 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8788
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024
 MAX_UPLOAD_REQUEST_BYTES = (MAX_UPLOAD_BYTES * 4 // 3) + 4096
+# Extracted document text can be much larger than the uploaded source bytes,
+# especially for compressed formats. Review events can carry original and
+# revised text snapshots; quote/backslash-heavy text doubles again when
+# JSON-escaped.
+MAX_REVIEW_EVENT_TEXT_BYTES = 8 * 1024 * 1024
+MAX_REVIEW_EVENT_REQUEST_BYTES = (MAX_REVIEW_EVENT_TEXT_BYTES * 4) + (64 * 1024)
 SOURCE_TYPES = {"pdf", "docx", "xlsx", "unknown"}
 KNOWN_SOURCE_TYPES = SOURCE_TYPES - {"unknown"}
 HTTP_CONTENT_TYPE = re.compile(
@@ -46,6 +55,25 @@ DEFAULT_JOB_QUEUE = JobQueue()
 
 class PocServerDependencyError(RuntimeError):
     """Raised when the PoC server is missing an optional parser dependency."""
+
+
+class ReviewAuditEventStore:
+    def __init__(self) -> None:
+        self._events: list[dict[str, Any]] = []
+        self._lock = Lock()
+
+    def record(self, audit_event: dict[str, Any]) -> dict[str, Any]:
+        event = deepcopy(audit_event)
+        with self._lock:
+            self._events.append(event)
+        return deepcopy(event)
+
+    def list_events(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return deepcopy(self._events)
+
+
+DEFAULT_REVIEW_AUDIT_EVENTS = ReviewAuditEventStore()
 
 
 def convert_uploaded_document(*, filename: str, content: bytes) -> dict[str, Any]:
@@ -105,6 +133,9 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/jobs":
             self._handle_list_jobs(parsed_url.query)
             return
+        if path == "/api/review-events":
+            self._handle_list_review_events()
+            return
         if path.startswith("/api/jobs/"):
             job_path = path.removeprefix("/api/jobs/")
             if job_path.endswith("/result"):
@@ -128,6 +159,9 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/job-events":
             self._handle_job_event()
+            return
+        if path == "/api/review-events":
+            self._handle_review_event()
             return
         if path != "/api/convert":
             self._send_json({"error": "not_found"}, status=404)
@@ -241,6 +275,31 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             status=202,
         )
 
+    def _handle_review_event(self) -> None:
+        try:
+            request = self._read_json_request(max_request_bytes=MAX_REVIEW_EVENT_REQUEST_BYTES)
+            accepted_event = _validate_review_event(request.get("audit_event"))
+            stored_event = self._review_event_store().record(accepted_event)
+        except ValueError as exc:
+            if str(exc) == "content_length_required":
+                self._send_json({"error": "content_length_required"}, status=411)
+                return
+            if str(exc) == "upload_too_large":
+                self._send_json({"error": "upload_too_large"}, status=413)
+                return
+            self._send_json({"error": "invalid_review_event", "message": str(exc)}, status=400)
+            return
+        self._send_json(
+            {
+                "accepted": True,
+                "audit_event": stored_event,
+            },
+            status=202,
+        )
+
+    def _handle_list_review_events(self) -> None:
+        self._send_json({"review_events": self._review_event_store().list_events()})
+
     def _handle_job_result_download(self, job_id: str) -> None:
         try:
             job = self._job_queue().get_job(job_id)
@@ -263,12 +322,12 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(download["content"])
 
-    def _read_json_request(self) -> dict[str, Any]:
+    def _read_json_request(self, *, max_request_bytes: int = MAX_UPLOAD_REQUEST_BYTES) -> dict[str, Any]:
         length = self.headers.get("Content-Length")
         if length is None or not length.isdigit():
             raise ValueError("content_length_required")
         byte_count = int(length)
-        if byte_count > MAX_UPLOAD_REQUEST_BYTES:
+        if byte_count > max_request_bytes:
             raise ValueError("upload_too_large")
         request = json.loads(self.rfile.read(byte_count).decode("utf-8"))
         if not isinstance(request, dict):
@@ -277,6 +336,9 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
 
     def _job_queue(self) -> JobQueue:
         return getattr(self.server, "job_queue", DEFAULT_JOB_QUEUE)
+
+    def _review_event_store(self) -> ReviewAuditEventStore:
+        return getattr(self.server, "review_event_store", DEFAULT_REVIEW_AUDIT_EVENTS)
 
     def _send_file(self, path: Path, content_type: str) -> None:
         if not path.is_file():
@@ -382,6 +444,97 @@ def _validate_job_event(
     if audit_event != expected_event:
         raise ValueError("audit_event does not match job action")
     return expected_event
+
+
+def _validate_review_event(audit_event: Any) -> dict[str, Any]:
+    if not isinstance(audit_event, dict):
+        raise ValueError("audit_event is required")
+    if audit_event.get("event_type") != "conversion_review.action_requested":
+        raise ValueError("audit_event.event_type is unsupported")
+    action = audit_event.get("action")
+    if not isinstance(action, str) or action not in {"edit", "approve"}:
+        raise ValueError("audit_event.action is unsupported")
+    document_id = audit_event.get("document_id")
+    if not isinstance(document_id, str) or not document_id.strip():
+        raise ValueError("audit_event.document_id is required")
+    document_id = document_id.strip()
+    block_id = audit_event.get("block_id")
+    if not isinstance(block_id, str) or not block_id.strip():
+        raise ValueError("audit_event.block_id is required")
+    block_id = block_id.strip()
+    source_page = audit_event.get("source_page")
+    if not isinstance(source_page, int) or isinstance(source_page, bool) or source_page < 1:
+        raise ValueError("audit_event.source_page must be a positive integer")
+    source_bbox = audit_event.get("source_bbox")
+    if source_bbox is not None:
+        source_bbox = _validate_review_event_bbox(source_bbox)
+    original_text = audit_event.get("original_text")
+    if not isinstance(original_text, str):
+        raise ValueError("audit_event.original_text is required")
+    _validate_review_event_text("original_text", original_text)
+    revised_text = audit_event.get("revised_text")
+    if action == "approve" and revised_text is None:
+        revised_text = original_text
+    if not isinstance(revised_text, str):
+        raise ValueError("audit_event.revised_text is required")
+    _validate_review_event_text("revised_text", revised_text)
+    if action == "approve" and revised_text != original_text:
+        raise ValueError("audit_event.revised_text must match original_text for approve")
+    warnings = audit_event.get("warnings", [])
+    if not isinstance(warnings, list) or not all(isinstance(item, str) for item in warnings):
+        raise ValueError("audit_event.warnings must be strings")
+    return {
+        "event_type": "conversion_review.action_requested",
+        "action": action,
+        "document_id": document_id,
+        "block_id": block_id,
+        "source_page": source_page,
+        "source_bbox": source_bbox,
+        "original_text": original_text,
+        "revised_text": revised_text,
+        "warnings": warnings,
+    }
+
+
+def _validate_review_event_text(field_name: str, value: str) -> None:
+    if len(value.encode("utf-8")) > MAX_REVIEW_EVENT_TEXT_BYTES:
+        raise ValueError(f"audit_event.{field_name} exceeds review text limit")
+
+
+def _validate_review_event_bbox(source_bbox: Any) -> dict[str, Any]:
+    if not isinstance(source_bbox, dict):
+        raise ValueError("audit_event.source_bbox must be an object")
+    for key in ("x", "y", "width", "height"):
+        value = source_bbox.get(key)
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            raise ValueError(f"audit_event.source_bbox.{key} must be finite")
+        try:
+            finite = math.isfinite(value)
+        except OverflowError:
+            finite = False
+        if not finite:
+            raise ValueError(f"audit_event.source_bbox.{key} must be finite")
+    unit = str(source_bbox.get("unit") or "").strip()
+    origin = str(source_bbox.get("origin") or "").strip()
+    if not unit:
+        raise ValueError("audit_event.source_bbox.unit is required")
+    if unit not in UNITS:
+        supported = ", ".join(sorted(UNITS))
+        raise ValueError(f"audit_event.source_bbox.unit must be one of {supported}")
+    if origin != "top-left":
+        raise ValueError("audit_event.source_bbox.origin must be top-left")
+    if source_bbox["x"] < 0 or source_bbox["y"] < 0:
+        raise ValueError("audit_event.source_bbox origin coordinates must be non-negative")
+    if source_bbox["width"] <= 0 or source_bbox["height"] <= 0:
+        raise ValueError("audit_event.source_bbox size must be positive")
+    return {
+        "x": source_bbox["x"],
+        "y": source_bbox["y"],
+        "width": source_bbox["width"],
+        "height": source_bbox["height"],
+        "unit": unit,
+        "origin": origin,
+    }
 
 
 def _job_download(job: JobRecord) -> dict[str, Any]:
@@ -503,17 +656,38 @@ def _review_items(document_ir: DocumentIRV1) -> list[dict[str, Any]]:
         if not block.review.requires_review and not block.review.warnings:
             continue
         item = {
+            "document_id": document_ir.document.id,
             "block_id": block.id,
             "source_page": block.source_page,
             "text": block.text,
             "warnings": block.review.warnings,
         }
         page = pages_by_number.get(block.source_page)
-        if page is not None:
-            item["source_bbox"] = asdict(block.bbox)
+        source_bbox = _review_source_bbox(block.bbox, page)
+        if source_bbox is not None:
+            item["source_bbox"] = source_bbox
             item["source_page_geometry"] = asdict(page)
         items.append(item)
     return items
+
+
+def _review_source_bbox(bbox: Any, page: Any) -> dict[str, Any] | None:
+    if page is None:
+        return None
+    values = (bbox.x, bbox.y, bbox.width, bbox.height, page.width, page.height)
+    if not all(isinstance(value, (int, float)) and math.isfinite(value) for value in values):
+        return None
+    if page.width <= 0 or page.height <= 0:
+        return None
+    if bbox.origin != "top-left" or bbox.unit != page.unit:
+        return None
+    if bbox.unit not in UNITS or page.unit not in UNITS:
+        return None
+    if bbox.x < 0 or bbox.y < 0 or bbox.width <= 0 or bbox.height <= 0:
+        return None
+    if bbox.x + bbox.width > page.width or bbox.y + bbox.height > page.height:
+        return None
+    return asdict(bbox)
 
 
 def _http_result(result: dict[str, Any]) -> dict[str, Any]:
