@@ -137,6 +137,46 @@ def test_convert_uploaded_document_treats_unusable_review_bboxes_as_absent() -> 
     assert all("source_page_geometry" not in item for item in result["review_items"])
 
 
+def test_convert_uploaded_document_omits_synthetic_missing_bbox_from_review_item() -> None:
+    parser_output = {
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 100,
+                "height": 100,
+                "unit": "pt",
+                "fragments": [
+                    {
+                        "text": "Missing bbox",
+                        "confidence": 0.41,
+                        "low_confidence": True,
+                    },
+                ],
+            }
+        ]
+    }
+
+    result = convert_uploaded_document(
+        filename="phase0-output.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+    )
+
+    assert result["status"] == "requires_review"
+    assert result["validation"]["errors"] == []
+    assert result["review_items"] == [
+        {
+            "document_id": "phase0-output",
+            "block_id": "block-0001",
+            "source_page": 1,
+            "text": "Missing bbox",
+            "warnings": [
+                "blocks[0].bbox missing; block marked requires_review",
+                "blocks[0].low confidence; block marked requires_review",
+            ],
+        }
+    ]
+
+
 def test_convert_uploaded_docx_uses_real_parser_bytes(tmp_path: Path) -> None:
     docx_path = tmp_path / "batch-record.docx"
     _write_docx(docx_path, _sample_docx_xml())
@@ -724,6 +764,15 @@ def test_poc_http_api_accepts_approve_review_action_without_duplicate_revised_te
     assert body["audit_event"]["action"] == "approve"
     assert body["audit_event"]["original_text"] == "Lot: SAMPLE-001"
     assert body["audit_event"]["revised_text"] == "Lot: SAMPLE-001"
+
+
+def test_poc_http_api_accepts_review_action_without_source_bbox() -> None:
+    audit_event = _review_audit_event(source_bbox=None)
+
+    status, body = _post_review_audit_event(audit_event)
+
+    assert status == 202
+    assert body["audit_event"]["source_bbox"] is None
 
 
 def _review_audit_event(**overrides: object) -> dict[str, object]:
