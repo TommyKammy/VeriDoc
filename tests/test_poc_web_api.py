@@ -75,6 +75,20 @@ def test_convert_uploaded_document_surfaces_review_items_and_download_payload() 
         {
             "block_id": "block-0001",
             "source_page": 1,
+            "source_bbox": {
+                "x": 10.0,
+                "y": 20.0,
+                "width": 120.0,
+                "height": 16.0,
+                "unit": "pt",
+                "origin": "top-left",
+            },
+            "source_page_geometry": {
+                "page_number": 1,
+                "width": 320.0,
+                "height": 240.0,
+                "unit": "pt",
+            },
             "text": "Lot: SAMPLE-001",
             "warnings": ["blocks[0].low confidence; block marked requires_review"],
         }
@@ -145,6 +159,20 @@ def test_convert_uploaded_pdf_adapts_phase0_document_ir_v0_blocks(monkeypatch) -
         {
             "block_id": "block-0001",
             "source_page": 1,
+            "source_bbox": {
+                "x": 72.0,
+                "y": 72.0,
+                "width": 180.0,
+                "height": 24.0,
+                "unit": "pt",
+                "origin": "top-left",
+            },
+            "source_page_geometry": {
+                "page_number": 1,
+                "width": 612.0,
+                "height": 792.0,
+                "unit": "pt",
+            },
             "text": "Lot\tSAMPLE-001",
             "warnings": ["blocks[0].parser marked block requires_review"],
         }
