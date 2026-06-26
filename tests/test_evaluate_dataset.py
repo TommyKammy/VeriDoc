@@ -14,7 +14,9 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "evaluate_dataset.py"
 CASES_PATH = REPO_ROOT / "datasets" / "gold" / "evaluation_cases_v0.json"
+HIGH_RISK_LABELS_PATH = REPO_ROOT / "datasets" / "gold" / "high_risk_labels_v0.json"
 LLM_STABILITY_RUNS_PATH = REPO_ROOT / "datasets" / "gold" / "llm_stability_runs_v0.json"
+POC_COMPARISON_PATH = REPO_ROOT / "datasets" / "gold" / "poc_mode_comparison_v0.json"
 
 
 spec = importlib.util.spec_from_file_location("evaluate_dataset", SCRIPT_PATH)
@@ -31,6 +33,12 @@ class EvaluateDatasetTest(unittest.TestCase):
 
     def valid_llm_stability_data(self) -> dict[str, object]:
         return copy.deepcopy(evaluate_dataset.load_json(LLM_STABILITY_RUNS_PATH))
+
+    def valid_poc_comparison_data(self) -> dict[str, object]:
+        return copy.deepcopy(evaluate_dataset.load_json(POC_COMPARISON_PATH))
+
+    def valid_high_risk_labels_data(self) -> dict[str, object]:
+        return copy.deepcopy(evaluate_dataset.load_json(HIGH_RISK_LABELS_PATH))
 
     def evaluate_valid_cases(self, data: dict[str, object]) -> object:
         return evaluate_dataset.evaluate_cases(data, manifest_root=REPO_ROOT)
@@ -119,6 +127,444 @@ class EvaluateDatasetTest(unittest.TestCase):
             ),
             metrics.unstable_examples,
         )
+
+    def test_poc_mode_comparison_measures_required_phase1_modes(self) -> None:
+        metrics = evaluate_dataset.evaluate_poc_mode_comparison(
+            self.valid_poc_comparison_data(), repo_root=REPO_ROOT
+        )
+
+        self.assertEqual(3, metrics.mode_count)
+        self.assertEqual(0, metrics.high_risk_false_auto_confirmed_count)
+        self.assertTrue(metrics.target_met)
+        self.assertEqual(
+            ["no_llm", "standard", "high_quality"],
+            [mode["mode"] for mode in metrics.as_dict()["modes"]],
+        )
+        high_quality = metrics.as_dict()["modes"][2]
+        self.assertEqual(1.0, high_quality["cell_match_rate"])
+        self.assertEqual(1.0, high_quality["source_linkage_rate"])
+        self.assertEqual(2, high_quality["requires_review_count"])
+
+    def test_poc_mode_comparison_rejects_missing_required_mode_before_scoring(self) -> None:
+        data = self.valid_poc_comparison_data()
+        data["modes"] = [mode for mode in data["modes"] if mode["mode"] != "high_quality"]
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "exactly no_llm"):
+            evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
+    def test_poc_mode_comparison_rejects_missing_dataset_manifest_before_scoring(self) -> None:
+        data = self.valid_poc_comparison_data()
+        data.pop("dataset_manifest")
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "dataset_manifest"):
+            evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
+    def test_poc_mode_comparison_rejects_non_canonical_dataset_manifest_before_scoring(
+        self,
+    ) -> None:
+        for manifest_path in (
+            str(REPO_ROOT / "datasets" / "fixtures" / "manifest.json"),
+            "datasets/fixtures/side-manifest.json",
+            "datasets/fixtures/../fixtures/manifest.json",
+        ):
+            data = self.valid_poc_comparison_data()
+            data["dataset_manifest"] = manifest_path
+
+            with self.subTest(manifest_path=manifest_path), self.assertRaisesRegex(
+                evaluate_dataset.EvaluationCaseError,
+                "dataset_manifest must be datasets/fixtures/manifest.json",
+            ):
+                evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
+    def test_poc_mode_comparison_rejects_missing_evaluation_cases_before_scoring(
+        self,
+    ) -> None:
+        data = self.valid_poc_comparison_data()
+        data.pop("evaluation_cases")
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "evaluation_cases"):
+            evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
+    def test_poc_mode_comparison_rejects_missing_high_risk_label_coverage_per_mode(
+        self,
+    ) -> None:
+        for mode_index, mode_name in enumerate(evaluate_dataset.REQUIRED_POC_MODES):
+            data = self.valid_poc_comparison_data()
+            data["modes"][mode_index]["high_risk_items"] = data["modes"][mode_index][
+                "high_risk_items"
+            ][:1]
+
+            with self.subTest(mode=mode_name), self.assertRaisesRegex(
+                evaluate_dataset.EvaluationCaseError, "cover all"
+            ):
+                evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
+    def test_poc_mode_comparison_rejects_high_risk_label_drift_before_scoring(self) -> None:
+        data = self.valid_poc_comparison_data()
+        data["modes"][0]["high_risk_items"][0]["expected_value"] = "SAMPLE-LOT-999"
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "high-risk labels"):
+            evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
+    def test_high_risk_label_index_allows_same_taxonomy_label_in_distinct_blocks(
+        self,
+    ) -> None:
+        data = self.valid_high_risk_labels_data()
+        duplicate_label = copy.deepcopy(data["items"][0])
+        duplicate_label["id"] = "gold-duplicate-block"
+        duplicate_label["block_id"] = "block-003"
+        data["items"].append(duplicate_label)
+
+        labels = evaluate_dataset.high_risk_label_index(data)
+
+        self.assertIn(
+            ("sample-document-ir-v0", "block-002", "lot_number"),
+            labels,
+        )
+        self.assertIn(
+            ("sample-document-ir-v0", "block-003", "lot_number"),
+            labels,
+        )
+
+    def test_high_risk_label_index_rejects_missing_expected_value(self) -> None:
+        data = self.valid_high_risk_labels_data()
+        del data["items"][0]["expected_value"]
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "expected_value"):
+            evaluate_dataset.high_risk_label_index(data)
+
+    def test_high_risk_label_index_rejects_label_outside_taxonomy(self) -> None:
+        data = self.valid_high_risk_labels_data()
+        data["items"][0]["label_id"] = "lot_numbre"
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "label_taxonomy"):
+            evaluate_dataset.high_risk_label_index(data)
+
+    def test_high_risk_labels_reject_unknown_fixture_block_id(self) -> None:
+        data = self.valid_high_risk_labels_data()
+        data["items"][0]["block_id"] = "block-missing"
+        labels = evaluate_dataset.high_risk_label_index(data)
+        fixture_paths = evaluate_dataset.fixture_paths_from_manifest(
+            evaluate_dataset.load_json(REPO_ROOT / "datasets" / "fixtures" / "manifest.json"),
+            REPO_ROOT,
+        )
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "block_id"):
+            evaluate_dataset.validate_high_risk_labels_against_fixtures(labels, fixture_paths)
+
+    def test_poc_mode_comparison_rejects_duplicate_value_from_different_block(
+        self,
+    ) -> None:
+        labels_data = self.valid_high_risk_labels_data()
+        duplicate_label = copy.deepcopy(labels_data["items"][0])
+        duplicate_label["id"] = "gold-duplicate-block-value"
+        duplicate_label["block_id"] = "block-003"
+        labels_data["items"].append(duplicate_label)
+        labels = evaluate_dataset.high_risk_label_index(labels_data)
+
+        fixture_paths = evaluate_dataset.fixture_paths_from_manifest(
+            evaluate_dataset.load_json(REPO_ROOT / "datasets" / "fixtures" / "manifest.json"),
+            REPO_ROOT,
+        )
+        label_blocks = evaluate_dataset.validate_high_risk_labels_against_fixtures(
+            evaluate_dataset.high_risk_label_index(self.valid_high_risk_labels_data()),
+            fixture_paths,
+        )
+        label_blocks[
+            ("sample-document-ir-v0", "block-003", "lot_number")
+        ] = {
+            "id": "block-003",
+            "text": "Lot Number: SAMPLE-LOT-001",
+            "source": {
+                "source_page": 1,
+                "bbox": {
+                    "x": 300.0,
+                    "y": 112.0,
+                    "width": 180.0,
+                    "height": 18.0,
+                },
+            },
+            "requires_review": True,
+        }
+        mode_record = self.valid_poc_comparison_data()["modes"][2]
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "captured actual value"):
+            evaluate_dataset.poc_mode_actual_values_by_high_risk_label(
+                mode_record,
+                self.valid_cases_data(),
+                labels,
+                label_blocks,
+                "modes[2]",
+            )
+
+    def test_poc_mode_comparison_rejects_missing_high_risk_block_binding(self) -> None:
+        data = self.valid_poc_comparison_data()
+        del data["modes"][0]["high_risk_items"][0]["block_id"]
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "block_id"):
+            evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
+    def test_poc_mode_comparison_rejects_missing_expected_high_risk_value(self) -> None:
+        data = self.valid_poc_comparison_data()
+        del data["modes"][0]["high_risk_items"][0]["expected_value"]
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "expected_value"):
+            evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
+    def test_poc_mode_comparison_rejects_numeric_expected_value_for_boolean_label(
+        self,
+    ) -> None:
+        data = self.valid_poc_comparison_data()
+        data["modes"][0]["high_risk_items"][1]["expected_value"] = 1
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "expected_value"):
+            evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
+    def test_poc_mode_comparison_rejects_missing_actual_high_risk_value(self) -> None:
+        data = self.valid_poc_comparison_data()
+        del data["modes"][0]["high_risk_items"][0]["actual_value"]
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "actual_value"):
+            evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
+    def test_poc_mode_comparison_rejects_confirmed_actual_high_risk_mismatch(self) -> None:
+        data = self.valid_poc_comparison_data()
+        data["modes"][0]["high_risk_items"][0]["status"] = "confirmed"
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "status"):
+            evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
+    def test_poc_mode_comparison_rejects_confirmed_matching_high_risk_value(self) -> None:
+        data = self.valid_poc_comparison_data()
+        data["modes"][2]["high_risk_items"][0]["status"] = "confirmed"
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "requires_review"):
+            evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
+    def test_poc_mode_comparison_rejects_reviewed_mismatch_in_inflated_rate(self) -> None:
+        data = self.valid_poc_comparison_data()
+        data["modes"][2]["high_risk_items"][0]["actual_value"] = "SAMPLE-LOT-002"
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "actual_value"):
+            evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
+    def test_poc_mode_comparison_rejects_actual_high_risk_value_from_wrong_cell(
+        self,
+    ) -> None:
+        data = self.valid_poc_comparison_data()
+        data["modes"][2]["high_risk_items"][0]["actual_value"] = "Lot number"
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "actual_value"):
+            evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
+    def test_poc_mode_comparison_rejects_prefix_high_risk_identifier_match(
+        self,
+    ) -> None:
+        data = self.valid_poc_comparison_data()
+        data["modes"][2]["cases"][0]["actual"]["tables"][0]["cells"][1][
+            "text"
+        ] = "SAMPLE-LOT-001-REV2"
+        data["modes"][2]["metrics"]["cell_match_rate"] = 0.5
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "actual_value"):
+            evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
+    def test_poc_mode_comparison_rejects_non_string_high_risk_value_mismatch(
+        self,
+    ) -> None:
+        data = self.valid_poc_comparison_data()
+        data["modes"][2]["high_risk_items"][1]["actual_value"] = False
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "actual_value"):
+            evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
+    def test_poc_mode_comparison_rejects_string_actual_for_non_string_high_risk_label(
+        self,
+    ) -> None:
+        data = self.valid_poc_comparison_data()
+        data["modes"][2]["high_risk_items"][1]["actual_value"] = "SAMPLE-LOT-001"
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "actual_value"):
+            evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
+    def test_poc_high_risk_item_accepts_semantically_equal_numeric_value(self) -> None:
+        labels = {
+            ("sample-document-ir-v0", "block-002", "numeric_value"): {
+                "expected_value": 1,
+                "risk_level": "high",
+                "requires_review": True,
+            }
+        }
+        item = {
+            "fixture_id": "sample-document-ir-v0",
+            "block_id": "block-002",
+            "label_id": "numeric_value",
+            "expected_value": 1,
+            "actual_value": 1.0,
+            "risk_level": "high",
+            "requires_review": True,
+            "status": "requires_review",
+        }
+
+        self.assertTrue(
+            evaluate_dataset.validate_poc_high_risk_item_against_label(
+                item, labels, "modes[0].high_risk_items[0]"
+            )
+        )
+
+    def test_poc_high_risk_item_rejects_large_numeric_drift(self) -> None:
+        labels = {
+            ("sample-document-ir-v0", "block-002", "numeric_value"): {
+                "expected_value": 10**12,
+                "risk_level": "high",
+                "requires_review": True,
+            }
+        }
+        item = {
+            "fixture_id": "sample-document-ir-v0",
+            "block_id": "block-002",
+            "label_id": "numeric_value",
+            "expected_value": 10**12,
+            "actual_value": 10**12 + 1,
+            "risk_level": "high",
+            "requires_review": True,
+            "status": "requires_review",
+        }
+
+        self.assertFalse(
+            evaluate_dataset.validate_poc_high_risk_item_against_label(
+                item, labels, "modes[0].high_risk_items[0]"
+            )
+        )
+
+    def test_poc_mode_high_risk_values_accept_parsed_full_field_cell(self) -> None:
+        cases_data = self.valid_cases_data()
+        mode_record = self.valid_poc_comparison_data()["modes"][2]
+        cases_data["cases"][0]["expected"]["tables"][0]["cells"][1][
+            "text"
+        ] = "Lot Number: SAMPLE-LOT-001"
+        mode_record["cases"][0]["actual"]["tables"][0]["cells"][1][
+            "text"
+        ] = "Lot Number: SAMPLE-LOT-001"
+        labels = evaluate_dataset.high_risk_label_index(self.valid_high_risk_labels_data())
+        fixture_paths = evaluate_dataset.fixture_paths_from_manifest(
+            evaluate_dataset.load_json(REPO_ROOT / "datasets" / "fixtures" / "manifest.json"),
+            REPO_ROOT,
+        )
+        label_blocks = evaluate_dataset.validate_high_risk_labels_against_fixtures(
+            labels,
+            fixture_paths,
+        )
+
+        actual_values = evaluate_dataset.poc_mode_actual_values_by_high_risk_label(
+            mode_record,
+            cases_data,
+            labels,
+            label_blocks,
+            "modes[2]",
+        )
+
+        self.assertIn(
+            "SAMPLE-LOT-001",
+            actual_values[("sample-document-ir-v0", "block-002", "lot_number")],
+        )
+
+    def test_poc_mode_comparison_recomputes_cell_match_rate_from_mode_cases(self) -> None:
+        data = self.valid_poc_comparison_data()
+        data["modes"][2]["cases"][0]["actual"]["tables"][0]["cells"][0]["text"] = "Batch"
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "cell_match_rate"):
+            evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
+    def test_poc_mode_comparison_recomputes_table_extraction_rate_from_mode_cases(
+        self,
+    ) -> None:
+        data = self.valid_poc_comparison_data()
+        data["modes"][2]["cases"][0]["actual"]["tables"] = []
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "table_extraction_rate"):
+            evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
+    def test_poc_mode_comparison_recomputes_source_linkage_rate_from_mode_cases(self) -> None:
+        data = self.valid_poc_comparison_data()
+        del data["modes"][2]["cases"][0]["actual"]["tables"][0]["cells"][1]["source"]
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "source_linkage_rate"):
+            evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
+    def test_poc_mode_comparison_counts_high_risk_auto_confirmation_failures(self) -> None:
+        data = self.valid_poc_comparison_data()
+        data["modes"][0]["high_risk_items"][0]["auto_confirmed"] = True
+
+        metrics = evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
+        self.assertEqual(1, metrics.high_risk_false_auto_confirmed_count)
+        self.assertFalse(metrics.target_met)
+
+    def test_poc_mode_comparison_counts_captured_cell_auto_confirmation_failures(
+        self,
+    ) -> None:
+        data = self.valid_poc_comparison_data()
+        data["modes"][2]["cases"][0]["actual"]["tables"][0]["cells"][1][
+            "auto_confirmed"
+        ] = True
+
+        metrics = evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
+        self.assertEqual(
+            1,
+            metrics.as_dict()["modes"][2]["high_risk_false_auto_confirmed_count"],
+        )
+        self.assertEqual(1, metrics.high_risk_false_auto_confirmed_count)
+        self.assertFalse(metrics.target_met)
+
+    def test_poc_mode_comparison_counts_wrong_captured_cell_auto_confirmation(
+        self,
+    ) -> None:
+        data = self.valid_poc_comparison_data()
+        data["modes"][0]["cases"][0]["actual"]["tables"][0]["cells"][1][
+            "auto_confirmed"
+        ] = True
+
+        metrics = evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
+        self.assertEqual(
+            1,
+            metrics.as_dict()["modes"][0]["high_risk_false_auto_confirmed_count"],
+        )
+        self.assertEqual(1, metrics.high_risk_false_auto_confirmed_count)
+        self.assertFalse(metrics.target_met)
+
+    def test_poc_mode_comparison_deduplicates_mirrored_auto_confirmation_sources(self) -> None:
+        data = self.valid_poc_comparison_data()
+        data["modes"][2]["high_risk_items"][0]["auto_confirmed"] = True
+        data["modes"][2]["cases"][0]["actual"]["tables"][0]["cells"][1][
+            "auto_confirmed"
+        ] = True
+
+        metrics = evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
+        self.assertEqual(
+            1,
+            metrics.as_dict()["modes"][2]["high_risk_false_auto_confirmed_count"],
+        )
+        self.assertEqual(1, metrics.high_risk_false_auto_confirmed_count)
+        self.assertFalse(metrics.target_met)
+
+    def test_poc_mode_comparison_counts_boolean_review_cell_auto_confirmation(self) -> None:
+        data = self.valid_poc_comparison_data()
+        data["modes"][2]["cases"][0]["actual"]["tables"][0]["cells"][0][
+            "auto_confirmed"
+        ] = True
+
+        metrics = evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
+        self.assertEqual(
+            1,
+            metrics.as_dict()["modes"][2]["high_risk_false_auto_confirmed_count"],
+        )
+        self.assertEqual(1, metrics.high_risk_false_auto_confirmed_count)
+        self.assertFalse(metrics.target_met)
 
     def test_llm_stability_agreement_rates_do_not_depend_on_run_order(self) -> None:
         data = self.valid_llm_stability_data()
@@ -701,6 +1147,28 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertEqual(2 / 3, metrics["plan_agreement_rate"])
         self.assertEqual(2 / 3, metrics["confirmed_value_agreement_rate"])
         self.assertEqual(2, metrics["unstable_example_count"])
+
+    def test_cli_emits_poc_mode_comparison_for_phase1_acceptance(self) -> None:
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT_PATH),
+                "--poc-comparison",
+                str(POC_COMPARISON_PATH),
+            ],
+            cwd=REPO_ROOT,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        self.assertEqual("", proc.stderr)
+        self.assertEqual(0, proc.returncode)
+        metrics = json.loads(proc.stdout)
+        self.assertEqual(["no_llm", "standard", "high_quality"], metrics["required_modes"])
+        self.assertEqual(0, metrics["high_risk_false_auto_confirmed_count"])
+        self.assertTrue(metrics["target_met"])
 
 
 if __name__ == "__main__":

@@ -1,0 +1,234 @@
+{
+  "schema_version": "veridoc-poc-mode-comparison/v0",
+  "dataset_manifest": "datasets/fixtures/manifest.json",
+  "scope": {
+    "phase": "phase0",
+    "public_only": true,
+    "confidential_source_documents_allowed": false,
+    "production_or_gmp_claim": false
+  },
+  "high_risk_labels": "datasets/gold/high_risk_labels_v0.json",
+  "evaluation_cases": "datasets/gold/evaluation_cases_v0.json",
+  "acceptance_targets": {
+    "high_risk_false_auto_confirmed_count": 0
+  },
+  "modes": [
+    {
+      "mode": "no_llm",
+      "description": "Rule-only baseline from the public synthetic fixture.",
+      "metrics": {
+        "table_extraction_rate": 1.0,
+        "cell_match_rate": 0.5,
+        "source_linkage_rate": 0.5
+      },
+      "cases": [
+        {
+          "id": "eval-case-001",
+          "actual": {
+            "tables": [
+              {
+                "id": "table-001",
+                "cells": [
+                  {
+                    "id": "table-001-r1-c1",
+                    "text": "Lot number",
+                    "source": {
+                      "source_page": 1,
+                      "bbox": {
+                        "x": 72.0,
+                        "y": 112.0,
+                        "width": 88.0,
+                        "height": 18.0
+                      }
+                    },
+                    "auto_confirmed": false
+                  },
+                  {
+                    "id": "table-001-r1-c2",
+                    "text": "SAMPLE-LOT-002",
+                    "auto_confirmed": false
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "high_risk_items": [
+        {
+          "id": "no-llm-lot-number",
+          "fixture_id": "sample-document-ir-v0",
+          "block_id": "block-002",
+          "label_id": "lot_number",
+          "risk_level": "high",
+          "expected_value": "SAMPLE-LOT-001",
+          "actual_value": "SAMPLE-LOT-002",
+          "requires_review": true,
+          "auto_confirmed": false,
+          "status": "requires_review"
+        },
+        {
+          "id": "no-llm-review-required",
+          "fixture_id": "sample-document-ir-v0",
+          "block_id": "block-002",
+          "label_id": "requires_human_review",
+          "risk_level": "high",
+          "expected_value": true,
+          "actual_value": true,
+          "requires_review": true,
+          "auto_confirmed": false,
+          "status": "requires_review"
+        }
+      ]
+    },
+    {
+      "mode": "standard",
+      "description": "Standard prompt result captured from public synthetic input.",
+      "metrics": {
+        "table_extraction_rate": 1.0,
+        "cell_match_rate": 1.0,
+        "source_linkage_rate": 0.5
+      },
+      "cases": [
+        {
+          "id": "eval-case-001",
+          "actual": {
+            "tables": [
+              {
+                "id": "table-001",
+                "cells": [
+                  {
+                    "id": "table-001-r1-c1",
+                    "text": "Lot number",
+                    "source": {
+                      "source_page": 1,
+                      "bbox": {
+                        "x": 72.0,
+                        "y": 112.0,
+                        "width": 88.0,
+                        "height": 18.0
+                      }
+                    },
+                    "auto_confirmed": false
+                  },
+                  {
+                    "id": "table-001-r1-c2",
+                    "text": "SAMPLE-LOT-001",
+                    "auto_confirmed": false
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "high_risk_items": [
+        {
+          "id": "standard-lot-number",
+          "fixture_id": "sample-document-ir-v0",
+          "block_id": "block-002",
+          "label_id": "lot_number",
+          "risk_level": "high",
+          "expected_value": "SAMPLE-LOT-001",
+          "actual_value": "SAMPLE-LOT-001",
+          "requires_review": true,
+          "auto_confirmed": false,
+          "status": "requires_review"
+        },
+        {
+          "id": "standard-review-required",
+          "fixture_id": "sample-document-ir-v0",
+          "block_id": "block-002",
+          "label_id": "requires_human_review",
+          "risk_level": "high",
+          "expected_value": true,
+          "actual_value": true,
+          "requires_review": true,
+          "auto_confirmed": false,
+          "status": "requires_review"
+        }
+      ]
+    },
+    {
+      "mode": "high_quality",
+      "description": "High-quality prompt result captured from public synthetic input.",
+      "metrics": {
+        "table_extraction_rate": 1.0,
+        "cell_match_rate": 1.0,
+        "source_linkage_rate": 1.0
+      },
+      "cases": [
+        {
+          "id": "eval-case-001",
+          "actual": {
+            "tables": [
+              {
+                "id": "table-001",
+                "cells": [
+                  {
+                    "id": "table-001-r1-c1",
+                    "text": "Lot number",
+                    "source": {
+                      "source_page": 1,
+                      "bbox": {
+                        "x": 72.0,
+                        "y": 112.0,
+                        "width": 88.0,
+                        "height": 18.0
+                      }
+                    },
+                    "auto_confirmed": false
+                  },
+                  {
+                    "id": "table-001-r1-c2",
+                    "text": "SAMPLE-LOT-001",
+                    "source": {
+                      "source_page": 1,
+                      "bbox": {
+                        "x": 162.0,
+                        "y": 112.0,
+                        "width": 90.0,
+                        "height": 18.0
+                      }
+                    },
+                    "auto_confirmed": false
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "high_risk_items": [
+        {
+          "id": "high-quality-lot-number",
+          "fixture_id": "sample-document-ir-v0",
+          "block_id": "block-002",
+          "label_id": "lot_number",
+          "risk_level": "high",
+          "expected_value": "SAMPLE-LOT-001",
+          "actual_value": "SAMPLE-LOT-001",
+          "requires_review": true,
+          "auto_confirmed": false,
+          "status": "requires_review"
+        },
+        {
+          "id": "high-quality-review-required",
+          "fixture_id": "sample-document-ir-v0",
+          "block_id": "block-002",
+          "label_id": "requires_human_review",
+          "risk_level": "high",
+          "expected_value": true,
+          "actual_value": true,
+          "requires_review": true,
+          "auto_confirmed": false,
+          "status": "requires_review"
+        }
+      ]
+    }
+  ],
+  "open_items": [
+    "Captured outputs are synthetic/public Phase 0 records only.",
+    "Production authentication, GMP readiness, and full layout fidelity remain out of scope."
+  ]
+}
