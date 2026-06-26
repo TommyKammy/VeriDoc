@@ -357,6 +357,18 @@ class EvaluateDatasetTest(unittest.TestCase):
         with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "actual_value"):
             evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
 
+    def test_poc_mode_comparison_rejects_prefix_high_risk_identifier_match(
+        self,
+    ) -> None:
+        data = self.valid_poc_comparison_data()
+        data["modes"][2]["cases"][0]["actual"]["tables"][0]["cells"][1][
+            "text"
+        ] = "SAMPLE-LOT-001-REV2"
+        data["modes"][2]["metrics"]["cell_match_rate"] = 0.5
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "actual_value"):
+            evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
     def test_poc_mode_comparison_rejects_non_string_high_risk_value_mismatch(
         self,
     ) -> None:
@@ -395,6 +407,31 @@ class EvaluateDatasetTest(unittest.TestCase):
         }
 
         self.assertTrue(
+            evaluate_dataset.validate_poc_high_risk_item_against_label(
+                item, labels, "modes[0].high_risk_items[0]"
+            )
+        )
+
+    def test_poc_high_risk_item_rejects_large_numeric_drift(self) -> None:
+        labels = {
+            ("sample-document-ir-v0", "block-002", "numeric_value"): {
+                "expected_value": 10**12,
+                "risk_level": "high",
+                "requires_review": True,
+            }
+        }
+        item = {
+            "fixture_id": "sample-document-ir-v0",
+            "block_id": "block-002",
+            "label_id": "numeric_value",
+            "expected_value": 10**12,
+            "actual_value": 10**12 + 1,
+            "risk_level": "high",
+            "requires_review": True,
+            "status": "requires_review",
+        }
+
+        self.assertFalse(
             evaluate_dataset.validate_poc_high_risk_item_against_label(
                 item, labels, "modes[0].high_risk_items[0]"
             )
@@ -514,7 +551,7 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertEqual(1, metrics.high_risk_false_auto_confirmed_count)
         self.assertFalse(metrics.target_met)
 
-    def test_poc_mode_comparison_ignores_non_value_cell_auto_confirmation(self) -> None:
+    def test_poc_mode_comparison_counts_boolean_review_cell_auto_confirmation(self) -> None:
         data = self.valid_poc_comparison_data()
         data["modes"][2]["cases"][0]["actual"]["tables"][0]["cells"][0][
             "auto_confirmed"
@@ -523,11 +560,11 @@ class EvaluateDatasetTest(unittest.TestCase):
         metrics = evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
 
         self.assertEqual(
-            0,
+            1,
             metrics.as_dict()["modes"][2]["high_risk_false_auto_confirmed_count"],
         )
-        self.assertEqual(0, metrics.high_risk_false_auto_confirmed_count)
-        self.assertTrue(metrics.target_met)
+        self.assertEqual(1, metrics.high_risk_false_auto_confirmed_count)
+        self.assertFalse(metrics.target_met)
 
     def test_llm_stability_agreement_rates_do_not_depend_on_run_order(self) -> None:
         data = self.valid_llm_stability_data()

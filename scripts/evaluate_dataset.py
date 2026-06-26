@@ -175,7 +175,7 @@ def normalized_text_contains(container: object, candidate: object) -> bool:
 
 def values_match_authoritative(expected: object, actual: object) -> bool:
     if is_number(expected) and is_number(actual):
-        return math.isclose(float(expected), float(actual))
+        return expected == actual
     if type(actual) is not type(expected):
         return False
     return actual == expected
@@ -1124,6 +1124,14 @@ def collect_poc_high_risk_label_evidence(
 
     actual_values_by_label = {key: set() for key in labels}
     auto_confirmed_labels: set[HighRiskLabelKey] = set()
+    string_expected_values_by_fixture = {
+        fixture_id: tuple(
+            label["expected_value"]
+            for key, label in labels.items()
+            if key[0] == fixture_id and isinstance(label.get("expected_value"), str)
+        )
+        for fixture_id in {key[0] for key in labels}
+    }
     for case_id, expected_case in expected_cases_by_id.items():
         fixture_id = expected_case.get("fixture_id")
         if not isinstance(fixture_id, str) or not fixture_id:
@@ -1151,14 +1159,17 @@ def collect_poc_high_risk_label_evidence(
                     if not source_contains(label_block.get("source"), expected_cell.get("source")):
                         continue
                     expected_value = label.get("expected_value")
+                    expected_text = actual_cell_text(
+                        expected_cell,
+                        f"case {case_id!r}: expected cell {cell_id!r}",
+                    )
                     if isinstance(expected_value, str):
-                        expected_text = actual_cell_text(
-                            expected_cell,
-                            f"case {case_id!r}: expected cell {cell_id!r}",
-                        )
                         if not normalized_text_contains(expected_text, expected_value):
                             continue
-                    elif expected_cell.get("requires_review") is not True:
+                    elif expected_cell.get("requires_review") is not True or any(
+                        normalized_text_contains(expected_text, string_expected_value)
+                        for string_expected_value in string_expected_values_by_fixture[fixture_id]
+                    ):
                         continue
                     actual_cell = actual_cells.get(cell_id)
                     if actual_cell is None:
@@ -1168,11 +1179,11 @@ def collect_poc_high_risk_label_evidence(
                         f"{context}.cases[{case_id!r}].actual cell {cell_id!r}",
                     )
                     actual_values_by_label[label_key].add(normalized_text(actual_text))
-                    if isinstance(expected_value, str) and normalized_text_contains(
-                        actual_text, expected_value
-                    ):
+                    if isinstance(expected_value, str) and normalized_text(
+                        actual_text
+                    ) == normalized_text(expected_text):
                         actual_values_by_label[label_key].add(normalized_text(expected_value))
-                    if isinstance(expected_value, str) and actual_auto_confirmed(
+                    if actual_auto_confirmed(
                         actual_cell,
                         f"{context}.cases[{case_id!r}].actual cell {cell_id!r}",
                     ):
