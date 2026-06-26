@@ -130,6 +130,9 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/jobs":
             self._handle_list_jobs(parsed_url.query)
             return
+        if path == "/api/review-events":
+            self._handle_list_review_events()
+            return
         if path.startswith("/api/jobs/"):
             job_path = path.removeprefix("/api/jobs/")
             if job_path.endswith("/result"):
@@ -290,6 +293,9 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             },
             status=202,
         )
+
+    def _handle_list_review_events(self) -> None:
+        self._send_json({"review_events": self._review_event_store().list_events()})
 
     def _handle_job_result_download(self, job_id: str) -> None:
         try:
@@ -658,6 +664,8 @@ def _review_source_bbox(bbox: Any, page: Any) -> dict[str, Any] | None:
     if page.width <= 0 or page.height <= 0:
         return None
     if bbox.origin != "top-left" or bbox.unit != page.unit:
+        return None
+    if bbox.unit not in UNITS or page.unit not in UNITS:
         return None
     if bbox.x < 0 or bbox.y < 0 or bbox.width <= 0 or bbox.height <= 0:
         return None

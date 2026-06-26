@@ -181,6 +181,47 @@ def test_convert_uploaded_document_omits_synthetic_missing_bbox_from_review_item
     ]
 
 
+def test_convert_uploaded_document_omits_unsupported_unit_review_bbox() -> None:
+    parser_output = {
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 100,
+                "height": 100,
+                "unit": "em",
+                "fragments": [
+                    {
+                        "text": "Unsupported unit",
+                        "bbox": {"x": 10, "y": 10, "width": 20, "height": 12, "unit": "em"},
+                        "confidence": 0.41,
+                        "low_confidence": True,
+                    },
+                ],
+            }
+        ]
+    }
+
+    result = convert_uploaded_document(
+        filename="phase0-output.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+    )
+
+    assert result["status"] == "blocked"
+    assert result["validation"]["errors"] == [
+        "pages[0].unit is unsupported: em",
+        "blocks[0].bbox unit is unsupported: em",
+    ]
+    assert result["review_items"] == [
+        {
+            "document_id": "phase0-output",
+            "block_id": "block-0001",
+            "source_page": 1,
+            "text": "Unsupported unit",
+            "warnings": ["blocks[0].low confidence; block marked requires_review"],
+        }
+    ]
+
+
 def test_convert_uploaded_docx_uses_real_parser_bytes(tmp_path: Path) -> None:
     docx_path = tmp_path / "batch-record.docx"
     _write_docx(docx_path, _sample_docx_xml())
@@ -717,6 +758,35 @@ def test_poc_http_api_persists_review_action_audit_event_server_side() -> None:
     assert status == 202
     assert events == [body["audit_event"]]
     assert events[0]["revised_text"] == "Lot: SAMPLE-001 corrected"
+
+
+def test_poc_http_api_lists_server_side_review_action_audit_events() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.review_event_store = ReviewAuditEventStore()
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        audit_event = _review_audit_event()
+        payload = json.dumps({"audit_event": audit_event}).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/review-events",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        post_response = connection.getresponse()
+        post_body = json.loads(post_response.read().decode("utf-8"))
+        connection.request("GET", "/api/review-events")
+        list_response = connection.getresponse()
+        list_body = json.loads(list_response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert post_response.status == 202
+    assert list_response.status == 200
+    assert list_body == {"review_events": [post_body["audit_event"]]}
 
 
 def test_poc_http_api_does_not_persist_rejected_review_action_audit_event() -> None:
