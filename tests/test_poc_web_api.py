@@ -699,7 +699,7 @@ def test_poc_http_api_sanitizes_succeeded_job_result_and_downloads_result() -> N
             "status": "converted",
             "document_ir": {"document": {"title": "stored conversion payload"}},
             "download": {
-                "filename": "converted-record.veridoc-result.json",
+                "filename": "nested\\invoice\r\nX-Test: 1.pdf",
                 "content_type": "application/json; charset=utf-8",
                 "content": b'{"converted": true}',
             },
@@ -719,6 +719,7 @@ def test_poc_http_api_sanitizes_succeeded_job_result_and_downloads_result() -> N
         download_response = connection.getresponse()
         download_content_type = download_response.getheader("Content-Type")
         download_disposition = download_response.getheader("Content-Disposition")
+        injected_header = download_response.getheader("X-Test")
         download_body = download_response.read()
     finally:
         server.shutdown()
@@ -740,8 +741,110 @@ def test_poc_http_api_sanitizes_succeeded_job_result_and_downloads_result() -> N
     assert "stored conversion payload" not in json.dumps(detail_body)
     assert download_response.status == 200
     assert download_content_type == "application/json; charset=utf-8"
-    assert download_disposition == 'attachment; filename="converted-record.veridoc-result.json"'
+    assert download_disposition == 'attachment; filename="invoiceX-Test: 1.pdf"'
+    assert injected_header is None
     assert download_body == b'{"converted": true}'
+
+
+def test_poc_http_api_hides_download_action_without_download_payload() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue()
+    created = server.job_queue.create_job(
+        idempotency_key="converted-no-download-1",
+        filename="converted-record.pdf",
+        mode="standard",
+    )
+    running = server.job_queue.start_next_job()
+    assert running is not None
+    server.job_queue.mark_succeeded(created.job_id, result={"status": "converted"})
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request("GET", "/api/jobs")
+        list_response = connection.getresponse()
+        list_body = json.loads(list_response.read().decode("utf-8"))
+        connection.request("GET", f"/api/jobs/{created.job_id}")
+        detail_response = connection.getresponse()
+        detail_body = json.loads(detail_response.read().decode("utf-8"))
+        connection.request("GET", f"/api/jobs/{created.job_id}/result")
+        download_response = connection.getresponse()
+        download_body = json.loads(download_response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert list_response.status == 200
+    assert detail_response.status == 200
+    assert download_response.status == 400
+    assert download_body["error"] == "job_result_unavailable"
+    assert list_body["jobs"][0]["has_result"] is False
+    assert detail_body["job"]["has_result"] is False
+    assert [action["action"] for action in detail_body["job"]["available_actions"]] == [
+        "open_detail"
+    ]
+
+
+def test_poc_http_api_hides_high_quality_retry_while_another_high_quality_job_is_active() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue(max_attempts=1)
+    failed_job = server.job_queue.create_job(
+        idempotency_key="failed-hq-1",
+        filename="failed-record.pdf",
+        mode="high_quality",
+    )
+    failed_running = server.job_queue.start_next_job()
+    assert failed_running is not None
+    server.job_queue.mark_failed(failed_job.job_id, error="parser unavailable")
+    active_job = server.job_queue.create_job(
+        idempotency_key="active-hq-1",
+        filename="active-record.pdf",
+        mode="high_quality",
+    )
+    active_running = server.job_queue.start_next_job()
+    assert active_running is not None
+    assert active_running.job_id == active_job.job_id
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request("GET", "/api/jobs?status=failed")
+        failed_response = connection.getresponse()
+        failed_body = json.loads(failed_response.read().decode("utf-8"))
+        event_payload = json.dumps(
+            {
+                "job_id": failed_job.job_id,
+                "action": "retry_conversion",
+                "audit_event": {
+                    "event_type": "conversion_job.action_requested",
+                    "job_id": failed_job.job_id,
+                    "job_status": "failed",
+                    "action": "retry_conversion",
+                },
+            }
+        ).encode("utf-8")
+        connection.request(
+            "POST",
+            "/api/job-events",
+            body=event_payload,
+            headers={
+                "Content-Type": "application/json",
+                "Content-Length": str(len(event_payload)),
+            },
+        )
+        event_response = connection.getresponse()
+        event_body = json.loads(event_response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert failed_response.status == 200
+    assert [action["action"] for action in failed_body["jobs"][0]["available_actions"]] == [
+        "open_detail"
+    ]
+    assert event_response.status == 400
+    assert event_body["error"] == "invalid_job_event"
+    assert server.job_queue.get_job(failed_job.job_id).status == "failed"
 
 
 def test_poc_http_api_rejects_second_active_high_quality_job() -> None:

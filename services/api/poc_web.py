@@ -107,12 +107,13 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 self._handle_job_result_download(job_path.removesuffix("/result"))
                 return
             job_id = job_path
+            job_queue = self._job_queue()
             try:
-                job = self._job_queue().get_job(job_id)
+                job = job_queue.get_job(job_id)
             except KeyError:
                 self._send_json({"error": "job_not_found"}, status=404)
                 return
-            self._send_json({"job": _job_response(job)})
+            self._send_json({"job": _job_response(job, job_queue)})
             return
         self._send_json({"error": "not_found"}, status=404)
 
@@ -180,7 +181,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 return
             self._send_json({"error": "invalid_job_request", "message": str(exc)}, status=400)
             return
-        self._send_json({"job": _job_response(job)}, status=202)
+        self._send_json({"job": _job_response(job, self._job_queue())}, status=202)
 
     def _handle_list_jobs(self, query: str) -> None:
         parameters = parse_qs(query, keep_blank_values=True)
@@ -193,11 +194,12 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             return
         status = status_values[0] if status_values else None
         try:
-            jobs = self._job_queue().list_jobs(status=status or None)
+            job_queue = self._job_queue()
+            jobs = job_queue.list_jobs(status=status or None)
         except ValueError as exc:
             self._send_json({"error": "invalid_job_filter", "message": str(exc)}, status=400)
             return
-        self._send_json({"jobs": [_job_response(job) for job in jobs]})
+        self._send_json({"jobs": [_job_response(job, job_queue) for job in jobs]})
 
     def _handle_job_event(self) -> None:
         try:
@@ -207,7 +209,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             audit_event = request.get("audit_event")
             job_queue = self._job_queue()
             job = job_queue.get_job(job_id)
-            accepted_event = _validate_job_event(job, action, audit_event)
+            accepted_event = _validate_job_event(job, action, audit_event, job_queue)
             updated_job = job
             if action == "retry_conversion":
                 updated_job = job_queue.retry_failed_job(job_id)
@@ -227,7 +229,11 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "invalid_job_event", "message": str(exc)}, status=400)
             return
         self._send_json(
-            {"accepted": True, "audit_event": accepted_event, "job": _job_response(updated_job)},
+            {
+                "accepted": True,
+                "audit_event": accepted_event,
+                "job": _job_response(updated_job, job_queue),
+            },
             status=202,
         )
 
@@ -286,7 +292,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-def _job_response(job: JobRecord) -> dict[str, Any]:
+def _job_response(job: JobRecord, job_queue: JobQueue | None = None) -> dict[str, Any]:
     return {
         "job_id": job.job_id,
         "idempotency_key": job.idempotency_key,
@@ -297,20 +303,43 @@ def _job_response(job: JobRecord) -> dict[str, Any]:
         "error": job.error,
         "created_at": job.created_at,
         "updated_at": job.updated_at,
-        "has_result": job.result is not None,
-        "available_actions": _job_actions(job),
+        "has_result": _job_has_download(job),
+        "available_actions": _job_actions(job, job_queue),
     }
 
 
-def _job_actions(job: JobRecord) -> list[dict[str, Any]]:
+def _job_actions(job: JobRecord, job_queue: JobQueue | None = None) -> list[dict[str, Any]]:
     actions = [
         _job_action(job, "open_detail", "Open details"),
     ]
-    if job.status == "succeeded":
+    if _job_has_download(job):
         actions.append(_job_action(job, "download_result", "Download result"))
-    if job.status == "failed":
+    if job.status == "failed" and not _retry_blocked_by_active_high_quality(job, job_queue):
         actions.append(_job_action(job, "retry_conversion", "Retry conversion"))
     return actions
+
+
+def _job_has_download(job: JobRecord) -> bool:
+    try:
+        _job_download(job)
+    except ValueError:
+        return False
+    return True
+
+
+def _retry_blocked_by_active_high_quality(
+    job: JobRecord, job_queue: JobQueue | None = None
+) -> bool:
+    if job.mode != "high_quality":
+        return False
+    if job_queue is None:
+        return True
+    return any(
+        other.job_id != job.job_id
+        and other.mode == "high_quality"
+        and other.status in {"queued", "running"}
+        for other in job_queue.list_jobs()
+    )
 
 
 def _job_action(job: JobRecord, action: str, label: str) -> dict[str, Any]:
@@ -331,8 +360,13 @@ def _job_audit_event(job: JobRecord, action: str) -> dict[str, Any]:
     }
 
 
-def _validate_job_event(job: JobRecord, action: str, audit_event: Any) -> dict[str, Any]:
-    actions = {item["action"]: item for item in _job_actions(job)}
+def _validate_job_event(
+    job: JobRecord,
+    action: str,
+    audit_event: Any,
+    job_queue: JobQueue | None = None,
+) -> dict[str, Any]:
+    actions = {item["action"]: item for item in _job_actions(job, job_queue)}
     selected = actions.get(action)
     if selected is None:
         raise ValueError("action is not available for job status")
@@ -362,7 +396,8 @@ def _job_download(job: JobRecord) -> dict[str, Any]:
 
 
 def _download_filename(filename: str) -> str:
-    safe = Path(filename).name.strip().replace('"', "")
+    basename = re.split(r"[\\/]+", filename)[-1].strip()
+    safe = re.sub(r'[\x00-\x1f\x7f"\\]', "", basename).strip()
     return safe or "veridoc-result.json"
 
 
