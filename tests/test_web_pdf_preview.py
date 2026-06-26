@@ -132,7 +132,7 @@ def test_review_actions_clear_and_reject_stale_file_selection() -> None:
 def test_review_actions_are_serialized_while_audit_request_is_pending() -> None:
     html = _web_html()
 
-    assert "pendingReviewActions: new Set()" in html
+    assert "pendingReviewActions: new Map()" in html
     assert "function reviewActionKey(item)" in html
     assert "return `${item.document_id}:${item.block_id}`;" in html
     assert "approve.dataset.reviewActionKey = reviewActionKey(item);" in html
@@ -141,12 +141,26 @@ def test_review_actions_are_serialized_while_audit_request_is_pending() -> None:
     assert "const controls = reviewList.querySelectorAll(" in html
     assert "controls.forEach((control) => {" in html
     assert "state.pendingReviewActions.has(actionKey)" in html
-    assert "state.pendingReviewActions.add(actionKey)" in html
+    assert "const pendingOwner = Symbol(actionKey)" in html
+    assert "state.pendingReviewActions.set(actionKey, pendingOwner)" in html
     assert "actionStarted = true" in html
     assert "setReviewActionPending(item, true)" in html
-    assert "actionStarted && state.pendingReviewActions.delete(actionKey)" in html
+    assert "state.pendingReviewActions.get(actionKey) === pendingOwner" in html
+    assert "state.pendingReviewActions.delete(actionKey)" in html
     assert "setReviewActionPending(item, false)" in html
     assert "reviewActionKey(item, action)" not in html
+
+
+def test_review_actions_ignore_stale_failures_after_result_changes() -> None:
+    html = _web_html()
+
+    assert re.search(
+        r"\} catch \(error\) \{\s+"
+        r"if \(actionStarted && reviewActionBlockReason\(item\)\) return;\s+"
+        r"reviewActionStatus\.textContent =",
+        html,
+        flags=re.S,
+    )
 
 
 def test_pdf_preview_uses_canvas_coordinate_space_for_overlays() -> None:

@@ -496,7 +496,13 @@ def _validate_review_event_bbox(source_bbox: Any) -> dict[str, Any]:
         raise ValueError("audit_event.source_bbox must be an object")
     for key in ("x", "y", "width", "height"):
         value = source_bbox.get(key)
-        if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value):
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            raise ValueError(f"audit_event.source_bbox.{key} must be finite")
+        try:
+            finite = math.isfinite(value)
+        except OverflowError:
+            finite = False
+        if not finite:
             raise ValueError(f"audit_event.source_bbox.{key} must be finite")
     unit = str(source_bbox.get("unit") or "").strip()
     origin = str(source_bbox.get("origin") or "").strip()

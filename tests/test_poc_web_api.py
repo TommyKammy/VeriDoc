@@ -912,6 +912,19 @@ def test_poc_http_api_normalizes_review_action_source_bbox_strings() -> None:
     }
 
 
+def test_poc_http_api_rejects_huge_review_bbox_integer_without_crashing() -> None:
+    audit_event = _review_audit_event(source_bbox=_review_bbox(x=10**400))
+
+    status, body, events = _post_review_audit_event_with_store(audit_event)
+
+    assert status == 400
+    assert body == {
+        "error": "invalid_review_event",
+        "message": "audit_event.source_bbox.x must be finite",
+    }
+    assert events == []
+
+
 def _review_audit_event(**overrides: object) -> dict[str, object]:
     event: dict[str, object] = {
         "event_type": "conversion_review.action_requested",

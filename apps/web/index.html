@@ -549,7 +549,7 @@
         latestResult: null,
         previewPage: 1,
         reviewAuditEvents: [],
-        pendingReviewActions: new Set(),
+        pendingReviewActions: new Map(),
       };
 
       const PDFJS_MODULE_URL = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.min.mjs";
@@ -1269,12 +1269,13 @@
 
       async function requestReviewAction(item, action) {
         const actionKey = reviewActionKey(item);
+        const pendingOwner = Symbol(actionKey);
         let actionStarted = false;
         try {
           const blockReason = reviewActionBlockReason(item);
           if (blockReason) throw new Error(blockReason);
           if (state.pendingReviewActions.has(actionKey)) return;
-          state.pendingReviewActions.add(actionKey);
+          state.pendingReviewActions.set(actionKey, pendingOwner);
           actionStarted = true;
           setReviewActionPending(item, true);
           const auditEvent = buildReviewAuditEvent(item, action);
@@ -1307,11 +1308,13 @@
           reviewActionStatus.textContent = "Review action event queued for audit.";
           reviewActionStatus.className = "page-status";
         } catch (error) {
+          if (actionStarted && reviewActionBlockReason(item)) return;
           reviewActionStatus.textContent =
             error instanceof Error && error.message ? error.message : "Review action failed.";
           reviewActionStatus.className = "page-status error";
         } finally {
-          if (actionStarted && state.pendingReviewActions.delete(actionKey)) {
+          if (actionStarted && state.pendingReviewActions.get(actionKey) === pendingOwner) {
+            state.pendingReviewActions.delete(actionKey);
             setReviewActionPending(item, false);
           }
         }
