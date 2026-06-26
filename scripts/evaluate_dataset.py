@@ -30,6 +30,7 @@ FIXTURE_MANIFEST_SCHEMA_VERSION = "veridoc-eval-fixtures/v0"
 FIXTURE_SCHEMA_VERSION = "veridoc-evaluation-fixture/v0"
 EXPECTED_ALLOWED_FIXTURE_ROOT = Path("datasets/fixtures")
 EXPECTED_DATASET_MANIFEST = EXPECTED_ALLOWED_FIXTURE_ROOT / "manifest.json"
+EXPECTED_EVALUATION_CASES = Path("datasets/gold/evaluation_cases_v0.json")
 EXPECTED_HIGH_RISK_LABELS = Path("datasets/gold/high_risk_labels_v0.json")
 EXPECTED_SCOPE_PHASE = "phase0"
 PUBLIC_FIXTURE_ANONYMIZATION_VALUES = {"anonymized", "synthetic"}
@@ -842,6 +843,16 @@ def high_risk_labels_path_from_comparison(data: dict[str, Any], repo_root: Path)
     return repo_root / path
 
 
+def evaluation_cases_path_from_comparison(data: dict[str, Any], repo_root: Path) -> Path:
+    cases_path = data.get("evaluation_cases")
+    if not isinstance(cases_path, str) or not cases_path:
+        raise EvaluationCaseError("evaluation_cases must be a non-empty string")
+    path = Path(cases_path)
+    if path.is_absolute() or path != EXPECTED_EVALUATION_CASES:
+        raise EvaluationCaseError("evaluation_cases must be datasets/gold/evaluation_cases_v0.json")
+    return repo_root / path
+
+
 def high_risk_label_index(labels_data: dict[str, Any]) -> dict[tuple[str, str], dict[str, Any]]:
     if labels_data.get("schema_version") != HIGH_RISK_LABELS_SCHEMA_VERSION:
         raise EvaluationCaseError(
@@ -910,6 +921,46 @@ def validate_poc_high_risk_item_against_label(
     return actual_value == expected_value
 
 
+def evaluate_poc_mode_cases(
+    mode_record: dict[str, Any],
+    evaluation_cases_data: dict[str, Any],
+    repo_root: Path,
+    context: str,
+) -> EvaluationMetrics:
+    expected_cases = evaluation_cases_data.get("cases")
+    if not isinstance(expected_cases, list):
+        raise EvaluationCaseError("evaluation_cases must define cases")
+    expected_cases_by_id = cases_by_id(expected_cases)
+
+    mode_cases = mode_record.get("cases")
+    if not isinstance(mode_cases, list) or not mode_cases:
+        raise EvaluationCaseError(f"{context}.cases must list captured evaluation cases")
+    mode_cases_by_id = cases_by_id(mode_cases)
+    if set(mode_cases_by_id) != set(expected_cases_by_id):
+        raise EvaluationCaseError(f"{context}.cases must cover all evaluation cases")
+
+    scored_cases: list[dict[str, Any]] = []
+    for case_id, expected_case in expected_cases_by_id.items():
+        mode_case = mode_cases_by_id[case_id]
+        actual = mode_case.get("actual")
+        if not isinstance(actual, dict):
+            raise EvaluationCaseError(f"{context}.cases[{case_id!r}].actual must be an object")
+        scored_case = dict(expected_case)
+        scored_case["actual"] = actual
+        scored_cases.append(scored_case)
+
+    scoring_data = dict(evaluation_cases_data)
+    scoring_data["cases"] = scored_cases
+    return evaluate_cases(scoring_data, manifest_root=repo_root)
+
+
+def validate_reported_metric_matches_computed(
+    reported: float, computed: float, context: str
+) -> None:
+    if not math.isclose(reported, computed):
+        raise EvaluationCaseError(f"{context} must match recomputed evaluation cases")
+
+
 def evaluate_poc_mode_comparison(
     data: dict[str, Any], repo_root: Path | None = None
 ) -> PoCComparisonMetrics:
@@ -923,6 +974,7 @@ def evaluate_poc_mode_comparison(
     fixture_paths = fixture_paths_from_manifest(load_json(manifest_path), root)
     labels = high_risk_label_index(load_json(high_risk_labels_path_from_comparison(data, root)))
     authoritative_label_keys = set(labels)
+    evaluation_cases_data = load_json(evaluation_cases_path_from_comparison(data, root))
     missing_fixture_ids = sorted({fixture_id for fixture_id, _ in labels} - set(fixture_paths))
     if missing_fixture_ids:
         raise EvaluationCaseError(
@@ -957,9 +1009,12 @@ def evaluate_poc_mode_comparison(
             raise EvaluationCaseError(f"duplicate PoC comparison mode {mode!r}")
         seen_modes.add(mode)
 
-        metrics = mode_record.get("metrics")
-        if not isinstance(metrics, dict):
+        reported_metrics = mode_record.get("metrics")
+        if not isinstance(reported_metrics, dict):
             raise EvaluationCaseError(f"{context}.metrics must be an object")
+        computed_metrics = evaluate_poc_mode_cases(
+            mode_record, evaluation_cases_data, root, context
+        )
         high_risk_items = mode_record.get("high_risk_items")
         if not isinstance(high_risk_items, list) or not high_risk_items:
             raise EvaluationCaseError(f"{context}.high_risk_items must list high-risk checks")
@@ -1000,8 +1055,18 @@ def evaluate_poc_mode_comparison(
                 f"{context}.high_risk_items must cover all authoritative high-risk labels"
             )
 
+        table_extraction_rate = validate_ratio_metric(
+            reported_metrics.get("table_extraction_rate"),
+            f"{context}.metrics.table_extraction_rate",
+        )
+        validate_reported_metric_matches_computed(
+            table_extraction_rate,
+            computed_metrics.table_extraction_rate,
+            f"{context}.metrics.table_extraction_rate",
+        )
+
         cell_match_rate = validate_ratio_metric(
-            metrics.get("cell_match_rate"),
+            reported_metrics.get("cell_match_rate"),
             f"{context}.metrics.cell_match_rate",
         )
         high_risk_actual_match_rate = ratio(high_risk_actual_match_count, len(labels))
@@ -1009,20 +1074,29 @@ def evaluate_poc_mode_comparison(
             raise EvaluationCaseError(
                 f"{context}.metrics.cell_match_rate must match high-risk actual-value match rate"
             )
+        validate_reported_metric_matches_computed(
+            cell_match_rate,
+            computed_metrics.cell_match_rate,
+            f"{context}.metrics.cell_match_rate",
+        )
+
+        source_linkage_rate = validate_ratio_metric(
+            reported_metrics.get("source_linkage_rate"),
+            f"{context}.metrics.source_linkage_rate",
+        )
+        validate_reported_metric_matches_computed(
+            source_linkage_rate,
+            computed_metrics.source_linkage_rate,
+            f"{context}.metrics.source_linkage_rate",
+        )
 
         total_high_risk_false_auto_confirmed += high_risk_false_auto_confirmed_count
         mode_metrics.append(
             PoCModeMetrics(
                 mode=mode,
-                table_extraction_rate=validate_ratio_metric(
-                    metrics.get("table_extraction_rate"),
-                    f"{context}.metrics.table_extraction_rate",
-                ),
+                table_extraction_rate=table_extraction_rate,
                 cell_match_rate=cell_match_rate,
-                source_linkage_rate=validate_ratio_metric(
-                    metrics.get("source_linkage_rate"),
-                    f"{context}.metrics.source_linkage_rate",
-                ),
+                source_linkage_rate=source_linkage_rate,
                 high_risk_false_auto_confirmed_count=high_risk_false_auto_confirmed_count,
                 requires_review_count=requires_review_count,
             )

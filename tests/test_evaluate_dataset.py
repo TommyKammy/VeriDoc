@@ -172,6 +172,15 @@ class EvaluateDatasetTest(unittest.TestCase):
             ):
                 evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
 
+    def test_poc_mode_comparison_rejects_missing_evaluation_cases_before_scoring(
+        self,
+    ) -> None:
+        data = self.valid_poc_comparison_data()
+        data.pop("evaluation_cases")
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "evaluation_cases"):
+            evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
     def test_poc_mode_comparison_rejects_missing_high_risk_label_coverage_per_mode(
         self,
     ) -> None:
@@ -219,6 +228,29 @@ class EvaluateDatasetTest(unittest.TestCase):
         data["modes"][2]["high_risk_items"][0]["actual_value"] = "SAMPLE-LOT-002"
 
         with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "cell_match_rate"):
+            evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
+    def test_poc_mode_comparison_recomputes_cell_match_rate_from_mode_cases(self) -> None:
+        data = self.valid_poc_comparison_data()
+        data["modes"][2]["cases"][0]["actual"]["tables"][0]["cells"][0]["text"] = "Batch"
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "cell_match_rate"):
+            evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
+    def test_poc_mode_comparison_recomputes_table_extraction_rate_from_mode_cases(
+        self,
+    ) -> None:
+        data = self.valid_poc_comparison_data()
+        data["modes"][2]["cases"][0]["actual"]["tables"] = []
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "table_extraction_rate"):
+            evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
+    def test_poc_mode_comparison_recomputes_source_linkage_rate_from_mode_cases(self) -> None:
+        data = self.valid_poc_comparison_data()
+        del data["modes"][2]["cases"][0]["actual"]["tables"][0]["cells"][1]["source"]
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "source_linkage_rate"):
             evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
 
     def test_poc_mode_comparison_counts_high_risk_auto_confirmation_failures(self) -> None:

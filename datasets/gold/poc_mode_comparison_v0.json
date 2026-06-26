@@ -8,6 +8,7 @@
     "production_or_gmp_claim": false
   },
   "high_risk_labels": "datasets/gold/high_risk_labels_v0.json",
+  "evaluation_cases": "datasets/gold/evaluation_cases_v0.json",
   "acceptance_targets": {
     "high_risk_false_auto_confirmed_count": 0
   },
@@ -20,6 +21,39 @@
         "cell_match_rate": 0.5,
         "source_linkage_rate": 0.5
       },
+      "cases": [
+        {
+          "id": "eval-case-001",
+          "actual": {
+            "tables": [
+              {
+                "id": "table-001",
+                "cells": [
+                  {
+                    "id": "table-001-r1-c1",
+                    "text": "Lot number",
+                    "source": {
+                      "source_page": 1,
+                      "bbox": {
+                        "x": 72.0,
+                        "y": 112.0,
+                        "width": 88.0,
+                        "height": 18.0
+                      }
+                    },
+                    "auto_confirmed": false
+                  },
+                  {
+                    "id": "table-001-r1-c2",
+                    "text": "SAMPLE-LOT-002",
+                    "auto_confirmed": false
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ],
       "high_risk_items": [
         {
           "id": "no-llm-lot-number",
@@ -53,6 +87,39 @@
         "cell_match_rate": 1.0,
         "source_linkage_rate": 0.5
       },
+      "cases": [
+        {
+          "id": "eval-case-001",
+          "actual": {
+            "tables": [
+              {
+                "id": "table-001",
+                "cells": [
+                  {
+                    "id": "table-001-r1-c1",
+                    "text": "Lot number",
+                    "source": {
+                      "source_page": 1,
+                      "bbox": {
+                        "x": 72.0,
+                        "y": 112.0,
+                        "width": 88.0,
+                        "height": 18.0
+                      }
+                    },
+                    "auto_confirmed": false
+                  },
+                  {
+                    "id": "table-001-r1-c2",
+                    "text": "SAMPLE-LOT-001",
+                    "auto_confirmed": false
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ],
       "high_risk_items": [
         {
           "id": "standard-lot-number",
@@ -86,6 +153,48 @@
         "cell_match_rate": 1.0,
         "source_linkage_rate": 1.0
       },
+      "cases": [
+        {
+          "id": "eval-case-001",
+          "actual": {
+            "tables": [
+              {
+                "id": "table-001",
+                "cells": [
+                  {
+                    "id": "table-001-r1-c1",
+                    "text": "Lot number",
+                    "source": {
+                      "source_page": 1,
+                      "bbox": {
+                        "x": 72.0,
+                        "y": 112.0,
+                        "width": 88.0,
+                        "height": 18.0
+                      }
+                    },
+                    "auto_confirmed": false
+                  },
+                  {
+                    "id": "table-001-r1-c2",
+                    "text": "SAMPLE-LOT-001",
+                    "source": {
+                      "source_page": 1,
+                      "bbox": {
+                        "x": 162.0,
+                        "y": 112.0,
+                        "width": 90.0,
+                        "height": 18.0
+                      }
+                    },
+                    "auto_confirmed": false
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ],
       "high_risk_items": [
         {
           "id": "high-quality-lot-number",
