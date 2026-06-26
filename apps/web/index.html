@@ -620,6 +620,7 @@
         const conversionToken = state.directConversionToken + 1;
         state.directConversionToken = conversionToken;
         button.disabled = true;
+        clearReviewResult();
         try {
           const fileBytes = await file.arrayBuffer();
           if (!isActiveDirectConversion(conversionToken)) return;
@@ -1175,14 +1176,14 @@
         const approve = document.createElement("button");
         approve.type = "button";
         approve.textContent = "Approve";
-        approve.dataset.reviewActionKey = reviewActionKey(item, "approve");
+        approve.dataset.reviewActionKey = reviewActionKey(item);
         approve.disabled = !reviewActionAvailable(item);
         approve.addEventListener("click", () => requestReviewAction(item, "approve"));
         const requestEdit = document.createElement("button");
         requestEdit.className = "secondary";
         requestEdit.type = "button";
         requestEdit.textContent = "Save edit";
-        requestEdit.dataset.reviewActionKey = reviewActionKey(item, "edit");
+        requestEdit.dataset.reviewActionKey = reviewActionKey(item);
         requestEdit.disabled = !reviewActionAvailable(item);
         requestEdit.addEventListener("click", () => requestReviewAction(item, "edit"));
         const actions = document.createElement("div");
@@ -1246,17 +1247,17 @@
         return !reviewActionBlockReason(item);
       }
 
-      function reviewActionKey(item, action) {
-        return `${item.document_id}:${item.block_id}:${action}`;
+      function reviewActionKey(item) {
+        return `${item.document_id}:${item.block_id}`;
       }
 
-      function setReviewActionPending(item, action, isPending) {
-        const control = reviewList.querySelector(
-          `[data-review-action-key="${CSS.escape(reviewActionKey(item, action))}"]`
+      function setReviewActionPending(item, isPending) {
+        const controls = reviewList.querySelectorAll(
+          `[data-review-action-key="${CSS.escape(reviewActionKey(item))}"]`
         );
-        if (control) {
+        controls.forEach((control) => {
           control.disabled = isPending || !reviewActionAvailable(item);
-        }
+        });
       }
 
       function reviewDraftText(item) {
@@ -1267,7 +1268,7 @@
       }
 
       async function requestReviewAction(item, action) {
-        const actionKey = reviewActionKey(item, action);
+        const actionKey = reviewActionKey(item);
         let actionStarted = false;
         try {
           const blockReason = reviewActionBlockReason(item);
@@ -1275,7 +1276,7 @@
           if (state.pendingReviewActions.has(actionKey)) return;
           state.pendingReviewActions.add(actionKey);
           actionStarted = true;
-          setReviewActionPending(item, action, true);
+          setReviewActionPending(item, true);
           const auditEvent = buildReviewAuditEvent(item, action);
           const response = await fetch("/api/review-events", {
             method: "POST",
@@ -1306,7 +1307,7 @@
           reviewActionStatus.className = "page-status error";
         } finally {
           if (actionStarted && state.pendingReviewActions.delete(actionKey)) {
-            setReviewActionPending(item, action, false);
+            setReviewActionPending(item, false);
           }
         }
       }

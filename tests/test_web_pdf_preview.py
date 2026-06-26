@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -98,6 +99,12 @@ def test_review_actions_clear_and_reject_stale_file_selection() -> None:
     assert "function isActiveDirectConversion(conversionToken)" in html
     assert "if (!isActiveDirectConversion(conversionToken)) return;" in html
     assert "clearReviewResult();" in html
+    assert re.search(
+        r'button\.addEventListener\("click", async \(\) => \{.*?'
+        r"button\.disabled = true;\s+clearReviewResult\(\);\s+try \{",
+        html,
+        flags=re.S,
+    )
     assert "function clearReviewResult()" in html
     assert "reviewList.replaceChildren();" in html
     assert "state.reviewAuditEvents = [];" in html
@@ -113,14 +120,20 @@ def test_review_actions_are_serialized_while_audit_request_is_pending() -> None:
     html = _web_html()
 
     assert "pendingReviewActions: new Set()" in html
-    assert "function reviewActionKey(item, action)" in html
-    assert "function setReviewActionPending(item, action, isPending)" in html
+    assert "function reviewActionKey(item)" in html
+    assert "return `${item.document_id}:${item.block_id}`;" in html
+    assert "approve.dataset.reviewActionKey = reviewActionKey(item);" in html
+    assert "requestEdit.dataset.reviewActionKey = reviewActionKey(item);" in html
+    assert "function setReviewActionPending(item, isPending)" in html
+    assert "const controls = reviewList.querySelectorAll(" in html
+    assert "controls.forEach((control) => {" in html
     assert "state.pendingReviewActions.has(actionKey)" in html
     assert "state.pendingReviewActions.add(actionKey)" in html
     assert "actionStarted = true" in html
-    assert "setReviewActionPending(item, action, true)" in html
+    assert "setReviewActionPending(item, true)" in html
     assert "actionStarted && state.pendingReviewActions.delete(actionKey)" in html
-    assert "setReviewActionPending(item, action, false)" in html
+    assert "setReviewActionPending(item, false)" in html
+    assert "reviewActionKey(item, action)" not in html
 
 
 def test_pdf_preview_uses_canvas_coordinate_space_for_overlays() -> None:
