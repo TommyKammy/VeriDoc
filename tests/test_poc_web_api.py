@@ -1650,6 +1650,8 @@ def test_poc_http_api_authenticates_job_events_before_parsing_payload() -> None:
 def test_bundled_web_ui_plumbs_local_auth_token_into_api_fetches() -> None:
     html = (Path(__file__).resolve().parents[1] / "apps" / "web" / "index.html").read_text()
 
+    assert '<script type="module">' in html
+    assert "<script>" not in html
     assert 'id="auth-token"' in html
     assert 'let savedAuthToken = "";' in html
     assert "savedAuthToken = token" in html
