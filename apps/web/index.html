@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>VeriDoc PoC</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #f6f7f9;
+        color: #1d2430;
+      }
+      body {
+        margin: 0;
+      }
+      main {
+        box-sizing: border-box;
+        max-width: 980px;
+        min-height: 100vh;
+        margin: 0 auto;
+        padding: 32px 20px;
+      }
+      h1 {
+        margin: 0 0 24px;
+        font-size: 28px;
+        font-weight: 650;
+      }
+      section {
+        margin: 0 0 18px;
+        padding: 18px;
+        background: #fff;
+        border: 1px solid #d9dee7;
+        border-radius: 8px;
+      }
+      label,
+      button,
+      a[download] {
+        font: inherit;
+      }
+      input[type="file"] {
+        display: block;
+        width: 100%;
+        margin: 12px 0;
+      }
+      button,
+      a[download] {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 40px;
+        padding: 0 14px;
+        border-radius: 6px;
+        border: 1px solid #1d4f91;
+        background: #235ea8;
+        color: #fff;
+        text-decoration: none;
+        cursor: pointer;
+      }
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.55;
+      }
+      .status {
+        display: inline-block;
+        margin: 0 0 12px;
+        padding: 4px 8px;
+        border-radius: 999px;
+        background: #eef3f8;
+        font-size: 13px;
+      }
+      .review-item {
+        margin-top: 10px;
+        padding-top: 10px;
+        border-top: 1px solid #e5e9f0;
+      }
+      .review-item strong {
+        display: block;
+        margin-bottom: 4px;
+      }
+      pre {
+        overflow: auto;
+        max-height: 360px;
+        padding: 12px;
+        background: #202733;
+        color: #f8fafc;
+        border-radius: 6px;
+        font-size: 13px;
+      }
+      [hidden] {
+        display: none !important;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>VeriDoc PoC</h1>
+      <section>
+        <label for="document-file">Document or Phase0 JSON</label>
+        <input id="document-file" type="file" />
+        <button id="convert-button" type="button">Convert</button>
+      </section>
+      <section id="result-panel" hidden>
+        <span id="status" class="status"></span>
+        <div id="review-list"></div>
+        <a id="download-link" download hidden>Download</a>
+      </section>
+      <section id="raw-panel" hidden>
+        <pre id="raw-result"></pre>
+      </section>
+    </main>
+    <script>
+      const input = document.querySelector("#document-file");
+      const button = document.querySelector("#convert-button");
+      const resultPanel = document.querySelector("#result-panel");
+      const rawPanel = document.querySelector("#raw-panel");
+      const status = document.querySelector("#status");
+      const reviewList = document.querySelector("#review-list");
+      const downloadLink = document.querySelector("#download-link");
+      const rawResult = document.querySelector("#raw-result");
+      let downloadUrl = "";
+
+      button.addEventListener("click", async () => {
+        const file = input.files[0];
+        if (!file) return;
+        button.disabled = true;
+        try {
+          const contentBase64 = await fileToBase64(file);
+          const response = await fetch("/api/convert", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ filename: file.name, content_base64: contentBase64 }),
+          });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.message || result.error || "convert failed");
+          renderResult(result);
+        } catch (error) {
+          status.textContent = `blocked: ${error.message}`;
+          reviewList.replaceChildren();
+          clearDownload();
+          resultPanel.hidden = false;
+          rawPanel.hidden = true;
+        } finally {
+          button.disabled = false;
+        }
+      });
+
+      function renderResult(result) {
+        status.textContent = result.status;
+        reviewList.replaceChildren(...result.review_items.map(renderReviewItem));
+        const blob = new Blob([result.download.content_text], { type: result.download.content_type });
+        clearDownload();
+        downloadUrl = URL.createObjectURL(blob);
+        downloadLink.href = downloadUrl;
+        downloadLink.download = result.download.filename;
+        downloadLink.hidden = false;
+        rawResult.textContent = JSON.stringify(
+          { validation: result.validation, review_items: result.review_items },
+          null,
+          2
+        );
+        resultPanel.hidden = false;
+        rawPanel.hidden = false;
+      }
+
+      function clearDownload() {
+        if (downloadUrl) {
+          URL.revokeObjectURL(downloadUrl);
+          downloadUrl = "";
+        }
+        downloadLink.removeAttribute("href");
+        downloadLink.removeAttribute("download");
+        downloadLink.hidden = true;
+      }
+
+      async function fileToBase64(file) {
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        const chunkSize = 0x8000;
+        let binary = "";
+        for (let index = 0; index < bytes.length; index += chunkSize) {
+          binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+        }
+        return btoa(binary);
+      }
+
+      function renderReviewItem(item) {
+        const wrapper = document.createElement("div");
+        wrapper.className = "review-item";
+        const title = document.createElement("strong");
+        title.textContent = `${item.block_id} / page ${item.source_page}`;
+        const text = document.createElement("div");
+        text.textContent = item.text;
+        const warnings = document.createElement("div");
+        warnings.textContent = item.warnings.join(" / ");
+        wrapper.append(title, text, warnings);
+        return wrapper;
+      }
+    </script>
+  </body>
+</html>

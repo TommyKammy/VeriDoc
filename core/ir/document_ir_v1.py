@@ -226,7 +226,11 @@ def _block_from_fragment(
         requires_review = True
         review_warnings.append(f"blocks[{block_index - 1}].text empty; block marked requires_review")
 
-    if data.get("confidence") is None and data.get("engine"):
+    if data.get("missing_confidence") is True:
+        confidence = 0.0
+        requires_review = True
+        review_warnings.append(f"blocks[{block_index - 1}].confidence missing; block marked requires_review")
+    elif data.get("confidence") is None and data.get("engine"):
         confidence = 0.0
         requires_review = True
         review_warnings.append(f"blocks[{block_index - 1}].confidence missing; block marked requires_review")
@@ -237,6 +241,9 @@ def _block_from_fragment(
     if data.get("low_confidence") is True:
         requires_review = True
         review_warnings.append(f"blocks[{block_index - 1}].low confidence; block marked requires_review")
+    if data.get("requires_review") is True:
+        requires_review = True
+        review_warnings.append(f"blocks[{block_index - 1}].parser marked block requires_review")
 
     return DocumentBlock(
         id=f"block-{block_index:04d}",
@@ -244,9 +251,22 @@ def _block_from_fragment(
         text=text,
         source_page=source_page,
         bbox=bbox,
-        extractor=ExtractorRef(name=str(data.get("extractor") or data.get("engine") or fallback_extractor)),
+        extractor=_extractor_ref(data, fallback_extractor),
         confidence=confidence,
         review=ReviewState(requires_review=requires_review, warnings=review_warnings),
+    )
+
+
+def _extractor_ref(data: dict[str, Any], fallback_extractor: str) -> ExtractorRef:
+    extractor = data.get("extractor")
+    if isinstance(extractor, dict):
+        return ExtractorRef(
+            name=str(extractor.get("name") or fallback_extractor),
+            version=str(extractor.get("version") or "unknown"),
+        )
+    return ExtractorRef(
+        name=str(extractor or data.get("engine") or fallback_extractor),
+        version=str(data.get("extractor_version") or "unknown"),
     )
 
 
@@ -271,7 +291,7 @@ def _list_value(value: Any) -> list[Any]:
 def _parser_pages(data: dict[str, Any], source_type: str) -> list[Any]:
     pages = _list_value(data.get("pages"))
     if pages:
-        return pages
+        return _list_value(adapt_document_ir_v0_blocks(data).get("pages"))
     if source_type == "docx":
         blocks = _list_value(data.get("blocks"))
         if blocks:
@@ -292,6 +312,94 @@ def _parser_pages(data: dict[str, Any], source_type: str) -> list[Any]:
         if table_pages:
             return table_pages
     return []
+
+
+def adapt_document_ir_v0_blocks(parser_output: Any) -> dict[str, Any]:
+    """Return parser output with top-level Document IR v0 blocks adapted into page fragments."""
+    data = dict(_to_mapping(parser_output))
+    pages = _list_value(data.get("pages"))
+    if not pages:
+        return data
+    top_level_blocks = [_to_mapping(block) for block in _list_value(data.get("blocks"))]
+    if not top_level_blocks:
+        return data
+
+    adapted_pages: list[dict[str, Any]] = []
+    blocks_by_page: dict[int, list[dict[str, Any]]] = {}
+    unmatched_blocks: list[dict[str, Any]] = []
+    known_page_numbers = {
+        _page_number_value(_to_mapping(page).get("page_number"), default=index)
+        for index, page in enumerate(pages, start=1)
+    }
+    page_units_by_number = {
+        _page_number_value(_to_mapping(page).get("page_number"), default=index): str(
+            _to_mapping(page).get("unit") or "pt"
+        )
+        for index, page in enumerate(pages, start=1)
+    }
+
+    for block in top_level_blocks:
+        metadata = _to_mapping(block.get("value_metadata"))
+        source_page = _page_number_value(metadata.get("source_page"), default=0)
+        fragment = _document_ir_v0_block_fragment(block, page_unit=page_units_by_number.get(source_page))
+        if source_page in known_page_numbers:
+            blocks_by_page.setdefault(source_page, []).append(fragment)
+        else:
+            unmatched_blocks.append(fragment)
+
+    for index, page_data in enumerate(pages, start=1):
+        page = dict(_to_mapping(page_data))
+        existing_page_blocks = [*_list_value(page.get("fragments")), *_list_value(page.get("regions"))]
+        if existing_page_blocks:
+            adapted_pages.append(page)
+            continue
+
+        page_number = _page_number_value(page.get("page_number"), default=index)
+        fragments = list(blocks_by_page.get(page_number, []))
+        if index == 1:
+            fragments.extend(unmatched_blocks)
+        if fragments:
+            page["fragments"] = fragments
+        adapted_pages.append(page)
+    data["pages"] = adapted_pages
+    return data
+
+
+def _document_ir_v0_block_fragment(
+    block: dict[str, Any], *, page_unit: str | None = None
+) -> dict[str, Any]:
+    metadata = _to_mapping(block.get("value_metadata"))
+    kind = str(block.get("type") or "paragraph")
+    fragment: dict[str, Any] = {
+        "kind": kind,
+        "text": str(block.get("text") or ""),
+    }
+    if kind not in BLOCK_TYPES:
+        fragment["preserve_invalid_type"] = True
+
+    fragment["page_number"] = _page_number_value(metadata.get("source_page"), default=0)
+
+    bbox = _to_mapping(metadata.get("bbox"))
+    if bbox:
+        if page_unit and "unit" not in bbox:
+            bbox = {**bbox, "unit": page_unit}
+        fragment["bbox"] = bbox
+
+    confidence = metadata.get("confidence")
+    if confidence is not None:
+        fragment["confidence"] = confidence
+    else:
+        fragment["missing_confidence"] = True
+
+    extractor = metadata.get("extractor")
+    if isinstance(extractor, dict):
+        fragment["extractor"] = dict(extractor)
+    elif extractor is not None:
+        fragment["extractor"] = str(extractor)
+
+    if metadata.get("requires_review") is True:
+        fragment["requires_review"] = True
+    return fragment
 
 
 def _xlsx_sheet_page(sheet_data: Any, page_number: int) -> dict[str, Any]:
@@ -503,6 +611,8 @@ def _bbox_value(value: Any) -> Optional[BoundingBox]:
 def _block_type(data: dict[str, Any], text: str) -> str:
     raw_type = str(data.get("type") or data.get("kind") or "")
     if raw_type in BLOCK_TYPES:
+        return raw_type
+    if raw_type and data.get("preserve_invalid_type") is True:
         return raw_type
     return "paragraph"
 
