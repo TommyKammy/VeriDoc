@@ -233,6 +233,63 @@ class EvaluateDatasetTest(unittest.TestCase):
         with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "expected_value"):
             evaluate_dataset.high_risk_label_index(data)
 
+    def test_high_risk_labels_reject_unknown_fixture_block_id(self) -> None:
+        data = self.valid_high_risk_labels_data()
+        data["items"][0]["block_id"] = "block-missing"
+        labels = evaluate_dataset.high_risk_label_index(data)
+        fixture_paths = evaluate_dataset.fixture_paths_from_manifest(
+            evaluate_dataset.load_json(REPO_ROOT / "datasets" / "fixtures" / "manifest.json"),
+            REPO_ROOT,
+        )
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "block_id"):
+            evaluate_dataset.validate_high_risk_labels_against_fixtures(labels, fixture_paths)
+
+    def test_poc_mode_comparison_rejects_duplicate_value_from_different_block(
+        self,
+    ) -> None:
+        labels_data = self.valid_high_risk_labels_data()
+        duplicate_label = copy.deepcopy(labels_data["items"][0])
+        duplicate_label["id"] = "gold-duplicate-block-value"
+        duplicate_label["block_id"] = "block-003"
+        labels_data["items"].append(duplicate_label)
+        labels = evaluate_dataset.high_risk_label_index(labels_data)
+
+        fixture_paths = evaluate_dataset.fixture_paths_from_manifest(
+            evaluate_dataset.load_json(REPO_ROOT / "datasets" / "fixtures" / "manifest.json"),
+            REPO_ROOT,
+        )
+        label_blocks = evaluate_dataset.validate_high_risk_labels_against_fixtures(
+            evaluate_dataset.high_risk_label_index(self.valid_high_risk_labels_data()),
+            fixture_paths,
+        )
+        label_blocks[
+            ("sample-document-ir-v0", "block-003", "lot_number")
+        ] = {
+            "id": "block-003",
+            "text": "Lot Number: SAMPLE-LOT-001",
+            "source": {
+                "source_page": 1,
+                "bbox": {
+                    "x": 300.0,
+                    "y": 112.0,
+                    "width": 180.0,
+                    "height": 18.0,
+                },
+            },
+            "requires_review": True,
+        }
+        mode_record = self.valid_poc_comparison_data()["modes"][2]
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "captured actual value"):
+            evaluate_dataset.poc_mode_actual_values_by_high_risk_label(
+                mode_record,
+                self.valid_cases_data(),
+                labels,
+                label_blocks,
+                "modes[2]",
+            )
+
     def test_poc_mode_comparison_rejects_missing_high_risk_block_binding(self) -> None:
         data = self.valid_poc_comparison_data()
         del data["modes"][0]["high_risk_items"][0]["block_id"]

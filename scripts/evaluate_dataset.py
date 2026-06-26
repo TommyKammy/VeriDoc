@@ -171,6 +171,25 @@ def source_matches(expected: dict[str, Any], actual: dict[str, Any]) -> bool:
     )
 
 
+def source_contains(container: object, candidate: object) -> bool:
+    if not is_valid_source_anchor(container) or not is_valid_source_anchor(candidate):
+        return False
+    assert isinstance(container, dict)
+    assert isinstance(candidate, dict)
+    if container["source_page"] != candidate["source_page"]:
+        return False
+    container_bbox = container["bbox"]
+    candidate_bbox = candidate["bbox"]
+    return (
+        candidate_bbox["x"] >= container_bbox["x"]
+        and candidate_bbox["y"] >= container_bbox["y"]
+        and candidate_bbox["x"] + candidate_bbox["width"]
+        <= container_bbox["x"] + container_bbox["width"]
+        and candidate_bbox["y"] + candidate_bbox["height"]
+        <= container_bbox["y"] + container_bbox["height"]
+    )
+
+
 def is_number(value: object) -> bool:
     if isinstance(value, bool):
         return False
@@ -893,6 +912,85 @@ def high_risk_label_index(labels_data: dict[str, Any]) -> dict[HighRiskLabelKey,
     return indexed
 
 
+def fixture_blocks_by_id(fixture: dict[str, Any], fixture_id: str) -> dict[str, dict[str, Any]]:
+    if fixture.get("schema_version") != FIXTURE_SCHEMA_VERSION:
+        raise EvaluationCaseError(
+            f"unsupported fixture schema_version {fixture.get('schema_version')!r}"
+        )
+    pages = pages_by_number(fixture, fixture_id)
+    blocks = fixture.get("blocks")
+    if not isinstance(blocks, list):
+        raise EvaluationCaseError(f"fixture {fixture_id!r}: blocks must be a list")
+
+    indexed: dict[str, dict[str, Any]] = {}
+    for block in blocks:
+        if not isinstance(block, dict) or not isinstance(block.get("id"), str):
+            raise EvaluationCaseError(f"fixture {fixture_id!r}: each block needs a string id")
+        block_id = block["id"]
+        if block_id in indexed:
+            raise EvaluationCaseError(f"fixture {fixture_id!r}: duplicate block id {block_id!r}")
+        validated_cell_text(block, f"fixture {fixture_id!r} block {block_id!r}")
+        validate_source_anchor_on_page(
+            block.get("source"), pages, f"fixture {fixture_id!r} block {block_id!r}"
+        )
+        indexed[block_id] = block
+    return indexed
+
+
+def validate_high_risk_labels_against_fixtures(
+    labels: dict[HighRiskLabelKey, dict[str, Any]], fixture_paths: dict[str, Path]
+) -> dict[HighRiskLabelKey, dict[str, Any]]:
+    fixture_cache: dict[str, dict[str, Any]] = {}
+    block_cache: dict[str, dict[str, dict[str, Any]]] = {}
+    blocks_by_label: dict[HighRiskLabelKey, dict[str, Any]] = {}
+    for label_key, label in labels.items():
+        fixture_id, block_id, _label_id = label_key
+        fixture_path = fixture_paths.get(fixture_id)
+        if fixture_path is None:
+            raise EvaluationCaseError(
+                f"high-risk label {label_key!r} references fixture missing from dataset_manifest"
+            )
+        fixture = fixture_cache.get(fixture_id)
+        if fixture is None:
+            fixture = load_json(fixture_path)
+            fixture_cache[fixture_id] = fixture
+
+        document = fixture.get("document")
+        if not isinstance(document, dict) or not isinstance(document.get("id"), str):
+            raise EvaluationCaseError(f"fixture {fixture_id!r}: document.id must be a string")
+        if label.get("document_id") != document["id"]:
+            raise EvaluationCaseError(
+                f"high-risk label {label_key!r} document_id must match fixture"
+            )
+
+        blocks = block_cache.get(fixture_id)
+        if blocks is None:
+            blocks = fixture_blocks_by_id(fixture, fixture_id)
+            block_cache[fixture_id] = blocks
+        block = blocks.get(block_id)
+        if block is None:
+            raise EvaluationCaseError(
+                f"high-risk label {label_key!r} block_id is not present in fixture"
+            )
+        expected_text = label.get("expected_text")
+        if not isinstance(expected_text, str) or not normalized_text(expected_text):
+            raise EvaluationCaseError(f"high-risk label {label_key!r} expected_text is required")
+        if normalized_text(expected_text) != normalized_text(block.get("text", "")):
+            raise EvaluationCaseError(
+                f"high-risk label {label_key!r} expected_text must match fixture block"
+            )
+        pages = pages_by_number(fixture, fixture_id)
+        validate_source_anchor_on_page(
+            label.get("evidence"), pages, f"high-risk label {label_key!r} evidence"
+        )
+        if label.get("evidence") != block.get("source"):
+            raise EvaluationCaseError(
+                f"high-risk label {label_key!r} evidence must match fixture block source"
+            )
+        blocks_by_label[label_key] = block
+    return blocks_by_label
+
+
 def validate_poc_high_risk_item_against_label(
     item: dict[str, Any],
     labels: dict[HighRiskLabelKey, dict[str, Any]],
@@ -969,6 +1067,7 @@ def poc_mode_actual_values_by_high_risk_label(
     mode_record: dict[str, Any],
     evaluation_cases_data: dict[str, Any],
     labels: dict[HighRiskLabelKey, dict[str, Any]],
+    label_blocks: dict[HighRiskLabelKey, dict[str, Any]],
     context: str,
 ) -> dict[HighRiskLabelKey, set[str]]:
     expected_cases = evaluation_cases_data.get("cases")
@@ -983,19 +1082,14 @@ def poc_mode_actual_values_by_high_risk_label(
     if set(mode_cases_by_id) != set(expected_cases_by_id):
         raise EvaluationCaseError(f"{context}.cases must cover all evaluation cases")
 
-    string_labels = {
-        key: label["expected_value"]
-        for key, label in labels.items()
-        if isinstance(label.get("expected_value"), str)
-    }
-    actual_values_by_label = {key: set() for key in string_labels}
+    actual_values_by_label = {key: set() for key in labels}
     for case_id, expected_case in expected_cases_by_id.items():
         fixture_id = expected_case.get("fixture_id")
         if not isinstance(fixture_id, str) or not fixture_id:
             raise EvaluationCaseError(f"evaluation case {case_id!r} fixture_id must be a string")
         relevant_labels = {
-            key: expected_value
-            for key, expected_value in string_labels.items()
+            key: label
+            for key, label in labels.items()
             if key[0] == fixture_id
         }
         if not relevant_labels:
@@ -1011,14 +1105,21 @@ def poc_mode_actual_values_by_high_risk_label(
             )
             actual_cells = cells_by_id(actual_tables.get(table_id, {"cells": []}))
             for cell_id, expected_cell in expected_cells.items():
-                expected_text = normalized_text(
-                    actual_cell_text(
-                        expected_cell,
-                        f"case {case_id!r}: expected cell {cell_id!r}",
-                    )
-                )
-                for label_key, expected_value in relevant_labels.items():
-                    if expected_text != normalized_text(expected_value):
+                for label_key, label in relevant_labels.items():
+                    label_block = label_blocks[label_key]
+                    if not source_contains(label_block.get("source"), expected_cell.get("source")):
+                        continue
+                    expected_value = label.get("expected_value")
+                    if isinstance(expected_value, str):
+                        expected_text = normalized_text(
+                            actual_cell_text(
+                                expected_cell,
+                                f"case {case_id!r}: expected cell {cell_id!r}",
+                            )
+                        )
+                        if expected_text != normalized_text(expected_value):
+                            continue
+                    elif expected_cell.get("requires_review") is not True:
                         continue
                     actual_cell = actual_cells.get(cell_id)
                     if actual_cell is None:
@@ -1060,6 +1161,7 @@ def evaluate_poc_mode_comparison(
     manifest_path = manifest_path_from_cases(data, root)
     fixture_paths = fixture_paths_from_manifest(load_json(manifest_path), root)
     labels = high_risk_label_index(load_json(high_risk_labels_path_from_comparison(data, root)))
+    label_blocks = validate_high_risk_labels_against_fixtures(labels, fixture_paths)
     authoritative_label_keys = set(labels)
     evaluation_cases_data = load_json(evaluation_cases_path_from_comparison(data, root))
     missing_fixture_ids = sorted({label_key[0] for label_key in labels} - set(fixture_paths))
@@ -1112,7 +1214,7 @@ def evaluate_poc_mode_comparison(
             f"{context}.metrics.table_extraction_rate",
         )
         actual_values_by_label = poc_mode_actual_values_by_high_risk_label(
-            mode_record, evaluation_cases_data, labels, context
+            mode_record, evaluation_cases_data, labels, label_blocks, context
         )
         high_risk_items = mode_record.get("high_risk_items")
         if not isinstance(high_risk_items, list) or not high_risk_items:
