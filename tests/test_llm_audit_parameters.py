@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from core.llm import _audit_parameter_rules as audit_parameter_rules
 from core.llm import audit_parameters
 from core.llm.audit_parameters import sanitize_audit_parameters
 
@@ -23,6 +24,29 @@ class _StringPathLike(os.PathLike[str]):
 
     def __fspath__(self) -> str:
         return self._value
+
+
+def test_audit_parameter_domain_rules_are_sourced_from_internal_module() -> None:
+    assert (
+        audit_parameters._SECRET_PARAMETER_KEYS
+        is audit_parameter_rules._SECRET_PARAMETER_KEYS
+    )
+    assert (
+        audit_parameters._CONTENT_BEARING_AUDIT_PARAMETER_KEYS
+        is audit_parameter_rules._CONTENT_BEARING_AUDIT_PARAMETER_KEYS
+    )
+    assert (
+        audit_parameters._SAFE_MESSAGE_METADATA_AUDIT_PARAMETER_KEYS
+        is audit_parameter_rules._SAFE_MESSAGE_METADATA_AUDIT_PARAMETER_KEYS
+    )
+    assert (
+        audit_parameters._JSON_SCHEMA_VALUE_AUDIT_PARAMETER_KEYS
+        is audit_parameter_rules._JSON_SCHEMA_VALUE_AUDIT_PARAMETER_KEYS
+    )
+    assert (
+        audit_parameters._QUERY_AUDIT_PARAMETER_CONTAINER_PREFIX_COMPONENTS
+        is audit_parameter_rules._QUERY_AUDIT_PARAMETER_CONTAINER_PREFIX_COMPONENTS
+    )
 
 
 def test_sanitize_audit_parameters_returns_json_safe_parameter_values() -> None:
