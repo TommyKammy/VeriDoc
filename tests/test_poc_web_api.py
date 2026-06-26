@@ -1717,6 +1717,7 @@ def test_bundled_web_ui_clears_credential_bound_state_when_auth_token_changes() 
     assert "state.authGeneration += 1" in credential_clear_body
     assert "state.directConversionToken += 1" in credential_clear_body
     assert "button.disabled = false" in credential_clear_body
+    assert "createJob.disabled = false" in credential_clear_body
     assert "clearJobState()" in credential_clear_body
     assert "clearSourcePreview()" in credential_clear_body
     assert "clearReviewResult()" in credential_clear_body
