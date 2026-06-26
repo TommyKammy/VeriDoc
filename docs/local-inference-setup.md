@@ -15,19 +15,24 @@ implementation. It is a PoC prerequisite only: GMP適合や業務利用可能性
 The machine-readable profile contract is `services/api/inference_profiles.json`.
 The file defines two local routes:
 
-- 標準モード: an operator-selected local OpenAI-compatible runtime for ordinary Phase0 checks.
+- 標準モード: `Qwen/Qwen3-8B` as the Phase1 PoC 暫定標準モデル through an operator-controlled local OpenAI-compatible runtime.
 - 高品質モード: DeepSeek V4 Flash on DwarfStar 4 exposed through an OpenAI互換 API.
 
 Both profiles set `egress` to `disabled` and use `credential_source` value
 `local-placeholder-only` so implementation work fails closed until real local
 runtime settings are provided.
 
+The standard-model selection is recorded in
+`adr/ADR-001-local-llm-standard-model.md`. That ADR compares 日本語,
+JSON安定性, and ライセンス posture for the Phase1 candidates and records the
+remaining Phase1 open items.
+
 ## Environment Variables
 
 Standard mode:
 
 - `VERIDOC_STANDARD_OPENAI_BASE_URL`: local OpenAI-compatible base URL, for example `http://127.0.0.1:<port>/v1`.
-- `VERIDOC_STANDARD_MODEL`: model identifier served by the standard local runtime.
+- `VERIDOC_STANDARD_MODEL`: model identifier served by the standard local runtime; default PoC target is `Qwen/Qwen3-8B`.
 - `VERIDOC_STANDARD_OPENAI_API_KEY`: optional local runtime token; use a placeholder only for runtimes that ignore auth.
 - `VERIDOC_STANDARD_TIMEOUT_SECONDS`: optional request timeout.
 - `VERIDOC_STANDARD_MAX_TOKENS`: optional response-token cap for API implementation tests.

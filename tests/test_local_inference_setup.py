@@ -8,6 +8,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PROFILE_PATH = REPO_ROOT / "services" / "api" / "inference_profiles.json"
 DOC_PATH = REPO_ROOT / "docs" / "local-inference-setup.md"
+ADR_PATH = REPO_ROOT / "adr" / "ADR-001-local-llm-standard-model.md"
 
 
 class LocalInferenceSetupTest(unittest.TestCase):
@@ -27,6 +28,13 @@ class LocalInferenceSetupTest(unittest.TestCase):
 
         standard = by_id["standard"]
         self.assertEqual(standard["quality_tier"], "standard")
+        self.assertEqual(standard["provider"], "Qwen")
+        self.assertEqual(standard["model_family"], "Qwen3-8B")
+        self.assertEqual(standard["recommended_model"], "Qwen/Qwen3-8B")
+        self.assertEqual(
+            standard["decision_ref"],
+            "adr/ADR-001-local-llm-standard-model.md",
+        )
         self.assertIn("VERIDOC_STANDARD_OPENAI_BASE_URL", standard["required_env"])
         self.assertIn("VERIDOC_STANDARD_MODEL", standard["required_env"])
 
@@ -65,9 +73,37 @@ class LocalInferenceSetupTest(unittest.TestCase):
         ):
             self.assertIn(required_text, docs)
 
-        forbidden_fragments = ("/Users/", "C:\\Users\\")
+        forbidden_fragments = ("/" + "Users" + "/", "C:" + "\\Users" + "\\")
         for fragment in forbidden_fragments:
             self.assertNotIn(fragment, docs)
+
+    def test_standard_model_adr_records_comparison_and_phase1_open_items(self) -> None:
+        self.assertTrue(
+            ADR_PATH.is_file(),
+            msg=f"missing standard model ADR: {ADR_PATH.relative_to(REPO_ROOT)}",
+        )
+
+        adr = ADR_PATH.read_text(encoding="utf-8")
+
+        for required_text in (
+            "Qwen3-8B",
+            "Mistral NeMo Instruct 2407",
+            "Llama 3.1 8B Instruct",
+            "日本語",
+            "JSON安定性",
+            "ライセンス",
+            "Apache-2.0",
+            "暫定標準モデル",
+            "Phase1以降の未決事項",
+            "VERIDOC_STANDARD_MODEL",
+            "requires_review",
+            "fail closed",
+        ):
+            self.assertIn(required_text, adr)
+
+        forbidden_fragments = ("/" + "Users" + "/", "C:" + "\\Users" + "\\")
+        for fragment in forbidden_fragments:
+            self.assertNotIn(fragment, adr)
 
 
 if __name__ == "__main__":
