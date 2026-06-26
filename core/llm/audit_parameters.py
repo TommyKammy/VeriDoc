@@ -8,7 +8,9 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
-from urllib.parse import parse_qsl, unquote, unquote_plus, urlparse
+from urllib.parse import unquote_plus
+
+from core.llm import _audit_parameter_raw as raw_audit
 
 JsonObject = dict[str, Any]
 MetadataKeyPredicate = Callable[[str], bool]
@@ -419,36 +421,6 @@ class AuditParameterContext:
         if decode_raw_key:
             key_string = _raw_key_value_parameter_entry_key(self.key_path, key_string)
         return _join_parameter_key_path(self.key_path, key_string)
-
-
-@dataclass(frozen=True)
-class RawKeyValueParameterContext:
-    key_path: str
-    normalized_leaf: str
-    split_query_pairs: bool = False
-
-    @classmethod
-    def from_key_path(cls, key_path: str) -> RawKeyValueParameterContext:
-        context = AuditParameterContext(key_path)
-        return cls(
-            key_path=key_path,
-            normalized_leaf=context.normalized_leaf,
-            split_query_pairs=context.is_real_parameters_container,
-        )
-
-    @property
-    def can_split_query_pairs(self) -> bool:
-        return self.split_query_pairs or _is_multi_entry_raw_parameter_container_leaf(
-            self.normalized_leaf
-        )
-
-    @property
-    def can_decode_encoded_pairs(self) -> bool:
-        return self.can_split_query_pairs
-
-    @property
-    def is_cookie_container(self) -> bool:
-        return _is_cookie_audit_parameter_container_leaf(self.normalized_leaf)
 
 
 @dataclass(frozen=True)
@@ -1481,180 +1453,77 @@ def _is_safe_audit_parameter_sequence_key(key: str) -> bool:
 
 
 def _raw_key_value_parameter_line(value: str, key_path: str) -> tuple[str, str, str] | None:
-    if not _is_key_value_audit_parameter_sequence_container_key(key_path):
-        return None
-    if _is_absolute_url(value):
-        return None
-    separator = _raw_key_value_parameter_separator(value)
-    if separator is not None:
-        entry_key, found, entry_value = value.partition(separator)
-        if found and entry_key.strip() and entry_value.strip():
-            return (entry_key.strip(), found, entry_value.strip())
-    return None
+    return raw_audit.raw_key_value_parameter_line(
+        value,
+        key_path,
+        _RAW_AUDIT_PARAMETER_POLICY,
+    )
 
 
 def _raw_key_value_parameter_separator(value: str) -> str | None:
-    positions = [
-        (position, separator)
-        for separator in ("=", ":")
-        if (position := value.find(separator)) >= 0
-    ]
-    if not positions:
-        return None
-    return min(positions)[1]
+    return raw_audit.raw_key_value_parameter_separator(value)
 
 
 def _raw_key_value_parameter_entries(value: str, key_path: str) -> list[tuple[str, str, str]]:
-    if not _is_key_value_audit_parameter_sequence_container_key(key_path):
-        return []
-    raw_context = RawKeyValueParameterContext.from_key_path(key_path)
-    return [
-        entry
-        for chunk in _raw_key_value_parameter_chunks(value, raw_context)
-        if (entry := _raw_key_value_parameter_chunk_entry(chunk, raw_context)) is not None
-    ]
+    context = AuditParameterContext(key_path)
+    return raw_audit.raw_key_value_parameter_entries(
+        value,
+        key_path,
+        _RAW_AUDIT_PARAMETER_POLICY,
+        normalized_leaf=context.normalized_leaf,
+        split_query_pairs=context.is_real_parameters_container,
+    )
 
 
 def _redact_raw_key_value_parameter_text(value: str, key_path: str) -> str | None:
-    if not _is_key_value_audit_parameter_sequence_container_key(key_path):
-        return None
-    raw_context = RawKeyValueParameterContext.from_key_path(key_path)
-    chunks = _raw_key_value_parameter_chunks(value, raw_context)
-    if len(chunks) == 1 and chunks[0] == value:
-        return _redact_single_raw_key_value_parameter_text(value, raw_context)
-    return _redact_chunked_raw_key_value_parameter_text(value, chunks, raw_context)
-
-
-def _redact_single_raw_key_value_parameter_text(
-    value: str,
-    raw_context: RawKeyValueParameterContext,
-) -> str | None:
-    raw_entry = _raw_key_value_parameter_chunk_entry(value, raw_context)
-    if raw_entry is None:
-        return None
-    return _redact_raw_key_value_parameter_line(raw_entry, raw_context.key_path)
-
-
-def _redact_chunked_raw_key_value_parameter_text(
-    value: str,
-    chunks: list[str],
-    raw_context: RawKeyValueParameterContext,
-) -> str | None:
-    redacted_chunks = []
-    changed = False
-    for chunk in chunks:
-        raw_entry = _raw_key_value_parameter_chunk_entry(chunk, raw_context)
-        if raw_entry is None:
-            redacted_chunks.append(chunk)
-            continue
-        redacted_chunk = _redact_raw_key_value_parameter_line(raw_entry, raw_context.key_path)
-        changed = changed or redacted_chunk != chunk
-        redacted_chunks.append(redacted_chunk)
-    if not changed:
-        return None
-    return _raw_key_value_parameter_joiner(value, raw_context).join(redacted_chunks)
-
-
-def _raw_key_value_parameter_chunk_entry(
-    chunk: str,
-    raw_context: RawKeyValueParameterContext,
-) -> tuple[str, str, str] | None:
-    raw_entry = _raw_key_value_parameter_line(chunk, raw_context.key_path)
-    if raw_entry is not None:
-        return raw_entry
-    if not raw_context.can_decode_encoded_pairs:
-        return None
-    decoded_chunk = _fully_decode_query_parameter_value(chunk)
-    if decoded_chunk == chunk:
-        return None
-    return _raw_key_value_parameter_line(decoded_chunk, raw_context.key_path)
-
-
-def _raw_key_value_parameter_chunks(
-    value: str,
-    raw_context: RawKeyValueParameterContext,
-) -> list[str]:
-    if "\n" in value or "\r" in value:
-        return value.splitlines()
-    if raw_context.can_split_query_pairs and ("&" in value or ";" in value):
-        return re.split(r"[&;]", value)
-    if raw_context.is_cookie_container and ";" in value:
-        return [chunk.strip() for chunk in value.split(";")]
-    return [value]
-
-
-def _raw_key_value_parameter_joiner(
-    value: str,
-    raw_context: RawKeyValueParameterContext,
-) -> str:
-    if "\n" in value or "\r" in value:
-        return "\n"
-    if raw_context.can_split_query_pairs and "&" in value:
-        return "&"
-    if raw_context.can_split_query_pairs and ";" in value:
-        return ";"
-    if raw_context.is_cookie_container and ";" in value:
-        return "; "
-    return ""
+    context = AuditParameterContext(key_path)
+    return raw_audit.redact_raw_key_value_parameter_text(
+        value,
+        key_path,
+        _RAW_AUDIT_PARAMETER_POLICY,
+        normalized_leaf=context.normalized_leaf,
+        split_query_pairs=context.is_real_parameters_container,
+        redacted_value=_REDACTED_VALUE,
+    )
 
 
 def _redact_raw_key_value_parameter_line(
     raw_entry: tuple[str, str, str], key_path: str
 ) -> str:
-    entry_key, separator, entry_value = raw_entry
-    entry_path = _raw_key_value_parameter_entry_path(key_path, entry_key)
-    entry_parameter_value = _raw_key_value_parameter_entry_value(key_path, entry_value)
-    separator_text = ": " if separator == ":" else separator
-    if (
-        _is_raw_query_audit_parameter_value_key(key_path)
-        and not _is_key_value_audit_parameter_sequence_container_key(entry_path)
-        and _is_credential_bearing_raw_query_text(entry_parameter_value)
-    ):
-        return f"{entry_key}{separator_text}{_REDACTED_VALUE}"
-    redacted_value = _redact_audit_parameters(
-        entry_parameter_value,
-        key_path=entry_path,
+    return raw_audit.redact_raw_key_value_parameter_line(
+        raw_entry,
+        key_path,
+        _RAW_AUDIT_PARAMETER_POLICY,
+        redacted_value=_REDACTED_VALUE,
     )
-    if redacted_value == _REDACTED_VALUE:
-        return f"{entry_key}{separator_text}{_REDACTED_VALUE}"
-    if isinstance(redacted_value, str) and redacted_value != entry_parameter_value:
-        return f"{entry_key}{separator_text}{redacted_value}"
-    return f"{entry_key}{separator_text}{entry_value}"
 
 
 def _raw_key_value_parameter_entry_path(key_path: str, entry_key: str) -> str:
-    return _join_parameter_key_path(
+    return raw_audit.raw_key_value_parameter_entry_path(
         key_path,
-        _raw_key_value_parameter_entry_key(key_path, entry_key),
+        entry_key,
+        _RAW_AUDIT_PARAMETER_POLICY,
     )
 
 
 def _raw_key_value_parameter_entry_key(key_path: str, entry_key: str) -> str:
-    normalized_leaf = _normalize_parameter_key(_parameter_key_leaf(key_path))
-    if _is_query_audit_parameter_container_leaf(normalized_leaf):
-        return _fully_decode_query_parameter_value(entry_key)
-    if _is_raw_audit_parameter_container_leaf(normalized_leaf):
-        return _fully_decode_query_parameter_value(entry_key)
-    return entry_key
+    return raw_audit.raw_key_value_parameter_entry_key(
+        key_path,
+        entry_key,
+        _RAW_AUDIT_PARAMETER_POLICY,
+    )
 
 
 def _raw_key_value_parameter_entry_value(key_path: str, entry_value: str) -> str:
-    normalized_leaf = _normalize_parameter_key(_parameter_key_leaf(key_path))
-    if _is_query_audit_parameter_container_leaf(
-        normalized_leaf
-    ) or _is_raw_audit_parameter_container_leaf(normalized_leaf):
-        return _fully_decode_query_parameter_value(entry_value)
-    return entry_value
+    return raw_audit.raw_key_value_parameter_entry_value(
+        key_path,
+        entry_value,
+        _RAW_AUDIT_PARAMETER_POLICY,
+    )
 
 
 def _fully_decode_query_parameter_value(value: str) -> str:
-    decoded_value = value
-    for _index in range(_MAX_AUDIT_PARAMETER_DECODE_DEPTH):
-        next_value = unquote(decoded_value)
-        if next_value == decoded_value:
-            break
-        decoded_value = next_value
-    return decoded_value
+    return raw_audit.fully_decode_query_parameter_value(value)
 
 
 def _security_checked_audit_parameter_string(value: str, key_path: str) -> str:
@@ -1664,41 +1533,29 @@ def _security_checked_audit_parameter_string(value: str, key_path: str) -> str:
 
 
 def _audit_parameter_url_value_forms(value: str, key_path: str) -> tuple[str, ...]:
-    decoded_value = _fully_decode_query_parameter_value(value)
-    if decoded_value == value:
-        return (value,)
-    if _should_decode_url_audit_parameter_value(key_path) and (
-        _is_absolute_url(decoded_value) or _is_data_url(decoded_value)
-    ):
-        return (value, decoded_value)
-    return (value,)
+    return raw_audit.audit_parameter_url_value_forms(
+        value,
+        key_path,
+        _RAW_AUDIT_PARAMETER_POLICY,
+    )
 
 
 def _should_decode_url_audit_parameter_value(key_path: str) -> bool:
-    leaf = _normalize_parameter_key(_parameter_key_leaf(key_path))
-    parent_key = key_path.rsplit(".", 1)[0] if "." in key_path else ""
-    parent_leaf = _normalize_parameter_key(_parameter_key_leaf(parent_key))
-    return (
-        _is_query_audit_parameter_container_leaf(parent_leaf)
-        or _is_raw_audit_parameter_container_leaf(parent_leaf)
-        or _is_query_audit_parameter_container_leaf(leaf)
-        or _is_raw_audit_parameter_container_leaf(leaf)
-        or _is_url_value_audit_parameter_leaf(leaf)
+    return raw_audit.should_decode_url_audit_parameter_value(
+        key_path,
+        _RAW_AUDIT_PARAMETER_POLICY,
     )
 
 
 def _should_decode_structured_raw_audit_parameter_value(key_path: str) -> bool:
-    parent_key = key_path.rsplit(".", 1)[0]
-    parent_leaf = _normalize_parameter_key(_parameter_key_leaf(parent_key))
-    return (
-        _is_query_audit_parameter_container_leaf(parent_leaf)
-        or _is_raw_audit_parameter_container_leaf(parent_leaf)
+    return raw_audit.should_decode_structured_raw_audit_parameter_value(
+        key_path,
+        _RAW_AUDIT_PARAMETER_POLICY,
     )
 
 
 def _is_url_value_audit_parameter_leaf(normalized_leaf: str) -> bool:
-    components = tuple(normalized_leaf.split("_"))
-    return bool(components) and components[-1] in {"url", "uri"}
+    return raw_audit.is_url_value_audit_parameter_leaf(normalized_leaf)
 
 
 def _mapping_key_value_parameter_entry(value: Mapping[object, object]) -> tuple[str, str, str] | None:
@@ -1854,163 +1711,98 @@ def _redact_json_encoded_audit_metadata_value(value: str, key_path: str) -> str 
 
 
 def _is_content_bearing_url(value: str, *, _depth: int = 0) -> bool:
-    parsed_url = urlparse(value)
-    if parsed_url.scheme.lower() == "data":
-        return True
-    if not parsed_url.scheme or not parsed_url.netloc:
-        return False
-    url_pairs = _url_parameter_pairs(parsed_url.query) + _url_parameter_pairs(parsed_url.fragment)
-    return any(
-        _is_content_bearing_query_parameter_pair(key, parameter_value)
-        for key, parameter_value in url_pairs
-    ) or any(
-        _is_content_bearing_url(parameter_value, _depth=_depth + 1)
-        or _is_content_bearing_raw_query_text(parameter_value, _depth=_depth + 1)
-        for _key, parameter_value in url_pairs
-        if _depth < _MAX_AUDIT_PARAMETER_DECODE_DEPTH
+    return raw_audit.is_content_bearing_url(
+        value,
+        _RAW_AUDIT_PARAMETER_POLICY,
+        _depth=_depth,
     )
 
 
 def _is_credential_bearing_url(value: str, *, _depth: int = 0) -> bool:
-    parsed_url = urlparse(value)
-    if not parsed_url.scheme or not parsed_url.netloc:
-        return False
-    if parsed_url.username is not None or parsed_url.password is not None:
-        return True
-    url_pairs = _url_parameter_pairs(parsed_url.query) + _url_parameter_pairs(parsed_url.fragment)
-    if any(_is_secret_url_parameter_key(key) for key, _value in url_pairs):
-        return True
-    return any(
-        _is_credential_bearing_url(parameter_value, _depth=_depth + 1)
-        or _is_credential_bearing_raw_query_text(parameter_value, _depth=_depth + 1)
-        for _key, parameter_value in url_pairs
-        if _depth < _MAX_AUDIT_PARAMETER_DECODE_DEPTH
+    return raw_audit.is_credential_bearing_url(
+        value,
+        _RAW_AUDIT_PARAMETER_POLICY,
+        _depth=_depth,
     )
 
 
 def _is_absolute_url(value: str) -> bool:
-    parsed_url = urlparse(value)
-    return bool(parsed_url.scheme and parsed_url.netloc)
+    return raw_audit.is_absolute_url(value)
 
 
 def _is_data_url(value: str) -> bool:
-    return urlparse(value).scheme.lower() == "data"
+    return raw_audit.is_data_url(value)
 
 
 def _is_secret_url_parameter_key(key: str) -> bool:
-    return _is_secret_parameter_key(key) or _normalize_parameter_key(key) in {"code", "key"}
+    return raw_audit.is_secret_url_parameter_key(
+        key,
+        _RAW_AUDIT_PARAMETER_POLICY,
+    )
 
 
 def _is_content_bearing_raw_query_text(value: str, *, _depth: int = 0) -> bool:
-    if not _has_raw_query_key_value_separator(value):
-        return False
-    if _depth >= _MAX_AUDIT_PARAMETER_DECODE_DEPTH:
-        # Let the redaction pass handle overly deep raw-query chains.
-        return False
-    raw_pairs = _raw_query_parameter_pairs(value)
-    return any(
-        _is_content_bearing_query_parameter_pair(key, parameter_value)
-        for key, parameter_value in raw_pairs
-    ) or any(
-        _is_content_bearing_url(parameter_value, _depth=_depth + 1)
-        or _is_content_bearing_raw_query_text(parameter_value, _depth=_depth + 1)
-        for _key, parameter_value in raw_pairs
+    return raw_audit.is_content_bearing_raw_query_text(
+        value,
+        _RAW_AUDIT_PARAMETER_POLICY,
+        _depth=_depth,
     )
 
 
 def _is_content_bearing_real_raw_query_text(value: str, *, _depth: int = 0) -> bool:
-    if not _has_raw_query_key_value_separator(value):
-        return False
-    if _depth >= _MAX_AUDIT_PARAMETER_DECODE_DEPTH:
-        return False
-    raw_pairs = _raw_query_parameter_pairs(value)
-    return any(
-        _is_content_bearing_real_raw_query_parameter_pair(key, parameter_value)
-        or _is_content_bearing_url(parameter_value, _depth=_depth + 1)
-        or _is_content_bearing_real_raw_query_text(parameter_value, _depth=_depth + 1)
-        for key, parameter_value in raw_pairs
+    return raw_audit.is_content_bearing_real_raw_query_text(
+        value,
+        _RAW_AUDIT_PARAMETER_POLICY,
+        _depth=_depth,
     )
 
 
 def _is_content_bearing_query_parameter_pair(key: str, value: str) -> bool:
-    if _is_secret_url_parameter_key(key):
-        return False
-    return _is_content_bearing_audit_parameter_key(key) or _is_invalid_safe_metadata_value(
+    return raw_audit.is_content_bearing_query_parameter_pair(
         key,
         value,
+        _RAW_AUDIT_PARAMETER_POLICY,
     )
 
 
 def _is_content_bearing_real_raw_query_parameter_pair(key: str, value: str) -> bool:
-    if _is_safe_real_raw_query_metadata_pair(key, value):
-        return False
-    return _is_content_bearing_query_parameter_pair(key, value)
+    return raw_audit.is_content_bearing_real_raw_query_parameter_pair(
+        key,
+        value,
+        _RAW_AUDIT_PARAMETER_POLICY,
+    )
 
 
 def _is_safe_real_raw_query_metadata_pair(key: str, value: str) -> bool:
-    normalized_key = _normalize_parameter_key(key)
-    return normalized_key in {"message", "mode", "output", "status"} and (
-        _is_safe_schema_literal_string(value)
+    return raw_audit.is_safe_real_raw_query_metadata_pair(
+        key,
+        value,
+        _RAW_AUDIT_PARAMETER_POLICY,
     )
 
 
 def _is_credential_bearing_raw_query_text(value: str, *, _depth: int = 0) -> bool:
-    if not _has_raw_query_key_value_separator(value):
-        return False
-    if _depth >= _MAX_AUDIT_PARAMETER_DECODE_DEPTH:
-        # Redact ambiguous raw-query chains instead of recursing without a bound.
-        return True
-    raw_pairs = _raw_query_parameter_pairs(value)
-    return any(
-        _is_secret_url_parameter_key(key)
-        for key, _parameter_value in raw_pairs
-    ) or any(
-        _is_credential_bearing_url(parameter_value, _depth=_depth + 1)
-        or _is_credential_bearing_raw_query_text(parameter_value, _depth=_depth + 1)
-        for _key, parameter_value in raw_pairs
+    return raw_audit.is_credential_bearing_raw_query_text(
+        value,
+        _RAW_AUDIT_PARAMETER_POLICY,
+        _depth=_depth,
     )
 
 
 def _has_raw_query_key_value_separator(value: str) -> bool:
-    return any(
-        _raw_key_value_parameter_separator(value_form) is not None
-        for value_form in _decoded_query_parameter_value_forms(value)
-    )
+    return raw_audit.has_raw_query_key_value_separator(value)
 
 
 def _raw_query_parameter_pairs(value: str) -> list[tuple[str, str]]:
-    pairs: list[tuple[str, str]] = []
-    for chunk in re.split(r"[&;]", value):
-        for value_form in _decoded_query_parameter_value_forms(chunk):
-            separator = _raw_key_value_parameter_separator(value_form)
-            if separator is None:
-                continue
-            key, found, parameter_value = value_form.partition(separator)
-            if found and key.strip() and parameter_value.strip():
-                pairs.append((key.strip(), parameter_value.strip()))
-    return pairs
+    return raw_audit.raw_query_parameter_pairs(value)
 
 
 def _url_parameter_pairs(value: str) -> list[tuple[str, str]]:
-    pairs: list[tuple[str, str]] = []
-    for chunk in re.split(r"[&;]", value):
-        for key, parameter_value in parse_qsl(chunk, keep_blank_values=True):
-            pairs.extend(
-                (decoded_key, decoded_value)
-                for decoded_key in _decoded_query_parameter_value_forms(key)
-                for decoded_value in _decoded_query_parameter_value_forms(parameter_value)
-            )
-    return pairs
+    return raw_audit.url_parameter_pairs(value)
 
 
 def _decoded_query_parameter_value_forms(value: str) -> tuple[str, ...]:
-    decoded_values = [value]
-    for _index in range(_MAX_AUDIT_PARAMETER_DECODE_DEPTH):
-        decoded_value = unquote_plus(decoded_values[-1])
-        if decoded_value == decoded_values[-1]:
-            break
-        decoded_values.append(decoded_value)
-    return tuple(decoded_values)
+    return raw_audit.decoded_query_parameter_value_forms(value)
 
 
 def _contains_component_sequence(components: tuple[str, ...], sequence: tuple[str, ...]) -> bool:
@@ -2030,3 +1822,25 @@ def _ends_with_component_sequence(
         len(sequence) <= len(components) and components[-len(sequence) :] == sequence
         for sequence in sequences
     )
+
+
+def _redact_raw_audit_parameter_value(value: object, key_path: str) -> object:
+    return _redact_audit_parameters(value, key_path=key_path)
+
+
+_RAW_AUDIT_PARAMETER_POLICY = raw_audit.RawAuditParameterPolicy(
+    normalize_parameter_key=_normalize_parameter_key,
+    parameter_key_leaf=_parameter_key_leaf,
+    join_parameter_key_path=_join_parameter_key_path,
+    is_query_container_leaf=_is_query_audit_parameter_container_leaf,
+    is_raw_container_leaf=_is_raw_audit_parameter_container_leaf,
+    is_multi_entry_raw_container_leaf=_is_multi_entry_raw_parameter_container_leaf,
+    is_key_value_sequence_container_key=_is_key_value_audit_parameter_sequence_container_key,
+    is_cookie_container_leaf=_is_cookie_audit_parameter_container_leaf,
+    is_raw_query_value_key=_is_raw_query_audit_parameter_value_key,
+    is_secret_parameter_key=_is_secret_parameter_key,
+    is_content_bearing_parameter_key=_is_content_bearing_audit_parameter_key,
+    is_invalid_safe_metadata_value=_is_invalid_safe_metadata_value,
+    is_safe_schema_literal_string=_is_safe_schema_literal_string,
+    redact_audit_parameters=_redact_raw_audit_parameter_value,
+)
