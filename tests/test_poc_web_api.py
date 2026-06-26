@@ -1671,6 +1671,7 @@ def test_bundled_web_ui_clears_credential_bound_state_when_auth_token_changes() 
     assert save_body.index("clearCredentialBoundState()") < save_body.index("sessionStorage.setItem")
     assert clear_body.index("sessionStorage.removeItem") < clear_body.index("clearCredentialBoundState()")
     assert clear_body.index("clearCredentialBoundState()") < clear_body.index("loadJobs()")
+    assert "state.authGeneration += 1" in credential_clear_body
     assert "state.directConversionToken += 1" in credential_clear_body
     assert "clearJobState()" in credential_clear_body
     assert "clearSourcePreview()" in credential_clear_body
@@ -2293,16 +2294,25 @@ def test_web_job_list_refresh_ignores_stale_auth_token_responses() -> None:
     assert load_jobs_handler is not None
     load_jobs_body = load_jobs_handler.group("body")
     assert "const requestAuthToken = authToken.value.trim()" in load_jobs_body
-    assert "if (!isActiveAuthToken(requestAuthToken)) return;" in load_jobs_body
+    assert "const requestAuthGeneration = state.authGeneration" in load_jobs_body
+    assert (
+        "if (!isActiveJobListRequest(requestAuthToken, requestAuthGeneration)) return;"
+        in load_jobs_body
+    )
     assert (
         load_jobs_body.index("const body = await response.json()")
-        < load_jobs_body.index("if (!isActiveAuthToken(requestAuthToken)) return;")
+        < load_jobs_body.index(
+            "if (!isActiveJobListRequest(requestAuthToken, requestAuthGeneration)) return;"
+        )
         < load_jobs_body.index("if (!response.ok) throw")
         < load_jobs_body.index("state.jobs = body.jobs")
     )
     assert (
-        load_jobs_body.rindex("if (!isActiveAuthToken(requestAuthToken)) return;")
+        load_jobs_body.rindex(
+            "if (!isActiveJobListRequest(requestAuthToken, requestAuthGeneration)) return;"
+        )
         < load_jobs_body.index("setPageStatus(error.message, true)")
     )
-    assert "function isActiveAuthToken(requestAuthToken)" in html
-    assert "return authToken.value.trim() === requestAuthToken" in html
+    assert "function isActiveJobListRequest(requestAuthToken, requestAuthGeneration)" in html
+    assert "state.authGeneration === requestAuthGeneration" in html
+    assert "authToken.value.trim() === requestAuthToken" in html

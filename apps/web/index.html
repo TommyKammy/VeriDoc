@@ -615,6 +615,7 @@
         previewPage: 1,
         reviewAuditEvents: [],
         pendingReviewActions: new Map(),
+        authGeneration: 0,
       };
 
       const AUTH_TOKEN_SESSION_STORAGE_KEY = "veridoc.sessionAuthToken";
@@ -749,11 +750,12 @@
         const filter = statusFilter.value;
         const query = filter ? `?status=${encodeURIComponent(filter)}` : "";
         const requestAuthToken = authToken.value.trim();
+        const requestAuthGeneration = state.authGeneration;
         setPageStatus("Loading jobs...");
         try {
           const response = await apiFetch(`/api/jobs${query}`);
           const body = await response.json();
-          if (!isActiveAuthToken(requestAuthToken)) return;
+          if (!isActiveJobListRequest(requestAuthToken, requestAuthGeneration)) return;
           if (!response.ok) throw new Error(body.message || body.error || "job list failed");
           state.jobs = body.jobs;
           const refreshedSelection = state.selectedJob
@@ -768,7 +770,7 @@
           }
           setPageStatus(`${body.jobs.length} job${body.jobs.length === 1 ? "" : "s"} loaded.`);
         } catch (error) {
-          if (!isActiveAuthToken(requestAuthToken)) return;
+          if (!isActiveJobListRequest(requestAuthToken, requestAuthGeneration)) return;
           setPageStatus(error.message, true);
         }
       }
@@ -950,14 +952,18 @@
       }
 
       function clearCredentialBoundState() {
+        state.authGeneration += 1;
         state.directConversionToken += 1;
         clearJobState();
         clearSourcePreview();
         clearReviewResult();
       }
 
-      function isActiveAuthToken(requestAuthToken) {
-        return authToken.value.trim() === requestAuthToken;
+      function isActiveJobListRequest(requestAuthToken, requestAuthGeneration) {
+        return (
+          state.authGeneration === requestAuthGeneration &&
+          authToken.value.trim() === requestAuthToken
+        );
       }
 
       function findAction(job, actionName) {
