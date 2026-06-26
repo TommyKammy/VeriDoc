@@ -799,6 +799,7 @@
           if (!response.ok) throw new Error(body.message || body.error || "job create failed");
           state.selectedJob = body.job;
           await loadJobs();
+          if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
           renderDetail(body.job);
           setPageStatus(`Created ${body.job.job_id}.`);
         } catch (error) {
@@ -810,19 +811,27 @@
       }
 
       async function loadJobDetail(jobId) {
+        const requestAuthToken = authToken.value.trim();
+        const requestAuthGeneration = state.authGeneration;
         setPageStatus("Loading job detail...");
         try {
           const response = await apiFetch(`/api/jobs/${encodeURIComponent(jobId)}`);
           const body = await response.json();
+          if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
           if (!response.ok) throw new Error(body.message || body.error || "job detail failed");
           renderDetail(body.job);
           setPageStatus(`Opened ${body.job.job_id}.`);
         } catch (error) {
+          if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
           setPageStatus(error.message, true);
         }
       }
 
-      async function sendJobAction(actionName) {
+      async function sendJobAction(
+        actionName,
+        requestAuthToken = authToken.value.trim(),
+        requestAuthGeneration = state.authGeneration
+      ) {
         const job = state.selectedJob;
         const action = findAction(job, actionName);
         if (!action) return null;
@@ -836,44 +845,75 @@
           }),
         });
         const body = await response.json();
+        if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return null;
         if (!response.ok) throw new Error(body.message || body.error || "job action failed");
         return { job, action, body };
       }
 
       async function downloadSelectedJobResult() {
+        const requestAuthToken = authToken.value.trim();
+        const requestAuthGeneration = state.authGeneration;
         try {
-          const accepted = await sendJobAction("download_result");
+          const accepted = await sendJobAction(
+            "download_result",
+            requestAuthToken,
+            requestAuthGeneration
+          );
           if (!accepted) return;
-          await downloadJobResult(accepted.job);
+          if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
+          const downloaded = await downloadJobResult(
+            accepted.job,
+            requestAuthToken,
+            requestAuthGeneration
+          );
+          if (!downloaded || !isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
           setPageStatus(`${accepted.action.label} event accepted and downloaded.`);
         } catch (error) {
+          if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
           setPageStatus(error.message, true);
         }
       }
 
       async function retrySelectedConversion() {
+        const requestAuthToken = authToken.value.trim();
+        const requestAuthGeneration = state.authGeneration;
         try {
-          const accepted = await sendJobAction("retry_conversion");
+          const accepted = await sendJobAction(
+            "retry_conversion",
+            requestAuthToken,
+            requestAuthGeneration
+          );
           if (!accepted) return;
+          if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
           if (accepted.body.job) {
             const body = accepted.body;
             renderDetail(body.job);
             await loadJobs();
+            if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
             renderDetail(body.job);
           }
+          if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
           setPageStatus(`${accepted.action.label} event accepted for audit.`);
         } catch (error) {
+          if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
           setPageStatus(error.message, true);
         }
       }
 
-      async function downloadJobResult(job) {
+      async function downloadJobResult(
+        job,
+        requestAuthToken = authToken.value.trim(),
+        requestAuthGeneration = state.authGeneration
+      ) {
         const response = await apiFetch(`/api/jobs/${encodeURIComponent(job.job_id)}/result`);
+        if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return false;
         if (!response.ok) {
           const body = await response.json();
+          if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return false;
           throw new Error(body.message || body.error || "result download failed");
         }
         const blob = await response.blob();
+        if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return false;
         const url = URL.createObjectURL(blob);
         const link = document.createElement("a");
         link.href = url;
@@ -882,6 +922,7 @@
         link.click();
         link.remove();
         window.setTimeout(() => URL.revokeObjectURL(url), 0);
+        return true;
       }
 
       function downloadFilename(response, job) {

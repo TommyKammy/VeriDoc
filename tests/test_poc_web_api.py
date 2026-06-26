@@ -1683,6 +1683,61 @@ def test_bundled_web_ui_clears_credential_bound_state_when_auth_token_changes() 
     assert "state.availableReviewActions = []" in preview_clear_body
 
 
+def test_bundled_web_ui_guards_credential_bound_job_responses() -> None:
+    html = Path("apps/web/index.html").read_text(encoding="utf-8")
+
+    def js_between(start: str, end: str) -> str:
+        start_index = html.index(start)
+        return html[start_index:html.index(end, start_index)]
+
+    create_job_body = js_between(
+        "async function createConversionJob()",
+        "async function loadJobDetail(jobId)",
+    )
+    load_detail_body = js_between(
+        "async function loadJobDetail(jobId)",
+        "async function sendJobAction(",
+    )
+    send_action_body = js_between(
+        "async function sendJobAction(",
+        "async function downloadSelectedJobResult()",
+    )
+    download_selected_body = js_between(
+        "async function downloadSelectedJobResult()",
+        "async function retrySelectedConversion()",
+    )
+    retry_body = js_between(
+        "async function retrySelectedConversion()",
+        "async function downloadJobResult(",
+    )
+    download_result_body = js_between(
+        "async function downloadJobResult(",
+        "function downloadFilename(response, job)",
+    )
+
+    assert create_job_body.index("await loadJobs();") < create_job_body.index(
+        "if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;",
+        create_job_body.index("await loadJobs();"),
+    ) < create_job_body.index("renderDetail(body.job);", create_job_body.index("await loadJobs();"))
+    assert "const requestAuthToken = authToken.value.trim();" in load_detail_body
+    assert load_detail_body.index("const body = await response.json();") < load_detail_body.index(
+        "if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;"
+    ) < load_detail_body.index("renderDetail(body.job);")
+    assert send_action_body.index("const body = await response.json();") < send_action_body.index(
+        "if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return null;"
+    ) < send_action_body.index("if (!response.ok)")
+    assert '"download_result",\n            requestAuthToken,\n            requestAuthGeneration' in download_selected_body
+    assert "const downloaded = await downloadJobResult(" in download_selected_body
+    assert "if (!downloaded || !isActiveCredentialRequest" in download_selected_body
+    assert '"retry_conversion",\n            requestAuthToken,\n            requestAuthGeneration' in retry_body
+    assert retry_body.index("await loadJobs();") < retry_body.index(
+        "if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;",
+        retry_body.index("await loadJobs();"),
+    ) < retry_body.index("renderDetail(body.job);", retry_body.index("await loadJobs();"))
+    assert "return false;" in download_result_body
+    assert "return true;" in download_result_body
+
+
 def test_bundled_web_ui_scopes_review_actions_from_api_permissions() -> None:
     html = Path("apps/web/index.html").read_text(encoding="utf-8")
 
@@ -2219,7 +2274,7 @@ def test_web_job_detail_actions_perform_download_and_retry_side_effects() -> Non
     html = Path("apps/web/index.html").read_text(encoding="utf-8")
 
     action_handler = re.search(
-        r"async function sendJobAction\(actionName\) \{(?P<body>.*?)\n      \}",
+        r"async function sendJobAction\(\s*actionName,.*?\) \{(?P<body>.*?)\n      \}",
         html,
         re.DOTALL,
     )
@@ -2234,7 +2289,7 @@ def test_web_job_detail_actions_perform_download_and_retry_side_effects() -> Non
         re.DOTALL,
     )
     download_handler = re.search(
-        r"async function downloadJobResult\(job\) \{(?P<body>.*?)\n      \}",
+        r"async function downloadJobResult\(\s*job,.*?\) \{(?P<body>.*?)\n      \}",
         html,
         re.DOTALL,
     )
@@ -2251,9 +2306,9 @@ def test_web_job_detail_actions_perform_download_and_retry_side_effects() -> Non
     assert 'detailDownload.addEventListener("click", () => downloadSelectedJobResult())' in html
     assert 'detailRetry.addEventListener("click", () => retrySelectedConversion())' in html
     assert 'apiFetch("/api/job-events"' in action_body
-    assert 'sendJobAction("download_result")' in selected_download_body
-    assert "await downloadJobResult(accepted.job)" in selected_download_body
-    assert 'sendJobAction("retry_conversion")' in selected_retry_body
+    assert 'sendJobAction(\n            "download_result"' in selected_download_body
+    assert "await downloadJobResult(\n            accepted.job" in selected_download_body
+    assert 'sendJobAction(\n            "retry_conversion"' in selected_retry_body
     assert "await loadJobs()" in selected_retry_body
     assert "renderDetail(body.job)" in selected_retry_body
     assert 'apiFetch(`/api/jobs/${encodeURIComponent(job.job_id)}/result`)' in download_body
