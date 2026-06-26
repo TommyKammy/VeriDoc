@@ -182,3 +182,24 @@ def test_bbox_overlay_resets_button_sizing() -> None:
     assert "min-height: 0;" in html
     assert "padding: 0;" in html
     assert "font-size: 0;" in html
+
+
+def test_review_warning_badges_show_codes_levels_and_llm_involvement() -> None:
+    html = _web_html()
+
+    assert "function warningBadgeDescriptor(warning)" in html
+    assert '"blocks[0].low confidence; block marked requires_review"' in html
+    assert 'code: "W002"' in html
+    assert 'severity: "yellow"' in html
+    assert 'code: "W000"' in html
+    assert "function severityClass(severity)" in html
+    assert 'return "gray";' in html
+    assert "function renderWarningBadges(item)" in html
+    assert 'badge.className = `warning-badge ${severityClass(descriptor.severity)}`;' in html
+    assert "function reviewItemForDetail(item)" in html
+    assert "warning_badges: (item.warnings || []).map(warningBadgeDescriptor)" in html
+    assert "review_items: result.review_items.map(reviewItemForDetail)" in html
+    assert "function llmInvolvementBadge(item)" in html
+    assert "item.llm_involved === true" in html
+    assert 'badge.className = "llm-badge";' in html
+    assert "wrapper.append(title, text, badges, edit, actions);" in html

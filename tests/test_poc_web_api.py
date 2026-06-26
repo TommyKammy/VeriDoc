@@ -514,6 +514,111 @@ def test_convert_uploaded_phase0_json_marks_missing_v0_confidence_for_review() -
     ]
 
 
+def test_convert_uploaded_phase0_json_marks_review_item_llm_involvement() -> None:
+    parser_output = {
+        "schema_version": "document-ir/v0",
+        "document": {
+            "id": "sample-document-001",
+            "title": "LLM Assisted Document",
+            "source_type": "docx",
+        },
+        "pages": [{"page_number": 1, "width": 612, "height": 792, "unit": "pt"}],
+        "blocks": [
+            {
+                "id": "block-001",
+                "type": "paragraph",
+                "text": "LLM assisted block",
+                "value_metadata": {
+                    "source_page": 1,
+                    "bbox": {"x": 72, "y": 72, "width": 240, "height": 24, "unit": "pt"},
+                    "extractor": {"name": "local-llm-conversion-plan", "version": "0.1.0"},
+                    "confidence": 0.98,
+                    "requires_review": True,
+                },
+            }
+        ],
+    }
+
+    result = convert_uploaded_document(
+        filename="phase0-output.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+    )
+
+    assert result["review_items"][0]["llm_involved"] is True
+
+
+@pytest.mark.parametrize(
+    "extractor_name",
+    ["standard", "Qwen/Qwen3-8B", "DeepSeek V4 Flash"],
+)
+def test_convert_uploaded_phase0_json_marks_configured_llm_extractors(
+    extractor_name: str,
+) -> None:
+    parser_output = {
+        "schema_version": "document-ir/v0",
+        "document": {
+            "id": "sample-document-001",
+            "title": "Configured LLM Assisted Document",
+            "source_type": "docx",
+        },
+        "pages": [{"page_number": 1, "width": 612, "height": 792, "unit": "pt"}],
+        "blocks": [
+            {
+                "id": "block-001",
+                "type": "paragraph",
+                "text": "Configured LLM assisted block",
+                "value_metadata": {
+                    "source_page": 1,
+                    "bbox": {"x": 72, "y": 72, "width": 240, "height": 24, "unit": "pt"},
+                    "extractor": {"name": extractor_name, "version": "0.1.0"},
+                    "confidence": 0.98,
+                    "requires_review": True,
+                },
+            }
+        ],
+    }
+
+    result = convert_uploaded_document(
+        filename="phase0-output.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+    )
+
+    assert result["review_items"][0]["llm_involved"] is True
+
+
+def test_convert_uploaded_phase0_json_does_not_mark_unknown_extractor_as_llm() -> None:
+    parser_output = {
+        "schema_version": "document-ir/v0",
+        "document": {
+            "id": "sample-document-001",
+            "title": "Non LLM Document",
+            "source_type": "docx",
+        },
+        "pages": [{"page_number": 1, "width": 612, "height": 792, "unit": "pt"}],
+        "blocks": [
+            {
+                "id": "block-001",
+                "type": "paragraph",
+                "text": "Non LLM reviewed block",
+                "value_metadata": {
+                    "source_page": 1,
+                    "bbox": {"x": 72, "y": 72, "width": 240, "height": 24, "unit": "pt"},
+                    "extractor": {"name": "rule-based-reviewer", "version": "0.1.0"},
+                    "confidence": 0.98,
+                    "requires_review": True,
+                },
+            }
+        ],
+    }
+
+    result = convert_uploaded_document(
+        filename="phase0-output.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+    )
+
+    assert "llm_involved" not in result["review_items"][0]
+
+
 def test_convert_uploaded_phase0_json_blocks_unsupported_v0_block_type() -> None:
     parser_output = {
         "schema_version": "document-ir/v0",

@@ -278,6 +278,49 @@
         margin-top: 8px;
       }
 
+      .warning-badges {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 8px;
+      }
+
+      .warning-badge,
+      .llm-badge {
+        display: inline-flex;
+        align-items: center;
+        min-height: 24px;
+        padding: 2px 8px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 680;
+      }
+
+      .warning-badge.green {
+        background: #e5f4ec;
+        color: var(--ok);
+      }
+
+      .warning-badge.yellow {
+        background: #fff4d9;
+        color: #78550b;
+      }
+
+      .warning-badge.red {
+        background: #faeaea;
+        color: var(--danger);
+      }
+
+      .warning-badge.gray {
+        background: #eef3f8;
+        color: #4c596c;
+      }
+
+      .llm-badge {
+        background: #f0e8ff;
+        color: #6632a8;
+      }
+
       .review-actions {
         display: flex;
         flex-wrap: wrap;
@@ -894,7 +937,7 @@
         downloadLink.download = result.download.filename;
         downloadLink.hidden = false;
         rawResult.textContent = JSON.stringify(
-          { validation: result.validation, review_items: result.review_items },
+          { validation: result.validation, review_items: result.review_items.map(reviewItemForDetail) },
           null,
           2
         );
@@ -1160,8 +1203,7 @@
         title.textContent = `${item.block_id} / page ${item.source_page}`;
         const text = document.createElement("div");
         text.textContent = item.text;
-        const warnings = document.createElement("div");
-        warnings.textContent = item.warnings.join(" / ");
+        const badges = renderWarningBadges(item);
         const edit = document.createElement("textarea");
         edit.className = "review-edit";
         edit.dataset.reviewEditFor = item.block_id;
@@ -1189,8 +1231,89 @@
         const actions = document.createElement("div");
         actions.className = "review-actions";
         actions.append(jump, requestEdit, approve);
-        wrapper.append(title, text, warnings, edit, actions);
+        wrapper.append(title, text, badges, edit, actions);
         return wrapper;
+      }
+
+      function renderWarningBadges(item) {
+        const badges = document.createElement("div");
+        badges.className = "warning-badges";
+        const descriptors = (item.warnings || []).map(warningBadgeDescriptor);
+        for (const descriptor of descriptors) {
+          const badge = document.createElement("span");
+          badge.className = `warning-badge ${severityClass(descriptor.severity)}`;
+          badge.textContent = `${descriptor.code} ${descriptor.label}`;
+          badges.append(badge);
+        }
+        const llmBadge = llmInvolvementBadge(item);
+        if (llmBadge) badges.append(llmBadge);
+        return badges;
+      }
+
+      function reviewItemForDetail(item) {
+        return {
+          ...item,
+          warning_badges: (item.warnings || []).map(warningBadgeDescriptor),
+        };
+      }
+
+      function warningBadgeDescriptor(warning) {
+        const text = warningText(warning);
+        const knownWarnings = {
+          "blocks[0].bbox missing; block marked requires_review": {
+            code: "W001",
+            severity: "yellow",
+            label: "bbox missing",
+          },
+          "blocks[0].low confidence; block marked requires_review": {
+            code: "W002",
+            severity: "yellow",
+            label: "low confidence",
+          },
+          "blocks[0].confidence missing; block marked requires_review": {
+            code: "W003",
+            severity: "yellow",
+            label: "confidence missing",
+          },
+          "blocks[0].confidence invalid; block marked requires_review": {
+            code: "W004",
+            severity: "red",
+            label: "confidence invalid",
+          },
+          "blocks[0].text empty; block marked requires_review": {
+            code: "W005",
+            severity: "red",
+            label: "text empty",
+          },
+          "blocks[0].parser marked block requires_review": {
+            code: "W006",
+            severity: "yellow",
+            label: "parser review",
+          },
+        };
+        const normalizedText = text.replace(/blocks\[\d+\]/, "blocks[0]");
+        return knownWarnings[normalizedText] || { code: "W000", severity: "gray", label: warningText(warning) };
+      }
+
+      function warningText(warning) {
+        if (typeof warning === "string") return warning;
+        if (warning && typeof warning.message === "string") return warning.message;
+        return "Unknown warning";
+      }
+
+      function severityClass(severity) {
+        if (["green", "yellow", "red", "gray"].includes(severity)) return severity;
+        return "gray";
+      }
+
+      function llmInvolvementBadge(item) {
+        if (item.llm_involved === true) {
+          const badge = document.createElement("span");
+          badge.className = "llm-badge";
+          badge.textContent = "LLM";
+          return badge;
+        }
+        return null;
       }
 
       function buildReviewAuditEvent(item, action) {
