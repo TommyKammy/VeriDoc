@@ -61,12 +61,22 @@ def test_review_item_exposes_edit_and_approve_audit_events() -> None:
     assert 'event_type: "conversion_review.action_requested"' in html
     assert "document_id: item.document_id" in html
     assert "block_id: item.block_id" in html
-    assert "source_page: item.source_page" in html
+    assert "source_page: reviewAuditSourcePage(item)" in html
+    assert "function reviewAuditSourcePage(item)" in html
+    assert "Number.isInteger(item.source_page)" in html
+    assert "item.source_page >= 1" in html
+    assert "approve.disabled = !reviewAuditSourcePage(item)" in html
+    assert "requestEdit.disabled = !reviewAuditSourcePage(item)" in html
     assert "source_bbox: reviewAuditSourceBbox(item)" in html
     assert "function reviewAuditSourceBbox(item)" in html
     assert "validBbox(item.source_bbox, item.source_page_geometry)" in html
     assert "event.revised_text = revisedText" in html
     assert "function requestReviewAction(item, action)" in html
+    assert "try {" in html
+    assert "Review item source page is invalid." in html
+    assert 'parsedBody && typeof parsedBody === "object" ? parsedBody : {}' in html
+    assert "catch (_error)" in html
+    assert "Review action failed." in html
     assert 'requestReviewAction(item, "edit")' in html
     assert 'requestReviewAction(item, "approve")' in html
     assert "Review action event queued for audit" in html

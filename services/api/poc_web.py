@@ -418,7 +418,7 @@ def _validate_review_event(audit_event: Any) -> dict[str, Any]:
     if audit_event.get("event_type") != "conversion_review.action_requested":
         raise ValueError("audit_event.event_type is unsupported")
     action = audit_event.get("action")
-    if action not in {"edit", "approve"}:
+    if not isinstance(action, str) or action not in {"edit", "approve"}:
         raise ValueError("audit_event.action is unsupported")
     document_id = audit_event.get("document_id")
     if not isinstance(document_id, str) or not document_id.strip():

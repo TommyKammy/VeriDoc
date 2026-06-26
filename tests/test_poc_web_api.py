@@ -879,6 +879,10 @@ def _post_review_audit_event(audit_event: dict[str, object]) -> tuple[int, dict[
             "audit_event.source_page must be a positive integer",
         ),
         (
+            _review_audit_event(action={"name": "approve"}),
+            "audit_event.action is unsupported",
+        ),
+        (
             _review_audit_event(document_id={"id": "phase0"}),
             "audit_event.document_id is required",
         ),

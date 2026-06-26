@@ -1146,11 +1146,13 @@
         const approve = document.createElement("button");
         approve.type = "button";
         approve.textContent = "Approve";
+        approve.disabled = !reviewAuditSourcePage(item);
         approve.addEventListener("click", () => requestReviewAction(item, "approve"));
         const requestEdit = document.createElement("button");
         requestEdit.className = "secondary";
         requestEdit.type = "button";
         requestEdit.textContent = "Save edit";
+        requestEdit.disabled = !reviewAuditSourcePage(item);
         requestEdit.addEventListener("click", () => requestReviewAction(item, "edit"));
         const actions = document.createElement("div");
         actions.className = "review-actions";
@@ -1166,7 +1168,7 @@
           action,
           document_id: item.document_id,
           block_id: item.block_id,
-          source_page: item.source_page,
+          source_page: reviewAuditSourcePage(item),
           source_bbox: reviewAuditSourceBbox(item),
           original_text: item.text,
           warnings: item.warnings || [],
@@ -1175,6 +1177,10 @@
           event.revised_text = revisedText;
         }
         return event;
+      }
+
+      function reviewAuditSourcePage(item) {
+        return Number.isInteger(item.source_page) && item.source_page >= 1 ? item.source_page : null;
       }
 
       function reviewAuditSourceBbox(item) {
@@ -1189,21 +1195,37 @@
       }
 
       async function requestReviewAction(item, action) {
-        const auditEvent = buildReviewAuditEvent(item, action);
-        const response = await fetch("/api/review-events", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ audit_event: auditEvent }),
-        });
-        const body = await response.json();
-        if (!response.ok) {
-          reviewActionStatus.textContent = body.message || body.error || "review action failed";
+        try {
+          if (!reviewAuditSourcePage(item)) {
+            throw new Error("Review item source page is invalid.");
+          }
+          const auditEvent = buildReviewAuditEvent(item, action);
+          const response = await fetch("/api/review-events", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ audit_event: auditEvent }),
+          });
+          let body = {};
+          try {
+            const parsedBody = await response.json();
+            body = parsedBody && typeof parsedBody === "object" ? parsedBody : {};
+          } catch (_error) {
+            body = {};
+          }
+          if (!response.ok) {
+            throw new Error(body.message || body.error || "Review action failed.");
+          }
+          if (!body.audit_event) {
+            throw new Error("Review action response did not include an audit event.");
+          }
+          state.reviewAuditEvents.push(body.audit_event);
+          reviewActionStatus.textContent = "Review action event queued for audit.";
+          reviewActionStatus.className = "page-status";
+        } catch (error) {
+          reviewActionStatus.textContent =
+            error instanceof Error && error.message ? error.message : "Review action failed.";
           reviewActionStatus.className = "page-status error";
-          return;
         }
-        state.reviewAuditEvents.push(body.audit_event);
-        reviewActionStatus.textContent = "Review action event queued for audit.";
-        reviewActionStatus.className = "page-status";
       }
 
       loadJobs();
