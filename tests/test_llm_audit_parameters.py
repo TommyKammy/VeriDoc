@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from core.llm import audit_parameters
 from core.llm.audit_parameters import sanitize_audit_parameters
 
 
@@ -530,6 +531,45 @@ def test_sanitize_audit_parameters_redacts_encoded_raw_query_container_text() ->
     rendered = json.dumps(sanitized_parameters, sort_keys=True)
     assert "operator-runtime-api-key" not in rendered
     assert "operator-runtime-token" not in rendered
+
+
+def test_sanitize_audit_parameters_delegates_raw_query_text_to_internal_helper(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str, bool]] = []
+    original = audit_parameters.raw_audit.redact_raw_key_value_parameter_text
+
+    def spy_redact_raw_key_value_parameter_text(
+        value: str,
+        key_path: str,
+        policy: audit_parameters.raw_audit.RawAuditParameterPolicy,
+        *,
+        normalized_leaf: str,
+        split_query_pairs: bool,
+        redacted_value: str,
+    ) -> str | None:
+        calls.append((key_path, normalized_leaf, split_query_pairs))
+        return original(
+            value,
+            key_path,
+            policy,
+            normalized_leaf=normalized_leaf,
+            split_query_pairs=split_query_pairs,
+            redacted_value=redacted_value,
+        )
+
+    monkeypatch.setattr(
+        audit_parameters.raw_audit,
+        "redact_raw_key_value_parameter_text",
+        spy_redact_raw_key_value_parameter_text,
+    )
+
+    sanitized_parameters = sanitize_audit_parameters(
+        {"queryParameters": "api_key=operator-runtime-key"}
+    )
+
+    assert sanitized_parameters == {"queryParameters": "api_key=[REDACTED]"}
+    assert ("parameters.queryParameters", "query_parameters", False) in calls
 
 
 def test_sanitize_audit_parameters_redacts_real_parameters_containers() -> None:
