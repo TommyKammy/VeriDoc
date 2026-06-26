@@ -954,9 +954,12 @@ def evaluate_poc_mode_cases(
     return evaluate_cases(scoring_data, manifest_root=repo_root)
 
 
-def poc_mode_actual_cell_texts_by_fixture(
-    mode_record: dict[str, Any], evaluation_cases_data: dict[str, Any], context: str
-) -> dict[str, set[str]]:
+def poc_mode_actual_values_by_high_risk_label(
+    mode_record: dict[str, Any],
+    evaluation_cases_data: dict[str, Any],
+    labels: dict[tuple[str, str], dict[str, Any]],
+    context: str,
+) -> dict[tuple[str, str], set[str]]:
     expected_cases = evaluation_cases_data.get("cases")
     if not isinstance(expected_cases, list):
         raise EvaluationCaseError("evaluation_cases must define cases")
@@ -969,25 +972,62 @@ def poc_mode_actual_cell_texts_by_fixture(
     if set(mode_cases_by_id) != set(expected_cases_by_id):
         raise EvaluationCaseError(f"{context}.cases must cover all evaluation cases")
 
-    actual_texts_by_fixture: dict[str, set[str]] = {}
+    string_labels = {
+        key: label["expected_value"]
+        for key, label in labels.items()
+        if isinstance(label.get("expected_value"), str)
+    }
+    actual_values_by_label = {key: set() for key in string_labels}
     for case_id, expected_case in expected_cases_by_id.items():
         fixture_id = expected_case.get("fixture_id")
         if not isinstance(fixture_id, str) or not fixture_id:
             raise EvaluationCaseError(f"evaluation case {case_id!r} fixture_id must be a string")
+        relevant_labels = {
+            key: expected_value
+            for key, expected_value in string_labels.items()
+            if key[0] == fixture_id
+        }
+        if not relevant_labels:
+            continue
         mode_case = mode_cases_by_id[case_id]
+        expected_tables = required_tables_by_id(
+            expected_case.get("expected", {}), f"case {case_id!r}: expected"
+        )
         actual_tables = tables_by_id(mode_case.get("actual"))
-        actual_texts = actual_texts_by_fixture.setdefault(fixture_id, set())
-        for table in actual_tables.values():
-            for cell_id, cell in cells_by_id(table).items():
-                actual_texts.add(
-                    normalized_text(
-                        actual_cell_text(
-                            cell,
-                            f"{context}.cases[{case_id!r}].actual cell {cell_id!r}",
-                        )
+        for table_id, expected_table in expected_tables.items():
+            expected_cells = required_cells_by_id(
+                expected_table, f"case {case_id!r}: expected table {table_id!r}"
+            )
+            actual_cells = cells_by_id(actual_tables.get(table_id, {"cells": []}))
+            for cell_id, expected_cell in expected_cells.items():
+                expected_text = normalized_text(
+                    actual_cell_text(
+                        expected_cell,
+                        f"case {case_id!r}: expected cell {cell_id!r}",
                     )
                 )
-    return actual_texts_by_fixture
+                for label_key, expected_value in relevant_labels.items():
+                    if expected_text != normalized_text(expected_value):
+                        continue
+                    actual_cell = actual_cells.get(cell_id)
+                    if actual_cell is None:
+                        continue
+                    actual_values_by_label[label_key].add(
+                        normalized_text(
+                            actual_cell_text(
+                                actual_cell,
+                                f"{context}.cases[{case_id!r}].actual cell {cell_id!r}",
+                            )
+                        )
+                    )
+
+    for label_key, values in actual_values_by_label.items():
+        if not values:
+            raise EvaluationCaseError(
+                f"{context}.cases must include captured actual value for high-risk label "
+                f"{label_key!r}"
+            )
+    return actual_values_by_label
 
 
 def validate_reported_metric_matches_computed(
@@ -1051,9 +1091,6 @@ def evaluate_poc_mode_comparison(
         computed_metrics = evaluate_poc_mode_cases(
             mode_record, evaluation_cases_data, root, context
         )
-        actual_cell_texts_by_fixture = poc_mode_actual_cell_texts_by_fixture(
-            mode_record, evaluation_cases_data, context
-        )
         table_extraction_rate = validate_ratio_metric(
             reported_metrics.get("table_extraction_rate"),
             f"{context}.metrics.table_extraction_rate",
@@ -1062,6 +1099,9 @@ def evaluate_poc_mode_comparison(
             table_extraction_rate,
             computed_metrics.table_extraction_rate,
             f"{context}.metrics.table_extraction_rate",
+        )
+        actual_values_by_label = poc_mode_actual_values_by_high_risk_label(
+            mode_record, evaluation_cases_data, labels, context
         )
         high_risk_items = mode_record.get("high_risk_items")
         if not isinstance(high_risk_items, list) or not high_risk_items:
@@ -1083,10 +1123,11 @@ def evaluate_poc_mode_comparison(
             mode_label_keys.add(label_key)
             actual_value = item.get("actual_value")
             if isinstance(actual_value, str) and normalized_text(actual_value) not in (
-                actual_cell_texts_by_fixture.get(item["fixture_id"]) or set()
+                actual_values_by_label.get(label_key) or set()
             ):
                 raise EvaluationCaseError(
-                    f"{item_context}.actual_value must be present in captured mode case cells"
+                    f"{item_context}.actual_value must match captured mode case value "
+                    "for the high-risk label"
                 )
             if item.get("risk_level") != "high":
                 raise EvaluationCaseError(f"{item_context}.risk_level must be high")
