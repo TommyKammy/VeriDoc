@@ -514,6 +514,39 @@ def test_convert_uploaded_phase0_json_marks_missing_v0_confidence_for_review() -
     ]
 
 
+def test_convert_uploaded_phase0_json_marks_review_item_llm_involvement() -> None:
+    parser_output = {
+        "schema_version": "document-ir/v0",
+        "document": {
+            "id": "sample-document-001",
+            "title": "LLM Assisted Document",
+            "source_type": "docx",
+        },
+        "pages": [{"page_number": 1, "width": 612, "height": 792, "unit": "pt"}],
+        "blocks": [
+            {
+                "id": "block-001",
+                "type": "paragraph",
+                "text": "LLM assisted block",
+                "value_metadata": {
+                    "source_page": 1,
+                    "bbox": {"x": 72, "y": 72, "width": 240, "height": 24, "unit": "pt"},
+                    "extractor": {"name": "local-llm-conversion-plan", "version": "0.1.0"},
+                    "confidence": 0.98,
+                    "requires_review": True,
+                },
+            }
+        ],
+    }
+
+    result = convert_uploaded_document(
+        filename="phase0-output.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+    )
+
+    assert result["review_items"][0]["llm_involved"] is True
+
+
 def test_convert_uploaded_phase0_json_blocks_unsupported_v0_block_type() -> None:
     parser_output = {
         "schema_version": "document-ir/v0",

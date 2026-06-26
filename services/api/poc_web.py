@@ -662,6 +662,8 @@ def _review_items(document_ir: DocumentIRV1) -> list[dict[str, Any]]:
             "text": block.text,
             "warnings": block.review.warnings,
         }
+        if _block_llm_involved(block):
+            item["llm_involved"] = True
         page = pages_by_number.get(block.source_page)
         source_bbox = _review_source_bbox(block.bbox, page)
         if source_bbox is not None:
@@ -669,6 +671,11 @@ def _review_items(document_ir: DocumentIRV1) -> list[dict[str, Any]]:
             item["source_page_geometry"] = asdict(page)
         items.append(item)
     return items
+
+
+def _block_llm_involved(block: Any) -> bool:
+    extractor_name = str(getattr(getattr(block, "extractor", None), "name", "") or "").lower()
+    return any(token in extractor_name for token in ("llm", "gpt", "openai"))
 
 
 def _review_source_bbox(bbox: Any, page: Any) -> dict[str, Any] | None:
