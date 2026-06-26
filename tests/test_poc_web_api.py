@@ -9,6 +9,8 @@ import sys
 from threading import Thread
 from zipfile import ZIP_DEFLATED, ZipFile
 
+import pytest
+
 import services.api.poc_web as poc_web
 from services.api.job_queue import JobQueue
 from services.api.poc_web import PocWebRequestHandler, convert_uploaded_document
@@ -802,6 +804,11 @@ def test_poc_http_api_rejects_malformed_download_content_type() -> None:
     assert [action["action"] for action in detail_body["job"]["available_actions"]] == [
         "open_detail"
     ]
+
+
+def test_download_content_type_rejects_crlf_before_parameter_separator() -> None:
+    with pytest.raises(ValueError, match="content type is invalid"):
+        poc_web._download_content_type("application/json\r\n;charset=utf-8")
 
 
 def test_poc_http_api_hides_download_action_without_download_payload() -> None:

@@ -39,7 +39,7 @@ SOURCE_TYPES = {"pdf", "docx", "xlsx", "unknown"}
 KNOWN_SOURCE_TYPES = SOURCE_TYPES - {"unknown"}
 HTTP_CONTENT_TYPE = re.compile(
     r"^[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+"
-    r"(?:\s*;\s*[A-Za-z0-9!#$&^_.+-]+=[A-Za-z0-9!#$&^_.+-]+)*$"
+    r"(?:[ \t]*;[ \t]*[A-Za-z0-9!#$&^_.+-]+=[A-Za-z0-9!#$&^_.+-]+)*$"
 )
 DEFAULT_JOB_QUEUE = JobQueue()
 
@@ -406,7 +406,11 @@ def _job_download(job: JobRecord) -> dict[str, Any]:
 
 
 def _download_content_type(content_type: str) -> str:
-    if not content_type or not HTTP_CONTENT_TYPE.fullmatch(content_type):
+    if (
+        not content_type
+        or any(ord(char) < 0x20 or ord(char) == 0x7F for char in content_type)
+        or not HTTP_CONTENT_TYPE.fullmatch(content_type)
+    ):
         raise ValueError("job result download content type is invalid")
     return content_type
 
