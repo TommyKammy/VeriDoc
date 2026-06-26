@@ -71,8 +71,11 @@ def test_review_item_exposes_edit_and_approve_audit_events() -> None:
     assert "function reviewActionBlockReason(item)" in html
     assert 'state.latestResult.status === "blocked"' in html
     assert "Review actions are disabled for blocked conversions." in html
-    assert "approve.disabled = !reviewActionAvailable(item)" in html
-    assert "requestEdit.disabled = !reviewActionAvailable(item)" in html
+    assert "result.available_review_actions" in html
+    assert 'approve.dataset.reviewActionName = "approve"' in html
+    assert 'approve.disabled = !reviewActionAvailable(item, "approve")' in html
+    assert 'requestEdit.dataset.reviewActionName = "edit"' in html
+    assert 'requestEdit.disabled = !reviewActionAvailable(item, "edit")' in html
     assert "source_bbox: reviewAuditSourceBbox(item)" in html
     assert "function reviewAuditSourceBbox(item)" in html
     assert "if (!reviewAuditSourcePage(item)) return null;" in html
