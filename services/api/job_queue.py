@@ -115,6 +115,20 @@ class JobQueue:
                 return retried
             return self._replace(job, status="failed", attempts=attempts, error=error)
 
+    def retry_failed_job(self, job_id: str) -> JobRecord:
+        with self._lock:
+            try:
+                job = self._jobs[job_id]
+            except KeyError as exc:
+                raise KeyError(f"unknown job_id: {job_id}") from exc
+            if job.status != "failed":
+                raise ValueError("job must be failed")
+            if job.mode == "high_quality" and self._has_active_high_quality_job():
+                raise RuntimeError("high_quality job already active")
+            retried = self._replace(job, status="queued", error=None)
+            self._pending_job_ids.append(job_id)
+            return retried
+
     def _require_running_job(self, job_id: str) -> JobRecord:
         try:
             job = self._jobs[job_id]

@@ -673,8 +673,75 @@ def test_poc_http_api_lists_conversion_jobs_filtered_by_status() -> None:
     assert event_response.status == 202
     assert event_body["audit_event"]["job_id"] == failed_job.job_id
     assert event_body["audit_event"]["action"] == "retry_conversion"
+    assert event_body["job"]["job_id"] == failed_job.job_id
+    assert event_body["job"]["status"] == "queued"
+    assert event_body["job"]["error"] is None
+    assert [action["action"] for action in event_body["job"]["available_actions"]] == [
+        "open_detail"
+    ]
     assert mismatched_response.status == 400
     assert mismatched_body["error"] == "invalid_job_event"
+
+
+def test_poc_http_api_sanitizes_succeeded_job_result_and_downloads_result() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue()
+    created = server.job_queue.create_job(
+        idempotency_key="converted-1",
+        filename="converted-record.pdf",
+        mode="standard",
+    )
+    running = server.job_queue.start_next_job()
+    assert running is not None
+    server.job_queue.mark_succeeded(
+        created.job_id,
+        result={
+            "status": "converted",
+            "document_ir": {"document": {"title": "stored conversion payload"}},
+            "download": {
+                "filename": "converted-record.veridoc-result.json",
+                "content_type": "application/json; charset=utf-8",
+                "content": b'{"converted": true}',
+            },
+        },
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request("GET", "/api/jobs")
+        list_response = connection.getresponse()
+        list_body = json.loads(list_response.read().decode("utf-8"))
+        connection.request("GET", f"/api/jobs/{created.job_id}")
+        detail_response = connection.getresponse()
+        detail_body = json.loads(detail_response.read().decode("utf-8"))
+        connection.request("GET", f"/api/jobs/{created.job_id}/result")
+        download_response = connection.getresponse()
+        download_content_type = download_response.getheader("Content-Type")
+        download_disposition = download_response.getheader("Content-Disposition")
+        download_body = download_response.read()
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    list_job = list_body["jobs"][0]
+    detail_job = detail_body["job"]
+    assert list_response.status == 200
+    assert detail_response.status == 200
+    assert "result" not in list_job
+    assert "result" not in detail_job
+    assert list_job["has_result"] is True
+    assert detail_job["has_result"] is True
+    assert [action["action"] for action in detail_job["available_actions"]] == [
+        "open_detail",
+        "download_result",
+    ]
+    assert "stored conversion payload" not in json.dumps(list_body)
+    assert "stored conversion payload" not in json.dumps(detail_body)
+    assert download_response.status == 200
+    assert download_content_type == "application/json; charset=utf-8"
+    assert download_disposition == 'attachment; filename="converted-record.veridoc-result.json"'
+    assert download_body == b'{"converted": true}'
 
 
 def test_poc_http_api_rejects_second_active_high_quality_job() -> None:

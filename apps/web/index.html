@@ -553,10 +553,45 @@
           });
           const body = await response.json();
           if (!response.ok) throw new Error(body.message || body.error || "job action failed");
+          if (actionName === "download_result") {
+            await downloadJobResult(job);
+            setPageStatus(`${action.label} event accepted and downloaded.`);
+            return;
+          }
+          if (actionName === "retry_conversion" && body.job) {
+            renderDetail(body.job);
+            await loadJobs();
+            renderDetail(body.job);
+          }
           setPageStatus(`${action.label} event accepted for audit.`);
         } catch (error) {
           setPageStatus(error.message, true);
         }
+      }
+
+      async function downloadJobResult(job) {
+        const response = await fetch(`/api/jobs/${encodeURIComponent(job.job_id)}/result`);
+        if (!response.ok) {
+          const body = await response.json();
+          throw new Error(body.message || body.error || "result download failed");
+        }
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = downloadFilename(response, job);
+        document.body.append(link);
+        link.click();
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 0);
+      }
+
+      function downloadFilename(response, job) {
+        const disposition = response.headers.get("Content-Disposition") || "";
+        const match = disposition.match(/filename="([^"]+)"/);
+        if (match) return match[1];
+        const stem = job.filename.replace(/\.[^.]*$/, "") || job.job_id;
+        return `${stem}.veridoc-result.json`;
       }
 
       function renderJobs() {

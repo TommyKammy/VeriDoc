@@ -59,6 +59,27 @@ def test_job_queue_retries_failed_job_with_bounded_attempts() -> None:
     ).job_id == created.job_id
 
 
+def test_job_queue_requeues_explicit_retry_for_failed_job() -> None:
+    queue = JobQueue(max_attempts=1)
+    created = queue.create_job(
+        idempotency_key="upload-1",
+        filename="batch-record.pdf",
+        mode="standard",
+    )
+    running = queue.start_next_job()
+    assert running is not None
+    failed = queue.mark_failed(running.job_id, error="parser unavailable")
+
+    retried = queue.retry_failed_job(failed.job_id)
+    next_job = queue.start_next_job()
+
+    assert retried.status == "queued"
+    assert retried.error is None
+    assert retried.attempts == 1
+    assert next_job is not None
+    assert next_job.job_id == created.job_id
+
+
 def test_high_quality_jobs_are_not_admitted_while_another_is_active() -> None:
     queue = JobQueue()
     queue.create_job(
