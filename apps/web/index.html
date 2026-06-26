@@ -1164,6 +1164,7 @@
         return {
           event_type: "conversion_review.action_requested",
           action,
+          document_id: item.document_id,
           block_id: item.block_id,
           source_page: item.source_page,
           source_bbox: item.source_bbox || null,

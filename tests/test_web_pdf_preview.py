@@ -59,6 +59,7 @@ def test_review_item_exposes_edit_and_approve_audit_events() -> None:
 
     assert "function buildReviewAuditEvent(item, action)" in html
     assert 'event_type: "conversion_review.action_requested"' in html
+    assert "document_id: item.document_id" in html
     assert "block_id: item.block_id" in html
     assert "source_page: item.source_page" in html
     assert "source_bbox: item.source_bbox || null" in html

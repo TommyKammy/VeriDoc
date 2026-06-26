@@ -21,6 +21,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from core.ir.document_ir_v1 import (
     DocumentIRV1,
+    UNITS,
     adapt_document_ir_v0_blocks,
     from_parser_output,
     validate_document_ir_v1,
@@ -416,11 +417,14 @@ def _validate_review_event(audit_event: Any) -> dict[str, Any]:
     action = audit_event.get("action")
     if action not in {"edit", "approve"}:
         raise ValueError("audit_event.action is unsupported")
+    document_id = str(audit_event.get("document_id") or "").strip()
+    if not document_id:
+        raise ValueError("audit_event.document_id is required")
     block_id = str(audit_event.get("block_id") or "").strip()
     if not block_id:
         raise ValueError("audit_event.block_id is required")
     source_page = audit_event.get("source_page")
-    if not isinstance(source_page, int) or source_page < 1:
+    if not isinstance(source_page, int) or isinstance(source_page, bool) or source_page < 1:
         raise ValueError("audit_event.source_page must be a positive integer")
     source_bbox = audit_event.get("source_bbox")
     if source_bbox is not None:
@@ -431,12 +435,15 @@ def _validate_review_event(audit_event: Any) -> dict[str, Any]:
     revised_text = audit_event.get("revised_text")
     if not isinstance(revised_text, str):
         raise ValueError("audit_event.revised_text is required")
+    if action == "approve" and revised_text != original_text:
+        raise ValueError("audit_event.revised_text must match original_text for approve")
     warnings = audit_event.get("warnings", [])
     if not isinstance(warnings, list) or not all(isinstance(item, str) for item in warnings):
         raise ValueError("audit_event.warnings must be strings")
     return {
         "event_type": "conversion_review.action_requested",
         "action": action,
+        "document_id": document_id,
         "block_id": block_id,
         "source_page": source_page,
         "source_bbox": source_bbox,
@@ -457,8 +464,13 @@ def _validate_review_event_bbox(source_bbox: Any) -> None:
     origin = str(source_bbox.get("origin") or "").strip()
     if not unit:
         raise ValueError("audit_event.source_bbox.unit is required")
+    if unit not in UNITS:
+        supported = ", ".join(sorted(UNITS))
+        raise ValueError(f"audit_event.source_bbox.unit must be one of {supported}")
     if origin != "top-left":
         raise ValueError("audit_event.source_bbox.origin must be top-left")
+    if source_bbox["x"] < 0 or source_bbox["y"] < 0:
+        raise ValueError("audit_event.source_bbox origin coordinates must be non-negative")
     if source_bbox["width"] <= 0 or source_bbox["height"] <= 0:
         raise ValueError("audit_event.source_bbox size must be positive")
 
@@ -582,6 +594,7 @@ def _review_items(document_ir: DocumentIRV1) -> list[dict[str, Any]]:
         if not block.review.requires_review and not block.review.warnings:
             continue
         item = {
+            "document_id": document_ir.document.id,
             "block_id": block.id,
             "source_page": block.source_page,
             "text": block.text,
