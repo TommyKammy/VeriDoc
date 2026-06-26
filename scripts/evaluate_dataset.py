@@ -21,15 +21,20 @@ from core.llm.conversion_plan import ConversionPlanValidationError, validate_con
 
 DEFAULT_EVALUATION_CASES = Path("datasets/gold/evaluation_cases_v0.json")
 DEFAULT_LLM_STABILITY_RUNS = Path("datasets/gold/llm_stability_runs_v0.json")
+DEFAULT_POC_COMPARISON = Path("datasets/gold/poc_mode_comparison_v0.json")
 EVALUATION_CASES_SCHEMA_VERSION = "veridoc-evaluation-cases/v0"
 LLM_STABILITY_RUNS_SCHEMA_VERSION = "veridoc-llm-stability-runs/v0"
+POC_MODE_COMPARISON_SCHEMA_VERSION = "veridoc-poc-mode-comparison/v0"
+HIGH_RISK_LABELS_SCHEMA_VERSION = "veridoc-high-risk-labels/v0"
 FIXTURE_MANIFEST_SCHEMA_VERSION = "veridoc-eval-fixtures/v0"
 FIXTURE_SCHEMA_VERSION = "veridoc-evaluation-fixture/v0"
 EXPECTED_ALLOWED_FIXTURE_ROOT = Path("datasets/fixtures")
 EXPECTED_DATASET_MANIFEST = EXPECTED_ALLOWED_FIXTURE_ROOT / "manifest.json"
+EXPECTED_HIGH_RISK_LABELS = Path("datasets/gold/high_risk_labels_v0.json")
 EXPECTED_SCOPE_PHASE = "phase0"
 PUBLIC_FIXTURE_ANONYMIZATION_VALUES = {"anonymized", "synthetic"}
 PUBLIC_LLM_STABILITY_SOURCE_KINDS = {"anonymized_text", "synthetic_text"}
+REQUIRED_POC_MODES = ("no_llm", "standard", "high_quality")
 
 
 @dataclass(frozen=True)
@@ -81,6 +86,45 @@ class LLMStabilityMetrics:
             "distinct_confirmed_value_count": self.distinct_confirmed_value_count,
             "unstable_example_count": self.unstable_example_count,
             "unstable_examples": list(self.unstable_examples),
+        }
+
+
+@dataclass(frozen=True)
+class PoCModeMetrics:
+    mode: str
+    table_extraction_rate: float
+    cell_match_rate: float
+    source_linkage_rate: float
+    high_risk_false_auto_confirmed_count: int
+    requires_review_count: int
+
+    def as_dict(self) -> dict[str, int | float | str]:
+        return {
+            "mode": self.mode,
+            "table_extraction_rate": self.table_extraction_rate,
+            "cell_match_rate": self.cell_match_rate,
+            "source_linkage_rate": self.source_linkage_rate,
+            "high_risk_false_auto_confirmed_count": self.high_risk_false_auto_confirmed_count,
+            "requires_review_count": self.requires_review_count,
+        }
+
+
+@dataclass(frozen=True)
+class PoCComparisonMetrics:
+    mode_count: int
+    high_risk_false_auto_confirmed_count: int
+    high_risk_false_auto_confirmed_target: int
+    target_met: bool
+    modes: tuple[PoCModeMetrics, ...]
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "mode_count": self.mode_count,
+            "required_modes": list(REQUIRED_POC_MODES),
+            "high_risk_false_auto_confirmed_count": self.high_risk_false_auto_confirmed_count,
+            "high_risk_false_auto_confirmed_target": self.high_risk_false_auto_confirmed_target,
+            "target_met": self.target_met,
+            "modes": [mode.as_dict() for mode in self.modes],
         }
 
 
@@ -515,6 +559,12 @@ def manifest_root_for_cases_path(cases_path: Path) -> Path:
     return Path.cwd()
 
 
+def repository_root_for_gold_path(gold_path: Path) -> Path:
+    if gold_path.parent.name == "gold" and gold_path.parent.parent.name == "datasets":
+        return gold_path.parent.parent.parent
+    return Path.cwd()
+
+
 def evaluate_cases(data: dict[str, Any], manifest_root: Path | None = None) -> EvaluationMetrics:
     validate_schema_version(data)
     validate_scope(data)
@@ -767,6 +817,187 @@ def evaluate_llm_stability(data: dict[str, Any]) -> LLMStabilityMetrics:
     )
 
 
+def validate_ratio_metric(value: object, context: str) -> float:
+    if not is_number(value):
+        raise EvaluationCaseError(f"{context} must be a finite number")
+    metric = float(value)
+    if metric < 0.0 or metric > 1.0:
+        raise EvaluationCaseError(f"{context} must be between 0.0 and 1.0")
+    return metric
+
+
+def validate_non_negative_int(value: object, context: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise EvaluationCaseError(f"{context} must be a non-negative integer")
+    return value
+
+
+def high_risk_labels_path_from_comparison(data: dict[str, Any], repo_root: Path) -> Path:
+    labels_path = data.get("high_risk_labels")
+    if not isinstance(labels_path, str) or not labels_path:
+        raise EvaluationCaseError("high_risk_labels must be a non-empty string")
+    path = Path(labels_path)
+    if path.is_absolute() or path != EXPECTED_HIGH_RISK_LABELS:
+        raise EvaluationCaseError("high_risk_labels must be datasets/gold/high_risk_labels_v0.json")
+    return repo_root / path
+
+
+def high_risk_label_index(labels_data: dict[str, Any]) -> dict[tuple[str, str], dict[str, Any]]:
+    if labels_data.get("schema_version") != HIGH_RISK_LABELS_SCHEMA_VERSION:
+        raise EvaluationCaseError(
+            f"unsupported high-risk labels schema_version {labels_data.get('schema_version')!r}"
+        )
+    validate_scope(labels_data)
+    if labels_data.get("dataset_manifest") != str(EXPECTED_DATASET_MANIFEST):
+        raise EvaluationCaseError("high-risk labels dataset_manifest must match evaluation fixtures")
+    items = labels_data.get("items")
+    if not isinstance(items, list) or not items:
+        raise EvaluationCaseError("high-risk labels must contain at least one item")
+
+    indexed: dict[tuple[str, str], dict[str, Any]] = {}
+    for index, item in enumerate(items):
+        context = f"high_risk_labels.items[{index}]"
+        if not isinstance(item, dict):
+            raise EvaluationCaseError(f"{context} must be an object")
+        fixture_id = item.get("fixture_id")
+        label_id = item.get("label_id")
+        if not isinstance(fixture_id, str) or not fixture_id:
+            raise EvaluationCaseError(f"{context}.fixture_id must be a non-empty string")
+        if not isinstance(label_id, str) or not label_id:
+            raise EvaluationCaseError(f"{context}.label_id must be a non-empty string")
+        if item.get("risk_level") != "high":
+            raise EvaluationCaseError(f"{context}.risk_level must be high")
+        if item.get("requires_review") is not True:
+            raise EvaluationCaseError(f"{context}.requires_review must be true")
+        key = (fixture_id, label_id)
+        if key in indexed:
+            raise EvaluationCaseError(f"duplicate high-risk label {key!r}")
+        indexed[key] = item
+    return indexed
+
+
+def validate_poc_high_risk_item_against_label(
+    item: dict[str, Any],
+    labels: dict[tuple[str, str], dict[str, Any]],
+    context: str,
+) -> None:
+    fixture_id = item.get("fixture_id")
+    label_id = item.get("label_id")
+    if not isinstance(fixture_id, str) or not fixture_id:
+        raise EvaluationCaseError(f"{context}.fixture_id must be a non-empty string")
+    if not isinstance(label_id, str) or not label_id:
+        raise EvaluationCaseError(f"{context}.label_id must be a non-empty string")
+    label = labels.get((fixture_id, label_id))
+    if label is None:
+        raise EvaluationCaseError(f"{context} must reference an authoritative high-risk label")
+    if item.get("risk_level") != label.get("risk_level"):
+        raise EvaluationCaseError(f"{context}.risk_level must match high-risk labels")
+    if item.get("requires_review") != label.get("requires_review"):
+        raise EvaluationCaseError(f"{context}.requires_review must match high-risk labels")
+    if item.get("expected_value") != label.get("expected_value"):
+        raise EvaluationCaseError(f"{context}.expected_value must match high-risk labels")
+
+
+def evaluate_poc_mode_comparison(
+    data: dict[str, Any], repo_root: Path | None = None
+) -> PoCComparisonMetrics:
+    if data.get("schema_version") != POC_MODE_COMPARISON_SCHEMA_VERSION:
+        raise EvaluationCaseError(
+            f"unsupported PoC comparison schema_version {data.get('schema_version')!r}"
+        )
+    validate_scope(data)
+    root = repo_root or Path.cwd()
+    labels = high_risk_label_index(load_json(high_risk_labels_path_from_comparison(data, root)))
+
+    acceptance_targets = data.get("acceptance_targets")
+    if not isinstance(acceptance_targets, dict):
+        raise EvaluationCaseError("PoC comparison must define acceptance_targets")
+    target = validate_non_negative_int(
+        acceptance_targets.get("high_risk_false_auto_confirmed_count"),
+        "acceptance_targets.high_risk_false_auto_confirmed_count",
+    )
+    if target != 0:
+        raise EvaluationCaseError("high-risk false auto-confirmation target must be 0")
+
+    modes = data.get("modes")
+    if not isinstance(modes, list):
+        raise EvaluationCaseError("PoC comparison modes must be a list")
+
+    seen_modes: set[str] = set()
+    mode_metrics: list[PoCModeMetrics] = []
+    total_high_risk_false_auto_confirmed = 0
+    for index, mode_record in enumerate(modes):
+        context = f"modes[{index}]"
+        if not isinstance(mode_record, dict):
+            raise EvaluationCaseError(f"{context} must be an object")
+        mode = mode_record.get("mode")
+        if not isinstance(mode, str) or mode not in REQUIRED_POC_MODES:
+            raise EvaluationCaseError(f"{context}.mode must be one of {REQUIRED_POC_MODES!r}")
+        if mode in seen_modes:
+            raise EvaluationCaseError(f"duplicate PoC comparison mode {mode!r}")
+        seen_modes.add(mode)
+
+        metrics = mode_record.get("metrics")
+        if not isinstance(metrics, dict):
+            raise EvaluationCaseError(f"{context}.metrics must be an object")
+        high_risk_items = mode_record.get("high_risk_items")
+        if not isinstance(high_risk_items, list) or not high_risk_items:
+            raise EvaluationCaseError(f"{context}.high_risk_items must list high-risk checks")
+
+        requires_review_count = 0
+        high_risk_false_auto_confirmed_count = 0
+        for item_index, item in enumerate(high_risk_items):
+            item_context = f"{context}.high_risk_items[{item_index}]"
+            if not isinstance(item, dict):
+                raise EvaluationCaseError(f"{item_context} must be an object")
+            validate_poc_high_risk_item_against_label(item, labels, item_context)
+            if item.get("risk_level") != "high":
+                raise EvaluationCaseError(f"{item_context}.risk_level must be high")
+            if item.get("requires_review") is not True:
+                raise EvaluationCaseError(f"{item_context}.requires_review must be true")
+            auto_confirmed = item.get("auto_confirmed")
+            if not isinstance(auto_confirmed, bool):
+                raise EvaluationCaseError(f"{item_context}.auto_confirmed must be a boolean")
+            requires_review_count += 1
+            if auto_confirmed:
+                high_risk_false_auto_confirmed_count += 1
+
+        total_high_risk_false_auto_confirmed += high_risk_false_auto_confirmed_count
+        mode_metrics.append(
+            PoCModeMetrics(
+                mode=mode,
+                table_extraction_rate=validate_ratio_metric(
+                    metrics.get("table_extraction_rate"),
+                    f"{context}.metrics.table_extraction_rate",
+                ),
+                cell_match_rate=validate_ratio_metric(
+                    metrics.get("cell_match_rate"),
+                    f"{context}.metrics.cell_match_rate",
+                ),
+                source_linkage_rate=validate_ratio_metric(
+                    metrics.get("source_linkage_rate"),
+                    f"{context}.metrics.source_linkage_rate",
+                ),
+                high_risk_false_auto_confirmed_count=high_risk_false_auto_confirmed_count,
+                requires_review_count=requires_review_count,
+            )
+        )
+
+    if tuple(sorted(seen_modes)) != tuple(sorted(REQUIRED_POC_MODES)):
+        raise EvaluationCaseError(
+            "PoC comparison must include exactly no_llm, standard, and high_quality modes"
+        )
+
+    mode_order = {mode: index for index, mode in enumerate(REQUIRED_POC_MODES)}
+    return PoCComparisonMetrics(
+        mode_count=len(mode_metrics),
+        high_risk_false_auto_confirmed_count=total_high_risk_false_auto_confirmed,
+        high_risk_false_auto_confirmed_target=target,
+        target_met=total_high_risk_false_auto_confirmed <= target,
+        modes=tuple(sorted(mode_metrics, key=lambda item: mode_order[item.mode])),
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cases", type=Path, default=DEFAULT_EVALUATION_CASES)
@@ -775,10 +1006,21 @@ def main() -> int:
         type=Path,
         help="Measure N-run LLM output stability from a public synthetic run record.",
     )
+    parser.add_argument(
+        "--poc-comparison",
+        type=Path,
+        help="Compare no-LLM, standard, and high-quality PoC outputs from public records.",
+    )
     args = parser.parse_args()
 
     try:
-        if args.llm_stability_runs is not None:
+        if args.poc_comparison is not None:
+            poc_comparison_path = args.poc_comparison.resolve()
+            metrics = evaluate_poc_mode_comparison(
+                load_json(poc_comparison_path),
+                repo_root=repository_root_for_gold_path(poc_comparison_path),
+            )
+        elif args.llm_stability_runs is not None:
             metrics = evaluate_llm_stability(load_json(args.llm_stability_runs.resolve()))
         else:
             cases_path = args.cases.resolve()

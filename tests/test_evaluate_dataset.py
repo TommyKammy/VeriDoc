@@ -15,6 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "evaluate_dataset.py"
 CASES_PATH = REPO_ROOT / "datasets" / "gold" / "evaluation_cases_v0.json"
 LLM_STABILITY_RUNS_PATH = REPO_ROOT / "datasets" / "gold" / "llm_stability_runs_v0.json"
+POC_COMPARISON_PATH = REPO_ROOT / "datasets" / "gold" / "poc_mode_comparison_v0.json"
 
 
 spec = importlib.util.spec_from_file_location("evaluate_dataset", SCRIPT_PATH)
@@ -31,6 +32,9 @@ class EvaluateDatasetTest(unittest.TestCase):
 
     def valid_llm_stability_data(self) -> dict[str, object]:
         return copy.deepcopy(evaluate_dataset.load_json(LLM_STABILITY_RUNS_PATH))
+
+    def valid_poc_comparison_data(self) -> dict[str, object]:
+        return copy.deepcopy(evaluate_dataset.load_json(POC_COMPARISON_PATH))
 
     def evaluate_valid_cases(self, data: dict[str, object]) -> object:
         return evaluate_dataset.evaluate_cases(data, manifest_root=REPO_ROOT)
@@ -119,6 +123,45 @@ class EvaluateDatasetTest(unittest.TestCase):
             ),
             metrics.unstable_examples,
         )
+
+    def test_poc_mode_comparison_measures_required_phase1_modes(self) -> None:
+        metrics = evaluate_dataset.evaluate_poc_mode_comparison(
+            self.valid_poc_comparison_data(), repo_root=REPO_ROOT
+        )
+
+        self.assertEqual(3, metrics.mode_count)
+        self.assertEqual(0, metrics.high_risk_false_auto_confirmed_count)
+        self.assertTrue(metrics.target_met)
+        self.assertEqual(
+            ["no_llm", "standard", "high_quality"],
+            [mode["mode"] for mode in metrics.as_dict()["modes"]],
+        )
+        high_quality = metrics.as_dict()["modes"][2]
+        self.assertEqual(1.0, high_quality["cell_match_rate"])
+        self.assertEqual(1.0, high_quality["source_linkage_rate"])
+
+    def test_poc_mode_comparison_rejects_missing_required_mode_before_scoring(self) -> None:
+        data = self.valid_poc_comparison_data()
+        data["modes"] = [mode for mode in data["modes"] if mode["mode"] != "high_quality"]
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "exactly no_llm"):
+            evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
+    def test_poc_mode_comparison_rejects_high_risk_label_drift_before_scoring(self) -> None:
+        data = self.valid_poc_comparison_data()
+        data["modes"][0]["high_risk_items"][0]["expected_value"] = "SAMPLE-LOT-999"
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "high-risk labels"):
+            evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
+    def test_poc_mode_comparison_counts_high_risk_auto_confirmation_failures(self) -> None:
+        data = self.valid_poc_comparison_data()
+        data["modes"][0]["high_risk_items"][0]["auto_confirmed"] = True
+
+        metrics = evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
+        self.assertEqual(1, metrics.high_risk_false_auto_confirmed_count)
+        self.assertFalse(metrics.target_met)
 
     def test_llm_stability_agreement_rates_do_not_depend_on_run_order(self) -> None:
         data = self.valid_llm_stability_data()
@@ -701,6 +744,28 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertEqual(2 / 3, metrics["plan_agreement_rate"])
         self.assertEqual(2 / 3, metrics["confirmed_value_agreement_rate"])
         self.assertEqual(2, metrics["unstable_example_count"])
+
+    def test_cli_emits_poc_mode_comparison_for_phase1_acceptance(self) -> None:
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT_PATH),
+                "--poc-comparison",
+                str(POC_COMPARISON_PATH),
+            ],
+            cwd=REPO_ROOT,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        self.assertEqual("", proc.stderr)
+        self.assertEqual(0, proc.returncode)
+        metrics = json.loads(proc.stdout)
+        self.assertEqual(["no_llm", "standard", "high_quality"], metrics["required_modes"])
+        self.assertEqual(0, metrics["high_risk_false_auto_confirmed_count"])
+        self.assertTrue(metrics["target_met"])
 
 
 if __name__ == "__main__":

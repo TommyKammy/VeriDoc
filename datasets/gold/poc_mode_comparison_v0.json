@@ -1,0 +1,86 @@
+{
+  "schema_version": "veridoc-poc-mode-comparison/v0",
+  "dataset_manifest": "datasets/fixtures/manifest.json",
+  "scope": {
+    "phase": "phase0",
+    "public_only": true,
+    "confidential_source_documents_allowed": false,
+    "production_or_gmp_claim": false
+  },
+  "high_risk_labels": "datasets/gold/high_risk_labels_v0.json",
+  "acceptance_targets": {
+    "high_risk_false_auto_confirmed_count": 0
+  },
+  "modes": [
+    {
+      "mode": "no_llm",
+      "description": "Rule-only baseline from the public synthetic fixture.",
+      "metrics": {
+        "table_extraction_rate": 1.0,
+        "cell_match_rate": 0.5,
+        "source_linkage_rate": 0.5
+      },
+      "high_risk_items": [
+        {
+          "id": "no-llm-lot-number",
+          "fixture_id": "sample-document-ir-v0",
+          "label_id": "lot_number",
+          "risk_level": "high",
+          "expected_value": "SAMPLE-LOT-001",
+          "actual_value": "SAMPLE-LOT-002",
+          "requires_review": true,
+          "auto_confirmed": false,
+          "status": "requires_review"
+        }
+      ]
+    },
+    {
+      "mode": "standard",
+      "description": "Standard prompt result captured from public synthetic input.",
+      "metrics": {
+        "table_extraction_rate": 1.0,
+        "cell_match_rate": 1.0,
+        "source_linkage_rate": 0.5
+      },
+      "high_risk_items": [
+        {
+          "id": "standard-lot-number",
+          "fixture_id": "sample-document-ir-v0",
+          "label_id": "lot_number",
+          "risk_level": "high",
+          "expected_value": "SAMPLE-LOT-001",
+          "actual_value": "SAMPLE-LOT-001",
+          "requires_review": true,
+          "auto_confirmed": false,
+          "status": "requires_review"
+        }
+      ]
+    },
+    {
+      "mode": "high_quality",
+      "description": "High-quality prompt result captured from public synthetic input.",
+      "metrics": {
+        "table_extraction_rate": 1.0,
+        "cell_match_rate": 1.0,
+        "source_linkage_rate": 1.0
+      },
+      "high_risk_items": [
+        {
+          "id": "high-quality-lot-number",
+          "fixture_id": "sample-document-ir-v0",
+          "label_id": "lot_number",
+          "risk_level": "high",
+          "expected_value": "SAMPLE-LOT-001",
+          "actual_value": "SAMPLE-LOT-001",
+          "requires_review": true,
+          "auto_confirmed": false,
+          "status": "requires_review"
+        }
+      ]
+    }
+  ],
+  "open_items": [
+    "Captured outputs are synthetic/public Phase 0 records only.",
+    "Production authentication, GMP readiness, and full layout fidelity remain out of scope."
+  ]
+}
