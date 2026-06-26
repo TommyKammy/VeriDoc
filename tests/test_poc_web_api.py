@@ -1626,27 +1626,57 @@ def test_bundled_web_ui_plumbs_local_auth_token_into_api_fetches() -> None:
     assert "fetch(\"/api/review-events\"" not in html
 
 
-def test_bundled_web_ui_clears_cached_jobs_before_removing_auth_token() -> None:
+def test_bundled_web_ui_clears_credential_bound_state_when_auth_token_changes() -> None:
     html = Path("apps/web/index.html").read_text(encoding="utf-8")
 
+    save_handler = re.search(
+        r'saveAuthToken\.addEventListener\("click", \(\) => \{(?P<body>.*?)\n      \}\);',
+        html,
+        re.DOTALL,
+    )
     clear_handler = re.search(
         r'clearAuthToken\.addEventListener\("click", \(\) => \{(?P<body>.*?)\n      \}\);',
         html,
         re.DOTALL,
     )
-    clear_state = re.search(
-        r"function clearJobState\(\) \{(?P<body>.*?)\n      \}",
+    credential_clear = re.search(
+        r"function clearCredentialBoundState\(\) \{(?P<body>.*?)\n      \}",
+        html,
+        re.DOTALL,
+    )
+    review_clear = re.search(
+        r"function clearReviewResult\(\) \{(?P<body>.*?)\n      \}",
+        html,
+        re.DOTALL,
+    )
+    preview_clear = re.search(
+        r"function clearPreview\(\) \{(?P<body>.*?)\n      \}",
         html,
         re.DOTALL,
     )
 
+    assert save_handler is not None
     assert clear_handler is not None
-    assert clear_state is not None
+    assert credential_clear is not None
+    assert review_clear is not None
+    assert preview_clear is not None
+    save_body = save_handler.group("body")
     clear_body = clear_handler.group("body")
-    assert clear_body.index("localStorage.removeItem") < clear_body.index("clearJobState()")
-    assert clear_body.index("clearJobState()") < clear_body.index("loadJobs()")
-    assert "state.jobs = []" in clear_state.group("body")
-    assert "clearDetail()" in clear_state.group("body")
+    credential_clear_body = credential_clear.group("body")
+    review_clear_body = review_clear.group("body")
+    preview_clear_body = preview_clear.group("body")
+    assert save_body.index("clearCredentialBoundState()") < save_body.index("localStorage.setItem")
+    assert clear_body.index("localStorage.removeItem") < clear_body.index("clearCredentialBoundState()")
+    assert clear_body.index("clearCredentialBoundState()") < clear_body.index("loadJobs()")
+    assert "state.directConversionToken += 1" in credential_clear_body
+    assert "clearJobState()" in credential_clear_body
+    assert "clearSourcePreview()" in credential_clear_body
+    assert "clearReviewResult()" in credential_clear_body
+    assert "reviewList.replaceChildren()" in review_clear_body
+    assert "rawResult.textContent = \"\"" in review_clear_body
+    assert "clearDownload()" in review_clear_body
+    assert "state.latestResult = null" in preview_clear_body
+    assert "state.availableReviewActions = []" in preview_clear_body
 
 
 def test_bundled_web_ui_scopes_review_actions_from_api_permissions() -> None:

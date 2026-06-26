@@ -669,7 +669,7 @@
       authToken.value = localStorage.getItem(LOCAL_AUTH_TOKEN_STORAGE_KEY) || "";
       saveAuthToken.addEventListener("click", () => {
         const token = authToken.value.trim();
-        clearJobState();
+        clearCredentialBoundState();
         if (token) {
           localStorage.setItem(LOCAL_AUTH_TOKEN_STORAGE_KEY, token);
           setPageStatus("API token saved.");
@@ -682,7 +682,7 @@
       clearAuthToken.addEventListener("click", () => {
         authToken.value = "";
         localStorage.removeItem(LOCAL_AUTH_TOKEN_STORAGE_KEY);
-        clearJobState();
+        clearCredentialBoundState();
         setPageStatus("API token cleared.");
         loadJobs();
       });
@@ -944,6 +944,13 @@
       function clearJobState() {
         state.jobs = [];
         clearDetail();
+      }
+
+      function clearCredentialBoundState() {
+        state.directConversionToken += 1;
+        clearJobState();
+        clearSourcePreview();
+        clearReviewResult();
       }
 
       function findAction(job, actionName) {
