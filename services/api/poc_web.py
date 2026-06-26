@@ -27,6 +27,7 @@ from core.ir.document_ir_v1 import (
 from core.parsers.docx_extraction import extract_docx_structure
 from core.parsers.pdf_text_extraction import MissingPdfExtractorDependency, parse_text_pdf_to_document_ir
 from core.parsers.xlsx_extraction import extract_xlsx_structure
+from services.api.job_queue import JobQueue
 
 WEB_ROOT = REPO_ROOT / "apps" / "web"
 DEFAULT_HOST = "127.0.0.1"
@@ -35,6 +36,7 @@ MAX_UPLOAD_BYTES = 2 * 1024 * 1024
 MAX_UPLOAD_REQUEST_BYTES = (MAX_UPLOAD_BYTES * 4 // 3) + 4096
 SOURCE_TYPES = {"pdf", "docx", "xlsx", "unknown"}
 KNOWN_SOURCE_TYPES = SOURCE_TYPES - {"unknown"}
+DEFAULT_JOB_QUEUE = JobQueue()
 
 
 class PocServerDependencyError(RuntimeError):
@@ -93,24 +95,26 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
         if self.path in {"/", "/index.html"}:
             self._send_file(WEB_ROOT / "index.html", "text/html; charset=utf-8")
             return
+        if self.path.startswith("/api/jobs/"):
+            job_id = self.path.removeprefix("/api/jobs/")
+            try:
+                job = self._job_queue().get_job(job_id)
+            except KeyError:
+                self._send_json({"error": "job_not_found"}, status=404)
+                return
+            self._send_json({"job": job.to_dict()})
+            return
         self._send_json({"error": "not_found"}, status=404)
 
     def do_POST(self) -> None:
+        if self.path == "/api/jobs":
+            self._handle_create_job()
+            return
         if self.path != "/api/convert":
             self._send_json({"error": "not_found"}, status=404)
             return
-        length = self.headers.get("Content-Length")
-        if length is None or not length.isdigit():
-            self._send_json({"error": "content_length_required"}, status=411)
-            return
-        byte_count = int(length)
-        if byte_count > MAX_UPLOAD_REQUEST_BYTES:
-            self._send_json({"error": "upload_too_large"}, status=413)
-            return
         try:
-            request = json.loads(self.rfile.read(byte_count).decode("utf-8"))
-            if not isinstance(request, dict):
-                raise ValueError("request JSON root must be an object")
+            request = self._read_json_request()
             filename = str(request.get("filename") or "upload.txt")
             content = _decode_request_content(request)
             if len(content) > MAX_UPLOAD_BYTES:
@@ -124,12 +128,60 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             )
             return
         except (json.JSONDecodeError, ValueError) as exc:
+            if str(exc) == "content_length_required":
+                self._send_json({"error": "content_length_required"}, status=411)
+                return
+            if str(exc) == "upload_too_large":
+                self._send_json({"error": "upload_too_large"}, status=413)
+                return
             self._send_json({"error": "invalid_upload", "message": str(exc)}, status=400)
             return
         self._send_json(_http_result(result))
 
     def log_message(self, format: str, *args: Any) -> None:
         return
+
+    def _handle_create_job(self) -> None:
+        try:
+            request = self._read_json_request()
+            filename = str(request.get("filename") or "").strip()
+            mode = str(request.get("mode") or "standard")
+            idempotency_key = str(
+                request.get("idempotency_key") or self.headers.get("Idempotency-Key") or ""
+            )
+            job = self._job_queue().create_job(
+                idempotency_key=idempotency_key,
+                filename=filename,
+                mode=mode,
+            )
+        except RuntimeError as exc:
+            self._send_json({"error": "job_conflict", "message": str(exc)}, status=409)
+            return
+        except ValueError as exc:
+            if str(exc) == "content_length_required":
+                self._send_json({"error": "content_length_required"}, status=411)
+                return
+            if str(exc) == "upload_too_large":
+                self._send_json({"error": "upload_too_large"}, status=413)
+                return
+            self._send_json({"error": "invalid_job_request", "message": str(exc)}, status=400)
+            return
+        self._send_json({"job": job.to_dict()}, status=202)
+
+    def _read_json_request(self) -> dict[str, Any]:
+        length = self.headers.get("Content-Length")
+        if length is None or not length.isdigit():
+            raise ValueError("content_length_required")
+        byte_count = int(length)
+        if byte_count > MAX_UPLOAD_REQUEST_BYTES:
+            raise ValueError("upload_too_large")
+        request = json.loads(self.rfile.read(byte_count).decode("utf-8"))
+        if not isinstance(request, dict):
+            raise ValueError("request JSON root must be an object")
+        return request
+
+    def _job_queue(self) -> JobQueue:
+        return getattr(self.server, "job_queue", DEFAULT_JOB_QUEUE)
 
     def _send_file(self, path: Path, content_type: str) -> None:
         if not path.is_file():

@@ -9,6 +9,7 @@ from threading import Thread
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import services.api.poc_web as poc_web
+from services.api.job_queue import JobQueue
 from services.api.poc_web import PocWebRequestHandler, convert_uploaded_document
 
 
@@ -543,6 +544,108 @@ def test_poc_http_api_returns_json_safe_download_content() -> None:
     ]
     downloaded = json.loads(body["download"]["content_text"])
     assert downloaded["document_ir"]["document"]["id"] == "upload"
+
+
+def test_poc_http_api_creates_idempotent_conversion_job() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue()
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = json.dumps(
+            {
+                "idempotency_key": "upload-1",
+                "filename": "batch-record.pdf",
+                "mode": "standard",
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/jobs",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        created_response = connection.getresponse()
+        created = json.loads(created_response.read().decode("utf-8"))
+        connection.request(
+            "POST",
+            "/api/jobs",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        duplicate_response = connection.getresponse()
+        duplicate = json.loads(duplicate_response.read().decode("utf-8"))
+        job_id = created["job"]["job_id"]
+        connection.request("GET", f"/api/jobs/{job_id}")
+        status_response = connection.getresponse()
+        status = json.loads(status_response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert created_response.status == 202
+    assert duplicate_response.status == 202
+    assert duplicate["job"]["job_id"] == job_id
+    assert status_response.status == 200
+    assert status["job"]["status"] == "queued"
+    assert status["job"]["mode"] == "standard"
+
+
+def test_poc_http_api_rejects_second_active_high_quality_job() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue()
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        first_payload = json.dumps(
+            {
+                "idempotency_key": "hq-1",
+                "filename": "batch-record.pdf",
+                "mode": "high_quality",
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/jobs",
+            body=first_payload,
+            headers={
+                "Content-Type": "application/json",
+                "Content-Length": str(len(first_payload)),
+            },
+        )
+        created_response = connection.getresponse()
+        created_response.read()
+        server.job_queue.start_next_job()
+        second_payload = json.dumps(
+            {
+                "idempotency_key": "hq-2",
+                "filename": "batch-record.pdf",
+                "mode": "high_quality",
+            }
+        ).encode("utf-8")
+        connection.request(
+            "POST",
+            "/api/jobs",
+            body=second_payload,
+            headers={
+                "Content-Type": "application/json",
+                "Content-Length": str(len(second_payload)),
+            },
+        )
+        conflict_response = connection.getresponse()
+        conflict = json.loads(conflict_response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert created_response.status == 202
+    assert conflict_response.status == 409
+    assert conflict == {
+        "error": "job_conflict",
+        "message": "high_quality job already active",
+    }
 
 
 def test_poc_http_api_accepts_base64_docx_upload(tmp_path: Path) -> None:
