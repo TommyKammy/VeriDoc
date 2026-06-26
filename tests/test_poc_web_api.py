@@ -1626,6 +1626,29 @@ def test_bundled_web_ui_plumbs_local_auth_token_into_api_fetches() -> None:
     assert "fetch(\"/api/review-events\"" not in html
 
 
+def test_bundled_web_ui_clears_cached_jobs_before_removing_auth_token() -> None:
+    html = Path("apps/web/index.html").read_text(encoding="utf-8")
+
+    clear_handler = re.search(
+        r'clearAuthToken\.addEventListener\("click", \(\) => \{(?P<body>.*?)\n      \}\);',
+        html,
+        re.DOTALL,
+    )
+    clear_state = re.search(
+        r"function clearJobState\(\) \{(?P<body>.*?)\n      \}",
+        html,
+        re.DOTALL,
+    )
+
+    assert clear_handler is not None
+    assert clear_state is not None
+    clear_body = clear_handler.group("body")
+    assert clear_body.index("localStorage.removeItem") < clear_body.index("clearJobState()")
+    assert clear_body.index("clearJobState()") < clear_body.index("loadJobs()")
+    assert "state.jobs = []" in clear_state.group("body")
+    assert "clearDetail()" in clear_state.group("body")
+
+
 def test_bundled_web_ui_scopes_review_actions_from_api_permissions() -> None:
     html = Path("apps/web/index.html").read_text(encoding="utf-8")
 

@@ -669,6 +669,7 @@
       authToken.value = localStorage.getItem(LOCAL_AUTH_TOKEN_STORAGE_KEY) || "";
       saveAuthToken.addEventListener("click", () => {
         const token = authToken.value.trim();
+        clearJobState();
         if (token) {
           localStorage.setItem(LOCAL_AUTH_TOKEN_STORAGE_KEY, token);
           setPageStatus("API token saved.");
@@ -681,6 +682,7 @@
       clearAuthToken.addEventListener("click", () => {
         authToken.value = "";
         localStorage.removeItem(LOCAL_AUTH_TOKEN_STORAGE_KEY);
+        clearJobState();
         setPageStatus("API token cleared.");
         loadJobs();
       });
@@ -937,6 +939,11 @@
         detailEmpty.hidden = false;
         detailContent.hidden = true;
         renderJobs();
+      }
+
+      function clearJobState() {
+        state.jobs = [];
+        clearDetail();
       }
 
       function findAction(job, actionName) {
