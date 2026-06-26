@@ -278,6 +278,21 @@
         margin-top: 8px;
       }
 
+      .review-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+        margin-top: 8px;
+      }
+
+      .review-edit {
+        width: 100%;
+        min-height: 70px;
+        margin-top: 8px;
+        resize: vertical;
+      }
+
       .preview-toolbar {
         display: flex;
         flex-wrap: wrap;
@@ -489,6 +504,7 @@
         <div id="result-panel" class="empty" hidden>
           <span id="status" class="status"></span>
           <div id="review-list"></div>
+          <div id="review-action-status" class="page-status" role="status"></div>
           <a id="download-link" download hidden>Download result</a>
         </div>
         <div id="raw-panel" hidden>
@@ -531,6 +547,7 @@
         pdfRenderToken: 0,
         latestResult: null,
         previewPage: 1,
+        reviewAuditEvents: [],
       };
 
       const PDFJS_MODULE_URL = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.min.mjs";
@@ -565,6 +582,7 @@
       const rawPanel = document.querySelector("#raw-panel");
       const status = document.querySelector("#status");
       const reviewList = document.querySelector("#review-list");
+      const reviewActionStatus = document.querySelector("#review-action-status");
       const downloadLink = document.querySelector("#download-link");
       const rawResult = document.querySelector("#raw-result");
       const pdfPreviewPanel = document.querySelector("#pdf-preview-panel");
@@ -864,6 +882,7 @@
           null,
           2
         );
+        reviewActionStatus.textContent = "";
         resultPanel.hidden = false;
         rawPanel.hidden = false;
         renderSourcePreview(result);
@@ -1106,20 +1125,77 @@
       function renderReviewItem(item) {
         const wrapper = document.createElement("div");
         wrapper.className = "review-item";
+        wrapper.dataset.blockId = item.block_id;
         const title = document.createElement("strong");
         title.textContent = `${item.block_id} / page ${item.source_page}`;
         const text = document.createElement("div");
         text.textContent = item.text;
         const warnings = document.createElement("div");
         warnings.textContent = item.warnings.join(" / ");
+        const edit = document.createElement("textarea");
+        edit.className = "review-edit";
+        edit.dataset.reviewEditFor = item.block_id;
+        edit.value = item.text;
+        edit.setAttribute("aria-label", `${item.block_id} revised text`);
         const jump = document.createElement("button");
         jump.className = "secondary";
         jump.type = "button";
         jump.textContent = "Jump to bbox";
         jump.disabled = !item.source_bbox;
         jump.addEventListener("click", () => jumpToReviewItem(item));
-        wrapper.append(title, text, warnings, jump);
+        const approve = document.createElement("button");
+        approve.type = "button";
+        approve.textContent = "Approve";
+        approve.addEventListener("click", () => requestReviewAction(item, "approve"));
+        const requestEdit = document.createElement("button");
+        requestEdit.className = "secondary";
+        requestEdit.type = "button";
+        requestEdit.textContent = "Save edit";
+        requestEdit.addEventListener("click", () => requestReviewAction(item, "edit"));
+        const actions = document.createElement("div");
+        actions.className = "review-actions";
+        actions.append(jump, requestEdit, approve);
+        wrapper.append(title, text, warnings, edit, actions);
         return wrapper;
+      }
+
+      function buildReviewAuditEvent(item, action) {
+        const revisedText = reviewDraftText(item);
+        return {
+          event_type: "conversion_review.action_requested",
+          action,
+          block_id: item.block_id,
+          source_page: item.source_page,
+          source_bbox: item.source_bbox || null,
+          original_text: item.text,
+          revised_text: action === "edit" ? revisedText : item.text,
+          warnings: item.warnings || [],
+        };
+      }
+
+      function reviewDraftText(item) {
+        const edit = reviewList.querySelector(
+          `[data-review-edit-for="${CSS.escape(item.block_id)}"]`
+        );
+        return edit ? edit.value : item.text;
+      }
+
+      async function requestReviewAction(item, action) {
+        const auditEvent = buildReviewAuditEvent(item, action);
+        const response = await fetch("/api/review-events", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ audit_event: auditEvent }),
+        });
+        const body = await response.json();
+        if (!response.ok) {
+          reviewActionStatus.textContent = body.message || body.error || "review action failed";
+          reviewActionStatus.className = "page-status error";
+          return;
+        }
+        state.reviewAuditEvents.push(body.audit_event);
+        reviewActionStatus.textContent = "Review action event queued for audit.";
+        reviewActionStatus.className = "page-status";
       }
 
       loadJobs();

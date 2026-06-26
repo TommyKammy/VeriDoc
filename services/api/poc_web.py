@@ -129,6 +129,9 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/job-events":
             self._handle_job_event()
             return
+        if path == "/api/review-events":
+            self._handle_review_event()
+            return
         if path != "/api/convert":
             self._send_json({"error": "not_found"}, status=404)
             return
@@ -237,6 +240,27 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 "accepted": True,
                 "audit_event": accepted_event,
                 "job": _job_response(updated_job, job_queue),
+            },
+            status=202,
+        )
+
+    def _handle_review_event(self) -> None:
+        try:
+            request = self._read_json_request()
+            accepted_event = _validate_review_event(request.get("audit_event"))
+        except ValueError as exc:
+            if str(exc) == "content_length_required":
+                self._send_json({"error": "content_length_required"}, status=411)
+                return
+            if str(exc) == "upload_too_large":
+                self._send_json({"error": "upload_too_large"}, status=413)
+                return
+            self._send_json({"error": "invalid_review_event", "message": str(exc)}, status=400)
+            return
+        self._send_json(
+            {
+                "accepted": True,
+                "audit_event": accepted_event,
             },
             status=202,
         )
@@ -382,6 +406,61 @@ def _validate_job_event(
     if audit_event != expected_event:
         raise ValueError("audit_event does not match job action")
     return expected_event
+
+
+def _validate_review_event(audit_event: Any) -> dict[str, Any]:
+    if not isinstance(audit_event, dict):
+        raise ValueError("audit_event is required")
+    if audit_event.get("event_type") != "conversion_review.action_requested":
+        raise ValueError("audit_event.event_type is unsupported")
+    action = audit_event.get("action")
+    if action not in {"edit", "approve"}:
+        raise ValueError("audit_event.action is unsupported")
+    block_id = str(audit_event.get("block_id") or "").strip()
+    if not block_id:
+        raise ValueError("audit_event.block_id is required")
+    source_page = audit_event.get("source_page")
+    if not isinstance(source_page, int) or source_page < 1:
+        raise ValueError("audit_event.source_page must be a positive integer")
+    source_bbox = audit_event.get("source_bbox")
+    if source_bbox is not None:
+        _validate_review_event_bbox(source_bbox)
+    original_text = audit_event.get("original_text")
+    if not isinstance(original_text, str):
+        raise ValueError("audit_event.original_text is required")
+    revised_text = audit_event.get("revised_text")
+    if not isinstance(revised_text, str):
+        raise ValueError("audit_event.revised_text is required")
+    warnings = audit_event.get("warnings", [])
+    if not isinstance(warnings, list) or not all(isinstance(item, str) for item in warnings):
+        raise ValueError("audit_event.warnings must be strings")
+    return {
+        "event_type": "conversion_review.action_requested",
+        "action": action,
+        "block_id": block_id,
+        "source_page": source_page,
+        "source_bbox": source_bbox,
+        "original_text": original_text,
+        "revised_text": revised_text,
+        "warnings": warnings,
+    }
+
+
+def _validate_review_event_bbox(source_bbox: Any) -> None:
+    if not isinstance(source_bbox, dict):
+        raise ValueError("audit_event.source_bbox must be an object")
+    for key in ("x", "y", "width", "height"):
+        value = source_bbox.get(key)
+        if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value):
+            raise ValueError(f"audit_event.source_bbox.{key} must be finite")
+    unit = str(source_bbox.get("unit") or "").strip()
+    origin = str(source_bbox.get("origin") or "").strip()
+    if not unit:
+        raise ValueError("audit_event.source_bbox.unit is required")
+    if origin != "top-left":
+        raise ValueError("audit_event.source_bbox.origin must be top-left")
+    if source_bbox["width"] <= 0 or source_bbox["height"] <= 0:
+        raise ValueError("audit_event.source_bbox size must be positive")
 
 
 def _job_download(job: JobRecord) -> dict[str, Any]:

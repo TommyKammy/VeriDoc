@@ -577,6 +577,98 @@ def test_poc_http_api_returns_json_safe_download_content() -> None:
     assert downloaded["document_ir"]["document"]["id"] == "upload"
 
 
+def test_poc_http_api_accepts_review_action_audit_event() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = json.dumps(
+            {
+                "audit_event": {
+                    "event_type": "conversion_review.action_requested",
+                    "action": "edit",
+                    "block_id": "block-0001",
+                    "source_page": 1,
+                    "source_bbox": {
+                        "x": 10,
+                        "y": 20,
+                        "width": 120,
+                        "height": 16,
+                        "unit": "pt",
+                        "origin": "top-left",
+                    },
+                    "original_text": "Lot: SAMPLE-001",
+                    "revised_text": "Lot: SAMPLE-001 corrected",
+                    "warnings": ["blocks[0].low confidence; block marked requires_review"],
+                }
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/review-events",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 202
+    assert body["accepted"] is True
+    assert body["audit_event"]["action"] == "edit"
+    assert body["audit_event"]["block_id"] == "block-0001"
+    assert body["audit_event"]["source_bbox"]["origin"] == "top-left"
+
+
+def test_poc_http_api_rejects_malformed_review_action_audit_event() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = json.dumps(
+            {
+                "audit_event": {
+                    "event_type": "conversion_review.action_requested",
+                    "action": "approve",
+                    "block_id": "block-0001",
+                    "source_page": 1,
+                    "source_bbox": {
+                        "x": 10,
+                        "y": 20,
+                        "width": 120,
+                        "height": 16,
+                        "unit": "pt",
+                        "origin": "bottom-left",
+                    },
+                    "original_text": "Lot: SAMPLE-001",
+                    "revised_text": "Lot: SAMPLE-001",
+                    "warnings": [],
+                }
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/review-events",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 400
+    assert body == {
+        "error": "invalid_review_event",
+        "message": "audit_event.source_bbox.origin must be top-left",
+    }
+
+
 def test_poc_http_api_creates_idempotent_conversion_job() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     server.job_queue = JobQueue()
