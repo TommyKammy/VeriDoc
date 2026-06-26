@@ -484,9 +484,15 @@
           const body = await response.json();
           if (!response.ok) throw new Error(body.message || body.error || "job list failed");
           state.jobs = body.jobs;
-          renderJobs();
-          if (state.selectedJob && !state.jobs.some((job) => job.job_id === state.selectedJob.job_id)) {
+          const refreshedSelection = state.selectedJob
+            ? state.jobs.find((job) => job.job_id === state.selectedJob.job_id)
+            : null;
+          if (refreshedSelection) {
+            renderDetail(refreshedSelection);
+          } else if (state.selectedJob) {
             clearDetail();
+          } else {
+            renderJobs();
           }
           setPageStatus(`${body.jobs.length} job${body.jobs.length === 1 ? "" : "s"} loaded.`);
         } catch (error) {

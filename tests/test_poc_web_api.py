@@ -706,7 +706,7 @@ def test_poc_http_api_sanitizes_succeeded_job_result_and_downloads_result() -> N
             "status": "converted",
             "document_ir": {"document": {"title": "stored conversion payload"}},
             "download": {
-                "filename": "nested\\invoice\r\nX-Test: 1.pdf",
+                "filename": "nested\\invoice📄\r\nX-Test: 1.pdf",
                 "content_type": "application/json; charset=utf-8",
                 "content": b'{"converted": true}',
             },
@@ -751,6 +751,57 @@ def test_poc_http_api_sanitizes_succeeded_job_result_and_downloads_result() -> N
     assert download_disposition == 'attachment; filename="invoiceX-Test: 1.pdf"'
     assert injected_header is None
     assert download_body == b'{"converted": true}'
+
+
+def test_poc_http_api_rejects_malformed_download_content_type() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue()
+    created = server.job_queue.create_job(
+        idempotency_key="converted-bad-content-type-1",
+        filename="converted-record.pdf",
+        mode="standard",
+    )
+    running = server.job_queue.start_next_job()
+    assert running is not None
+    server.job_queue.mark_succeeded(
+        created.job_id,
+        result={
+            "status": "converted",
+            "download": {
+                "filename": "converted-record.veridoc-result.json",
+                "content_type": "application/json\r\nX-Test: 1",
+                "content": b'{"converted": true}',
+            },
+        },
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request("GET", "/api/jobs")
+        list_response = connection.getresponse()
+        list_body = json.loads(list_response.read().decode("utf-8"))
+        connection.request("GET", f"/api/jobs/{created.job_id}")
+        detail_response = connection.getresponse()
+        detail_body = json.loads(detail_response.read().decode("utf-8"))
+        connection.request("GET", f"/api/jobs/{created.job_id}/result")
+        download_response = connection.getresponse()
+        injected_header = download_response.getheader("X-Test")
+        download_body = json.loads(download_response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert list_response.status == 200
+    assert detail_response.status == 200
+    assert download_response.status == 400
+    assert injected_header is None
+    assert download_body["error"] == "job_result_unavailable"
+    assert list_body["jobs"][0]["has_result"] is False
+    assert detail_body["job"]["has_result"] is False
+    assert [action["action"] for action in detail_body["job"]["available_actions"]] == [
+        "open_detail"
+    ]
 
 
 def test_poc_http_api_hides_download_action_without_download_payload() -> None:
@@ -1166,3 +1217,23 @@ def test_web_job_detail_actions_perform_download_and_retry_side_effects() -> Non
     assert "await response.blob()" in download_body
     assert "URL.createObjectURL(blob)" in download_body
     assert "link.click()" in download_body
+
+
+def test_web_job_list_refresh_updates_selected_detail_snapshot() -> None:
+    html = Path("apps/web/index.html").read_text(encoding="utf-8")
+
+    load_jobs_handler = re.search(
+        r"async function loadJobs\(\) \{(?P<body>.*?)\n      \}",
+        html,
+        re.DOTALL,
+    )
+
+    assert load_jobs_handler is not None
+    load_jobs_body = load_jobs_handler.group("body")
+    assert "const refreshedSelection = state.selectedJob" in load_jobs_body
+    assert (
+        "state.jobs.find((job) => job.job_id === state.selectedJob.job_id)"
+        in load_jobs_body
+    )
+    assert "renderDetail(refreshedSelection)" in load_jobs_body
+    assert "clearDetail()" in load_jobs_body

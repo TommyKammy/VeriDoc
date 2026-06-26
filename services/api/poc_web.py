@@ -37,6 +37,7 @@ MAX_UPLOAD_BYTES = 2 * 1024 * 1024
 MAX_UPLOAD_REQUEST_BYTES = (MAX_UPLOAD_BYTES * 4 // 3) + 4096
 SOURCE_TYPES = {"pdf", "docx", "xlsx", "unknown"}
 KNOWN_SOURCE_TYPES = SOURCE_TYPES - {"unknown"}
+HTTP_HEADER_VISIBLE_ASCII = re.compile(r"^[\x20-\x7e]+$")
 DEFAULT_JOB_QUEUE = JobQueue()
 
 
@@ -390,15 +391,24 @@ def _job_download(job: JobRecord) -> dict[str, Any]:
     filename = str(download.get("filename") or "").strip()
     content_type = str(download.get("content_type") or "").strip()
     content = download.get("content")
-    if not filename or not content_type or not isinstance(content, bytes):
+    if (
+        not filename
+        or not _safe_header_value(content_type)
+        or not isinstance(content, bytes)
+    ):
         raise ValueError("job result download is invalid")
     return {"filename": filename, "content_type": content_type, "content": content}
 
 
 def _download_filename(filename: str) -> str:
     basename = re.split(r"[\\/]+", filename)[-1].strip()
-    safe = re.sub(r'[\x00-\x1f\x7f"\\]', "", basename).strip()
+    safe = re.sub(r'[\x00-\x1f\x7f"\\]', "", basename)
+    safe = "".join(char for char in safe if 0x20 <= ord(char) <= 0x7E).strip()
     return safe or "veridoc-result.json"
+
+
+def _safe_header_value(value: str) -> bool:
+    return bool(value and HTTP_HEADER_VISIBLE_ASCII.fullmatch(value))
 
 
 def _parser_output_from_upload(filename: str, content: bytes) -> tuple[dict[str, Any], list[str]]:
