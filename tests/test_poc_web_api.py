@@ -873,9 +873,10 @@ def test_poc_http_api_accepts_review_action_without_source_bbox() -> None:
     assert body["audit_event"]["source_bbox"] is None
 
 
-def test_poc_http_api_accepts_large_review_edit_event_above_upload_request_cap() -> None:
-    original_text = '"' * poc_web.MAX_UPLOAD_BYTES
-    revised_text = '"' * poc_web.MAX_UPLOAD_BYTES
+def test_poc_http_api_accepts_large_review_edit_event_above_upload_sized_cap() -> None:
+    extracted_text_bytes = poc_web.MAX_UPLOAD_BYTES + (128 * 1024)
+    original_text = '"' * extracted_text_bytes
+    revised_text = '"' * extracted_text_bytes
     audit_event = _review_audit_event(
         action="edit",
         source_bbox=None,
@@ -883,8 +884,11 @@ def test_poc_http_api_accepts_large_review_edit_event_above_upload_request_cap()
         revised_text=revised_text,
     )
     payload_size = len(json.dumps({"audit_event": audit_event}).encode("utf-8"))
+    upload_sized_review_event_cap = (poc_web.MAX_UPLOAD_BYTES * 4) + (64 * 1024)
 
-    assert payload_size > (poc_web.MAX_UPLOAD_REQUEST_BYTES * 2) + 4096
+    assert len(original_text.encode("utf-8")) > poc_web.MAX_UPLOAD_BYTES
+    assert len(original_text.encode("utf-8")) <= poc_web.MAX_REVIEW_EVENT_TEXT_BYTES
+    assert payload_size > upload_sized_review_event_cap
     assert payload_size < poc_web.MAX_REVIEW_EVENT_REQUEST_BYTES
 
     status, body = _post_review_audit_event(audit_event)
@@ -892,6 +896,25 @@ def test_poc_http_api_accepts_large_review_edit_event_above_upload_request_cap()
     assert status == 202
     assert body["audit_event"]["original_text"] == original_text
     assert body["audit_event"]["revised_text"] == revised_text
+
+
+def test_poc_http_api_rejects_review_text_over_extracted_text_cap(monkeypatch) -> None:
+    monkeypatch.setattr(poc_web, "MAX_REVIEW_EVENT_TEXT_BYTES", 16)
+    audit_event = _review_audit_event(
+        action="edit",
+        source_bbox=None,
+        original_text="x" * 17,
+        revised_text="corrected",
+    )
+
+    status, body, events = _post_review_audit_event_with_store(audit_event)
+
+    assert status == 400
+    assert body == {
+        "error": "invalid_review_event",
+        "message": "audit_event.original_text exceeds review text limit",
+    }
+    assert events == []
 
 
 def test_poc_http_api_normalizes_review_action_source_bbox_strings() -> None:

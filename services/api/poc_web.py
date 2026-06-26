@@ -38,9 +38,12 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8788
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024
 MAX_UPLOAD_REQUEST_BYTES = (MAX_UPLOAD_BYTES * 4 // 3) + 4096
-# Review edits can carry original and revised conversion-sized text snapshots;
-# quote/backslash-heavy text doubles again when JSON-escaped.
-MAX_REVIEW_EVENT_REQUEST_BYTES = (MAX_UPLOAD_BYTES * 4) + (64 * 1024)
+# Extracted document text can be much larger than the uploaded source bytes,
+# especially for compressed formats. Review events can carry original and
+# revised text snapshots; quote/backslash-heavy text doubles again when
+# JSON-escaped.
+MAX_REVIEW_EVENT_TEXT_BYTES = 8 * 1024 * 1024
+MAX_REVIEW_EVENT_REQUEST_BYTES = (MAX_REVIEW_EVENT_TEXT_BYTES * 4) + (64 * 1024)
 SOURCE_TYPES = {"pdf", "docx", "xlsx", "unknown"}
 KNOWN_SOURCE_TYPES = SOURCE_TYPES - {"unknown"}
 HTTP_CONTENT_TYPE = re.compile(
@@ -468,11 +471,13 @@ def _validate_review_event(audit_event: Any) -> dict[str, Any]:
     original_text = audit_event.get("original_text")
     if not isinstance(original_text, str):
         raise ValueError("audit_event.original_text is required")
+    _validate_review_event_text("original_text", original_text)
     revised_text = audit_event.get("revised_text")
     if action == "approve" and revised_text is None:
         revised_text = original_text
     if not isinstance(revised_text, str):
         raise ValueError("audit_event.revised_text is required")
+    _validate_review_event_text("revised_text", revised_text)
     if action == "approve" and revised_text != original_text:
         raise ValueError("audit_event.revised_text must match original_text for approve")
     warnings = audit_event.get("warnings", [])
@@ -489,6 +494,11 @@ def _validate_review_event(audit_event: Any) -> dict[str, Any]:
         "revised_text": revised_text,
         "warnings": warnings,
     }
+
+
+def _validate_review_event_text(field_name: str, value: str) -> None:
+    if len(value.encode("utf-8")) > MAX_REVIEW_EVENT_TEXT_BYTES:
+        raise ValueError(f"audit_event.{field_name} exceeds review text limit")
 
 
 def _validate_review_event_bbox(source_bbox: Any) -> dict[str, Any]:
