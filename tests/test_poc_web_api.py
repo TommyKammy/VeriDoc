@@ -1195,6 +1195,16 @@ def test_web_job_detail_actions_perform_download_and_retry_side_effects() -> Non
         html,
         re.DOTALL,
     )
+    selected_download_handler = re.search(
+        r"async function downloadSelectedJobResult\(\) \{(?P<body>.*?)\n      \}",
+        html,
+        re.DOTALL,
+    )
+    selected_retry_handler = re.search(
+        r"async function retrySelectedConversion\(\) \{(?P<body>.*?)\n      \}",
+        html,
+        re.DOTALL,
+    )
     download_handler = re.search(
         r"async function downloadJobResult\(job\) \{(?P<body>.*?)\n      \}",
         html,
@@ -1202,17 +1212,22 @@ def test_web_job_detail_actions_perform_download_and_retry_side_effects() -> Non
     )
 
     assert action_handler is not None
+    assert selected_download_handler is not None
+    assert selected_retry_handler is not None
     assert download_handler is not None
     action_body = action_handler.group("body")
+    selected_download_body = selected_download_handler.group("body")
+    selected_retry_body = selected_retry_handler.group("body")
     download_body = download_handler.group("body")
 
-    assert 'detailDownload.addEventListener("click", () => sendJobAction("download_result"))' in html
-    assert 'detailRetry.addEventListener("click", () => sendJobAction("retry_conversion"))' in html
-    assert 'actionName === "download_result"' in action_body
-    assert "await downloadJobResult(job)" in action_body
-    assert 'actionName === "retry_conversion" && body.job' in action_body
-    assert "await loadJobs()" in action_body
-    assert "renderDetail(body.job)" in action_body
+    assert 'detailDownload.addEventListener("click", () => downloadSelectedJobResult())' in html
+    assert 'detailRetry.addEventListener("click", () => retrySelectedConversion())' in html
+    assert 'fetch("/api/job-events"' in action_body
+    assert 'sendJobAction("download_result")' in selected_download_body
+    assert "await downloadJobResult(accepted.job)" in selected_download_body
+    assert 'sendJobAction("retry_conversion")' in selected_retry_body
+    assert "await loadJobs()" in selected_retry_body
+    assert "renderDetail(body.job)" in selected_retry_body
     assert 'fetch(`/api/jobs/${encodeURIComponent(job.job_id)}/result`)' in download_body
     assert "await response.blob()" in download_body
     assert "URL.createObjectURL(blob)" in download_body

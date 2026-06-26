@@ -445,8 +445,8 @@
       statusFilter.addEventListener("change", () => loadJobs());
       createJob.addEventListener("click", () => createConversionJob());
       detailOpen.addEventListener("click", () => loadJobDetail(state.selectedJob.job_id));
-      detailDownload.addEventListener("click", () => sendJobAction("download_result"));
-      detailRetry.addEventListener("click", () => sendJobAction("retry_conversion"));
+      detailDownload.addEventListener("click", () => downloadSelectedJobResult());
+      detailRetry.addEventListener("click", () => retrySelectedConversion());
 
       button.addEventListener("click", async () => {
         const file = input.files[0];
@@ -546,30 +546,43 @@
       async function sendJobAction(actionName) {
         const job = state.selectedJob;
         const action = findAction(job, actionName);
-        if (!action) return;
+        if (!action) return null;
+        const response = await fetch("/api/job-events", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            job_id: job.job_id,
+            action: action.action,
+            audit_event: action.audit_event,
+          }),
+        });
+        const body = await response.json();
+        if (!response.ok) throw new Error(body.message || body.error || "job action failed");
+        return { job, action, body };
+      }
+
+      async function downloadSelectedJobResult() {
         try {
-          const response = await fetch("/api/job-events", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              job_id: job.job_id,
-              action: action.action,
-              audit_event: action.audit_event,
-            }),
-          });
-          const body = await response.json();
-          if (!response.ok) throw new Error(body.message || body.error || "job action failed");
-          if (actionName === "download_result") {
-            await downloadJobResult(job);
-            setPageStatus(`${action.label} event accepted and downloaded.`);
-            return;
-          }
-          if (actionName === "retry_conversion" && body.job) {
+          const accepted = await sendJobAction("download_result");
+          if (!accepted) return;
+          await downloadJobResult(accepted.job);
+          setPageStatus(`${accepted.action.label} event accepted and downloaded.`);
+        } catch (error) {
+          setPageStatus(error.message, true);
+        }
+      }
+
+      async function retrySelectedConversion() {
+        try {
+          const accepted = await sendJobAction("retry_conversion");
+          if (!accepted) return;
+          if (accepted.body.job) {
+            const body = accepted.body;
             renderDetail(body.job);
             await loadJobs();
             renderDetail(body.job);
           }
-          setPageStatus(`${action.label} event accepted for audit.`);
+          setPageStatus(`${accepted.action.label} event accepted for audit.`);
         } catch (error) {
           setPageStatus(error.message, true);
         }
