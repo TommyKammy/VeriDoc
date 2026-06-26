@@ -8,6 +8,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 JobStatus = Literal["queued", "running", "succeeded", "failed"]
+JOB_STATUSES: set[JobStatus] = {"queued", "running", "succeeded", "failed"}
 TERMINAL_STATUSES: set[JobStatus] = {"succeeded", "failed"}
 
 
@@ -75,6 +76,16 @@ class JobQueue:
                 return self._jobs[job_id]
             except KeyError as exc:
                 raise KeyError(f"unknown job_id: {job_id}") from exc
+
+    def list_jobs(self, *, status: str | None = None) -> list[JobRecord]:
+        if status is not None and status not in JOB_STATUSES:
+            raise ValueError("unsupported job status")
+        with self._lock:
+            return [
+                job
+                for job in self._jobs.values()
+                if status is None or job.status == status
+            ]
 
     def start_next_job(self) -> JobRecord | None:
         with self._lock:

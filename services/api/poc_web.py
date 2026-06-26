@@ -11,6 +11,7 @@ import re
 import sys
 from tempfile import TemporaryDirectory
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 from xml.etree.ElementTree import ParseError as XmlParseError
 from zipfile import BadZipFile
 
@@ -27,7 +28,7 @@ from core.ir.document_ir_v1 import (
 from core.parsers.docx_extraction import extract_docx_structure
 from core.parsers.pdf_text_extraction import MissingPdfExtractorDependency, parse_text_pdf_to_document_ir
 from core.parsers.xlsx_extraction import extract_xlsx_structure
-from services.api.job_queue import JobQueue
+from services.api.job_queue import JobQueue, JobRecord
 
 WEB_ROOT = REPO_ROOT / "apps" / "web"
 DEFAULT_HOST = "127.0.0.1"
@@ -92,25 +93,34 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
     server_version = "VeriDocPoC/0.1"
 
     def do_GET(self) -> None:
-        if self.path in {"/", "/index.html"}:
+        parsed_url = urlsplit(self.path)
+        path = parsed_url.path
+        if path in {"/", "/index.html"}:
             self._send_file(WEB_ROOT / "index.html", "text/html; charset=utf-8")
             return
-        if self.path.startswith("/api/jobs/"):
-            job_id = self.path.removeprefix("/api/jobs/")
+        if path == "/api/jobs":
+            self._handle_list_jobs(parsed_url.query)
+            return
+        if path.startswith("/api/jobs/"):
+            job_id = path.removeprefix("/api/jobs/")
             try:
                 job = self._job_queue().get_job(job_id)
             except KeyError:
                 self._send_json({"error": "job_not_found"}, status=404)
                 return
-            self._send_json({"job": job.to_dict()})
+            self._send_json({"job": _job_response(job)})
             return
         self._send_json({"error": "not_found"}, status=404)
 
     def do_POST(self) -> None:
-        if self.path == "/api/jobs":
+        path = urlsplit(self.path).path
+        if path == "/api/jobs":
             self._handle_create_job()
             return
-        if self.path != "/api/convert":
+        if path == "/api/job-events":
+            self._handle_job_event()
+            return
+        if path != "/api/convert":
             self._send_json({"error": "not_found"}, status=404)
             return
         try:
@@ -166,7 +176,46 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 return
             self._send_json({"error": "invalid_job_request", "message": str(exc)}, status=400)
             return
-        self._send_json({"job": job.to_dict()}, status=202)
+        self._send_json({"job": _job_response(job)}, status=202)
+
+    def _handle_list_jobs(self, query: str) -> None:
+        parameters = parse_qs(query, keep_blank_values=True)
+        status_values = parameters.get("status", [])
+        if len(status_values) > 1:
+            self._send_json(
+                {"error": "invalid_job_filter", "message": "status filter must be singular"},
+                status=400,
+            )
+            return
+        status = status_values[0] if status_values else None
+        try:
+            jobs = self._job_queue().list_jobs(status=status or None)
+        except ValueError as exc:
+            self._send_json({"error": "invalid_job_filter", "message": str(exc)}, status=400)
+            return
+        self._send_json({"jobs": [_job_response(job) for job in jobs]})
+
+    def _handle_job_event(self) -> None:
+        try:
+            request = self._read_json_request()
+            job_id = str(request.get("job_id") or "")
+            action = str(request.get("action") or "")
+            audit_event = request.get("audit_event")
+            job = self._job_queue().get_job(job_id)
+            accepted_event = _validate_job_event(job, action, audit_event)
+        except KeyError:
+            self._send_json({"error": "job_not_found"}, status=404)
+            return
+        except ValueError as exc:
+            if str(exc) == "content_length_required":
+                self._send_json({"error": "content_length_required"}, status=411)
+                return
+            if str(exc) == "upload_too_large":
+                self._send_json({"error": "upload_too_large"}, status=413)
+                return
+            self._send_json({"error": "invalid_job_event", "message": str(exc)}, status=400)
+            return
+        self._send_json({"accepted": True, "audit_event": accepted_event}, status=202)
 
     def _read_json_request(self) -> dict[str, Any]:
         length = self.headers.get("Content-Length")
@@ -201,6 +250,55 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+
+def _job_response(job: JobRecord) -> dict[str, Any]:
+    return {
+        **job.to_dict(),
+        "available_actions": _job_actions(job),
+    }
+
+
+def _job_actions(job: JobRecord) -> list[dict[str, Any]]:
+    actions = [
+        _job_action(job, "open_detail", "Open details"),
+    ]
+    if job.status == "succeeded":
+        actions.append(_job_action(job, "download_result", "Download result"))
+    if job.status == "failed":
+        actions.append(_job_action(job, "retry_conversion", "Retry conversion"))
+    return actions
+
+
+def _job_action(job: JobRecord, action: str, label: str) -> dict[str, Any]:
+    return {
+        "action": action,
+        "label": label,
+        "enabled": True,
+        "audit_event": _job_audit_event(job, action),
+    }
+
+
+def _job_audit_event(job: JobRecord, action: str) -> dict[str, Any]:
+    return {
+        "event_type": "conversion_job.action_requested",
+        "job_id": job.job_id,
+        "job_status": job.status,
+        "action": action,
+    }
+
+
+def _validate_job_event(job: JobRecord, action: str, audit_event: Any) -> dict[str, Any]:
+    actions = {item["action"]: item for item in _job_actions(job)}
+    selected = actions.get(action)
+    if selected is None:
+        raise ValueError("action is not available for job status")
+    expected_event = selected["audit_event"]
+    if not isinstance(audit_event, dict):
+        raise ValueError("audit_event is required")
+    if audit_event != expected_event:
+        raise ValueError("audit_event does not match job action")
+    return expected_event
 
 
 def _parser_output_from_upload(filename: str, content: bytes) -> tuple[dict[str, Any], list[str]]:

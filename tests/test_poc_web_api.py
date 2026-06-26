@@ -592,6 +592,91 @@ def test_poc_http_api_creates_idempotent_conversion_job() -> None:
     assert status["job"]["mode"] == "standard"
 
 
+def test_poc_http_api_lists_conversion_jobs_filtered_by_status() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue(max_attempts=1)
+    failed_job = server.job_queue.create_job(
+        idempotency_key="failed-1",
+        filename="failed-record.docx",
+        mode="standard",
+    )
+    queued_job = server.job_queue.create_job(
+        idempotency_key="queued-1",
+        filename="queued-record.pdf",
+        mode="standard",
+    )
+    running = server.job_queue.start_next_job()
+    assert running is not None
+    assert running.job_id == failed_job.job_id
+    server.job_queue.mark_failed(failed_job.job_id, error="parser unavailable")
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request("GET", "/api/jobs?status=queued")
+        queued_response = connection.getresponse()
+        queued_body = json.loads(queued_response.read().decode("utf-8"))
+        connection.request("GET", "/api/jobs?status=failed")
+        failed_response = connection.getresponse()
+        failed_body = json.loads(failed_response.read().decode("utf-8"))
+        retry_action = next(
+            action
+            for action in failed_body["jobs"][0]["available_actions"]
+            if action["action"] == "retry_conversion"
+        )
+        event_payload = json.dumps(
+            {
+                "job_id": failed_job.job_id,
+                "action": "retry_conversion",
+                "audit_event": retry_action["audit_event"],
+            }
+        ).encode("utf-8")
+        connection.request(
+            "POST",
+            "/api/job-events",
+            body=event_payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(event_payload))},
+        )
+        event_response = connection.getresponse()
+        event_body = json.loads(event_response.read().decode("utf-8"))
+        mismatched_payload = json.dumps(
+            {
+                "job_id": queued_job.job_id,
+                "action": "retry_conversion",
+                "audit_event": retry_action["audit_event"],
+            }
+        ).encode("utf-8")
+        connection.request(
+            "POST",
+            "/api/job-events",
+            body=mismatched_payload,
+            headers={
+                "Content-Type": "application/json",
+                "Content-Length": str(len(mismatched_payload)),
+            },
+        )
+        mismatched_response = connection.getresponse()
+        mismatched_body = json.loads(mismatched_response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert queued_response.status == 200
+    assert [job["job_id"] for job in queued_body["jobs"]] == [queued_job.job_id]
+    assert queued_body["jobs"][0]["status"] == "queued"
+    assert [action["action"] for action in queued_body["jobs"][0]["available_actions"]] == [
+        "open_detail"
+    ]
+    assert failed_response.status == 200
+    assert [job["job_id"] for job in failed_body["jobs"]] == [failed_job.job_id]
+    assert failed_body["jobs"][0]["status"] == "failed"
+    assert event_response.status == 202
+    assert event_body["audit_event"]["job_id"] == failed_job.job_id
+    assert event_body["audit_event"]["action"] == "retry_conversion"
+    assert mismatched_response.status == 400
+    assert mismatched_body["error"] == "invalid_job_event"
+
+
 def test_poc_http_api_rejects_second_active_high_quality_job() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     server.job_queue = JobQueue()
