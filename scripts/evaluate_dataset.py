@@ -1114,7 +1114,9 @@ def evaluate_poc_mode_comparison(
             item_context = f"{context}.high_risk_items[{item_index}]"
             if not isinstance(item, dict):
                 raise EvaluationCaseError(f"{item_context} must be an object")
-            validate_poc_high_risk_item_against_label(item, labels, item_context)
+            matches_authoritative_value = validate_poc_high_risk_item_against_label(
+                item, labels, item_context
+            )
             label_key = (item["fixture_id"], item["label_id"])
             if label_key in mode_label_keys:
                 raise EvaluationCaseError(
@@ -1122,6 +1124,10 @@ def evaluate_poc_mode_comparison(
                 )
             mode_label_keys.add(label_key)
             actual_value = item.get("actual_value")
+            if not isinstance(actual_value, str) and not matches_authoritative_value:
+                raise EvaluationCaseError(
+                    f"{item_context}.actual_value must match high-risk labels"
+                )
             if isinstance(actual_value, str) and normalized_text(actual_value) not in (
                 actual_values_by_label.get(label_key) or set()
             ):

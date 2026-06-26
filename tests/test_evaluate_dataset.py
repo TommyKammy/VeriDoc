@@ -239,6 +239,15 @@ class EvaluateDatasetTest(unittest.TestCase):
         with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "actual_value"):
             evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
 
+    def test_poc_mode_comparison_rejects_non_string_high_risk_value_mismatch(
+        self,
+    ) -> None:
+        data = self.valid_poc_comparison_data()
+        data["modes"][2]["high_risk_items"][1]["actual_value"] = False
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "actual_value"):
+            evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
     def test_poc_mode_comparison_recomputes_cell_match_rate_from_mode_cases(self) -> None:
         data = self.valid_poc_comparison_data()
         data["modes"][2]["cases"][0]["actual"]["tables"][0]["cells"][0]["text"] = "Batch"
