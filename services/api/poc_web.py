@@ -36,7 +36,9 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8788
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024
 MAX_UPLOAD_REQUEST_BYTES = (MAX_UPLOAD_BYTES * 4 // 3) + 4096
-MAX_REVIEW_EVENT_REQUEST_BYTES = (MAX_UPLOAD_REQUEST_BYTES * 2) + 4096
+# Review edits can carry original and revised conversion-sized text snapshots;
+# quote/backslash-heavy text doubles again when JSON-escaped.
+MAX_REVIEW_EVENT_REQUEST_BYTES = (MAX_UPLOAD_BYTES * 4) + (64 * 1024)
 SOURCE_TYPES = {"pdf", "docx", "xlsx", "unknown"}
 KNOWN_SOURCE_TYPES = SOURCE_TYPES - {"unknown"}
 HTTP_CONTENT_TYPE = re.compile(
@@ -431,7 +433,7 @@ def _validate_review_event(audit_event: Any) -> dict[str, Any]:
         raise ValueError("audit_event.source_page must be a positive integer")
     source_bbox = audit_event.get("source_bbox")
     if source_bbox is not None:
-        _validate_review_event_bbox(source_bbox)
+        source_bbox = _validate_review_event_bbox(source_bbox)
     original_text = audit_event.get("original_text")
     if not isinstance(original_text, str):
         raise ValueError("audit_event.original_text is required")
@@ -458,7 +460,7 @@ def _validate_review_event(audit_event: Any) -> dict[str, Any]:
     }
 
 
-def _validate_review_event_bbox(source_bbox: Any) -> None:
+def _validate_review_event_bbox(source_bbox: Any) -> dict[str, Any]:
     if not isinstance(source_bbox, dict):
         raise ValueError("audit_event.source_bbox must be an object")
     for key in ("x", "y", "width", "height"):
@@ -478,6 +480,14 @@ def _validate_review_event_bbox(source_bbox: Any) -> None:
         raise ValueError("audit_event.source_bbox origin coordinates must be non-negative")
     if source_bbox["width"] <= 0 or source_bbox["height"] <= 0:
         raise ValueError("audit_event.source_bbox size must be positive")
+    return {
+        "x": source_bbox["x"],
+        "y": source_bbox["y"],
+        "width": source_bbox["width"],
+        "height": source_bbox["height"],
+        "unit": unit,
+        "origin": origin,
+    }
 
 
 def _job_download(job: JobRecord) -> dict[str, Any]:
