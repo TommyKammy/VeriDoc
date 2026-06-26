@@ -311,6 +311,15 @@ class EvaluateDatasetTest(unittest.TestCase):
         with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "expected_value"):
             evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
 
+    def test_poc_mode_comparison_rejects_numeric_expected_value_for_boolean_label(
+        self,
+    ) -> None:
+        data = self.valid_poc_comparison_data()
+        data["modes"][0]["high_risk_items"][1]["expected_value"] = 1
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "expected_value"):
+            evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
     def test_poc_mode_comparison_rejects_missing_actual_high_risk_value(self) -> None:
         data = self.valid_poc_comparison_data()
         del data["modes"][0]["high_risk_items"][0]["actual_value"]

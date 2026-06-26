@@ -1052,7 +1052,7 @@ def validate_poc_high_risk_item_against_label(
         raise EvaluationCaseError(f"{context}.risk_level must match high-risk labels")
     if item.get("requires_review") != label.get("requires_review"):
         raise EvaluationCaseError(f"{context}.requires_review must match high-risk labels")
-    if item.get("expected_value") != label.get("expected_value"):
+    if not values_match_authoritative(label.get("expected_value"), item.get("expected_value")):
         raise EvaluationCaseError(f"{context}.expected_value must match high-risk labels")
     if "actual_value" not in item:
         raise EvaluationCaseError(f"{context}.actual_value must be present")
