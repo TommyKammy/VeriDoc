@@ -617,7 +617,7 @@
         pendingReviewActions: new Map(),
       };
 
-      const LOCAL_AUTH_TOKEN_STORAGE_KEY = "veridoc.localAuthToken";
+      const AUTH_TOKEN_SESSION_STORAGE_KEY = "veridoc.sessionAuthToken";
       const PDFJS_MODULE_URL = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.min.mjs";
       const PDFJS_WORKER_URL = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs";
 
@@ -666,22 +666,22 @@
       const bboxLayer = document.querySelector("#bbox-layer");
       const bboxInvalid = document.querySelector("#bbox-invalid");
 
-      authToken.value = localStorage.getItem(LOCAL_AUTH_TOKEN_STORAGE_KEY) || "";
+      authToken.value = sessionStorage.getItem(AUTH_TOKEN_SESSION_STORAGE_KEY) || "";
       saveAuthToken.addEventListener("click", () => {
         const token = authToken.value.trim();
         clearCredentialBoundState();
         if (token) {
-          localStorage.setItem(LOCAL_AUTH_TOKEN_STORAGE_KEY, token);
+          sessionStorage.setItem(AUTH_TOKEN_SESSION_STORAGE_KEY, token);
           setPageStatus("API token saved.");
         } else {
-          localStorage.removeItem(LOCAL_AUTH_TOKEN_STORAGE_KEY);
+          sessionStorage.removeItem(AUTH_TOKEN_SESSION_STORAGE_KEY);
           setPageStatus("API token cleared.");
         }
         loadJobs();
       });
       clearAuthToken.addEventListener("click", () => {
         authToken.value = "";
-        localStorage.removeItem(LOCAL_AUTH_TOKEN_STORAGE_KEY);
+        sessionStorage.removeItem(AUTH_TOKEN_SESSION_STORAGE_KEY);
         clearCredentialBoundState();
         setPageStatus("API token cleared.");
         loadJobs();
@@ -748,10 +748,12 @@
       async function loadJobs() {
         const filter = statusFilter.value;
         const query = filter ? `?status=${encodeURIComponent(filter)}` : "";
+        const requestAuthToken = authToken.value.trim();
         setPageStatus("Loading jobs...");
         try {
           const response = await apiFetch(`/api/jobs${query}`);
           const body = await response.json();
+          if (!isActiveAuthToken(requestAuthToken)) return;
           if (!response.ok) throw new Error(body.message || body.error || "job list failed");
           state.jobs = body.jobs;
           const refreshedSelection = state.selectedJob
@@ -766,6 +768,7 @@
           }
           setPageStatus(`${body.jobs.length} job${body.jobs.length === 1 ? "" : "s"} loaded.`);
         } catch (error) {
+          if (!isActiveAuthToken(requestAuthToken)) return;
           setPageStatus(error.message, true);
         }
       }
@@ -951,6 +954,10 @@
         clearJobState();
         clearSourcePreview();
         clearReviewResult();
+      }
+
+      function isActiveAuthToken(requestAuthToken) {
+        return authToken.value.trim() === requestAuthToken;
       }
 
       function findAction(job, actionName) {

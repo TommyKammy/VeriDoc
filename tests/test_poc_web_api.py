@@ -1617,7 +1617,10 @@ def test_bundled_web_ui_plumbs_local_auth_token_into_api_fetches() -> None:
     html = (Path(__file__).resolve().parents[1] / "apps" / "web" / "index.html").read_text()
 
     assert 'id="auth-token"' in html
-    assert "LOCAL_AUTH_TOKEN_STORAGE_KEY" in html
+    assert "AUTH_TOKEN_SESSION_STORAGE_KEY" in html
+    assert "sessionStorage.setItem(AUTH_TOKEN_SESSION_STORAGE_KEY, token)" in html
+    assert "sessionStorage.getItem(AUTH_TOKEN_SESSION_STORAGE_KEY)" in html
+    assert "localStorage" not in html
     assert "function apiFetch" in html
     assert "headers.Authorization = `Bearer ${token}`" in html
     assert "fetch(\"/api/convert\"" not in html
@@ -1665,8 +1668,8 @@ def test_bundled_web_ui_clears_credential_bound_state_when_auth_token_changes() 
     credential_clear_body = credential_clear.group("body")
     review_clear_body = review_clear.group("body")
     preview_clear_body = preview_clear.group("body")
-    assert save_body.index("clearCredentialBoundState()") < save_body.index("localStorage.setItem")
-    assert clear_body.index("localStorage.removeItem") < clear_body.index("clearCredentialBoundState()")
+    assert save_body.index("clearCredentialBoundState()") < save_body.index("sessionStorage.setItem")
+    assert clear_body.index("sessionStorage.removeItem") < clear_body.index("clearCredentialBoundState()")
     assert clear_body.index("clearCredentialBoundState()") < clear_body.index("loadJobs()")
     assert "state.directConversionToken += 1" in credential_clear_body
     assert "clearJobState()" in credential_clear_body
@@ -2276,3 +2279,30 @@ def test_web_job_list_refresh_updates_selected_detail_snapshot() -> None:
     )
     assert "renderDetail(refreshedSelection)" in load_jobs_body
     assert "clearDetail()" in load_jobs_body
+
+
+def test_web_job_list_refresh_ignores_stale_auth_token_responses() -> None:
+    html = Path("apps/web/index.html").read_text(encoding="utf-8")
+
+    load_jobs_handler = re.search(
+        r"async function loadJobs\(\) \{(?P<body>.*?)\n      \}",
+        html,
+        re.DOTALL,
+    )
+
+    assert load_jobs_handler is not None
+    load_jobs_body = load_jobs_handler.group("body")
+    assert "const requestAuthToken = authToken.value.trim()" in load_jobs_body
+    assert "if (!isActiveAuthToken(requestAuthToken)) return;" in load_jobs_body
+    assert (
+        load_jobs_body.index("const body = await response.json()")
+        < load_jobs_body.index("if (!isActiveAuthToken(requestAuthToken)) return;")
+        < load_jobs_body.index("if (!response.ok) throw")
+        < load_jobs_body.index("state.jobs = body.jobs")
+    )
+    assert (
+        load_jobs_body.rindex("if (!isActiveAuthToken(requestAuthToken)) return;")
+        < load_jobs_body.index("setPageStatus(error.message, true)")
+    )
+    assert "function isActiveAuthToken(requestAuthToken)" in html
+    assert "return authToken.value.trim() === requestAuthToken" in html
