@@ -1069,7 +1069,7 @@ def evaluate_poc_mode_comparison(
 
         mode_label_keys: set[tuple[str, str]] = set()
         requires_review_count = 0
-        high_risk_false_auto_confirmed_count = 0
+        reported_high_risk_false_auto_confirmed_count = 0
         for item_index, item in enumerate(high_risk_items):
             item_context = f"{context}.high_risk_items[{item_index}]"
             if not isinstance(item, dict):
@@ -1098,7 +1098,7 @@ def evaluate_poc_mode_comparison(
             if item.get("status") == "requires_review":
                 requires_review_count += 1
             if auto_confirmed:
-                high_risk_false_auto_confirmed_count += 1
+                reported_high_risk_false_auto_confirmed_count += 1
 
         if mode_label_keys != authoritative_label_keys:
             raise EvaluationCaseError(
@@ -1125,6 +1125,10 @@ def evaluate_poc_mode_comparison(
             f"{context}.metrics.source_linkage_rate",
         )
 
+        high_risk_false_auto_confirmed_count = max(
+            reported_high_risk_false_auto_confirmed_count,
+            computed_metrics.false_auto_confirmed_count,
+        )
         total_high_risk_false_auto_confirmed += high_risk_false_auto_confirmed_count
         mode_metrics.append(
             PoCModeMetrics(

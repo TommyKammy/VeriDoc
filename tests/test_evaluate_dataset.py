@@ -262,6 +262,23 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertEqual(1, metrics.high_risk_false_auto_confirmed_count)
         self.assertFalse(metrics.target_met)
 
+    def test_poc_mode_comparison_counts_captured_cell_auto_confirmation_failures(
+        self,
+    ) -> None:
+        data = self.valid_poc_comparison_data()
+        data["modes"][2]["cases"][0]["actual"]["tables"][0]["cells"][1][
+            "auto_confirmed"
+        ] = True
+
+        metrics = evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
+        self.assertEqual(
+            1,
+            metrics.as_dict()["modes"][2]["high_risk_false_auto_confirmed_count"],
+        )
+        self.assertEqual(1, metrics.high_risk_false_auto_confirmed_count)
+        self.assertFalse(metrics.target_met)
+
     def test_llm_stability_agreement_rates_do_not_depend_on_run_order(self) -> None:
         data = self.valid_llm_stability_data()
         data["runs"] = [data["runs"][2], data["runs"][1], data["runs"][0]]
