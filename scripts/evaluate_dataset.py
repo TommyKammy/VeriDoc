@@ -130,6 +130,12 @@ class PoCComparisonMetrics:
         }
 
 
+@dataclass(frozen=True)
+class PoCCapturedHighRiskEvidence:
+    actual_values_by_label: dict[HighRiskLabelKey, set[str]]
+    auto_confirmed_labels: frozenset[HighRiskLabelKey]
+
+
 class EvaluationCaseError(ValueError):
     """Raised when evaluation cases are malformed or unsafe to score."""
 
@@ -159,6 +165,20 @@ def canonical_json(value: object) -> str:
 
 def normalized_text(value: object) -> str:
     return " ".join(str(value).split())
+
+
+def normalized_text_contains(container: object, candidate: object) -> bool:
+    normalized_container = normalized_text(container)
+    normalized_candidate = normalized_text(candidate)
+    return bool(normalized_candidate) and normalized_candidate in normalized_container
+
+
+def values_match_authoritative(expected: object, actual: object) -> bool:
+    if is_number(expected) and is_number(actual):
+        return math.isclose(float(expected), float(actual))
+    if type(actual) is not type(expected):
+        return False
+    return actual == expected
 
 
 def source_matches(expected: dict[str, Any], actual: dict[str, Any]) -> bool:
@@ -884,6 +904,22 @@ def high_risk_label_index(labels_data: dict[str, Any]) -> dict[HighRiskLabelKey,
     items = labels_data.get("items")
     if not isinstance(items, list) or not items:
         raise EvaluationCaseError("high-risk labels must contain at least one item")
+    taxonomy = labels_data.get("label_taxonomy")
+    if not isinstance(taxonomy, list) or not taxonomy:
+        raise EvaluationCaseError("high-risk labels must define label_taxonomy")
+    taxonomy_ids: set[str] = set()
+    for index, taxonomy_item in enumerate(taxonomy):
+        context = f"high_risk_labels.label_taxonomy[{index}]"
+        if not isinstance(taxonomy_item, dict):
+            raise EvaluationCaseError(f"{context} must be an object")
+        taxonomy_id = taxonomy_item.get("id")
+        if not isinstance(taxonomy_id, str) or not taxonomy_id:
+            raise EvaluationCaseError(f"{context}.id must be a non-empty string")
+        if taxonomy_id in taxonomy_ids:
+            raise EvaluationCaseError(f"duplicate high-risk label taxonomy id {taxonomy_id!r}")
+        if taxonomy_item.get("risk_level") != "high":
+            raise EvaluationCaseError(f"{context}.risk_level must be high")
+        taxonomy_ids.add(taxonomy_id)
 
     indexed: dict[HighRiskLabelKey, dict[str, Any]] = {}
     for index, item in enumerate(items):
@@ -899,6 +935,8 @@ def high_risk_label_index(labels_data: dict[str, Any]) -> dict[HighRiskLabelKey,
             raise EvaluationCaseError(f"{context}.block_id must be a non-empty string")
         if not isinstance(label_id, str) or not label_id:
             raise EvaluationCaseError(f"{context}.label_id must be a non-empty string")
+        if label_id not in taxonomy_ids:
+            raise EvaluationCaseError(f"{context}.label_id must be declared in label_taxonomy")
         if "expected_value" not in item or item.get("expected_value") is None:
             raise EvaluationCaseError(f"{context}.expected_value must be defined")
         if item.get("risk_level") != "high":
@@ -1020,14 +1058,12 @@ def validate_poc_high_risk_item_against_label(
         raise EvaluationCaseError(f"{context}.actual_value must be present")
     expected_value = label.get("expected_value")
     actual_value = item.get("actual_value")
-    if type(actual_value) is not type(expected_value):
-        raise EvaluationCaseError(f"{context}.actual_value must match high-risk label value type")
     status = item.get("status")
     if not isinstance(status, str) or not status:
         raise EvaluationCaseError(f"{context}.status must be a non-empty string")
     if status != "requires_review":
         raise EvaluationCaseError(f"{context}.status must be requires_review")
-    return actual_value == expected_value
+    return values_match_authoritative(expected_value, actual_value)
 
 
 def evaluate_poc_mode_cases(
@@ -1063,13 +1099,13 @@ def evaluate_poc_mode_cases(
     return evaluate_cases(scoring_data, manifest_root=repo_root)
 
 
-def poc_mode_actual_values_by_high_risk_label(
+def collect_poc_high_risk_label_evidence(
     mode_record: dict[str, Any],
     evaluation_cases_data: dict[str, Any],
     labels: dict[HighRiskLabelKey, dict[str, Any]],
     label_blocks: dict[HighRiskLabelKey, dict[str, Any]],
     context: str,
-) -> dict[HighRiskLabelKey, set[str]]:
+) -> PoCCapturedHighRiskEvidence:
     expected_cases = evaluation_cases_data.get("cases")
     if not isinstance(expected_cases, list):
         raise EvaluationCaseError("evaluation_cases must define cases")
@@ -1083,6 +1119,7 @@ def poc_mode_actual_values_by_high_risk_label(
         raise EvaluationCaseError(f"{context}.cases must cover all evaluation cases")
 
     actual_values_by_label = {key: set() for key in labels}
+    auto_confirmed_labels: set[HighRiskLabelKey] = set()
     for case_id, expected_case in expected_cases_by_id.items():
         fixture_id = expected_case.get("fixture_id")
         if not isinstance(fixture_id, str) or not fixture_id:
@@ -1111,27 +1148,31 @@ def poc_mode_actual_values_by_high_risk_label(
                         continue
                     expected_value = label.get("expected_value")
                     if isinstance(expected_value, str):
-                        expected_text = normalized_text(
-                            actual_cell_text(
-                                expected_cell,
-                                f"case {case_id!r}: expected cell {cell_id!r}",
-                            )
+                        expected_text = actual_cell_text(
+                            expected_cell,
+                            f"case {case_id!r}: expected cell {cell_id!r}",
                         )
-                        if expected_text != normalized_text(expected_value):
+                        if not normalized_text_contains(expected_text, expected_value):
                             continue
                     elif expected_cell.get("requires_review") is not True:
                         continue
                     actual_cell = actual_cells.get(cell_id)
                     if actual_cell is None:
                         continue
-                    actual_values_by_label[label_key].add(
-                        normalized_text(
-                            actual_cell_text(
-                                actual_cell,
-                                f"{context}.cases[{case_id!r}].actual cell {cell_id!r}",
-                            )
-                        )
+                    actual_text = actual_cell_text(
+                        actual_cell,
+                        f"{context}.cases[{case_id!r}].actual cell {cell_id!r}",
                     )
+                    actual_values_by_label[label_key].add(normalized_text(actual_text))
+                    if isinstance(expected_value, str) and normalized_text_contains(
+                        actual_text, expected_value
+                    ):
+                        actual_values_by_label[label_key].add(normalized_text(expected_value))
+                        if actual_auto_confirmed(
+                            actual_cell,
+                            f"{context}.cases[{case_id!r}].actual cell {cell_id!r}",
+                        ):
+                            auto_confirmed_labels.add(label_key)
 
     for label_key, values in actual_values_by_label.items():
         if not values:
@@ -1139,7 +1180,22 @@ def poc_mode_actual_values_by_high_risk_label(
                 f"{context}.cases must include captured actual value for high-risk label "
                 f"{label_key!r}"
             )
-    return actual_values_by_label
+    return PoCCapturedHighRiskEvidence(
+        actual_values_by_label=actual_values_by_label,
+        auto_confirmed_labels=frozenset(auto_confirmed_labels),
+    )
+
+
+def poc_mode_actual_values_by_high_risk_label(
+    mode_record: dict[str, Any],
+    evaluation_cases_data: dict[str, Any],
+    labels: dict[HighRiskLabelKey, dict[str, Any]],
+    label_blocks: dict[HighRiskLabelKey, dict[str, Any]],
+    context: str,
+) -> dict[HighRiskLabelKey, set[str]]:
+    return collect_poc_high_risk_label_evidence(
+        mode_record, evaluation_cases_data, labels, label_blocks, context
+    ).actual_values_by_label
 
 
 def validate_reported_metric_matches_computed(
@@ -1213,16 +1269,17 @@ def evaluate_poc_mode_comparison(
             computed_metrics.table_extraction_rate,
             f"{context}.metrics.table_extraction_rate",
         )
-        actual_values_by_label = poc_mode_actual_values_by_high_risk_label(
+        high_risk_evidence = collect_poc_high_risk_label_evidence(
             mode_record, evaluation_cases_data, labels, label_blocks, context
         )
+        actual_values_by_label = high_risk_evidence.actual_values_by_label
         high_risk_items = mode_record.get("high_risk_items")
         if not isinstance(high_risk_items, list) or not high_risk_items:
             raise EvaluationCaseError(f"{context}.high_risk_items must list high-risk checks")
 
         mode_label_keys: set[tuple[str, str]] = set()
         requires_review_count = 0
-        reported_high_risk_false_auto_confirmed_count = 0
+        reported_auto_confirmed_labels: set[HighRiskLabelKey] = set()
         for item_index, item in enumerate(high_risk_items):
             item_context = f"{context}.high_risk_items[{item_index}]"
             if not isinstance(item, dict):
@@ -1258,7 +1315,7 @@ def evaluate_poc_mode_comparison(
             if item.get("status") == "requires_review":
                 requires_review_count += 1
             if auto_confirmed:
-                reported_high_risk_false_auto_confirmed_count += 1
+                reported_auto_confirmed_labels.add(label_key)
 
         if mode_label_keys != authoritative_label_keys:
             raise EvaluationCaseError(
@@ -1285,9 +1342,8 @@ def evaluate_poc_mode_comparison(
             f"{context}.metrics.source_linkage_rate",
         )
 
-        high_risk_false_auto_confirmed_count = (
-            reported_high_risk_false_auto_confirmed_count
-            + computed_metrics.false_auto_confirmed_count
+        high_risk_false_auto_confirmed_count = len(
+            reported_auto_confirmed_labels | set(high_risk_evidence.auto_confirmed_labels)
         )
         total_high_risk_false_auto_confirmed += high_risk_false_auto_confirmed_count
         mode_metrics.append(
