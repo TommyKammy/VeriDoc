@@ -227,7 +227,7 @@ class EvaluateDatasetTest(unittest.TestCase):
         data = self.valid_poc_comparison_data()
         data["modes"][2]["high_risk_items"][0]["actual_value"] = "SAMPLE-LOT-002"
 
-        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "cell_match_rate"):
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "actual_value"):
             evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
 
     def test_poc_mode_comparison_recomputes_cell_match_rate_from_mode_cases(self) -> None:
