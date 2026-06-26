@@ -1297,7 +1297,12 @@
             throw new Error("Review action response did not include an audit event.");
           }
           const postResponseBlockReason = reviewActionBlockReason(item);
-          if (postResponseBlockReason) throw new Error(postResponseBlockReason);
+          if (postResponseBlockReason) {
+            reviewActionStatus.textContent =
+              "Review action accepted; current review result changed before the response returned.";
+            reviewActionStatus.className = "page-status";
+            return;
+          }
           state.reviewAuditEvents.push(body.audit_event);
           reviewActionStatus.textContent = "Review action event queued for audit.";
           reviewActionStatus.className = "page-status";

@@ -114,6 +114,19 @@ def test_review_actions_clear_and_reject_stale_file_selection() -> None:
     assert "Review result is no longer active." in html
     assert "state.pendingReviewActions.clear();" in html
     assert "const postResponseBlockReason = reviewActionBlockReason(item)" in html
+    assert "if (postResponseBlockReason) throw" not in html
+    assert (
+        "Review action accepted; current review result changed before the response returned."
+        in html
+    )
+    assert re.search(
+        r"if \(postResponseBlockReason\) \{\s+reviewActionStatus\.textContent =\s+"
+        r'"Review action accepted; current review result changed before the response returned\.";\s+'
+        r'reviewActionStatus\.className = "page-status";\s+return;\s+\}\s+'
+        r"state\.reviewAuditEvents\.push\(body\.audit_event\);",
+        html,
+        flags=re.S,
+    )
 
 
 def test_review_actions_are_serialized_while_audit_request_is_pending() -> None:
