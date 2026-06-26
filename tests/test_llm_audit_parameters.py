@@ -525,6 +525,37 @@ def test_sanitize_audit_parameters_rejects_structured_nested_raw_query_entry_con
         )
 
 
+def test_sanitize_audit_parameters_uses_context_for_sequence_entry_rejection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, object, bool]] = []
+    original = audit_parameters.AuditParameterContext.child_path
+
+    def spy_child_path(
+        self: audit_parameters.AuditParameterContext,
+        key: object,
+        *,
+        decode_raw_key: bool = False,
+    ) -> str:
+        calls.append((self.key_path, key, decode_raw_key))
+        return original(self, key, decode_raw_key=decode_raw_key)
+
+    monkeypatch.setattr(
+        audit_parameters.AuditParameterContext,
+        "child_path",
+        spy_child_path,
+    )
+
+    with pytest.raises(ValueError, match=r"parameters\.queryParameters\[0\]\.next"):
+        sanitize_audit_parameters(
+            {
+                "queryParameters": [["next", "prompt=Lot: ABC-123"]],
+            }
+        )
+
+    assert ("parameters.queryParameters[0]", "next", True) in calls
+
+
 def test_sanitize_audit_parameters_rejects_structured_encoded_content_entry_names() -> (
     None
 ):
