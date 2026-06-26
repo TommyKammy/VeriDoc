@@ -3,113 +3,435 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>VeriDoc PoC</title>
+    <title>VeriDoc Jobs</title>
     <style>
       :root {
         color-scheme: light;
         font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        background: #f6f7f9;
+        background: #f4f6f8;
         color: #1d2430;
+        --border: #d7dee8;
+        --muted: #5a6677;
+        --surface: #ffffff;
+        --surface-soft: #eef3f8;
+        --brand: #235ea8;
+        --brand-dark: #17467f;
+        --danger: #a33131;
+        --ok: #28714a;
       }
+
+      * {
+        box-sizing: border-box;
+      }
+
       body {
         margin: 0;
       }
+
       main {
-        box-sizing: border-box;
-        max-width: 980px;
+        width: min(1180px, calc(100vw - 32px));
         min-height: 100vh;
         margin: 0 auto;
-        padding: 32px 20px;
+        padding: 28px 0;
       }
+
+      header {
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 18px;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+
       h1 {
-        margin: 0 0 24px;
-        font-size: 28px;
-        font-weight: 650;
+        font-size: clamp(26px, 4vw, 36px);
+        font-weight: 720;
       }
-      section {
-        margin: 0 0 18px;
-        padding: 18px;
-        background: #fff;
-        border: 1px solid #d9dee7;
-        border-radius: 8px;
+
+      h2 {
+        font-size: 18px;
+        font-weight: 680;
       }
+
+      h3 {
+        font-size: 15px;
+        font-weight: 680;
+      }
+
       label,
       button,
+      input,
+      select,
       a[download] {
         font: inherit;
       }
-      input[type="file"] {
-        display: block;
-        width: 100%;
-        margin: 12px 0;
-      }
+
       button,
       a[download] {
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        min-height: 40px;
-        padding: 0 14px;
+        min-height: 38px;
+        padding: 0 13px;
+        border: 1px solid var(--brand);
         border-radius: 6px;
-        border: 1px solid #1d4f91;
-        background: #235ea8;
+        background: var(--brand);
         color: #fff;
         text-decoration: none;
         cursor: pointer;
       }
-      button:disabled {
-        cursor: not-allowed;
-        opacity: 0.55;
+
+      button.secondary {
+        background: #fff;
+        color: var(--brand-dark);
       }
-      .status {
-        display: inline-block;
-        margin: 0 0 12px;
-        padding: 4px 8px;
-        border-radius: 999px;
-        background: #eef3f8;
+
+      button.danger {
+        border-color: var(--danger);
+        background: var(--danger);
+      }
+
+      button:disabled,
+      a[download][hidden] {
+        cursor: not-allowed;
+        opacity: 0.5;
+      }
+
+      input,
+      select {
+        width: 100%;
+        min-height: 38px;
+        padding: 7px 10px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: #fff;
+        color: #1d2430;
+      }
+
+      input[type="file"] {
+        padding: 7px 0;
+        border: 0;
+      }
+
+      section {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--surface);
+      }
+
+      .page-status {
+        min-height: 24px;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .layout {
+        display: grid;
+        grid-template-columns: minmax(0, 1.25fr) minmax(320px, 0.75fr);
+        gap: 16px;
+        align-items: start;
+      }
+
+      .panel {
+        padding: 16px;
+      }
+
+      .panel + .panel {
+        margin-top: 16px;
+      }
+
+      .toolbar,
+      .form-grid,
+      .action-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: end;
+      }
+
+      .field {
+        display: grid;
+        gap: 5px;
+        min-width: 160px;
+        flex: 1;
+      }
+
+      .field label {
+        color: var(--muted);
         font-size: 13px;
       }
+
+      .table-wrap {
+        overflow: auto;
+        margin-top: 14px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+      }
+
+      table {
+        width: 100%;
+        min-width: 700px;
+        border-collapse: collapse;
+      }
+
+      th,
+      td {
+        padding: 10px 12px;
+        border-bottom: 1px solid #e8edf3;
+        text-align: left;
+        vertical-align: top;
+      }
+
+      th {
+        background: #f8fafc;
+        color: #344154;
+        font-size: 13px;
+        font-weight: 680;
+      }
+
+      tr:last-child td {
+        border-bottom: 0;
+      }
+
+      tr[data-selected="true"] td {
+        background: #eef5ff;
+      }
+
+      .status {
+        display: inline-flex;
+        align-items: center;
+        min-height: 24px;
+        padding: 2px 8px;
+        border-radius: 999px;
+        background: var(--surface-soft);
+        color: #263243;
+        font-size: 13px;
+        font-weight: 620;
+      }
+
+      .status.succeeded {
+        background: #e5f4ec;
+        color: var(--ok);
+      }
+
+      .status.failed {
+        background: #faeaea;
+        color: var(--danger);
+      }
+
+      .status.running {
+        background: #fff4d9;
+        color: #78550b;
+      }
+
+      .detail-grid {
+        display: grid;
+        gap: 10px;
+        margin-top: 12px;
+      }
+
+      .detail-row {
+        display: grid;
+        grid-template-columns: 116px minmax(0, 1fr);
+        gap: 10px;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .detail-row strong {
+        color: #263243;
+      }
+
+      .empty,
+      .error {
+        margin-top: 12px;
+        padding: 12px;
+        border-radius: 8px;
+        background: #f8fafc;
+        color: var(--muted);
+      }
+
+      .error {
+        background: #faeaea;
+        color: var(--danger);
+      }
+
       .review-item {
         margin-top: 10px;
         padding-top: 10px;
         border-top: 1px solid #e5e9f0;
       }
+
       .review-item strong {
         display: block;
         margin-bottom: 4px;
       }
+
       pre {
         overflow: auto;
-        max-height: 360px;
+        max-height: 320px;
         padding: 12px;
+        border-radius: 6px;
         background: #202733;
         color: #f8fafc;
-        border-radius: 6px;
         font-size: 13px;
       }
+
       [hidden] {
         display: none !important;
+      }
+
+      @media (max-width: 860px) {
+        header,
+        .layout {
+          display: block;
+        }
+
+        .layout > section + section {
+          margin-top: 16px;
+        }
+
+        .page-status {
+          margin-top: 8px;
+        }
       }
     </style>
   </head>
   <body>
     <main>
-      <h1>VeriDoc PoC</h1>
-      <section>
-        <label for="document-file">Document or Phase0 JSON</label>
-        <input id="document-file" type="file" />
-        <button id="convert-button" type="button">Convert</button>
-      </section>
-      <section id="result-panel" hidden>
-        <span id="status" class="status"></span>
-        <div id="review-list"></div>
-        <a id="download-link" download hidden>Download</a>
-      </section>
-      <section id="raw-panel" hidden>
-        <pre id="raw-result"></pre>
+      <header>
+        <h1>VeriDoc Jobs</h1>
+        <div id="page-status" class="page-status" role="status"></div>
+      </header>
+
+      <div class="layout">
+        <section class="panel" aria-labelledby="jobs-title">
+          <div class="toolbar">
+            <h2 id="jobs-title">Conversion jobs</h2>
+            <button id="refresh-jobs" class="secondary" type="button">Refresh jobs</button>
+          </div>
+
+          <div class="form-grid" style="margin-top: 14px">
+            <div class="field">
+              <label for="job-filename">Filename</label>
+              <input id="job-filename" value="batch-record.pdf" />
+            </div>
+            <div class="field">
+              <label for="job-mode">Mode</label>
+              <select id="job-mode">
+                <option value="standard">standard</option>
+                <option value="high_quality">high_quality</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="status-filter">Status filter</label>
+              <select id="status-filter">
+                <option value="">all</option>
+                <option value="queued">queued</option>
+                <option value="running">running</option>
+                <option value="succeeded">succeeded</option>
+                <option value="failed">failed</option>
+              </select>
+            </div>
+            <button id="create-job" type="button">Create job</button>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Job</th>
+                  <th>Status</th>
+                  <th>Mode</th>
+                  <th>Updated</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="jobs-body"></tbody>
+            </table>
+          </div>
+          <div id="jobs-empty" class="empty" hidden>No jobs match the current filter.</div>
+        </section>
+
+        <section class="panel" aria-labelledby="detail-title">
+          <h2 id="detail-title">Job detail</h2>
+          <div id="detail-empty" class="empty">Select a job to inspect its state and actions.</div>
+          <div id="detail-content" hidden>
+            <div class="detail-grid">
+              <div class="detail-row"><strong>Job ID</strong><span id="detail-id"></span></div>
+              <div class="detail-row"><strong>Status</strong><span id="detail-status"></span></div>
+              <div class="detail-row"><strong>Filename</strong><span id="detail-filename"></span></div>
+              <div class="detail-row"><strong>Mode</strong><span id="detail-mode"></span></div>
+              <div class="detail-row"><strong>Attempts</strong><span id="detail-attempts"></span></div>
+              <div class="detail-row"><strong>Error</strong><span id="detail-error"></span></div>
+            </div>
+            <div class="action-row" style="margin-top: 14px">
+              <button id="detail-open" class="secondary" type="button">Open details</button>
+              <button id="detail-download" class="secondary" type="button">Download result</button>
+              <button id="detail-retry" class="danger" type="button">Retry conversion</button>
+            </div>
+            <pre id="detail-raw"></pre>
+          </div>
+        </section>
+      </div>
+
+      <section class="panel" style="margin-top: 16px" aria-labelledby="direct-title">
+        <h2 id="direct-title">Direct convert</h2>
+        <div class="form-grid" style="margin-top: 14px">
+          <div class="field">
+            <label for="document-file">Document or Phase0 JSON</label>
+            <input id="document-file" type="file" />
+          </div>
+          <button id="convert-button" type="button">Convert now</button>
+        </div>
+        <div id="result-panel" class="empty" hidden>
+          <span id="status" class="status"></span>
+          <div id="review-list"></div>
+          <a id="download-link" download hidden>Download result</a>
+        </div>
+        <div id="raw-panel" hidden>
+          <pre id="raw-result"></pre>
+        </div>
       </section>
     </main>
+
     <script>
+      const state = {
+        jobs: [],
+        selectedJob: null,
+        downloadUrl: "",
+      };
+
+      const pageStatus = document.querySelector("#page-status");
+      const jobsBody = document.querySelector("#jobs-body");
+      const jobsEmpty = document.querySelector("#jobs-empty");
+      const refreshJobs = document.querySelector("#refresh-jobs");
+      const createJob = document.querySelector("#create-job");
+      const jobFilename = document.querySelector("#job-filename");
+      const jobMode = document.querySelector("#job-mode");
+      const statusFilter = document.querySelector("#status-filter");
+      const detailEmpty = document.querySelector("#detail-empty");
+      const detailContent = document.querySelector("#detail-content");
+      const detailOpen = document.querySelector("#detail-open");
+      const detailDownload = document.querySelector("#detail-download");
+      const detailRetry = document.querySelector("#detail-retry");
+      const detailFields = {
+        id: document.querySelector("#detail-id"),
+        status: document.querySelector("#detail-status"),
+        filename: document.querySelector("#detail-filename"),
+        mode: document.querySelector("#detail-mode"),
+        attempts: document.querySelector("#detail-attempts"),
+        error: document.querySelector("#detail-error"),
+        raw: document.querySelector("#detail-raw"),
+      };
+
       const input = document.querySelector("#document-file");
       const button = document.querySelector("#convert-button");
       const resultPanel = document.querySelector("#result-panel");
@@ -118,7 +440,13 @@
       const reviewList = document.querySelector("#review-list");
       const downloadLink = document.querySelector("#download-link");
       const rawResult = document.querySelector("#raw-result");
-      let downloadUrl = "";
+
+      refreshJobs.addEventListener("click", () => loadJobs());
+      statusFilter.addEventListener("change", () => loadJobs());
+      createJob.addEventListener("click", () => createConversionJob());
+      detailOpen.addEventListener("click", () => loadJobDetail(state.selectedJob.job_id));
+      detailDownload.addEventListener("click", () => downloadSelectedJobResult());
+      detailRetry.addEventListener("click", () => retrySelectedConversion());
 
       button.addEventListener("click", async () => {
         const file = input.files[0];
@@ -134,24 +462,253 @@
           const result = await response.json();
           if (!response.ok) throw new Error(result.message || result.error || "convert failed");
           renderResult(result);
+          setPageStatus("Direct conversion finished.");
         } catch (error) {
           status.textContent = `blocked: ${error.message}`;
           reviewList.replaceChildren();
           clearDownload();
           resultPanel.hidden = false;
           rawPanel.hidden = true;
+          setPageStatus(error.message, true);
         } finally {
           button.disabled = false;
         }
       });
 
+      async function loadJobs() {
+        const filter = statusFilter.value;
+        const query = filter ? `?status=${encodeURIComponent(filter)}` : "";
+        setPageStatus("Loading jobs...");
+        try {
+          const response = await fetch(`/api/jobs${query}`);
+          const body = await response.json();
+          if (!response.ok) throw new Error(body.message || body.error || "job list failed");
+          state.jobs = body.jobs;
+          const refreshedSelection = state.selectedJob
+            ? state.jobs.find((job) => job.job_id === state.selectedJob.job_id)
+            : null;
+          if (refreshedSelection) {
+            renderDetail(refreshedSelection);
+          } else if (state.selectedJob) {
+            clearDetail();
+          } else {
+            renderJobs();
+          }
+          setPageStatus(`${body.jobs.length} job${body.jobs.length === 1 ? "" : "s"} loaded.`);
+        } catch (error) {
+          setPageStatus(error.message, true);
+        }
+      }
+
+      async function createConversionJob() {
+        const filename = jobFilename.value.trim();
+        if (!filename) {
+          setPageStatus("Filename is required.", true);
+          return;
+        }
+        createJob.disabled = true;
+        try {
+          const response = await fetch("/api/jobs", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              idempotency_key: `web-${Date.now()}-${filename}`,
+              filename,
+              mode: jobMode.value,
+            }),
+          });
+          const body = await response.json();
+          if (!response.ok) throw new Error(body.message || body.error || "job create failed");
+          state.selectedJob = body.job;
+          await loadJobs();
+          renderDetail(body.job);
+          setPageStatus(`Created ${body.job.job_id}.`);
+        } catch (error) {
+          setPageStatus(error.message, true);
+        } finally {
+          createJob.disabled = false;
+        }
+      }
+
+      async function loadJobDetail(jobId) {
+        setPageStatus("Loading job detail...");
+        try {
+          const response = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`);
+          const body = await response.json();
+          if (!response.ok) throw new Error(body.message || body.error || "job detail failed");
+          renderDetail(body.job);
+          setPageStatus(`Opened ${body.job.job_id}.`);
+        } catch (error) {
+          setPageStatus(error.message, true);
+        }
+      }
+
+      async function sendJobAction(actionName) {
+        const job = state.selectedJob;
+        const action = findAction(job, actionName);
+        if (!action) return null;
+        const response = await fetch("/api/job-events", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            job_id: job.job_id,
+            action: action.action,
+            audit_event: action.audit_event,
+          }),
+        });
+        const body = await response.json();
+        if (!response.ok) throw new Error(body.message || body.error || "job action failed");
+        return { job, action, body };
+      }
+
+      async function downloadSelectedJobResult() {
+        try {
+          const accepted = await sendJobAction("download_result");
+          if (!accepted) return;
+          await downloadJobResult(accepted.job);
+          setPageStatus(`${accepted.action.label} event accepted and downloaded.`);
+        } catch (error) {
+          setPageStatus(error.message, true);
+        }
+      }
+
+      async function retrySelectedConversion() {
+        try {
+          const accepted = await sendJobAction("retry_conversion");
+          if (!accepted) return;
+          if (accepted.body.job) {
+            const body = accepted.body;
+            renderDetail(body.job);
+            await loadJobs();
+            renderDetail(body.job);
+          }
+          setPageStatus(`${accepted.action.label} event accepted for audit.`);
+        } catch (error) {
+          setPageStatus(error.message, true);
+        }
+      }
+
+      async function downloadJobResult(job) {
+        const response = await fetch(`/api/jobs/${encodeURIComponent(job.job_id)}/result`);
+        if (!response.ok) {
+          const body = await response.json();
+          throw new Error(body.message || body.error || "result download failed");
+        }
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = downloadFilename(response, job);
+        document.body.append(link);
+        link.click();
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 0);
+      }
+
+      function downloadFilename(response, job) {
+        const disposition = response.headers.get("Content-Disposition") || "";
+        const match = disposition.match(/filename="([^"]+)"/);
+        if (match) return match[1];
+        const stem = job.filename.replace(/\.[^.]*$/, "") || job.job_id;
+        return `${stem}.veridoc-result.json`;
+      }
+
+      function renderJobs() {
+        jobsBody.replaceChildren(...state.jobs.map(renderJobRow));
+        jobsEmpty.hidden = state.jobs.length > 0;
+      }
+
+      function renderJobRow(job) {
+        const row = document.createElement("tr");
+        row.dataset.selected = String(state.selectedJob?.job_id === job.job_id);
+        row.append(
+          cell(job.job_id),
+          cell(statusBadge(job.status)),
+          cell(job.mode),
+          cell(formatDate(job.updated_at)),
+          cell(rowActions(job))
+        );
+        row.addEventListener("click", () => loadJobDetail(job.job_id));
+        return row;
+      }
+
+      function rowActions(job) {
+        const wrapper = document.createElement("div");
+        wrapper.className = "action-row";
+        const open = document.createElement("button");
+        open.className = "secondary";
+        open.type = "button";
+        open.textContent = "Open details";
+        open.addEventListener("click", (event) => {
+          event.stopPropagation();
+          loadJobDetail(job.job_id);
+        });
+        wrapper.append(open);
+        return wrapper;
+      }
+
+      function renderDetail(job) {
+        state.selectedJob = job;
+        detailEmpty.hidden = true;
+        detailContent.hidden = false;
+        detailFields.id.textContent = job.job_id;
+        detailFields.status.replaceChildren(statusBadge(job.status));
+        detailFields.filename.textContent = job.filename;
+        detailFields.mode.textContent = job.mode;
+        detailFields.attempts.textContent = String(job.attempts);
+        detailFields.error.textContent = job.error || "none";
+        detailFields.raw.textContent = JSON.stringify(job, null, 2);
+        detailOpen.disabled = !findAction(job, "open_detail");
+        detailDownload.disabled = !findAction(job, "download_result");
+        detailRetry.disabled = !findAction(job, "retry_conversion");
+        renderJobs();
+      }
+
+      function clearDetail() {
+        state.selectedJob = null;
+        detailEmpty.hidden = false;
+        detailContent.hidden = true;
+        renderJobs();
+      }
+
+      function findAction(job, actionName) {
+        return job?.available_actions?.find((action) => action.action === actionName);
+      }
+
+      function cell(content) {
+        const item = document.createElement("td");
+        if (content instanceof Node) {
+          item.append(content);
+        } else {
+          item.textContent = content;
+        }
+        return item;
+      }
+
+      function statusBadge(value) {
+        const badge = document.createElement("span");
+        badge.className = `status ${value}`;
+        badge.textContent = value;
+        return badge;
+      }
+
+      function formatDate(value) {
+        return new Date(value).toLocaleString();
+      }
+
+      function setPageStatus(message, isError = false) {
+        pageStatus.textContent = message;
+        pageStatus.className = isError ? "page-status error" : "page-status";
+      }
+
       function renderResult(result) {
         status.textContent = result.status;
+        status.className = `status ${result.status}`;
         reviewList.replaceChildren(...result.review_items.map(renderReviewItem));
         const blob = new Blob([result.download.content_text], { type: result.download.content_type });
         clearDownload();
-        downloadUrl = URL.createObjectURL(blob);
-        downloadLink.href = downloadUrl;
+        state.downloadUrl = URL.createObjectURL(blob);
+        downloadLink.href = state.downloadUrl;
         downloadLink.download = result.download.filename;
         downloadLink.hidden = false;
         rawResult.textContent = JSON.stringify(
@@ -164,9 +721,9 @@
       }
 
       function clearDownload() {
-        if (downloadUrl) {
-          URL.revokeObjectURL(downloadUrl);
-          downloadUrl = "";
+        if (state.downloadUrl) {
+          URL.revokeObjectURL(state.downloadUrl);
+          state.downloadUrl = "";
         }
         downloadLink.removeAttribute("href");
         downloadLink.removeAttribute("download");
@@ -195,6 +752,8 @@
         wrapper.append(title, text, warnings);
         return wrapper;
       }
+
+      loadJobs();
     </script>
   </body>
 </html>

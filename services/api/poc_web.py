@@ -11,6 +11,7 @@ import re
 import sys
 from tempfile import TemporaryDirectory
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 from xml.etree.ElementTree import ParseError as XmlParseError
 from zipfile import BadZipFile
 
@@ -27,7 +28,7 @@ from core.ir.document_ir_v1 import (
 from core.parsers.docx_extraction import extract_docx_structure
 from core.parsers.pdf_text_extraction import MissingPdfExtractorDependency, parse_text_pdf_to_document_ir
 from core.parsers.xlsx_extraction import extract_xlsx_structure
-from services.api.job_queue import JobQueue
+from services.api.job_queue import JobQueue, JobRecord
 
 WEB_ROOT = REPO_ROOT / "apps" / "web"
 DEFAULT_HOST = "127.0.0.1"
@@ -36,6 +37,10 @@ MAX_UPLOAD_BYTES = 2 * 1024 * 1024
 MAX_UPLOAD_REQUEST_BYTES = (MAX_UPLOAD_BYTES * 4 // 3) + 4096
 SOURCE_TYPES = {"pdf", "docx", "xlsx", "unknown"}
 KNOWN_SOURCE_TYPES = SOURCE_TYPES - {"unknown"}
+HTTP_CONTENT_TYPE = re.compile(
+    r"^[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+"
+    r"(?:[ \t]*;[ \t]*[A-Za-z0-9!#$&^_.+-]+=[A-Za-z0-9!#$&^_.+-]+)*$"
+)
 DEFAULT_JOB_QUEUE = JobQueue()
 
 
@@ -92,25 +97,39 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
     server_version = "VeriDocPoC/0.1"
 
     def do_GET(self) -> None:
-        if self.path in {"/", "/index.html"}:
+        parsed_url = urlsplit(self.path)
+        path = parsed_url.path
+        if path in {"/", "/index.html"}:
             self._send_file(WEB_ROOT / "index.html", "text/html; charset=utf-8")
             return
-        if self.path.startswith("/api/jobs/"):
-            job_id = self.path.removeprefix("/api/jobs/")
+        if path == "/api/jobs":
+            self._handle_list_jobs(parsed_url.query)
+            return
+        if path.startswith("/api/jobs/"):
+            job_path = path.removeprefix("/api/jobs/")
+            if job_path.endswith("/result"):
+                self._handle_job_result_download(job_path.removesuffix("/result"))
+                return
+            job_id = job_path
+            job_queue = self._job_queue()
             try:
-                job = self._job_queue().get_job(job_id)
+                job = job_queue.get_job(job_id)
             except KeyError:
                 self._send_json({"error": "job_not_found"}, status=404)
                 return
-            self._send_json({"job": job.to_dict()})
+            self._send_json({"job": _job_response(job, job_queue)})
             return
         self._send_json({"error": "not_found"}, status=404)
 
     def do_POST(self) -> None:
-        if self.path == "/api/jobs":
+        path = urlsplit(self.path).path
+        if path == "/api/jobs":
             self._handle_create_job()
             return
-        if self.path != "/api/convert":
+        if path == "/api/job-events":
+            self._handle_job_event()
+            return
+        if path != "/api/convert":
             self._send_json({"error": "not_found"}, status=404)
             return
         try:
@@ -166,7 +185,83 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 return
             self._send_json({"error": "invalid_job_request", "message": str(exc)}, status=400)
             return
-        self._send_json({"job": job.to_dict()}, status=202)
+        self._send_json({"job": _job_response(job, self._job_queue())}, status=202)
+
+    def _handle_list_jobs(self, query: str) -> None:
+        parameters = parse_qs(query, keep_blank_values=True)
+        status_values = parameters.get("status", [])
+        if len(status_values) > 1:
+            self._send_json(
+                {"error": "invalid_job_filter", "message": "status filter must be singular"},
+                status=400,
+            )
+            return
+        status = status_values[0] if status_values else None
+        try:
+            job_queue = self._job_queue()
+            jobs = job_queue.list_jobs(status=status or None)
+        except ValueError as exc:
+            self._send_json({"error": "invalid_job_filter", "message": str(exc)}, status=400)
+            return
+        self._send_json({"jobs": [_job_response(job, job_queue) for job in jobs]})
+
+    def _handle_job_event(self) -> None:
+        try:
+            request = self._read_json_request()
+            job_id = str(request.get("job_id") or "")
+            action = str(request.get("action") or "")
+            audit_event = request.get("audit_event")
+            job_queue = self._job_queue()
+            job = job_queue.get_job(job_id)
+            accepted_event = _validate_job_event(job, action, audit_event, job_queue)
+            updated_job = job
+            if action == "retry_conversion":
+                updated_job = job_queue.retry_failed_job(job_id)
+        except KeyError:
+            self._send_json({"error": "job_not_found"}, status=404)
+            return
+        except RuntimeError as exc:
+            self._send_json({"error": "job_conflict", "message": str(exc)}, status=409)
+            return
+        except ValueError as exc:
+            if str(exc) == "content_length_required":
+                self._send_json({"error": "content_length_required"}, status=411)
+                return
+            if str(exc) == "upload_too_large":
+                self._send_json({"error": "upload_too_large"}, status=413)
+                return
+            self._send_json({"error": "invalid_job_event", "message": str(exc)}, status=400)
+            return
+        self._send_json(
+            {
+                "accepted": True,
+                "audit_event": accepted_event,
+                "job": _job_response(updated_job, job_queue),
+            },
+            status=202,
+        )
+
+    def _handle_job_result_download(self, job_id: str) -> None:
+        try:
+            job = self._job_queue().get_job(job_id)
+            download = _job_download(job)
+            content_type = _download_content_type(download["content_type"])
+            filename = _download_filename(download["filename"])
+        except KeyError:
+            self._send_json({"error": "job_not_found"}, status=404)
+            return
+        except ValueError as exc:
+            self._send_json({"error": "job_result_unavailable", "message": str(exc)}, status=400)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header(
+            "Content-Disposition",
+            f'attachment; filename="{filename}"',
+        )
+        self.send_header("Content-Length", str(len(download["content"])))
+        self.end_headers()
+        self.wfile.write(download["content"])
 
     def _read_json_request(self) -> dict[str, Any]:
         length = self.headers.get("Content-Length")
@@ -201,6 +296,130 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+
+def _job_response(job: JobRecord, job_queue: JobQueue | None = None) -> dict[str, Any]:
+    return {
+        "job_id": job.job_id,
+        "idempotency_key": job.idempotency_key,
+        "filename": job.filename,
+        "mode": job.mode,
+        "status": job.status,
+        "attempts": job.attempts,
+        "error": job.error,
+        "created_at": job.created_at,
+        "updated_at": job.updated_at,
+        "has_result": _job_has_download(job),
+        "available_actions": _job_actions(job, job_queue),
+    }
+
+
+def _job_actions(job: JobRecord, job_queue: JobQueue | None = None) -> list[dict[str, Any]]:
+    actions = [
+        _job_action(job, "open_detail", "Open details"),
+    ]
+    if _job_has_download(job):
+        actions.append(_job_action(job, "download_result", "Download result"))
+    if job.status == "failed" and not _retry_blocked_by_active_high_quality(job, job_queue):
+        actions.append(_job_action(job, "retry_conversion", "Retry conversion"))
+    return actions
+
+
+def _job_has_download(job: JobRecord) -> bool:
+    try:
+        _job_download(job)
+    except ValueError:
+        return False
+    return True
+
+
+def _retry_blocked_by_active_high_quality(
+    job: JobRecord, job_queue: JobQueue | None = None
+) -> bool:
+    if job.mode != "high_quality":
+        return False
+    if job_queue is None:
+        return True
+    return any(
+        other.job_id != job.job_id
+        and other.mode == "high_quality"
+        and other.status in {"queued", "running"}
+        for other in job_queue.list_jobs()
+    )
+
+
+def _job_action(job: JobRecord, action: str, label: str) -> dict[str, Any]:
+    return {
+        "action": action,
+        "label": label,
+        "enabled": True,
+        "audit_event": _job_audit_event(job, action),
+    }
+
+
+def _job_audit_event(job: JobRecord, action: str) -> dict[str, Any]:
+    return {
+        "event_type": "conversion_job.action_requested",
+        "job_id": job.job_id,
+        "job_status": job.status,
+        "action": action,
+    }
+
+
+def _validate_job_event(
+    job: JobRecord,
+    action: str,
+    audit_event: Any,
+    job_queue: JobQueue | None = None,
+) -> dict[str, Any]:
+    actions = {item["action"]: item for item in _job_actions(job, job_queue)}
+    selected = actions.get(action)
+    if selected is None:
+        raise ValueError("action is not available for job status")
+    expected_event = selected["audit_event"]
+    if not isinstance(audit_event, dict):
+        raise ValueError("audit_event is required")
+    if audit_event != expected_event:
+        raise ValueError("audit_event does not match job action")
+    return expected_event
+
+
+def _job_download(job: JobRecord) -> dict[str, Any]:
+    if job.status != "succeeded":
+        raise ValueError("job has no downloadable result")
+    result = job.result
+    if not isinstance(result, dict):
+        raise ValueError("job result is missing")
+    download = result.get("download")
+    if not isinstance(download, dict):
+        raise ValueError("job result download is missing")
+    filename = str(download.get("filename") or "").strip()
+    content_type = str(download.get("content_type") or "").strip()
+    content = download.get("content")
+    if not filename or not isinstance(content, bytes):
+        raise ValueError("job result download is invalid")
+    return {
+        "filename": filename,
+        "content_type": _download_content_type(content_type),
+        "content": content,
+    }
+
+
+def _download_content_type(content_type: str) -> str:
+    if (
+        not content_type
+        or any(ord(char) < 0x20 or ord(char) == 0x7F for char in content_type)
+        or not HTTP_CONTENT_TYPE.fullmatch(content_type)
+    ):
+        raise ValueError("job result download content type is invalid")
+    return content_type
+
+
+def _download_filename(filename: str) -> str:
+    basename = re.split(r"[\\/]+", filename)[-1].strip()
+    safe = re.sub(r'[\x00-\x1f\x7f"\\]', "", basename)
+    safe = "".join(char for char in safe if 0x20 <= ord(char) <= 0x7E).strip()
+    return safe or "veridoc-result.json"
 
 
 def _parser_output_from_upload(filename: str, content: bytes) -> tuple[dict[str, Any], list[str]]:
