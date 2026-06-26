@@ -14,6 +14,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "evaluate_dataset.py"
 CASES_PATH = REPO_ROOT / "datasets" / "gold" / "evaluation_cases_v0.json"
+HIGH_RISK_LABELS_PATH = REPO_ROOT / "datasets" / "gold" / "high_risk_labels_v0.json"
 LLM_STABILITY_RUNS_PATH = REPO_ROOT / "datasets" / "gold" / "llm_stability_runs_v0.json"
 POC_COMPARISON_PATH = REPO_ROOT / "datasets" / "gold" / "poc_mode_comparison_v0.json"
 
@@ -35,6 +36,9 @@ class EvaluateDatasetTest(unittest.TestCase):
 
     def valid_poc_comparison_data(self) -> dict[str, object]:
         return copy.deepcopy(evaluate_dataset.load_json(POC_COMPARISON_PATH))
+
+    def valid_high_risk_labels_data(self) -> dict[str, object]:
+        return copy.deepcopy(evaluate_dataset.load_json(HIGH_RISK_LABELS_PATH))
 
     def evaluate_valid_cases(self, data: dict[str, object]) -> object:
         return evaluate_dataset.evaluate_cases(data, manifest_root=REPO_ROOT)
@@ -202,6 +206,47 @@ class EvaluateDatasetTest(unittest.TestCase):
         with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "high-risk labels"):
             evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
 
+    def test_high_risk_label_index_allows_same_taxonomy_label_in_distinct_blocks(
+        self,
+    ) -> None:
+        data = self.valid_high_risk_labels_data()
+        duplicate_label = copy.deepcopy(data["items"][0])
+        duplicate_label["id"] = "gold-duplicate-block"
+        duplicate_label["block_id"] = "block-003"
+        data["items"].append(duplicate_label)
+
+        labels = evaluate_dataset.high_risk_label_index(data)
+
+        self.assertIn(
+            ("sample-document-ir-v0", "block-002", "lot_number"),
+            labels,
+        )
+        self.assertIn(
+            ("sample-document-ir-v0", "block-003", "lot_number"),
+            labels,
+        )
+
+    def test_high_risk_label_index_rejects_missing_expected_value(self) -> None:
+        data = self.valid_high_risk_labels_data()
+        del data["items"][0]["expected_value"]
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "expected_value"):
+            evaluate_dataset.high_risk_label_index(data)
+
+    def test_poc_mode_comparison_rejects_missing_high_risk_block_binding(self) -> None:
+        data = self.valid_poc_comparison_data()
+        del data["modes"][0]["high_risk_items"][0]["block_id"]
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "block_id"):
+            evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
+    def test_poc_mode_comparison_rejects_missing_expected_high_risk_value(self) -> None:
+        data = self.valid_poc_comparison_data()
+        del data["modes"][0]["high_risk_items"][0]["expected_value"]
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "expected_value"):
+            evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
     def test_poc_mode_comparison_rejects_missing_actual_high_risk_value(self) -> None:
         data = self.valid_poc_comparison_data()
         del data["modes"][0]["high_risk_items"][0]["actual_value"]
@@ -295,6 +340,22 @@ class EvaluateDatasetTest(unittest.TestCase):
             metrics.as_dict()["modes"][2]["high_risk_false_auto_confirmed_count"],
         )
         self.assertEqual(1, metrics.high_risk_false_auto_confirmed_count)
+        self.assertFalse(metrics.target_met)
+
+    def test_poc_mode_comparison_counts_both_auto_confirmation_sources(self) -> None:
+        data = self.valid_poc_comparison_data()
+        data["modes"][2]["high_risk_items"][0]["auto_confirmed"] = True
+        data["modes"][2]["cases"][0]["actual"]["tables"][0]["cells"][1][
+            "auto_confirmed"
+        ] = True
+
+        metrics = evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
+        self.assertEqual(
+            2,
+            metrics.as_dict()["modes"][2]["high_risk_false_auto_confirmed_count"],
+        )
+        self.assertEqual(2, metrics.high_risk_false_auto_confirmed_count)
         self.assertFalse(metrics.target_met)
 
     def test_llm_stability_agreement_rates_do_not_depend_on_run_order(self) -> None:

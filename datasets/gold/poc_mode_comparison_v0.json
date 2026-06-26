@@ -58,6 +58,7 @@
         {
           "id": "no-llm-lot-number",
           "fixture_id": "sample-document-ir-v0",
+          "block_id": "block-002",
           "label_id": "lot_number",
           "risk_level": "high",
           "expected_value": "SAMPLE-LOT-001",
@@ -69,6 +70,7 @@
         {
           "id": "no-llm-review-required",
           "fixture_id": "sample-document-ir-v0",
+          "block_id": "block-002",
           "label_id": "requires_human_review",
           "risk_level": "high",
           "expected_value": true,
@@ -124,6 +126,7 @@
         {
           "id": "standard-lot-number",
           "fixture_id": "sample-document-ir-v0",
+          "block_id": "block-002",
           "label_id": "lot_number",
           "risk_level": "high",
           "expected_value": "SAMPLE-LOT-001",
@@ -135,6 +138,7 @@
         {
           "id": "standard-review-required",
           "fixture_id": "sample-document-ir-v0",
+          "block_id": "block-002",
           "label_id": "requires_human_review",
           "risk_level": "high",
           "expected_value": true,
@@ -199,6 +203,7 @@
         {
           "id": "high-quality-lot-number",
           "fixture_id": "sample-document-ir-v0",
+          "block_id": "block-002",
           "label_id": "lot_number",
           "risk_level": "high",
           "expected_value": "SAMPLE-LOT-001",
@@ -210,6 +215,7 @@
         {
           "id": "high-quality-review-required",
           "fixture_id": "sample-document-ir-v0",
+          "block_id": "block-002",
           "label_id": "requires_human_review",
           "risk_level": "high",
           "expected_value": true,
