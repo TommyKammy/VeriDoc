@@ -587,11 +587,12 @@ def _redact_mapping_audit_parameters(
     key_path: str,
 ) -> dict[str, object]:
     key_value_entry = _mapping_key_value_parameter_entry(value)
+    context = AuditParameterContext(key_path)
     return {
         str(key): _redact_mapping_audit_parameter_item(
             key,
             item,
-            key_path=key_path,
+            context=context,
             key_value_entry=key_value_entry,
         )
         for key, item in value.items()
@@ -602,8 +603,9 @@ def _redact_sequence_key_value_parameter_entry(
     value: list[object] | tuple[object, ...],
     key_path: str,
 ) -> list[object]:
+    context = AuditParameterContext(key_path)
     entry_name = _redact_key_value_parameter_entry_name(str(value[0]), key_path)
-    entry_path = _join_parameter_key_path(key_path, entry_name)
+    entry_path = context.child_path(entry_name)
     return [
         entry_name,
         _redact_key_value_parameter_entry_value(value[1], key_path, entry_path),
@@ -651,13 +653,11 @@ def _redact_mapping_audit_parameter_item(
     key: object,
     item: object,
     *,
-    key_path: str,
+    context: AuditParameterContext,
     key_value_entry: MappingKeyValueParameterEntry | None,
 ) -> object:
-    item_path = _join_parameter_key_path(
-        key_path,
-        _raw_key_value_parameter_entry_key(key_path, str(key)),
-    )
+    key_path = context.key_path
+    item_path = context.child_path(key, decode_raw_key=True)
     if key_value_entry is None:
         if (
             isinstance(item, str)
@@ -676,7 +676,7 @@ def _redact_mapping_audit_parameter_item(
             key_value_entry.entry_key,
             key_path,
         )
-        entry_path = _join_parameter_key_path(key_path, entry_name)
+        entry_path = context.child_path(entry_name)
         return _redact_key_value_parameter_entry_value(item, key_path, entry_path)
     return _redact_audit_parameters(
         item,
@@ -782,15 +782,14 @@ def _reject_mapping_content_bearing_audit_parameters(
     key_value_entry = _mapping_key_value_parameter_entry(value)
     if key_value_entry is None and _is_file_audit_parameter_container_path(key_path):
         raise ValueError(f"{key_path} must not include document or request content")
-    if key_value_entry is not None:
-        _reject_mapping_key_value_parameter_entry(value, key_path, key_value_entry)
-
     context = AuditParameterContext(key_path)
+    if key_value_entry is not None:
+        _reject_mapping_key_value_parameter_entry(value, context, key_value_entry)
+
     for key, item in value.items():
         _reject_mapping_audit_parameter_item_content(
             key,
             item,
-            key_path=key_path,
             context=context,
         )
 
@@ -799,11 +798,11 @@ def _reject_mapping_audit_parameter_item_content(
     key: object,
     item: object,
     *,
-    key_path: str,
     context: AuditParameterContext,
 ) -> None:
+    key_path = context.key_path
     entry_key = _raw_key_value_parameter_entry_key(key_path, str(key))
-    item_path = _join_parameter_key_path(key_path, entry_key)
+    item_path = context.child_path(key, decode_raw_key=True)
     is_safe_real_metadata_pair = (
         context.is_real_parameters_container
         and isinstance(item, str)
@@ -830,13 +829,11 @@ def _reject_mapping_audit_parameter_item_content(
 
 def _reject_mapping_key_value_parameter_entry(
     value: Mapping[object, object],
-    key_path: str,
+    context: AuditParameterContext,
     key_value_entry: MappingKeyValueParameterEntry,
 ) -> None:
-    item_path = _join_parameter_key_path(
-        key_path,
-        _raw_key_value_parameter_entry_key(key_path, key_value_entry.entry_key),
-    )
+    key_path = context.key_path
+    item_path = context.child_path(key_value_entry.entry_key, decode_raw_key=True)
     if _is_file_audit_parameter_container_path(key_path):
         raise ValueError(f"{item_path} must not include document or request content")
     _reject_key_value_parameter_entry_name(key_value_entry.entry_key, key_path, item_path)
@@ -851,8 +848,8 @@ def _reject_sequence_key_value_parameter_entry(
     value: list[object] | tuple[object, ...],
     key_path: str,
 ) -> None:
-    entry_key = _raw_key_value_parameter_entry_key(key_path, str(value[0]))
-    item_path = f"{key_path}.{entry_key}"
+    context = AuditParameterContext(key_path)
+    item_path = context.child_path(value[0], decode_raw_key=True)
     if _is_file_audit_parameter_container_path(key_path):
         raise ValueError(f"{item_path} must not include document or request content")
     _reject_key_value_parameter_entry_name(str(value[0]), key_path, item_path)
