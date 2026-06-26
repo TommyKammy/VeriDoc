@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import asdict
+from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import base64
 import binascii
@@ -34,6 +35,7 @@ from core.parsers.xlsx_extraction import extract_xlsx_structure
 from services.api.job_queue import JobQueue, JobRecord
 
 WEB_ROOT = REPO_ROOT / "apps" / "web"
+INFERENCE_PROFILES_PATH = REPO_ROOT / "services" / "api" / "inference_profiles.json"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8788
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024
@@ -74,6 +76,8 @@ class ReviewAuditEventStore:
 
 
 DEFAULT_REVIEW_AUDIT_EVENTS = ReviewAuditEventStore()
+LLM_EXTRACTOR_NAME_TOKENS = ("llm", "gpt", "openai")
+LLM_INFERENCE_PROFILE_FIELDS = ("id", "label", "provider", "model_family", "recommended_model")
 
 
 def convert_uploaded_document(*, filename: str, content: bytes) -> dict[str, Any]:
@@ -674,8 +678,38 @@ def _review_items(document_ir: DocumentIRV1) -> list[dict[str, Any]]:
 
 
 def _block_llm_involved(block: Any) -> bool:
-    extractor_name = str(getattr(getattr(block, "extractor", None), "name", "") or "").lower()
-    return any(token in extractor_name for token in ("llm", "gpt", "openai"))
+    extractor_name = _normalize_extractor_name(
+        getattr(getattr(block, "extractor", None), "name", "") or ""
+    )
+    if any(token in extractor_name for token in LLM_EXTRACTOR_NAME_TOKENS):
+        return True
+    return extractor_name in _configured_llm_extractor_names()
+
+
+def _normalize_extractor_name(value: Any) -> str:
+    return str(value or "").strip().casefold()
+
+
+@lru_cache(maxsize=1)
+def _configured_llm_extractor_names() -> frozenset[str]:
+    try:
+        profiles_config = json.loads(INFERENCE_PROFILES_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return frozenset()
+    profiles = profiles_config.get("profiles")
+    if not isinstance(profiles, list):
+        return frozenset()
+    names: set[str] = set()
+    for profile in profiles:
+        if not isinstance(profile, dict):
+            continue
+        for field_name in LLM_INFERENCE_PROFILE_FIELDS:
+            value = profile.get(field_name)
+            if isinstance(value, str):
+                normalized = _normalize_extractor_name(value)
+                if normalized:
+                    names.add(normalized)
+    return frozenset(names)
 
 
 def _review_source_bbox(bbox: Any, page: Any) -> dict[str, Any] | None:
