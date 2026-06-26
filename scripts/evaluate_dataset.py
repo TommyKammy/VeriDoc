@@ -1172,11 +1172,11 @@ def collect_poc_high_risk_label_evidence(
                         actual_text, expected_value
                     ):
                         actual_values_by_label[label_key].add(normalized_text(expected_value))
-                        if actual_auto_confirmed(
-                            actual_cell,
-                            f"{context}.cases[{case_id!r}].actual cell {cell_id!r}",
-                        ):
-                            auto_confirmed_labels.add(label_key)
+                    if isinstance(expected_value, str) and actual_auto_confirmed(
+                        actual_cell,
+                        f"{context}.cases[{case_id!r}].actual cell {cell_id!r}",
+                    ):
+                        auto_confirmed_labels.add(label_key)
 
     for label_key, values in actual_values_by_label.items():
         if not values:
