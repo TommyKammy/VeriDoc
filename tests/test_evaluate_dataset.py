@@ -155,12 +155,36 @@ class EvaluateDatasetTest(unittest.TestCase):
         with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "dataset_manifest"):
             evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
 
-    def test_poc_mode_comparison_rejects_missing_high_risk_label_coverage(self) -> None:
-        data = self.valid_poc_comparison_data()
-        data["modes"][0]["high_risk_items"] = data["modes"][0]["high_risk_items"][:1]
+    def test_poc_mode_comparison_rejects_non_canonical_dataset_manifest_before_scoring(
+        self,
+    ) -> None:
+        for manifest_path in (
+            str(REPO_ROOT / "datasets" / "fixtures" / "manifest.json"),
+            "datasets/fixtures/side-manifest.json",
+            "datasets/fixtures/../fixtures/manifest.json",
+        ):
+            data = self.valid_poc_comparison_data()
+            data["dataset_manifest"] = manifest_path
 
-        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "cover all"):
-            evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+            with self.subTest(manifest_path=manifest_path), self.assertRaisesRegex(
+                evaluate_dataset.EvaluationCaseError,
+                "dataset_manifest must be datasets/fixtures/manifest.json",
+            ):
+                evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
+    def test_poc_mode_comparison_rejects_missing_high_risk_label_coverage_per_mode(
+        self,
+    ) -> None:
+        for mode_index, mode_name in enumerate(evaluate_dataset.REQUIRED_POC_MODES):
+            data = self.valid_poc_comparison_data()
+            data["modes"][mode_index]["high_risk_items"] = data["modes"][mode_index][
+                "high_risk_items"
+            ][:1]
+
+            with self.subTest(mode=mode_name), self.assertRaisesRegex(
+                evaluate_dataset.EvaluationCaseError, "cover all"
+            ):
+                evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
 
     def test_poc_mode_comparison_rejects_high_risk_label_drift_before_scoring(self) -> None:
         data = self.valid_poc_comparison_data()

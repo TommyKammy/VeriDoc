@@ -916,13 +916,13 @@ def evaluate_poc_mode_comparison(
     if data.get("schema_version") != POC_MODE_COMPARISON_SCHEMA_VERSION:
         raise EvaluationCaseError(
             f"unsupported PoC comparison schema_version {data.get('schema_version')!r}"
-        )
+    )
     validate_scope(data)
     root = repo_root or Path.cwd()
-    fixture_paths = fixture_paths_from_manifest(
-        load_json(manifest_path_from_cases(data, root)), root
-    )
+    manifest_path = manifest_path_from_cases(data, root)
+    fixture_paths = fixture_paths_from_manifest(load_json(manifest_path), root)
     labels = high_risk_label_index(load_json(high_risk_labels_path_from_comparison(data, root)))
+    authoritative_label_keys = set(labels)
     missing_fixture_ids = sorted({fixture_id for fixture_id, _ in labels} - set(fixture_paths))
     if missing_fixture_ids:
         raise EvaluationCaseError(
@@ -995,7 +995,7 @@ def evaluate_poc_mode_comparison(
             if auto_confirmed:
                 high_risk_false_auto_confirmed_count += 1
 
-        if mode_label_keys != set(labels):
+        if mode_label_keys != authoritative_label_keys:
             raise EvaluationCaseError(
                 f"{context}.high_risk_items must cover all authoritative high-risk labels"
             )
