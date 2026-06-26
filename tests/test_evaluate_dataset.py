@@ -357,6 +357,15 @@ class EvaluateDatasetTest(unittest.TestCase):
         with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "actual_value"):
             evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
 
+    def test_poc_mode_comparison_rejects_string_actual_for_non_string_high_risk_label(
+        self,
+    ) -> None:
+        data = self.valid_poc_comparison_data()
+        data["modes"][2]["high_risk_items"][1]["actual_value"] = "SAMPLE-LOT-001"
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "actual_value"):
+            evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
     def test_poc_high_risk_item_accepts_semantically_equal_numeric_value(self) -> None:
         labels = {
             ("sample-document-ir-v0", "block-002", "numeric_value"): {

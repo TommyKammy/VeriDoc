@@ -1058,6 +1058,10 @@ def validate_poc_high_risk_item_against_label(
         raise EvaluationCaseError(f"{context}.actual_value must be present")
     expected_value = label.get("expected_value")
     actual_value = item.get("actual_value")
+    if not isinstance(expected_value, str) and isinstance(actual_value, str):
+        raise EvaluationCaseError(
+            f"{context}.actual_value must not be a string for non-string high-risk labels"
+        )
     status = item.get("status")
     if not isinstance(status, str) or not status:
         raise EvaluationCaseError(f"{context}.status must be a non-empty string")
