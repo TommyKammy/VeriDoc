@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import base64
@@ -10,6 +11,7 @@ from pathlib import Path
 import re
 import sys
 from tempfile import TemporaryDirectory
+from threading import Lock
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 from xml.etree.ElementTree import ParseError as XmlParseError
@@ -50,6 +52,25 @@ DEFAULT_JOB_QUEUE = JobQueue()
 
 class PocServerDependencyError(RuntimeError):
     """Raised when the PoC server is missing an optional parser dependency."""
+
+
+class ReviewAuditEventStore:
+    def __init__(self) -> None:
+        self._events: list[dict[str, Any]] = []
+        self._lock = Lock()
+
+    def record(self, audit_event: dict[str, Any]) -> dict[str, Any]:
+        event = deepcopy(audit_event)
+        with self._lock:
+            self._events.append(event)
+        return deepcopy(event)
+
+    def list_events(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return deepcopy(self._events)
+
+
+DEFAULT_REVIEW_AUDIT_EVENTS = ReviewAuditEventStore()
 
 
 def convert_uploaded_document(*, filename: str, content: bytes) -> dict[str, Any]:
@@ -252,6 +273,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
         try:
             request = self._read_json_request(max_request_bytes=MAX_REVIEW_EVENT_REQUEST_BYTES)
             accepted_event = _validate_review_event(request.get("audit_event"))
+            stored_event = self._review_event_store().record(accepted_event)
         except ValueError as exc:
             if str(exc) == "content_length_required":
                 self._send_json({"error": "content_length_required"}, status=411)
@@ -264,7 +286,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
         self._send_json(
             {
                 "accepted": True,
-                "audit_event": accepted_event,
+                "audit_event": stored_event,
             },
             status=202,
         )
@@ -305,6 +327,9 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
 
     def _job_queue(self) -> JobQueue:
         return getattr(self.server, "job_queue", DEFAULT_JOB_QUEUE)
+
+    def _review_event_store(self) -> ReviewAuditEventStore:
+        return getattr(self.server, "review_event_store", DEFAULT_REVIEW_AUDIT_EVENTS)
 
     def _send_file(self, path: Path, content_type: str) -> None:
         if not path.is_file():

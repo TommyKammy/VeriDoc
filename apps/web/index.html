@@ -603,7 +603,7 @@
       detailRetry.addEventListener("click", () => retrySelectedConversion());
       input.addEventListener("change", () => {
         clearSourcePreview();
-        clearPreview();
+        clearReviewResult();
       });
       previewPageSelect.addEventListener("change", () => {
         state.previewPage = Number(previewPageSelect.value);
@@ -932,6 +932,19 @@
         pdfPageSurface.removeAttribute("style");
       }
 
+      function clearReviewResult() {
+        clearPreview();
+        reviewList.replaceChildren();
+        state.reviewAuditEvents = [];
+        reviewActionStatus.textContent = "";
+        status.textContent = "";
+        status.className = "status";
+        rawResult.textContent = "";
+        clearDownload();
+        resultPanel.hidden = true;
+        rawPanel.hidden = true;
+      }
+
       async function renderSourcePreview(result) {
         const renderToken = state.pdfRenderToken + 1;
         state.pdfRenderToken = renderToken;
@@ -1196,6 +1209,9 @@
 
       async function requestReviewAction(item, action) {
         try {
+          if (!state.latestResult || !(state.latestResult.review_items || []).includes(item)) {
+            throw new Error("Review result is no longer active.");
+          }
           if (!reviewAuditSourcePage(item)) {
             throw new Error("Review item source page is invalid.");
           }

@@ -82,6 +82,20 @@ def test_review_item_exposes_edit_and_approve_audit_events() -> None:
     assert "Review action event queued for audit" in html
 
 
+def test_review_actions_clear_and_reject_stale_file_selection() -> None:
+    html = _web_html()
+
+    assert 'input.addEventListener("change", () => {' in html
+    assert "clearReviewResult();" in html
+    assert "function clearReviewResult()" in html
+    assert "reviewList.replaceChildren();" in html
+    assert "state.reviewAuditEvents = [];" in html
+    assert "resultPanel.hidden = true;" in html
+    assert "rawPanel.hidden = true;" in html
+    assert "!(state.latestResult.review_items || []).includes(item)" in html
+    assert "Review result is no longer active." in html
+
+
 def test_pdf_preview_uses_canvas_coordinate_space_for_overlays() -> None:
     html = _web_html()
 

@@ -13,7 +13,11 @@ import pytest
 
 import services.api.poc_web as poc_web
 from services.api.job_queue import JobQueue
-from services.api.poc_web import PocWebRequestHandler, convert_uploaded_document
+from services.api.poc_web import (
+    PocWebRequestHandler,
+    ReviewAuditEventStore,
+    convert_uploaded_document,
+)
 
 
 def _write_docx(path: Path, document_xml: str) -> None:
@@ -704,6 +708,30 @@ def test_poc_http_api_accepts_review_action_audit_event() -> None:
     assert body["audit_event"]["source_bbox"]["origin"] == "top-left"
 
 
+def test_poc_http_api_persists_review_action_audit_event_server_side() -> None:
+    audit_event = _review_audit_event()
+
+    status, body, events = _post_review_audit_event_with_store(audit_event)
+    audit_event["revised_text"] = "mutated after request"
+
+    assert status == 202
+    assert events == [body["audit_event"]]
+    assert events[0]["revised_text"] == "Lot: SAMPLE-001 corrected"
+
+
+def test_poc_http_api_does_not_persist_rejected_review_action_audit_event() -> None:
+    audit_event = _review_audit_event(source_bbox=_review_bbox(origin="bottom-left"))
+
+    status, body, events = _post_review_audit_event_with_store(audit_event)
+
+    assert status == 400
+    assert body == {
+        "error": "invalid_review_event",
+        "message": "audit_event.source_bbox.origin must be top-left",
+    }
+    assert events == []
+
+
 def test_poc_http_api_rejects_malformed_review_action_audit_event() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     thread = Thread(target=server.serve_forever, daemon=True)
@@ -851,7 +879,16 @@ def _review_bbox(**overrides: object) -> dict[str, object]:
 
 
 def _post_review_audit_event(audit_event: dict[str, object]) -> tuple[int, dict[str, object]]:
+    status, body, _events = _post_review_audit_event_with_store(audit_event)
+    return status, body
+
+
+def _post_review_audit_event_with_store(
+    audit_event: dict[str, object],
+) -> tuple[int, dict[str, object], list[dict[str, object]]]:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    store = ReviewAuditEventStore()
+    server.review_event_store = store
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -868,7 +905,7 @@ def _post_review_audit_event(audit_event: dict[str, object]) -> tuple[int, dict[
     finally:
         server.shutdown()
         thread.join(timeout=5)
-    return response.status, body
+    return response.status, body, store.list_events()
 
 
 @pytest.mark.parametrize(
