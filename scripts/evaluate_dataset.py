@@ -880,7 +880,7 @@ def validate_poc_high_risk_item_against_label(
     item: dict[str, Any],
     labels: dict[tuple[str, str], dict[str, Any]],
     context: str,
-) -> None:
+) -> bool:
     fixture_id = item.get("fixture_id")
     label_id = item.get("label_id")
     if not isinstance(fixture_id, str) or not fixture_id:
@@ -905,10 +905,9 @@ def validate_poc_high_risk_item_against_label(
     status = item.get("status")
     if not isinstance(status, str) or not status:
         raise EvaluationCaseError(f"{context}.status must be a non-empty string")
-    if actual_value != expected_value and status != "requires_review":
-        raise EvaluationCaseError(
-            f"{context}.actual_value mismatch must stay in requires_review status"
-        )
+    if status != "requires_review":
+        raise EvaluationCaseError(f"{context}.status must be requires_review")
+    return actual_value == expected_value
 
 
 def evaluate_poc_mode_comparison(
@@ -966,19 +965,24 @@ def evaluate_poc_mode_comparison(
             raise EvaluationCaseError(f"{context}.high_risk_items must list high-risk checks")
 
         mode_label_keys: set[tuple[str, str]] = set()
+        high_risk_actual_match_count = 0
         requires_review_count = 0
         high_risk_false_auto_confirmed_count = 0
         for item_index, item in enumerate(high_risk_items):
             item_context = f"{context}.high_risk_items[{item_index}]"
             if not isinstance(item, dict):
                 raise EvaluationCaseError(f"{item_context} must be an object")
-            validate_poc_high_risk_item_against_label(item, labels, item_context)
+            actual_matches = validate_poc_high_risk_item_against_label(
+                item, labels, item_context
+            )
             label_key = (item["fixture_id"], item["label_id"])
             if label_key in mode_label_keys:
                 raise EvaluationCaseError(
                     f"{context}.high_risk_items has duplicate label {label_key!r}"
                 )
             mode_label_keys.add(label_key)
+            if actual_matches:
+                high_risk_actual_match_count += 1
             if item.get("risk_level") != "high":
                 raise EvaluationCaseError(f"{item_context}.risk_level must be high")
             if item.get("requires_review") is not True:
@@ -986,13 +990,24 @@ def evaluate_poc_mode_comparison(
             auto_confirmed = item.get("auto_confirmed")
             if not isinstance(auto_confirmed, bool):
                 raise EvaluationCaseError(f"{item_context}.auto_confirmed must be a boolean")
-            requires_review_count += 1
+            if item.get("status") == "requires_review":
+                requires_review_count += 1
             if auto_confirmed:
                 high_risk_false_auto_confirmed_count += 1
 
         if mode_label_keys != set(labels):
             raise EvaluationCaseError(
                 f"{context}.high_risk_items must cover all authoritative high-risk labels"
+            )
+
+        cell_match_rate = validate_ratio_metric(
+            metrics.get("cell_match_rate"),
+            f"{context}.metrics.cell_match_rate",
+        )
+        high_risk_actual_match_rate = ratio(high_risk_actual_match_count, len(labels))
+        if not math.isclose(cell_match_rate, high_risk_actual_match_rate):
+            raise EvaluationCaseError(
+                f"{context}.metrics.cell_match_rate must match high-risk actual-value match rate"
             )
 
         total_high_risk_false_auto_confirmed += high_risk_false_auto_confirmed_count
@@ -1003,10 +1018,7 @@ def evaluate_poc_mode_comparison(
                     metrics.get("table_extraction_rate"),
                     f"{context}.metrics.table_extraction_rate",
                 ),
-                cell_match_rate=validate_ratio_metric(
-                    metrics.get("cell_match_rate"),
-                    f"{context}.metrics.cell_match_rate",
-                ),
+                cell_match_rate=cell_match_rate,
                 source_linkage_rate=validate_ratio_metric(
                     metrics.get("source_linkage_rate"),
                     f"{context}.metrics.source_linkage_rate",

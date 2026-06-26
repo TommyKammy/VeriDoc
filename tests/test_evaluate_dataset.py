@@ -180,7 +180,21 @@ class EvaluateDatasetTest(unittest.TestCase):
         data = self.valid_poc_comparison_data()
         data["modes"][0]["high_risk_items"][0]["status"] = "confirmed"
 
-        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "requires_review status"):
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "status"):
+            evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
+    def test_poc_mode_comparison_rejects_confirmed_matching_high_risk_value(self) -> None:
+        data = self.valid_poc_comparison_data()
+        data["modes"][2]["high_risk_items"][0]["status"] = "confirmed"
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "requires_review"):
+            evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
+    def test_poc_mode_comparison_rejects_reviewed_mismatch_in_inflated_rate(self) -> None:
+        data = self.valid_poc_comparison_data()
+        data["modes"][2]["high_risk_items"][0]["actual_value"] = "SAMPLE-LOT-002"
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "cell_match_rate"):
             evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
 
     def test_poc_mode_comparison_counts_high_risk_auto_confirmation_failures(self) -> None:
