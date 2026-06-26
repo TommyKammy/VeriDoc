@@ -937,6 +937,36 @@ def test_poc_http_api_requires_configured_local_auth_token_for_review_events() -
     assert events == []
 
 
+def test_poc_http_api_authenticates_review_events_before_parsing_payload() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    store = ReviewAuditEventStore()
+    server.review_event_store = store
+    server.local_auth_tokens = _local_auth_tokens()
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = b"{not valid json"
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/review-events",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 401
+    assert body == {
+        "error": "auth_required",
+        "message": "Authorization bearer token is required",
+    }
+    assert store.list_events() == []
+
+
 def test_poc_http_api_rejects_viewer_review_edit() -> None:
     audit_event = _review_audit_event()
 
@@ -1412,16 +1442,24 @@ def test_poc_http_api_requires_admin_role_for_retry_job_event() -> None:
         )
         failed_response = connection.getresponse()
         failed_body = json.loads(failed_response.read().decode("utf-8"))
-        retry_action = next(
-            action
-            for action in failed_body["jobs"][0]["available_actions"]
-            if action["action"] == "retry_conversion"
+        connection.request(
+            "GET",
+            f"/api/jobs/{failed_job.job_id}",
+            headers={"Authorization": "Bearer reviewer-token"},
         )
+        reviewer_detail_response = connection.getresponse()
+        reviewer_detail_body = json.loads(reviewer_detail_response.read().decode("utf-8"))
+        forged_retry_event = {
+            "event_type": "conversion_job.action_requested",
+            "job_id": failed_job.job_id,
+            "job_status": "failed",
+            "action": "retry_conversion",
+        }
         event_payload = json.dumps(
             {
                 "job_id": failed_job.job_id,
                 "action": "retry_conversion",
-                "audit_event": retry_action["audit_event"],
+                "audit_event": forged_retry_event,
             }
         ).encode("utf-8")
         connection.request(
@@ -1438,13 +1476,32 @@ def test_poc_http_api_requires_admin_role_for_retry_job_event() -> None:
         reviewer_body = json.loads(reviewer_response.read().decode("utf-8"))
         assert server.job_queue.get_job(failed_job.job_id).status == "failed"
         connection.request(
+            "GET",
+            "/api/jobs?status=failed",
+            headers={"Authorization": "Bearer admin-token"},
+        )
+        admin_failed_response = connection.getresponse()
+        admin_failed_body = json.loads(admin_failed_response.read().decode("utf-8"))
+        retry_action = next(
+            action
+            for action in admin_failed_body["jobs"][0]["available_actions"]
+            if action["action"] == "retry_conversion"
+        )
+        admin_event_payload = json.dumps(
+            {
+                "job_id": failed_job.job_id,
+                "action": "retry_conversion",
+                "audit_event": retry_action["audit_event"],
+            }
+        ).encode("utf-8")
+        connection.request(
             "POST",
             "/api/job-events",
-            body=event_payload,
+            body=admin_event_payload,
             headers={
                 "Authorization": "Bearer admin-token",
                 "Content-Type": "application/json",
-                "Content-Length": str(len(event_payload)),
+                "Content-Length": str(len(admin_event_payload)),
             },
         )
         admin_response = connection.getresponse()
@@ -1454,14 +1511,35 @@ def test_poc_http_api_requires_admin_role_for_retry_job_event() -> None:
         thread.join(timeout=5)
 
     assert failed_response.status == 200
+    assert [action["action"] for action in failed_body["jobs"][0]["available_actions"]] == [
+        "open_detail"
+    ]
+    assert reviewer_detail_response.status == 200
+    assert [
+        action["action"] for action in reviewer_detail_body["job"]["available_actions"]
+    ] == ["open_detail"]
     assert reviewer_response.status == 403
     assert reviewer_body == {
         "error": "forbidden",
         "message": "role reviewer cannot perform jobs_retry",
     }
+    assert admin_failed_response.status == 200
     assert admin_response.status == 202
     assert admin_body["job"]["status"] == "queued"
     assert server.job_queue.get_job(failed_job.job_id).status == "queued"
+
+
+def test_bundled_web_ui_plumbs_local_auth_token_into_api_fetches() -> None:
+    html = (Path(__file__).resolve().parents[1] / "apps" / "web" / "index.html").read_text()
+
+    assert 'id="auth-token"' in html
+    assert "LOCAL_AUTH_TOKEN_STORAGE_KEY" in html
+    assert "function apiFetch" in html
+    assert "headers.Authorization = `Bearer ${token}`" in html
+    assert "fetch(\"/api/convert\"" not in html
+    assert "fetch(`/api/jobs${query}`)" not in html
+    assert "fetch(\"/api/job-events\"" not in html
+    assert "fetch(\"/api/review-events\"" not in html
 
 
 def test_poc_http_api_sanitizes_succeeded_job_result_and_downloads_result() -> None:
@@ -2001,13 +2079,13 @@ def test_web_job_detail_actions_perform_download_and_retry_side_effects() -> Non
 
     assert 'detailDownload.addEventListener("click", () => downloadSelectedJobResult())' in html
     assert 'detailRetry.addEventListener("click", () => retrySelectedConversion())' in html
-    assert 'fetch("/api/job-events"' in action_body
+    assert 'apiFetch("/api/job-events"' in action_body
     assert 'sendJobAction("download_result")' in selected_download_body
     assert "await downloadJobResult(accepted.job)" in selected_download_body
     assert 'sendJobAction("retry_conversion")' in selected_retry_body
     assert "await loadJobs()" in selected_retry_body
     assert "renderDetail(body.job)" in selected_retry_body
-    assert 'fetch(`/api/jobs/${encodeURIComponent(job.job_id)}/result`)' in download_body
+    assert 'apiFetch(`/api/jobs/${encodeURIComponent(job.job_id)}/result`)' in download_body
     assert "await response.blob()" in download_body
     assert "URL.createObjectURL(blob)" in download_body
     assert "link.click()" in download_body

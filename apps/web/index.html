@@ -43,6 +43,19 @@
         margin-bottom: 18px;
       }
 
+      .auth-controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: end;
+        justify-content: flex-end;
+      }
+
+      .auth-controls .field {
+        width: min(260px, 100%);
+        flex: 0 1 260px;
+      }
+
       h1,
       h2,
       h3,
@@ -461,7 +474,15 @@
     <main>
       <header>
         <h1>VeriDoc Jobs</h1>
-        <div id="page-status" class="page-status" role="status"></div>
+        <div class="auth-controls">
+          <div class="field">
+            <label for="auth-token">API token</label>
+            <input id="auth-token" autocomplete="off" spellcheck="false" />
+          </div>
+          <button id="save-auth-token" class="secondary" type="button">Save token</button>
+          <button id="clear-auth-token" class="secondary" type="button">Clear token</button>
+          <div id="page-status" class="page-status" role="status"></div>
+        </div>
       </header>
 
       <div class="layout">
@@ -595,10 +616,14 @@
         pendingReviewActions: new Map(),
       };
 
+      const LOCAL_AUTH_TOKEN_STORAGE_KEY = "veridoc.localAuthToken";
       const PDFJS_MODULE_URL = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.min.mjs";
       const PDFJS_WORKER_URL = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs";
 
       const pageStatus = document.querySelector("#page-status");
+      const authToken = document.querySelector("#auth-token");
+      const saveAuthToken = document.querySelector("#save-auth-token");
+      const clearAuthToken = document.querySelector("#clear-auth-token");
       const jobsBody = document.querySelector("#jobs-body");
       const jobsEmpty = document.querySelector("#jobs-empty");
       const refreshJobs = document.querySelector("#refresh-jobs");
@@ -640,6 +665,24 @@
       const bboxLayer = document.querySelector("#bbox-layer");
       const bboxInvalid = document.querySelector("#bbox-invalid");
 
+      authToken.value = localStorage.getItem(LOCAL_AUTH_TOKEN_STORAGE_KEY) || "";
+      saveAuthToken.addEventListener("click", () => {
+        const token = authToken.value.trim();
+        if (token) {
+          localStorage.setItem(LOCAL_AUTH_TOKEN_STORAGE_KEY, token);
+          setPageStatus("API token saved.");
+        } else {
+          localStorage.removeItem(LOCAL_AUTH_TOKEN_STORAGE_KEY);
+          setPageStatus("API token cleared.");
+        }
+        loadJobs();
+      });
+      clearAuthToken.addEventListener("click", () => {
+        authToken.value = "";
+        localStorage.removeItem(LOCAL_AUTH_TOKEN_STORAGE_KEY);
+        setPageStatus("API token cleared.");
+        loadJobs();
+      });
       refreshJobs.addEventListener("click", () => loadJobs());
       statusFilter.addEventListener("change", () => loadJobs());
       createJob.addEventListener("click", () => createConversionJob());
@@ -669,7 +712,7 @@
           if (!isActiveDirectConversion(conversionToken)) return;
           setSourcePreview(file, fileBytes);
           const contentBase64 = arrayBufferToBase64(fileBytes);
-          const response = await fetch("/api/convert", {
+          const response = await apiFetch("/api/convert", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ filename: file.name, content_base64: contentBase64 }),
@@ -704,7 +747,7 @@
         const query = filter ? `?status=${encodeURIComponent(filter)}` : "";
         setPageStatus("Loading jobs...");
         try {
-          const response = await fetch(`/api/jobs${query}`);
+          const response = await apiFetch(`/api/jobs${query}`);
           const body = await response.json();
           if (!response.ok) throw new Error(body.message || body.error || "job list failed");
           state.jobs = body.jobs;
@@ -732,7 +775,7 @@
         }
         createJob.disabled = true;
         try {
-          const response = await fetch("/api/jobs", {
+          const response = await apiFetch("/api/jobs", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -757,7 +800,7 @@
       async function loadJobDetail(jobId) {
         setPageStatus("Loading job detail...");
         try {
-          const response = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`);
+          const response = await apiFetch(`/api/jobs/${encodeURIComponent(jobId)}`);
           const body = await response.json();
           if (!response.ok) throw new Error(body.message || body.error || "job detail failed");
           renderDetail(body.job);
@@ -771,7 +814,7 @@
         const job = state.selectedJob;
         const action = findAction(job, actionName);
         if (!action) return null;
-        const response = await fetch("/api/job-events", {
+        const response = await apiFetch("/api/job-events", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -813,7 +856,7 @@
       }
 
       async function downloadJobResult(job) {
-        const response = await fetch(`/api/jobs/${encodeURIComponent(job.job_id)}/result`);
+        const response = await apiFetch(`/api/jobs/${encodeURIComponent(job.job_id)}/result`);
         if (!response.ok) {
           const body = await response.json();
           throw new Error(body.message || body.error || "result download failed");
@@ -1402,7 +1445,7 @@
           actionStarted = true;
           setReviewActionPending(item, true);
           const auditEvent = buildReviewAuditEvent(item, action);
-          const response = await fetch("/api/review-events", {
+          const response = await apiFetch("/api/review-events", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ audit_event: auditEvent }),
@@ -1441,6 +1484,13 @@
             setReviewActionPending(item, false);
           }
         }
+      }
+
+      function apiFetch(url, options = {}) {
+        const token = authToken.value.trim();
+        const headers = { ...(options.headers || {}) };
+        if (token) headers.Authorization = `Bearer ${token}`;
+        return fetch(url, { ...options, headers });
       }
 
       loadJobs();
