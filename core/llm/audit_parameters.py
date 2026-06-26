@@ -519,6 +519,32 @@ class NormalizedParameterKey:
         )
 
 
+@dataclass(frozen=True)
+class MappingKeyValueParameterEntry:
+    key_field: str
+    entry_key: str
+    value_field: str
+
+
+@dataclass(frozen=True)
+class RawKeyValueParameterEntry:
+    entry_key: str
+    separator: str
+    entry_value: str
+
+    @classmethod
+    def from_raw_entry(cls, raw_entry: raw_audit.RawEntry) -> RawKeyValueParameterEntry:
+        entry_key, separator, entry_value = raw_entry
+        return cls(
+            entry_key=entry_key,
+            separator=separator,
+            entry_value=entry_value,
+        )
+
+    def to_raw_entry(self) -> raw_audit.RawEntry:
+        return (self.entry_key, self.separator, self.entry_value)
+
+
 def sanitize_audit_parameters(parameters: Mapping[str, object]) -> JsonObject:
     _reject_content_bearing_audit_parameters(parameters)
     sanitized = _redact_audit_parameters(parameters, key_path=AuditParameterContext().key_path)
@@ -626,7 +652,7 @@ def _redact_mapping_audit_parameter_item(
     item: object,
     *,
     key_path: str,
-    key_value_entry: tuple[str, str, str] | None,
+    key_value_entry: MappingKeyValueParameterEntry | None,
 ) -> object:
     item_path = _join_parameter_key_path(
         key_path,
@@ -643,10 +669,13 @@ def _redact_mapping_audit_parameter_item(
             item,
             key_path=item_path,
         )
-    if str(key) == key_value_entry[0]:
+    if str(key) == key_value_entry.key_field:
         return _redact_key_value_parameter_entry_name(str(item), key_path)
-    if str(key) == key_value_entry[2]:
-        entry_name = _redact_key_value_parameter_entry_name(key_value_entry[1], key_path)
+    if str(key) == key_value_entry.value_field:
+        entry_name = _redact_key_value_parameter_entry_name(
+            key_value_entry.entry_key,
+            key_path,
+        )
         entry_path = _join_parameter_key_path(key_path, entry_name)
         return _redact_key_value_parameter_entry_value(item, key_path, entry_path)
     return _redact_audit_parameters(
@@ -802,18 +831,17 @@ def _reject_mapping_audit_parameter_item_content(
 def _reject_mapping_key_value_parameter_entry(
     value: Mapping[object, object],
     key_path: str,
-    key_value_entry: tuple[str, str, str],
+    key_value_entry: MappingKeyValueParameterEntry,
 ) -> None:
-    _key_field, entry_key, value_field = key_value_entry
     item_path = _join_parameter_key_path(
         key_path,
-        _raw_key_value_parameter_entry_key(key_path, entry_key),
+        _raw_key_value_parameter_entry_key(key_path, key_value_entry.entry_key),
     )
     if _is_file_audit_parameter_container_path(key_path):
         raise ValueError(f"{item_path} must not include document or request content")
-    _reject_key_value_parameter_entry_name(entry_key, key_path, item_path)
+    _reject_key_value_parameter_entry_name(key_value_entry.entry_key, key_path, item_path)
     _reject_key_value_parameter_entry_value(
-        value[value_field],
+        value[key_value_entry.value_field],
         key_path,
         item_path,
     )
@@ -861,17 +889,16 @@ def _reject_json_encoded_audit_parameter_value(value: object, key_path: str) -> 
 
 
 def _reject_raw_key_value_parameter_entry(
-    raw_entry: tuple[str, str, str],
+    raw_entry: RawKeyValueParameterEntry,
     key_path: str,
     context: AuditParameterContext,
 ) -> None:
-    entry_key, _separator, entry_raw_value = raw_entry
-    item_path = _raw_key_value_parameter_entry_path(key_path, entry_key)
-    entry_value = _raw_key_value_parameter_entry_value(key_path, entry_raw_value)
+    item_path = _raw_key_value_parameter_entry_path(key_path, raw_entry.entry_key)
+    entry_value = _raw_key_value_parameter_entry_value(key_path, raw_entry.entry_value)
     is_safe_real_metadata_pair = (
         context.is_real_parameters_container
         and _is_safe_real_raw_query_metadata_pair(
-            _raw_key_value_parameter_entry_key(key_path, entry_key),
+            _raw_key_value_parameter_entry_key(key_path, raw_entry.entry_key),
             entry_value,
         )
     )
@@ -1452,27 +1479,33 @@ def _is_safe_audit_parameter_sequence_key(key: str) -> bool:
     return _normalize_parameter_key(_parameter_key_leaf(key)) in _SAFE_AUDIT_PARAMETER_SEQUENCE_KEYS
 
 
-def _raw_key_value_parameter_line(value: str, key_path: str) -> tuple[str, str, str] | None:
-    return raw_audit.raw_key_value_parameter_line(
+def _raw_key_value_parameter_line(value: str, key_path: str) -> RawKeyValueParameterEntry | None:
+    raw_entry = raw_audit.raw_key_value_parameter_line(
         value,
         key_path,
         _RAW_AUDIT_PARAMETER_POLICY,
     )
+    if raw_entry is None:
+        return None
+    return RawKeyValueParameterEntry.from_raw_entry(raw_entry)
 
 
 def _raw_key_value_parameter_separator(value: str) -> str | None:
     return raw_audit.raw_key_value_parameter_separator(value)
 
 
-def _raw_key_value_parameter_entries(value: str, key_path: str) -> list[tuple[str, str, str]]:
+def _raw_key_value_parameter_entries(value: str, key_path: str) -> list[RawKeyValueParameterEntry]:
     context = AuditParameterContext(key_path)
-    return raw_audit.raw_key_value_parameter_entries(
-        value,
-        key_path,
-        _RAW_AUDIT_PARAMETER_POLICY,
-        normalized_leaf=context.normalized_leaf,
-        split_query_pairs=context.is_real_parameters_container,
-    )
+    return [
+        RawKeyValueParameterEntry.from_raw_entry(raw_entry)
+        for raw_entry in raw_audit.raw_key_value_parameter_entries(
+            value,
+            key_path,
+            _RAW_AUDIT_PARAMETER_POLICY,
+            normalized_leaf=context.normalized_leaf,
+            split_query_pairs=context.is_real_parameters_container,
+        )
+    ]
 
 
 def _redact_raw_key_value_parameter_text(value: str, key_path: str) -> str | None:
@@ -1488,10 +1521,10 @@ def _redact_raw_key_value_parameter_text(value: str, key_path: str) -> str | Non
 
 
 def _redact_raw_key_value_parameter_line(
-    raw_entry: tuple[str, str, str], key_path: str
+    raw_entry: RawKeyValueParameterEntry, key_path: str
 ) -> str:
     return raw_audit.redact_raw_key_value_parameter_line(
-        raw_entry,
+        raw_entry.to_raw_entry(),
         key_path,
         _RAW_AUDIT_PARAMETER_POLICY,
         redacted_value=_REDACTED_VALUE,
@@ -1558,7 +1591,9 @@ def _is_url_value_audit_parameter_leaf(normalized_leaf: str) -> bool:
     return raw_audit.is_url_value_audit_parameter_leaf(normalized_leaf)
 
 
-def _mapping_key_value_parameter_entry(value: Mapping[object, object]) -> tuple[str, str, str] | None:
+def _mapping_key_value_parameter_entry(
+    value: Mapping[object, object],
+) -> MappingKeyValueParameterEntry | None:
     normalized_fields: dict[str, object] = {}
     for field in value:
         if isinstance(field, str):
@@ -1573,7 +1608,11 @@ def _mapping_key_value_parameter_entry(value: Mapping[object, object]) -> tuple[
             continue
         key = value.get(original_key_field)
         if isinstance(key, str):
-            return (str(original_key_field), key, str(value_field))
+            return MappingKeyValueParameterEntry(
+                key_field=str(original_key_field),
+                entry_key=key,
+                value_field=str(value_field),
+            )
     return None
 
 
