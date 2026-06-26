@@ -2290,29 +2290,52 @@ def test_web_job_list_refresh_ignores_stale_auth_token_responses() -> None:
         html,
         re.DOTALL,
     )
+    create_job_handler = re.search(
+        r"async function createConversionJob\(\) \{(?P<body>.*?)\n      \}",
+        html,
+        re.DOTALL,
+    )
 
     assert load_jobs_handler is not None
+    assert create_job_handler is not None
     load_jobs_body = load_jobs_handler.group("body")
+    create_job_body = create_job_handler.group("body")
     assert "const requestAuthToken = authToken.value.trim()" in load_jobs_body
     assert "const requestAuthGeneration = state.authGeneration" in load_jobs_body
     assert (
-        "if (!isActiveJobListRequest(requestAuthToken, requestAuthGeneration)) return;"
+        "if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;"
         in load_jobs_body
     )
     assert (
         load_jobs_body.index("const body = await response.json()")
         < load_jobs_body.index(
-            "if (!isActiveJobListRequest(requestAuthToken, requestAuthGeneration)) return;"
+            "if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;"
         )
         < load_jobs_body.index("if (!response.ok) throw")
         < load_jobs_body.index("state.jobs = body.jobs")
     )
     assert (
         load_jobs_body.rindex(
-            "if (!isActiveJobListRequest(requestAuthToken, requestAuthGeneration)) return;"
+            "if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;"
         )
         < load_jobs_body.index("setPageStatus(error.message, true)")
     )
-    assert "function isActiveJobListRequest(requestAuthToken, requestAuthGeneration)" in html
+    assert "const requestAuthToken = authToken.value.trim()" in create_job_body
+    assert "const requestAuthGeneration = state.authGeneration" in create_job_body
+    assert (
+        create_job_body.index("const body = await response.json()")
+        < create_job_body.index(
+            "if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;"
+        )
+        < create_job_body.index("if (!response.ok) throw")
+        < create_job_body.index("state.selectedJob = body.job")
+    )
+    assert (
+        create_job_body.rindex(
+            "if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;"
+        )
+        < create_job_body.index("setPageStatus(error.message, true)")
+    )
+    assert "function isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)" in html
     assert "state.authGeneration === requestAuthGeneration" in html
     assert "authToken.value.trim() === requestAuthToken" in html

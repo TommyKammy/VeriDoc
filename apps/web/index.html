@@ -755,7 +755,7 @@
         try {
           const response = await apiFetch(`/api/jobs${query}`);
           const body = await response.json();
-          if (!isActiveJobListRequest(requestAuthToken, requestAuthGeneration)) return;
+          if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
           if (!response.ok) throw new Error(body.message || body.error || "job list failed");
           state.jobs = body.jobs;
           const refreshedSelection = state.selectedJob
@@ -770,7 +770,7 @@
           }
           setPageStatus(`${body.jobs.length} job${body.jobs.length === 1 ? "" : "s"} loaded.`);
         } catch (error) {
-          if (!isActiveJobListRequest(requestAuthToken, requestAuthGeneration)) return;
+          if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
           setPageStatus(error.message, true);
         }
       }
@@ -781,6 +781,8 @@
           setPageStatus("Filename is required.", true);
           return;
         }
+        const requestAuthToken = authToken.value.trim();
+        const requestAuthGeneration = state.authGeneration;
         createJob.disabled = true;
         try {
           const response = await apiFetch("/api/jobs", {
@@ -793,12 +795,14 @@
             }),
           });
           const body = await response.json();
+          if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
           if (!response.ok) throw new Error(body.message || body.error || "job create failed");
           state.selectedJob = body.job;
           await loadJobs();
           renderDetail(body.job);
           setPageStatus(`Created ${body.job.job_id}.`);
         } catch (error) {
+          if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
           setPageStatus(error.message, true);
         } finally {
           createJob.disabled = false;
@@ -959,7 +963,7 @@
         clearReviewResult();
       }
 
-      function isActiveJobListRequest(requestAuthToken, requestAuthGeneration) {
+      function isActiveCredentialRequest(requestAuthToken, requestAuthGeneration) {
         return (
           state.authGeneration === requestAuthGeneration &&
           authToken.value.trim() === requestAuthToken
