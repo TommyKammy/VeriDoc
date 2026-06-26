@@ -36,6 +36,7 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8788
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024
 MAX_UPLOAD_REQUEST_BYTES = (MAX_UPLOAD_BYTES * 4 // 3) + 4096
+MAX_REVIEW_EVENT_REQUEST_BYTES = (MAX_UPLOAD_REQUEST_BYTES * 2) + 4096
 SOURCE_TYPES = {"pdf", "docx", "xlsx", "unknown"}
 KNOWN_SOURCE_TYPES = SOURCE_TYPES - {"unknown"}
 HTTP_CONTENT_TYPE = re.compile(
@@ -247,7 +248,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_review_event(self) -> None:
         try:
-            request = self._read_json_request()
+            request = self._read_json_request(max_request_bytes=MAX_REVIEW_EVENT_REQUEST_BYTES)
             accepted_event = _validate_review_event(request.get("audit_event"))
         except ValueError as exc:
             if str(exc) == "content_length_required":
@@ -288,12 +289,12 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(download["content"])
 
-    def _read_json_request(self) -> dict[str, Any]:
+    def _read_json_request(self, *, max_request_bytes: int = MAX_UPLOAD_REQUEST_BYTES) -> dict[str, Any]:
         length = self.headers.get("Content-Length")
         if length is None or not length.isdigit():
             raise ValueError("content_length_required")
         byte_count = int(length)
-        if byte_count > MAX_UPLOAD_REQUEST_BYTES:
+        if byte_count > max_request_bytes:
             raise ValueError("upload_too_large")
         request = json.loads(self.rfile.read(byte_count).decode("utf-8"))
         if not isinstance(request, dict):

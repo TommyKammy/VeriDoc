@@ -775,6 +775,27 @@ def test_poc_http_api_accepts_review_action_without_source_bbox() -> None:
     assert body["audit_event"]["source_bbox"] is None
 
 
+def test_poc_http_api_accepts_large_review_edit_event_above_upload_request_cap() -> None:
+    original_text = "A" * (poc_web.MAX_UPLOAD_REQUEST_BYTES // 2)
+    revised_text = "B" * (poc_web.MAX_UPLOAD_REQUEST_BYTES // 2)
+    audit_event = _review_audit_event(
+        action="edit",
+        source_bbox=None,
+        original_text=original_text,
+        revised_text=revised_text,
+    )
+    payload_size = len(json.dumps({"audit_event": audit_event}).encode("utf-8"))
+
+    assert payload_size > poc_web.MAX_UPLOAD_REQUEST_BYTES
+    assert payload_size < poc_web.MAX_REVIEW_EVENT_REQUEST_BYTES
+
+    status, body = _post_review_audit_event(audit_event)
+
+    assert status == 202
+    assert body["audit_event"]["original_text"] == original_text
+    assert body["audit_event"]["revised_text"] == revised_text
+
+
 def _review_audit_event(**overrides: object) -> dict[str, object]:
     event: dict[str, object] = {
         "event_type": "conversion_review.action_requested",
