@@ -1,5 +1,6 @@
 import base64
 import json
+import re
 from http.client import HTTPConnection
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -681,6 +682,12 @@ def test_poc_http_api_lists_conversion_jobs_filtered_by_status() -> None:
     ]
     assert mismatched_response.status == 400
     assert mismatched_body["error"] == "invalid_job_event"
+    next_job = server.job_queue.start_next_job()
+    retried_job = server.job_queue.start_next_job()
+    assert next_job is not None
+    assert next_job.job_id == queued_job.job_id
+    assert retried_job is not None
+    assert retried_job.job_id == failed_job.job_id
 
 
 def test_poc_http_api_sanitizes_succeeded_job_result_and_downloads_result() -> None:
@@ -1127,3 +1134,35 @@ def test_web_upload_preserves_file_bytes() -> None:
     assert "file.arrayBuffer()" in html
     assert "content_base64" in html
     assert "file.text()" not in html
+
+
+def test_web_job_detail_actions_perform_download_and_retry_side_effects() -> None:
+    html = Path("apps/web/index.html").read_text(encoding="utf-8")
+
+    action_handler = re.search(
+        r"async function sendJobAction\(actionName\) \{(?P<body>.*?)\n      \}",
+        html,
+        re.DOTALL,
+    )
+    download_handler = re.search(
+        r"async function downloadJobResult\(job\) \{(?P<body>.*?)\n      \}",
+        html,
+        re.DOTALL,
+    )
+
+    assert action_handler is not None
+    assert download_handler is not None
+    action_body = action_handler.group("body")
+    download_body = download_handler.group("body")
+
+    assert 'detailDownload.addEventListener("click", () => sendJobAction("download_result"))' in html
+    assert 'detailRetry.addEventListener("click", () => sendJobAction("retry_conversion"))' in html
+    assert 'actionName === "download_result"' in action_body
+    assert "await downloadJobResult(job)" in action_body
+    assert 'actionName === "retry_conversion" && body.job' in action_body
+    assert "await loadJobs()" in action_body
+    assert "renderDetail(body.job)" in action_body
+    assert 'fetch(`/api/jobs/${encodeURIComponent(job.job_id)}/result`)' in download_body
+    assert "await response.blob()" in download_body
+    assert "URL.createObjectURL(blob)" in download_body
+    assert "link.click()" in download_body
