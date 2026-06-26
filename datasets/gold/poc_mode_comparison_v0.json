@@ -31,6 +31,17 @@
           "requires_review": true,
           "auto_confirmed": false,
           "status": "requires_review"
+        },
+        {
+          "id": "no-llm-review-required",
+          "fixture_id": "sample-document-ir-v0",
+          "label_id": "requires_human_review",
+          "risk_level": "high",
+          "expected_value": true,
+          "actual_value": true,
+          "requires_review": true,
+          "auto_confirmed": false,
+          "status": "requires_review"
         }
       ]
     },
@@ -53,6 +64,17 @@
           "requires_review": true,
           "auto_confirmed": false,
           "status": "requires_review"
+        },
+        {
+          "id": "standard-review-required",
+          "fixture_id": "sample-document-ir-v0",
+          "label_id": "requires_human_review",
+          "risk_level": "high",
+          "expected_value": true,
+          "actual_value": true,
+          "requires_review": true,
+          "auto_confirmed": false,
+          "status": "requires_review"
         }
       ]
     },
@@ -72,6 +94,17 @@
           "risk_level": "high",
           "expected_value": "SAMPLE-LOT-001",
           "actual_value": "SAMPLE-LOT-001",
+          "requires_review": true,
+          "auto_confirmed": false,
+          "status": "requires_review"
+        },
+        {
+          "id": "high-quality-review-required",
+          "fixture_id": "sample-document-ir-v0",
+          "label_id": "requires_human_review",
+          "risk_level": "high",
+          "expected_value": true,
+          "actual_value": true,
           "requires_review": true,
           "auto_confirmed": false,
           "status": "requires_review"

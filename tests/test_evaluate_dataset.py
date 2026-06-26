@@ -139,6 +139,7 @@ class EvaluateDatasetTest(unittest.TestCase):
         high_quality = metrics.as_dict()["modes"][2]
         self.assertEqual(1.0, high_quality["cell_match_rate"])
         self.assertEqual(1.0, high_quality["source_linkage_rate"])
+        self.assertEqual(2, high_quality["requires_review_count"])
 
     def test_poc_mode_comparison_rejects_missing_required_mode_before_scoring(self) -> None:
         data = self.valid_poc_comparison_data()
@@ -147,11 +148,39 @@ class EvaluateDatasetTest(unittest.TestCase):
         with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "exactly no_llm"):
             evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
 
+    def test_poc_mode_comparison_rejects_missing_dataset_manifest_before_scoring(self) -> None:
+        data = self.valid_poc_comparison_data()
+        data.pop("dataset_manifest")
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "dataset_manifest"):
+            evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
+    def test_poc_mode_comparison_rejects_missing_high_risk_label_coverage(self) -> None:
+        data = self.valid_poc_comparison_data()
+        data["modes"][0]["high_risk_items"] = data["modes"][0]["high_risk_items"][:1]
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "cover all"):
+            evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
     def test_poc_mode_comparison_rejects_high_risk_label_drift_before_scoring(self) -> None:
         data = self.valid_poc_comparison_data()
         data["modes"][0]["high_risk_items"][0]["expected_value"] = "SAMPLE-LOT-999"
 
         with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "high-risk labels"):
+            evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
+    def test_poc_mode_comparison_rejects_missing_actual_high_risk_value(self) -> None:
+        data = self.valid_poc_comparison_data()
+        del data["modes"][0]["high_risk_items"][0]["actual_value"]
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "actual_value"):
+            evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
+    def test_poc_mode_comparison_rejects_confirmed_actual_high_risk_mismatch(self) -> None:
+        data = self.valid_poc_comparison_data()
+        data["modes"][0]["high_risk_items"][0]["status"] = "confirmed"
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "requires_review status"):
             evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
 
     def test_poc_mode_comparison_counts_high_risk_auto_confirmation_failures(self) -> None:

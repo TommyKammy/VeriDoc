@@ -896,6 +896,19 @@ def validate_poc_high_risk_item_against_label(
         raise EvaluationCaseError(f"{context}.requires_review must match high-risk labels")
     if item.get("expected_value") != label.get("expected_value"):
         raise EvaluationCaseError(f"{context}.expected_value must match high-risk labels")
+    if "actual_value" not in item:
+        raise EvaluationCaseError(f"{context}.actual_value must be present")
+    expected_value = label.get("expected_value")
+    actual_value = item.get("actual_value")
+    if type(actual_value) is not type(expected_value):
+        raise EvaluationCaseError(f"{context}.actual_value must match high-risk label value type")
+    status = item.get("status")
+    if not isinstance(status, str) or not status:
+        raise EvaluationCaseError(f"{context}.status must be a non-empty string")
+    if actual_value != expected_value and status != "requires_review":
+        raise EvaluationCaseError(
+            f"{context}.actual_value mismatch must stay in requires_review status"
+        )
 
 
 def evaluate_poc_mode_comparison(
@@ -907,7 +920,15 @@ def evaluate_poc_mode_comparison(
         )
     validate_scope(data)
     root = repo_root or Path.cwd()
+    fixture_paths = fixture_paths_from_manifest(
+        load_json(manifest_path_from_cases(data, root)), root
+    )
     labels = high_risk_label_index(load_json(high_risk_labels_path_from_comparison(data, root)))
+    missing_fixture_ids = sorted({fixture_id for fixture_id, _ in labels} - set(fixture_paths))
+    if missing_fixture_ids:
+        raise EvaluationCaseError(
+            f"high-risk labels reference fixtures missing from dataset_manifest: {missing_fixture_ids!r}"
+        )
 
     acceptance_targets = data.get("acceptance_targets")
     if not isinstance(acceptance_targets, dict):
@@ -944,6 +965,7 @@ def evaluate_poc_mode_comparison(
         if not isinstance(high_risk_items, list) or not high_risk_items:
             raise EvaluationCaseError(f"{context}.high_risk_items must list high-risk checks")
 
+        mode_label_keys: set[tuple[str, str]] = set()
         requires_review_count = 0
         high_risk_false_auto_confirmed_count = 0
         for item_index, item in enumerate(high_risk_items):
@@ -951,6 +973,12 @@ def evaluate_poc_mode_comparison(
             if not isinstance(item, dict):
                 raise EvaluationCaseError(f"{item_context} must be an object")
             validate_poc_high_risk_item_against_label(item, labels, item_context)
+            label_key = (item["fixture_id"], item["label_id"])
+            if label_key in mode_label_keys:
+                raise EvaluationCaseError(
+                    f"{context}.high_risk_items has duplicate label {label_key!r}"
+                )
+            mode_label_keys.add(label_key)
             if item.get("risk_level") != "high":
                 raise EvaluationCaseError(f"{item_context}.risk_level must be high")
             if item.get("requires_review") is not True:
@@ -961,6 +989,11 @@ def evaluate_poc_mode_comparison(
             requires_review_count += 1
             if auto_confirmed:
                 high_risk_false_auto_confirmed_count += 1
+
+        if mode_label_keys != set(labels):
+            raise EvaluationCaseError(
+                f"{context}.high_risk_items must cover all authoritative high-risk labels"
+            )
 
         total_high_risk_false_auto_confirmed += high_risk_false_auto_confirmed_count
         mode_metrics.append(
