@@ -1014,6 +1014,40 @@ def test_poc_http_api_authenticates_review_events_before_parsing_payload() -> No
     assert store.list_events() == []
 
 
+def test_poc_http_api_rejects_read_only_review_role_before_parsing_payload() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    store = ReviewAuditEventStore()
+    server.review_event_store = store
+    server.local_auth_tokens = _local_auth_tokens()
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = b"{not valid json"
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/review-events",
+            body=payload,
+            headers={
+                "Authorization": "Bearer viewer-token",
+                "Content-Type": "application/json",
+                "Content-Length": str(len(payload)),
+            },
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 403
+    assert body == {
+        "error": "forbidden",
+        "message": "role viewer cannot perform review_edit",
+    }
+    assert store.list_events() == []
+
+
 def test_poc_http_api_rejects_viewer_review_edit() -> None:
     audit_event = _review_audit_event()
 
@@ -1620,6 +1654,8 @@ def test_bundled_web_ui_plumbs_local_auth_token_into_api_fetches() -> None:
     assert "AUTH_TOKEN_SESSION_STORAGE_KEY" in html
     assert "sessionStorage.setItem(AUTH_TOKEN_SESSION_STORAGE_KEY, token)" in html
     assert "sessionStorage.getItem(AUTH_TOKEN_SESSION_STORAGE_KEY)" in html
+    assert "function activeAuthToken()" in html
+    assert "const token = activeAuthToken();" in html
     assert "localStorage" not in html
     assert "function apiFetch" in html
     assert "headers.Authorization = `Bearer ${token}`" in html
@@ -1673,6 +1709,7 @@ def test_bundled_web_ui_clears_credential_bound_state_when_auth_token_changes() 
     assert clear_body.index("clearCredentialBoundState()") < clear_body.index("loadJobs()")
     assert "state.authGeneration += 1" in credential_clear_body
     assert "state.directConversionToken += 1" in credential_clear_body
+    assert "button.disabled = false" in credential_clear_body
     assert "clearJobState()" in credential_clear_body
     assert "clearSourcePreview()" in credential_clear_body
     assert "clearReviewResult()" in credential_clear_body
@@ -1719,7 +1756,8 @@ def test_bundled_web_ui_guards_credential_bound_job_responses() -> None:
         "if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;",
         create_job_body.index("await loadJobs();"),
     ) < create_job_body.index("renderDetail(body.job);", create_job_body.index("await loadJobs();"))
-    assert "const requestAuthToken = authToken.value.trim();" in load_detail_body
+    assert "const requestAuthToken = activeAuthToken();" in create_job_body
+    assert "const requestAuthToken = activeAuthToken();" in load_detail_body
     assert load_detail_body.index("const body = await response.json();") < load_detail_body.index(
         "if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;"
     ) < load_detail_body.index("renderDetail(body.job);")
@@ -2355,7 +2393,7 @@ def test_web_job_list_refresh_ignores_stale_auth_token_responses() -> None:
     assert create_job_handler is not None
     load_jobs_body = load_jobs_handler.group("body")
     create_job_body = create_job_handler.group("body")
-    assert "const requestAuthToken = authToken.value.trim()" in load_jobs_body
+    assert "const requestAuthToken = activeAuthToken()" in load_jobs_body
     assert "const requestAuthGeneration = state.authGeneration" in load_jobs_body
     assert (
         "if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;"
@@ -2375,7 +2413,7 @@ def test_web_job_list_refresh_ignores_stale_auth_token_responses() -> None:
         )
         < load_jobs_body.index("setPageStatus(error.message, true)")
     )
-    assert "const requestAuthToken = authToken.value.trim()" in create_job_body
+    assert "const requestAuthToken = activeAuthToken()" in create_job_body
     assert "const requestAuthGeneration = state.authGeneration" in create_job_body
     assert (
         create_job_body.index("const body = await response.json()")
@@ -2393,4 +2431,4 @@ def test_web_job_list_refresh_ignores_stale_auth_token_responses() -> None:
     )
     assert "function isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)" in html
     assert "state.authGeneration === requestAuthGeneration" in html
-    assert "authToken.value.trim() === requestAuthToken" in html
+    assert "activeAuthToken() === requestAuthToken" in html

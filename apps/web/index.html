@@ -667,7 +667,7 @@
       const bboxLayer = document.querySelector("#bbox-layer");
       const bboxInvalid = document.querySelector("#bbox-invalid");
 
-      authToken.value = sessionStorage.getItem(AUTH_TOKEN_SESSION_STORAGE_KEY) || "";
+      authToken.value = activeAuthToken();
       saveAuthToken.addEventListener("click", () => {
         const token = authToken.value.trim();
         clearCredentialBoundState();
@@ -749,7 +749,7 @@
       async function loadJobs() {
         const filter = statusFilter.value;
         const query = filter ? `?status=${encodeURIComponent(filter)}` : "";
-        const requestAuthToken = authToken.value.trim();
+        const requestAuthToken = activeAuthToken();
         const requestAuthGeneration = state.authGeneration;
         setPageStatus("Loading jobs...");
         try {
@@ -781,7 +781,7 @@
           setPageStatus("Filename is required.", true);
           return;
         }
-        const requestAuthToken = authToken.value.trim();
+        const requestAuthToken = activeAuthToken();
         const requestAuthGeneration = state.authGeneration;
         createJob.disabled = true;
         try {
@@ -811,7 +811,7 @@
       }
 
       async function loadJobDetail(jobId) {
-        const requestAuthToken = authToken.value.trim();
+        const requestAuthToken = activeAuthToken();
         const requestAuthGeneration = state.authGeneration;
         setPageStatus("Loading job detail...");
         try {
@@ -829,7 +829,7 @@
 
       async function sendJobAction(
         actionName,
-        requestAuthToken = authToken.value.trim(),
+        requestAuthToken = activeAuthToken(),
         requestAuthGeneration = state.authGeneration
       ) {
         const job = state.selectedJob;
@@ -851,7 +851,7 @@
       }
 
       async function downloadSelectedJobResult() {
-        const requestAuthToken = authToken.value.trim();
+        const requestAuthToken = activeAuthToken();
         const requestAuthGeneration = state.authGeneration;
         try {
           const accepted = await sendJobAction(
@@ -875,7 +875,7 @@
       }
 
       async function retrySelectedConversion() {
-        const requestAuthToken = authToken.value.trim();
+        const requestAuthToken = activeAuthToken();
         const requestAuthGeneration = state.authGeneration;
         try {
           const accepted = await sendJobAction(
@@ -902,7 +902,7 @@
 
       async function downloadJobResult(
         job,
-        requestAuthToken = authToken.value.trim(),
+        requestAuthToken = activeAuthToken(),
         requestAuthGeneration = state.authGeneration
       ) {
         const response = await apiFetch(`/api/jobs/${encodeURIComponent(job.job_id)}/result`);
@@ -999,6 +999,7 @@
       function clearCredentialBoundState() {
         state.authGeneration += 1;
         state.directConversionToken += 1;
+        button.disabled = false;
         clearJobState();
         clearSourcePreview();
         clearReviewResult();
@@ -1007,8 +1008,12 @@
       function isActiveCredentialRequest(requestAuthToken, requestAuthGeneration) {
         return (
           state.authGeneration === requestAuthGeneration &&
-          authToken.value.trim() === requestAuthToken
+          activeAuthToken() === requestAuthToken
         );
+      }
+
+      function activeAuthToken() {
+        return sessionStorage.getItem(AUTH_TOKEN_SESSION_STORAGE_KEY) || "";
       }
 
       function findAction(job, actionName) {
@@ -1567,7 +1572,7 @@
       }
 
       function apiFetch(url, options = {}) {
-        const token = authToken.value.trim();
+        const token = activeAuthToken();
         const headers = { ...(options.headers || {}) };
         if (token) headers.Authorization = `Bearer ${token}`;
         return fetch(url, { ...options, headers });

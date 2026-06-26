@@ -336,6 +336,8 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
         authenticated, role = self._authenticated_role()
         if not authenticated:
             return
+        if not self._role_has_permission(role, "review_events:edit"):
+            return
         try:
             request = self._read_json_request(max_request_bytes=MAX_REVIEW_EVENT_REQUEST_BYTES)
             raw_audit_event = request.get("audit_event")
