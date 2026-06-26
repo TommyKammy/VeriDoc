@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import is_dataclass
 from decimal import Decimal
 from pathlib import Path
 
@@ -81,6 +82,27 @@ def test_sanitize_audit_parameters_rejects_pathlike_content_url_after_decoding()
 def test_sanitize_audit_parameters_rejects_unsupported_non_json_metadata_values() -> None:
     with pytest.raises(TypeError, match=r"parameters\.metadata\.opaque"):
         sanitize_audit_parameters({"metadata": {"opaque": object()}})
+
+
+def test_audit_key_value_helpers_return_named_entries() -> None:
+    mapping_entry = audit_parameters._mapping_key_value_parameter_entry(
+        {"Name": "Authorization", "Value": "Bearer operator-runtime-token"}
+    )
+    raw_entries = audit_parameters._raw_key_value_parameter_entries(
+        "api_key=operator-runtime-key", "parameters.queryParameters"
+    )
+
+    assert is_dataclass(mapping_entry)
+    assert mapping_entry.key_field == "Name"
+    assert mapping_entry.entry_key == "Authorization"
+    assert mapping_entry.value_field == "Value"
+
+    assert len(raw_entries) == 1
+    raw_entry = raw_entries[0]
+    assert is_dataclass(raw_entry)
+    assert raw_entry.entry_key == "api_key"
+    assert raw_entry.separator == "="
+    assert raw_entry.entry_value == "operator-runtime-key"
 
 
 @pytest.mark.parametrize(
