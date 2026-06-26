@@ -545,9 +545,11 @@
         pdfDocumentPromise: null,
         pdfJsPromise: null,
         pdfRenderToken: 0,
+        directConversionToken: 0,
         latestResult: null,
         previewPage: 1,
         reviewAuditEvents: [],
+        pendingReviewActions: new Set(),
       };
 
       const PDFJS_MODULE_URL = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.min.mjs";
@@ -602,6 +604,8 @@
       detailDownload.addEventListener("click", () => downloadSelectedJobResult());
       detailRetry.addEventListener("click", () => retrySelectedConversion());
       input.addEventListener("change", () => {
+        state.directConversionToken += 1;
+        button.disabled = false;
         clearSourcePreview();
         clearReviewResult();
       });
@@ -613,9 +617,12 @@
       button.addEventListener("click", async () => {
         const file = input.files[0];
         if (!file) return;
+        const conversionToken = state.directConversionToken + 1;
+        state.directConversionToken = conversionToken;
         button.disabled = true;
         try {
           const fileBytes = await file.arrayBuffer();
+          if (!isActiveDirectConversion(conversionToken)) return;
           setSourcePreview(file, fileBytes);
           const contentBase64 = arrayBufferToBase64(fileBytes);
           const response = await fetch("/api/convert", {
@@ -624,10 +631,12 @@
             body: JSON.stringify({ filename: file.name, content_base64: contentBase64 }),
           });
           const result = await response.json();
+          if (!isActiveDirectConversion(conversionToken)) return;
           if (!response.ok) throw new Error(result.message || result.error || "convert failed");
           renderResult(result);
           setPageStatus("Direct conversion finished.");
         } catch (error) {
+          if (!isActiveDirectConversion(conversionToken)) return;
           status.textContent = `blocked: ${error.message}`;
           reviewList.replaceChildren();
           clearDownload();
@@ -636,9 +645,15 @@
           rawPanel.hidden = true;
           setPageStatus(error.message, true);
         } finally {
-          button.disabled = false;
+          if (isActiveDirectConversion(conversionToken)) {
+            button.disabled = false;
+          }
         }
       });
+
+      function isActiveDirectConversion(conversionToken) {
+        return state.directConversionToken === conversionToken;
+      }
 
       async function loadJobs() {
         const filter = statusFilter.value;
@@ -936,6 +951,7 @@
         clearPreview();
         reviewList.replaceChildren();
         state.reviewAuditEvents = [];
+        state.pendingReviewActions.clear();
         reviewActionStatus.textContent = "";
         status.textContent = "";
         status.className = "status";
@@ -1154,18 +1170,20 @@
         jump.className = "secondary";
         jump.type = "button";
         jump.textContent = "Jump to bbox";
-        jump.disabled = !item.source_bbox;
+        jump.disabled = !reviewAuditSourceBbox(item);
         jump.addEventListener("click", () => jumpToReviewItem(item));
         const approve = document.createElement("button");
         approve.type = "button";
         approve.textContent = "Approve";
-        approve.disabled = !reviewAuditSourcePage(item);
+        approve.dataset.reviewActionKey = reviewActionKey(item, "approve");
+        approve.disabled = !reviewActionAvailable(item);
         approve.addEventListener("click", () => requestReviewAction(item, "approve"));
         const requestEdit = document.createElement("button");
         requestEdit.className = "secondary";
         requestEdit.type = "button";
         requestEdit.textContent = "Save edit";
-        requestEdit.disabled = !reviewAuditSourcePage(item);
+        requestEdit.dataset.reviewActionKey = reviewActionKey(item, "edit");
+        requestEdit.disabled = !reviewActionAvailable(item);
         requestEdit.addEventListener("click", () => requestReviewAction(item, "edit"));
         const actions = document.createElement("div");
         actions.className = "review-actions";
@@ -1193,11 +1211,52 @@
       }
 
       function reviewAuditSourcePage(item) {
-        return Number.isInteger(item.source_page) && item.source_page >= 1 ? item.source_page : null;
+        if (!Number.isInteger(item.source_page) || item.source_page < 1) return null;
+        return reviewSourcePages().has(item.source_page) ? item.source_page : null;
       }
 
       function reviewAuditSourceBbox(item) {
+        if (!reviewAuditSourcePage(item)) return null;
         return validBbox(item.source_bbox, item.source_page_geometry) ? item.source_bbox : null;
+      }
+
+      function reviewSourcePages() {
+        const pages = state.latestResult?.document_ir?.pages || [];
+        return new Set(
+          pages
+            .map((page) => page.page_number)
+            .filter((pageNumber) => Number.isInteger(pageNumber) && pageNumber >= 1)
+        );
+      }
+
+      function reviewActionBlockReason(item) {
+        if (!state.latestResult || !(state.latestResult.review_items || []).includes(item)) {
+          return "Review result is no longer active.";
+        }
+        if (state.latestResult.status === "blocked") {
+          return "Review actions are disabled for blocked conversions.";
+        }
+        if (!reviewAuditSourcePage(item)) {
+          return "Review item source page is invalid.";
+        }
+        return "";
+      }
+
+      function reviewActionAvailable(item) {
+        return !reviewActionBlockReason(item);
+      }
+
+      function reviewActionKey(item, action) {
+        return `${item.document_id}:${item.block_id}:${action}`;
+      }
+
+      function setReviewActionPending(item, action, isPending) {
+        const control = reviewList.querySelector(
+          `[data-review-action-key="${CSS.escape(reviewActionKey(item, action))}"]`
+        );
+        if (control) {
+          control.disabled = isPending || !reviewActionAvailable(item);
+        }
       }
 
       function reviewDraftText(item) {
@@ -1208,13 +1267,15 @@
       }
 
       async function requestReviewAction(item, action) {
+        const actionKey = reviewActionKey(item, action);
+        let actionStarted = false;
         try {
-          if (!state.latestResult || !(state.latestResult.review_items || []).includes(item)) {
-            throw new Error("Review result is no longer active.");
-          }
-          if (!reviewAuditSourcePage(item)) {
-            throw new Error("Review item source page is invalid.");
-          }
+          const blockReason = reviewActionBlockReason(item);
+          if (blockReason) throw new Error(blockReason);
+          if (state.pendingReviewActions.has(actionKey)) return;
+          state.pendingReviewActions.add(actionKey);
+          actionStarted = true;
+          setReviewActionPending(item, action, true);
           const auditEvent = buildReviewAuditEvent(item, action);
           const response = await fetch("/api/review-events", {
             method: "POST",
@@ -1234,6 +1295,8 @@
           if (!body.audit_event) {
             throw new Error("Review action response did not include an audit event.");
           }
+          const postResponseBlockReason = reviewActionBlockReason(item);
+          if (postResponseBlockReason) throw new Error(postResponseBlockReason);
           state.reviewAuditEvents.push(body.audit_event);
           reviewActionStatus.textContent = "Review action event queued for audit.";
           reviewActionStatus.className = "page-status";
@@ -1241,6 +1304,10 @@
           reviewActionStatus.textContent =
             error instanceof Error && error.message ? error.message : "Review action failed.";
           reviewActionStatus.className = "page-status error";
+        } finally {
+          if (actionStarted && state.pendingReviewActions.delete(actionKey)) {
+            setReviewActionPending(item, action, false);
+          }
         }
       }
 

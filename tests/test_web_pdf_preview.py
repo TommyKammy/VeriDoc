@@ -64,12 +64,19 @@ def test_review_item_exposes_edit_and_approve_audit_events() -> None:
     assert "source_page: reviewAuditSourcePage(item)" in html
     assert "function reviewAuditSourcePage(item)" in html
     assert "Number.isInteger(item.source_page)" in html
-    assert "item.source_page >= 1" in html
-    assert "approve.disabled = !reviewAuditSourcePage(item)" in html
-    assert "requestEdit.disabled = !reviewAuditSourcePage(item)" in html
+    assert "item.source_page < 1" in html
+    assert "function reviewSourcePages()" in html
+    assert "reviewSourcePages().has(item.source_page)" in html
+    assert "function reviewActionBlockReason(item)" in html
+    assert 'state.latestResult.status === "blocked"' in html
+    assert "Review actions are disabled for blocked conversions." in html
+    assert "approve.disabled = !reviewActionAvailable(item)" in html
+    assert "requestEdit.disabled = !reviewActionAvailable(item)" in html
     assert "source_bbox: reviewAuditSourceBbox(item)" in html
     assert "function reviewAuditSourceBbox(item)" in html
+    assert "if (!reviewAuditSourcePage(item)) return null;" in html
     assert "validBbox(item.source_bbox, item.source_page_geometry)" in html
+    assert "jump.disabled = !reviewAuditSourceBbox(item)" in html
     assert "event.revised_text = revisedText" in html
     assert "function requestReviewAction(item, action)" in html
     assert "try {" in html
@@ -86,6 +93,10 @@ def test_review_actions_clear_and_reject_stale_file_selection() -> None:
     html = _web_html()
 
     assert 'input.addEventListener("change", () => {' in html
+    assert "state.directConversionToken += 1;" in html
+    assert "button.disabled = false;" in html
+    assert "function isActiveDirectConversion(conversionToken)" in html
+    assert "if (!isActiveDirectConversion(conversionToken)) return;" in html
     assert "clearReviewResult();" in html
     assert "function clearReviewResult()" in html
     assert "reviewList.replaceChildren();" in html
@@ -94,6 +105,22 @@ def test_review_actions_clear_and_reject_stale_file_selection() -> None:
     assert "rawPanel.hidden = true;" in html
     assert "!(state.latestResult.review_items || []).includes(item)" in html
     assert "Review result is no longer active." in html
+    assert "state.pendingReviewActions.clear();" in html
+    assert "const postResponseBlockReason = reviewActionBlockReason(item)" in html
+
+
+def test_review_actions_are_serialized_while_audit_request_is_pending() -> None:
+    html = _web_html()
+
+    assert "pendingReviewActions: new Set()" in html
+    assert "function reviewActionKey(item, action)" in html
+    assert "function setReviewActionPending(item, action, isPending)" in html
+    assert "state.pendingReviewActions.has(actionKey)" in html
+    assert "state.pendingReviewActions.add(actionKey)" in html
+    assert "actionStarted = true" in html
+    assert "setReviewActionPending(item, action, true)" in html
+    assert "actionStarted && state.pendingReviewActions.delete(actionKey)" in html
+    assert "setReviewActionPending(item, action, false)" in html
 
 
 def test_pdf_preview_uses_canvas_coordinate_space_for_overlays() -> None:
