@@ -1651,11 +1651,13 @@ def test_bundled_web_ui_plumbs_local_auth_token_into_api_fetches() -> None:
     html = (Path(__file__).resolve().parents[1] / "apps" / "web" / "index.html").read_text()
 
     assert 'id="auth-token"' in html
-    assert "AUTH_TOKEN_SESSION_STORAGE_KEY" in html
-    assert "sessionStorage.setItem(AUTH_TOKEN_SESSION_STORAGE_KEY, token)" in html
-    assert "sessionStorage.getItem(AUTH_TOKEN_SESSION_STORAGE_KEY)" in html
+    assert 'let savedAuthToken = "";' in html
+    assert "savedAuthToken = token" in html
+    assert "savedAuthToken = \"\"" in html
     assert "function activeAuthToken()" in html
+    assert "return savedAuthToken;" in html
     assert "const token = activeAuthToken();" in html
+    assert "sessionStorage" not in html
     assert "localStorage" not in html
     assert "function apiFetch" in html
     assert "headers.Authorization = `Bearer ${token}`" in html
@@ -1704,8 +1706,13 @@ def test_bundled_web_ui_clears_credential_bound_state_when_auth_token_changes() 
     credential_clear_body = credential_clear.group("body")
     review_clear_body = review_clear.group("body")
     preview_clear_body = preview_clear.group("body")
-    assert save_body.index("clearCredentialBoundState()") < save_body.index("sessionStorage.setItem")
-    assert clear_body.index("sessionStorage.removeItem") < clear_body.index("clearCredentialBoundState()")
+    assert save_body.index("clearCredentialBoundState()") < save_body.index(
+        "savedAuthToken = token"
+    )
+    assert save_body.index("savedAuthToken = token") < save_body.index("authToken.value = \"\"")
+    assert clear_body.index("savedAuthToken = \"\"") < clear_body.index(
+        "clearCredentialBoundState()"
+    )
     assert clear_body.index("clearCredentialBoundState()") < clear_body.index("loadJobs()")
     assert "state.authGeneration += 1" in credential_clear_body
     assert "state.directConversionToken += 1" in credential_clear_body

@@ -618,7 +618,7 @@
         authGeneration: 0,
       };
 
-      const AUTH_TOKEN_SESSION_STORAGE_KEY = "veridoc.sessionAuthToken";
+      let savedAuthToken = "";
       const PDFJS_MODULE_URL = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.min.mjs";
       const PDFJS_WORKER_URL = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs";
 
@@ -671,18 +671,18 @@
       saveAuthToken.addEventListener("click", () => {
         const token = authToken.value.trim();
         clearCredentialBoundState();
+        savedAuthToken = token;
+        authToken.value = "";
         if (token) {
-          sessionStorage.setItem(AUTH_TOKEN_SESSION_STORAGE_KEY, token);
           setPageStatus("API token saved.");
         } else {
-          sessionStorage.removeItem(AUTH_TOKEN_SESSION_STORAGE_KEY);
           setPageStatus("API token cleared.");
         }
         loadJobs();
       });
       clearAuthToken.addEventListener("click", () => {
+        savedAuthToken = "";
         authToken.value = "";
-        sessionStorage.removeItem(AUTH_TOKEN_SESSION_STORAGE_KEY);
         clearCredentialBoundState();
         setPageStatus("API token cleared.");
         loadJobs();
@@ -1013,7 +1013,7 @@
       }
 
       function activeAuthToken() {
-        return sessionStorage.getItem(AUTH_TOKEN_SESSION_STORAGE_KEY) || "";
+        return savedAuthToken;
       }
 
       function findAction(job, actionName) {
