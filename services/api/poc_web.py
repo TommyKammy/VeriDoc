@@ -8,6 +8,7 @@ import base64
 import binascii
 import json
 import math
+import os
 from pathlib import Path
 import re
 import sys
@@ -48,6 +49,38 @@ MAX_REVIEW_EVENT_TEXT_BYTES = 8 * 1024 * 1024
 MAX_REVIEW_EVENT_REQUEST_BYTES = (MAX_REVIEW_EVENT_TEXT_BYTES * 4) + (64 * 1024)
 SOURCE_TYPES = {"pdf", "docx", "xlsx", "unknown"}
 KNOWN_SOURCE_TYPES = SOURCE_TYPES - {"unknown"}
+LOCAL_AUTH_TOKENS_ENV = "VERIDOC_LOCAL_AUTH_TOKENS"
+ROLES = {"viewer", "reviewer", "approver", "admin"}
+ROLE_PERMISSIONS = {
+    "viewer": {
+        "jobs:read",
+        "review_events:read",
+    },
+    "reviewer": {
+        "convert",
+        "jobs:create",
+        "jobs:read",
+        "review_events:edit",
+        "review_events:read",
+    },
+    "approver": {
+        "convert",
+        "jobs:create",
+        "jobs:read",
+        "review_events:approve",
+        "review_events:edit",
+        "review_events:read",
+    },
+    "admin": {
+        "convert",
+        "jobs:create",
+        "jobs:read",
+        "jobs:retry",
+        "review_events:approve",
+        "review_events:edit",
+        "review_events:read",
+    },
+}
 HTTP_CONTENT_TYPE = re.compile(
     r"^[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+"
     r"(?:[ \t]*;[ \t]*[A-Za-z0-9!#$&^_.+-]+=[A-Za-z0-9!#$&^_.+-]+)*$"
@@ -135,12 +168,18 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             self._send_file(WEB_ROOT / "index.html", "text/html; charset=utf-8")
             return
         if path == "/api/jobs":
+            if not self._require_permission("jobs:read"):
+                return
             self._handle_list_jobs(parsed_url.query)
             return
         if path == "/api/review-events":
+            if not self._require_permission("review_events:read"):
+                return
             self._handle_list_review_events()
             return
         if path.startswith("/api/jobs/"):
+            if not self._require_permission("jobs:read"):
+                return
             job_path = path.removeprefix("/api/jobs/")
             if job_path.endswith("/result"):
                 self._handle_job_result_download(job_path.removesuffix("/result"))
@@ -159,6 +198,8 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         path = urlsplit(self.path).path
         if path == "/api/jobs":
+            if not self._require_permission("jobs:create"):
+                return
             self._handle_create_job()
             return
         if path == "/api/job-events":
@@ -169,6 +210,8 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             return
         if path != "/api/convert":
             self._send_json({"error": "not_found"}, status=404)
+            return
+        if not self._require_permission("convert"):
             return
         try:
             request = self._read_json_request()
@@ -248,6 +291,9 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             request = self._read_json_request()
             job_id = str(request.get("job_id") or "")
             action = str(request.get("action") or "")
+            permission = "jobs:retry" if action == "retry_conversion" else "jobs:read"
+            if not self._require_permission(permission):
+                return
             audit_event = request.get("audit_event")
             job_queue = self._job_queue()
             job = job_queue.get_job(job_id)
@@ -282,7 +328,16 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
     def _handle_review_event(self) -> None:
         try:
             request = self._read_json_request(max_request_bytes=MAX_REVIEW_EVENT_REQUEST_BYTES)
-            accepted_event = _validate_review_event(request.get("audit_event"))
+            raw_audit_event = request.get("audit_event")
+            raw_action = raw_audit_event.get("action") if isinstance(raw_audit_event, dict) else None
+            permission = (
+                "review_events:approve"
+                if raw_action == "approve"
+                else "review_events:edit"
+            )
+            if not self._require_permission(permission):
+                return
+            accepted_event = _validate_review_event(raw_audit_event)
             stored_event = self._review_event_store().record(accepted_event)
         except ValueError as exc:
             if str(exc) == "content_length_required":
@@ -344,6 +399,40 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
     def _review_event_store(self) -> ReviewAuditEventStore:
         return getattr(self.server, "review_event_store", DEFAULT_REVIEW_AUDIT_EVENTS)
 
+    def _require_permission(self, permission: str) -> bool:
+        auth_tokens = _local_auth_tokens(self.server)
+        if auth_tokens is None:
+            return True
+        authorization = self.headers.get("Authorization") or ""
+        prefix = "Bearer "
+        if not authorization.startswith(prefix):
+            self._send_json(
+                {
+                    "error": "auth_required",
+                    "message": "Authorization bearer token is required",
+                },
+                status=401,
+            )
+            return False
+        token = authorization.removeprefix(prefix).strip()
+        role = auth_tokens.get(token)
+        if role is None:
+            self._send_json(
+                {"error": "auth_required", "message": "Authorization bearer token is invalid"},
+                status=401,
+            )
+            return False
+        if permission not in ROLE_PERMISSIONS[role]:
+            self._send_json(
+                {
+                    "error": "forbidden",
+                    "message": f"role {role} cannot perform {_permission_label(permission)}",
+                },
+                status=403,
+            )
+            return False
+        return True
+
     def _send_file(self, path: Path, content_type: str) -> None:
         if not path.is_file():
             self._send_json({"error": "web_asset_missing"}, status=500)
@@ -362,6 +451,48 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+
+def _local_auth_tokens(server: Any) -> dict[str, str] | None:
+    configured = getattr(server, "local_auth_tokens", None)
+    if configured is None:
+        configured = _local_auth_tokens_from_env(os.environ.get(LOCAL_AUTH_TOKENS_ENV, ""))
+    if configured is None:
+        return None
+    if not isinstance(configured, dict):
+        return {}
+    tokens: dict[str, str] = {}
+    for token, role in configured.items():
+        token_text = str(token).strip()
+        role_text = str(role).strip()
+        if token_text and role_text in ROLES:
+            tokens[token_text] = role_text
+    return tokens
+
+
+def _local_auth_tokens_from_env(value: str) -> dict[str, str] | None:
+    if not value.strip():
+        return None
+    tokens: dict[str, str] = {}
+    for entry in value.split(","):
+        role, separator, token = entry.partition("=")
+        if separator != "=":
+            continue
+        role_text = role.strip()
+        token_text = token.strip()
+        if role_text in ROLES and token_text:
+            tokens[token_text] = role_text
+    return tokens
+
+
+def _permission_label(permission: str) -> str:
+    labels = {
+        "review_events:approve": "review_approve",
+        "review_events:edit": "review_edit",
+    }
+    if permission in labels:
+        return labels[permission]
+    return permission.replace(":", "_")
 
 
 def _job_response(job: JobRecord, job_queue: JobQueue | None = None) -> dict[str, Any]:

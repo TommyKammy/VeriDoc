@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 from threading import Thread
+from typing import Optional
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
@@ -907,6 +908,51 @@ def test_poc_http_api_does_not_persist_rejected_review_action_audit_event() -> N
     assert events == []
 
 
+def test_poc_http_api_rejects_review_approve_without_approver_role() -> None:
+    audit_event = _review_audit_event(action="approve", revised_text="Lot: SAMPLE-001")
+
+    status, body, events = _post_review_audit_event_with_store(
+        audit_event,
+        role_token="reviewer-token",
+    )
+
+    assert status == 403
+    assert body == {
+        "error": "forbidden",
+        "message": "role reviewer cannot perform review_approve",
+    }
+    assert events == []
+
+
+def test_poc_http_api_requires_configured_local_auth_token_for_review_events() -> None:
+    audit_event = _review_audit_event()
+
+    status, body, events = _post_review_audit_event_with_store(audit_event, role_token=None)
+
+    assert status == 401
+    assert body == {
+        "error": "auth_required",
+        "message": "Authorization bearer token is required",
+    }
+    assert events == []
+
+
+def test_poc_http_api_rejects_viewer_review_edit() -> None:
+    audit_event = _review_audit_event()
+
+    status, body, events = _post_review_audit_event_with_store(
+        audit_event,
+        role_token="viewer-token",
+    )
+
+    assert status == 403
+    assert body == {
+        "error": "forbidden",
+        "message": "role viewer cannot perform review_edit",
+    }
+    assert events == []
+
+
 def test_poc_http_api_rejects_malformed_review_action_audit_event() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     thread = Thread(target=server.serve_forever, daemon=True)
@@ -1089,27 +1135,48 @@ def _review_bbox(**overrides: object) -> dict[str, object]:
     return bbox
 
 
-def _post_review_audit_event(audit_event: dict[str, object]) -> tuple[int, dict[str, object]]:
-    status, body, _events = _post_review_audit_event_with_store(audit_event)
+def _post_review_audit_event(
+    audit_event: dict[str, object],
+    *,
+    role_token: Optional[str] = "auto",
+) -> tuple[int, dict[str, object]]:
+    status, body, _events = _post_review_audit_event_with_store(
+        audit_event,
+        role_token=role_token,
+    )
     return status, body
 
 
 def _post_review_audit_event_with_store(
     audit_event: dict[str, object],
+    *,
+    role_token: Optional[str] = "auto",
 ) -> tuple[int, dict[str, object], list[dict[str, object]]]:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     store = ReviewAuditEventStore()
     server.review_event_store = store
+    server.local_auth_tokens = _local_auth_tokens()
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
         payload = json.dumps({"audit_event": audit_event}).encode("utf-8")
         connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        selected_token = role_token
+        if selected_token == "auto" and audit_event.get("action") != "approve":
+            selected_token = "reviewer-token"
+        if selected_token == "auto" and audit_event.get("action") == "approve":
+            selected_token = "approver-token"
+        headers = {
+            "Content-Type": "application/json",
+            "Content-Length": str(len(payload)),
+        }
+        if selected_token:
+            headers["Authorization"] = f"Bearer {selected_token}"
         connection.request(
             "POST",
             "/api/review-events",
             body=payload,
-            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+            headers=headers,
         )
         response = connection.getresponse()
         body = json.loads(response.read().decode("utf-8"))
@@ -1117,6 +1184,15 @@ def _post_review_audit_event_with_store(
         server.shutdown()
         thread.join(timeout=5)
     return response.status, body, store.list_events()
+
+
+def _local_auth_tokens() -> dict[str, str]:
+    return {
+        "viewer-token": "viewer",
+        "reviewer-token": "reviewer",
+        "approver-token": "approver",
+        "admin-token": "admin",
+    }
 
 
 @pytest.mark.parametrize(
@@ -1311,6 +1387,81 @@ def test_poc_http_api_lists_conversion_jobs_filtered_by_status() -> None:
     assert next_job.job_id == queued_job.job_id
     assert retried_job is not None
     assert retried_job.job_id == failed_job.job_id
+
+
+def test_poc_http_api_requires_admin_role_for_retry_job_event() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue(max_attempts=1)
+    server.local_auth_tokens = _local_auth_tokens()
+    failed_job = server.job_queue.create_job(
+        idempotency_key="failed-1",
+        filename="failed-record.docx",
+        mode="standard",
+    )
+    running = server.job_queue.start_next_job()
+    assert running is not None
+    server.job_queue.mark_failed(failed_job.job_id, error="parser unavailable")
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "GET",
+            "/api/jobs?status=failed",
+            headers={"Authorization": "Bearer reviewer-token"},
+        )
+        failed_response = connection.getresponse()
+        failed_body = json.loads(failed_response.read().decode("utf-8"))
+        retry_action = next(
+            action
+            for action in failed_body["jobs"][0]["available_actions"]
+            if action["action"] == "retry_conversion"
+        )
+        event_payload = json.dumps(
+            {
+                "job_id": failed_job.job_id,
+                "action": "retry_conversion",
+                "audit_event": retry_action["audit_event"],
+            }
+        ).encode("utf-8")
+        connection.request(
+            "POST",
+            "/api/job-events",
+            body=event_payload,
+            headers={
+                "Authorization": "Bearer reviewer-token",
+                "Content-Type": "application/json",
+                "Content-Length": str(len(event_payload)),
+            },
+        )
+        reviewer_response = connection.getresponse()
+        reviewer_body = json.loads(reviewer_response.read().decode("utf-8"))
+        assert server.job_queue.get_job(failed_job.job_id).status == "failed"
+        connection.request(
+            "POST",
+            "/api/job-events",
+            body=event_payload,
+            headers={
+                "Authorization": "Bearer admin-token",
+                "Content-Type": "application/json",
+                "Content-Length": str(len(event_payload)),
+            },
+        )
+        admin_response = connection.getresponse()
+        admin_body = json.loads(admin_response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert failed_response.status == 200
+    assert reviewer_response.status == 403
+    assert reviewer_body == {
+        "error": "forbidden",
+        "message": "role reviewer cannot perform jobs_retry",
+    }
+    assert admin_response.status == 202
+    assert admin_body["job"]["status"] == "queued"
+    assert server.job_queue.get_job(failed_job.job_id).status == "queued"
 
 
 def test_poc_http_api_sanitizes_succeeded_job_result_and_downloads_result() -> None:
