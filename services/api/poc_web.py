@@ -37,7 +37,10 @@ MAX_UPLOAD_BYTES = 2 * 1024 * 1024
 MAX_UPLOAD_REQUEST_BYTES = (MAX_UPLOAD_BYTES * 4 // 3) + 4096
 SOURCE_TYPES = {"pdf", "docx", "xlsx", "unknown"}
 KNOWN_SOURCE_TYPES = SOURCE_TYPES - {"unknown"}
-HTTP_HEADER_VISIBLE_ASCII = re.compile(r"^[\x20-\x7e]+$")
+HTTP_CONTENT_TYPE = re.compile(
+    r"^[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+"
+    r"(?:\s*;\s*[A-Za-z0-9!#$&^_.+-]+=[A-Za-z0-9!#$&^_.+-]+)*$"
+)
 DEFAULT_JOB_QUEUE = JobQueue()
 
 
@@ -242,6 +245,8 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
         try:
             job = self._job_queue().get_job(job_id)
             download = _job_download(job)
+            content_type = _download_content_type(download["content_type"])
+            filename = _download_filename(download["filename"])
         except KeyError:
             self._send_json({"error": "job_not_found"}, status=404)
             return
@@ -249,10 +254,10 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "job_result_unavailable", "message": str(exc)}, status=400)
             return
         self.send_response(200)
-        self.send_header("Content-Type", download["content_type"])
+        self.send_header("Content-Type", content_type)
         self.send_header(
             "Content-Disposition",
-            f'attachment; filename="{_download_filename(download["filename"])}"',
+            f'attachment; filename="{filename}"',
         )
         self.send_header("Content-Length", str(len(download["content"])))
         self.end_headers()
@@ -391,13 +396,19 @@ def _job_download(job: JobRecord) -> dict[str, Any]:
     filename = str(download.get("filename") or "").strip()
     content_type = str(download.get("content_type") or "").strip()
     content = download.get("content")
-    if (
-        not filename
-        or not _safe_header_value(content_type)
-        or not isinstance(content, bytes)
-    ):
+    if not filename or not isinstance(content, bytes):
         raise ValueError("job result download is invalid")
-    return {"filename": filename, "content_type": content_type, "content": content}
+    return {
+        "filename": filename,
+        "content_type": _download_content_type(content_type),
+        "content": content,
+    }
+
+
+def _download_content_type(content_type: str) -> str:
+    if not content_type or not HTTP_CONTENT_TYPE.fullmatch(content_type):
+        raise ValueError("job result download content type is invalid")
+    return content_type
 
 
 def _download_filename(filename: str) -> str:
@@ -405,10 +416,6 @@ def _download_filename(filename: str) -> str:
     safe = re.sub(r'[\x00-\x1f\x7f"\\]', "", basename)
     safe = "".join(char for char in safe if 0x20 <= ord(char) <= 0x7E).strip()
     return safe or "veridoc-result.json"
-
-
-def _safe_header_value(value: str) -> bool:
-    return bool(value and HTTP_HEADER_VISIBLE_ASCII.fullmatch(value))
 
 
 def _parser_output_from_upload(filename: str, content: bytes) -> tuple[dict[str, Any], list[str]]:
