@@ -274,6 +274,84 @@
         margin-bottom: 4px;
       }
 
+      .review-item button {
+        margin-top: 8px;
+      }
+
+      .preview-toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: end;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .preview-toolbar .field {
+        max-width: 180px;
+      }
+
+      .pdf-preview-shell {
+        overflow: auto;
+        margin-top: 14px;
+        padding: 16px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: #dfe5ec;
+      }
+
+      .pdf-page-surface {
+        position: relative;
+        width: min(100%, 680px);
+        min-width: 280px;
+        margin: 0 auto;
+        overflow: hidden;
+        border: 1px solid #b8c2cf;
+        background: #fff;
+        box-shadow: 0 8px 22px rgba(28, 38, 52, 0.18);
+      }
+
+      .pdf-page-placeholder {
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .pdf-source-frame {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        border: 0;
+      }
+
+      .bbox-layer {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+      }
+
+      .bbox-overlay {
+        position: absolute;
+        border: 2px solid #d64545;
+        background: rgba(214, 69, 69, 0.16);
+        outline: 2px solid rgba(255, 255, 255, 0.8);
+        pointer-events: auto;
+      }
+
+      .bbox-overlay:focus {
+        border-color: #17467f;
+        background: rgba(35, 94, 168, 0.2);
+      }
+
+      .bbox-invalid {
+        margin-top: 10px;
+        color: var(--danger);
+        font-size: 14px;
+      }
+
       pre {
         overflow: auto;
         max-height: 320px;
@@ -400,6 +478,27 @@
           <pre id="raw-result"></pre>
         </div>
       </section>
+
+      <section id="pdf-preview-panel" class="panel" style="margin-top: 16px" aria-labelledby="pdf-preview-title" hidden>
+        <div class="preview-toolbar">
+          <div>
+            <h2 id="pdf-preview-title">PDF preview</h2>
+            <div id="pdf-preview-status" class="page-status"></div>
+          </div>
+          <div class="field">
+            <label for="preview-page-select">Page</label>
+            <select id="preview-page-select"></select>
+          </div>
+        </div>
+        <div id="pdf-preview-shell" class="pdf-preview-shell">
+          <div id="pdf-page-surface" class="pdf-page-surface">
+            <div id="pdf-page-placeholder" class="pdf-page-placeholder">No PDF page selected.</div>
+            <object id="pdf-source-frame" class="pdf-source-frame" type="application/pdf" hidden></object>
+            <div id="bbox-layer" class="bbox-layer" aria-label="Source bounding boxes"></div>
+          </div>
+        </div>
+        <div id="bbox-invalid" class="bbox-invalid" role="status" hidden></div>
+      </section>
     </main>
 
     <script>
@@ -407,6 +506,9 @@
         jobs: [],
         selectedJob: null,
         downloadUrl: "",
+        sourcePreviewUrl: "",
+        latestResult: null,
+        previewPage: 1,
       };
 
       const pageStatus = document.querySelector("#page-status");
@@ -440,6 +542,14 @@
       const reviewList = document.querySelector("#review-list");
       const downloadLink = document.querySelector("#download-link");
       const rawResult = document.querySelector("#raw-result");
+      const pdfPreviewPanel = document.querySelector("#pdf-preview-panel");
+      const pdfPreviewStatus = document.querySelector("#pdf-preview-status");
+      const previewPageSelect = document.querySelector("#preview-page-select");
+      const pdfPageSurface = document.querySelector("#pdf-page-surface");
+      const pdfPagePlaceholder = document.querySelector("#pdf-page-placeholder");
+      const pdfSourceFrame = document.querySelector("#pdf-source-frame");
+      const bboxLayer = document.querySelector("#bbox-layer");
+      const bboxInvalid = document.querySelector("#bbox-invalid");
 
       refreshJobs.addEventListener("click", () => loadJobs());
       statusFilter.addEventListener("change", () => loadJobs());
@@ -447,12 +557,21 @@
       detailOpen.addEventListener("click", () => loadJobDetail(state.selectedJob.job_id));
       detailDownload.addEventListener("click", () => downloadSelectedJobResult());
       detailRetry.addEventListener("click", () => retrySelectedConversion());
+      input.addEventListener("change", () => {
+        clearSourcePreview();
+        clearPreview();
+      });
+      previewPageSelect.addEventListener("change", () => {
+        state.previewPage = Number(previewPageSelect.value);
+        renderSourcePreview(state.latestResult);
+      });
 
       button.addEventListener("click", async () => {
         const file = input.files[0];
         if (!file) return;
         button.disabled = true;
         try {
+          setSourcePreview(file);
           const contentBase64 = await fileToBase64(file);
           const response = await fetch("/api/convert", {
             method: "POST",
@@ -467,6 +586,7 @@
           status.textContent = `blocked: ${error.message}`;
           reviewList.replaceChildren();
           clearDownload();
+          clearPreview();
           resultPanel.hidden = false;
           rawPanel.hidden = true;
           setPageStatus(error.message, true);
@@ -702,6 +822,7 @@
       }
 
       function renderResult(result) {
+        state.latestResult = result;
         status.textContent = result.status;
         status.className = `status ${result.status}`;
         reviewList.replaceChildren(...result.review_items.map(renderReviewItem));
@@ -718,6 +839,7 @@
         );
         resultPanel.hidden = false;
         rawPanel.hidden = false;
+        renderSourcePreview(result);
       }
 
       function clearDownload() {
@@ -728,6 +850,121 @@
         downloadLink.removeAttribute("href");
         downloadLink.removeAttribute("download");
         downloadLink.hidden = true;
+      }
+
+      function setSourcePreview(file) {
+        clearSourcePreview();
+        if (file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf")) {
+          state.sourcePreviewUrl = URL.createObjectURL(file);
+        }
+      }
+
+      function clearSourcePreview() {
+        if (state.sourcePreviewUrl) {
+          URL.revokeObjectURL(state.sourcePreviewUrl);
+          state.sourcePreviewUrl = "";
+        }
+        pdfSourceFrame.removeAttribute("data");
+      }
+
+      function clearPreview() {
+        state.latestResult = null;
+        state.previewPage = 1;
+        pdfPreviewPanel.hidden = true;
+        previewPageSelect.replaceChildren();
+        bboxLayer.replaceChildren();
+        bboxInvalid.hidden = true;
+        pdfPagePlaceholder.textContent = "No PDF page selected.";
+        pdfPagePlaceholder.hidden = false;
+        pdfSourceFrame.hidden = true;
+        pdfPageSurface.removeAttribute("style");
+      }
+
+      function renderSourcePreview(result) {
+        const pages = result?.document_ir?.pages || [];
+        if (!pages.length) {
+          clearPreview();
+          return;
+        }
+        const selectedPage = pages.find((page) => page.page_number === state.previewPage) || pages[0];
+        state.previewPage = selectedPage.page_number;
+        previewPageSelect.replaceChildren(
+          ...pages.map((page) => {
+            const option = document.createElement("option");
+            option.value = String(page.page_number);
+            option.textContent = `Page ${page.page_number}`;
+            option.selected = page.page_number === state.previewPage;
+            return option;
+          })
+        );
+        pdfPageSurface.style.aspectRatio = `${selectedPage.width} / ${selectedPage.height}`;
+        pdfPagePlaceholder.hidden = Boolean(state.sourcePreviewUrl);
+        pdfPagePlaceholder.textContent = `Page ${selectedPage.page_number}`;
+        pdfSourceFrame.hidden = !state.sourcePreviewUrl;
+        if (state.sourcePreviewUrl) {
+          pdfSourceFrame.data = `${state.sourcePreviewUrl}#page=${selectedPage.page_number}&toolbar=0&navpanes=0`;
+        }
+        const items = (result.review_items || []).filter(
+          (item) => item.source_page === selectedPage.page_number
+        );
+        const overlays = [];
+        const invalidItems = [];
+        for (const item of items) {
+          const overlay = bboxOverlay(item, selectedPage);
+          if (overlay) {
+            overlays.push(overlay);
+          } else {
+            invalidItems.push(item.block_id);
+          }
+        }
+        bboxLayer.replaceChildren(...overlays);
+        bboxInvalid.hidden = invalidItems.length === 0;
+        bboxInvalid.textContent = invalidItems.length
+          ? `Skipped invalid bbox: ${invalidItems.join(", ")}`
+          : "";
+        pdfPreviewStatus.textContent = `${overlays.length} bbox${overlays.length === 1 ? "" : "es"} on page ${selectedPage.page_number}.`;
+        pdfPreviewPanel.hidden = false;
+      }
+
+      function bboxOverlay(item, page) {
+        const bbox = item.source_bbox;
+        if (!validBbox(bbox, page)) return null;
+        const overlay = document.createElement("button");
+        overlay.type = "button";
+        overlay.className = "bbox-overlay";
+        overlay.title = `${item.block_id}: ${item.text}`;
+        overlay.setAttribute("aria-label", `${item.block_id} source bbox`);
+        overlay.dataset.blockId = item.block_id;
+        overlay.style.left = `${(bbox.x / page.width) * 100}%`;
+        overlay.style.top = `${(bbox.y / page.height) * 100}%`;
+        overlay.style.width = `${(bbox.width / page.width) * 100}%`;
+        overlay.style.height = `${(bbox.height / page.height) * 100}%`;
+        overlay.addEventListener("click", () => jumpToReviewItem(item));
+        return overlay;
+      }
+
+      function validBbox(bbox, page) {
+        if (!bbox || bbox.origin !== "top-left" || bbox.unit !== page.unit) return false;
+        const values = [bbox.x, bbox.y, bbox.width, bbox.height, page.width, page.height];
+        if (!values.every((value) => Number.isFinite(value))) return false;
+        return (
+          page.width > 0 &&
+          page.height > 0 &&
+          bbox.width > 0 &&
+          bbox.height > 0 &&
+          bbox.x >= 0 &&
+          bbox.y >= 0 &&
+          bbox.x + bbox.width <= page.width &&
+          bbox.y + bbox.height <= page.height
+        );
+      }
+
+      function jumpToReviewItem(item) {
+        state.previewPage = item.source_page;
+        renderSourcePreview(state.latestResult);
+        const overlay = bboxLayer.querySelector(`[data-block-id="${CSS.escape(item.block_id)}"]`);
+        overlay?.focus();
+        overlay?.scrollIntoView({ block: "center", inline: "center", behavior: "smooth" });
       }
 
       async function fileToBase64(file) {
@@ -749,7 +986,13 @@
         text.textContent = item.text;
         const warnings = document.createElement("div");
         warnings.textContent = item.warnings.join(" / ");
-        wrapper.append(title, text, warnings);
+        const jump = document.createElement("button");
+        jump.className = "secondary";
+        jump.type = "button";
+        jump.textContent = "Jump to bbox";
+        jump.disabled = !item.source_bbox;
+        jump.addEventListener("click", () => jumpToReviewItem(item));
+        wrapper.append(title, text, warnings, jump);
         return wrapper;
       }
 

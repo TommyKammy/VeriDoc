@@ -498,17 +498,21 @@ def _plain_text_parser_output(text: str) -> dict[str, Any]:
 
 def _review_items(document_ir: DocumentIRV1) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
+    pages_by_number = {page.page_number: page for page in document_ir.pages}
     for block in document_ir.blocks:
         if not block.review.requires_review and not block.review.warnings:
             continue
-        items.append(
-            {
-                "block_id": block.id,
-                "source_page": block.source_page,
-                "text": block.text,
-                "warnings": block.review.warnings,
-            }
-        )
+        item = {
+            "block_id": block.id,
+            "source_page": block.source_page,
+            "text": block.text,
+            "warnings": block.review.warnings,
+        }
+        page = pages_by_number.get(block.source_page)
+        if page is not None:
+            item["source_bbox"] = asdict(block.bbox)
+            item["source_page_geometry"] = asdict(page)
+        items.append(item)
     return items
 
 
