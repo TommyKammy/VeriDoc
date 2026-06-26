@@ -1011,7 +1011,7 @@
       }
 
       function validBbox(bbox, page) {
-        if (!bbox || bbox.origin !== "top-left" || bbox.unit !== page.unit) return false;
+        if (!bbox || !page || bbox.origin !== "top-left" || bbox.unit !== page.unit) return false;
         const values = [bbox.x, bbox.y, bbox.width, bbox.height, page.width, page.height];
         if (!values.every((value) => Number.isFinite(value))) return false;
         return (
@@ -1161,17 +1161,24 @@
 
       function buildReviewAuditEvent(item, action) {
         const revisedText = reviewDraftText(item);
-        return {
+        const event = {
           event_type: "conversion_review.action_requested",
           action,
           document_id: item.document_id,
           block_id: item.block_id,
           source_page: item.source_page,
-          source_bbox: item.source_bbox || null,
+          source_bbox: reviewAuditSourceBbox(item),
           original_text: item.text,
-          revised_text: action === "edit" ? revisedText : item.text,
           warnings: item.warnings || [],
         };
+        if (action === "edit") {
+          event.revised_text = revisedText;
+        }
+        return event;
+      }
+
+      function reviewAuditSourceBbox(item) {
+        return validBbox(item.source_bbox, item.source_page_geometry) ? item.source_bbox : null;
       }
 
       function reviewDraftText(item) {

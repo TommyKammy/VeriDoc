@@ -100,6 +100,43 @@ def test_convert_uploaded_document_surfaces_review_items_and_download_payload() 
     assert downloaded["document_ir"]["blocks"][0]["review"]["requires_review"] is True
 
 
+def test_convert_uploaded_document_treats_unusable_review_bboxes_as_absent() -> None:
+    parser_output = {
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 100,
+                "height": 100,
+                "unit": "pt",
+                "fragments": [
+                    {
+                        "text": "Missing bbox",
+                        "confidence": 0.41,
+                        "low_confidence": True,
+                    },
+                    {
+                        "text": "Outside page",
+                        "bbox": {"x": 90, "y": 10, "width": 20, "height": 12, "unit": "pt"},
+                        "confidence": 0.41,
+                        "low_confidence": True,
+                    },
+                ],
+            }
+        ]
+    }
+
+    result = convert_uploaded_document(
+        filename="phase0-output.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+    )
+
+    assert result["status"] == "blocked"
+    assert result["validation"]["errors"] == ["blocks[1].bbox extends past page 1"]
+    assert [item["block_id"] for item in result["review_items"]] == ["block-0001", "block-0002"]
+    assert all("source_bbox" not in item for item in result["review_items"])
+    assert all("source_page_geometry" not in item for item in result["review_items"])
+
+
 def test_convert_uploaded_docx_uses_real_parser_bytes(tmp_path: Path) -> None:
     docx_path = tmp_path / "batch-record.docx"
     _write_docx(docx_path, _sample_docx_xml())
@@ -674,6 +711,21 @@ def test_poc_http_api_rejects_malformed_review_action_audit_event() -> None:
     }
 
 
+def test_poc_http_api_accepts_approve_review_action_without_duplicate_revised_text() -> None:
+    audit_event = _review_audit_event(
+        action="approve",
+        original_text="Lot: SAMPLE-001",
+    )
+    del audit_event["revised_text"]
+
+    status, body = _post_review_audit_event(audit_event)
+
+    assert status == 202
+    assert body["audit_event"]["action"] == "approve"
+    assert body["audit_event"]["original_text"] == "Lot: SAMPLE-001"
+    assert body["audit_event"]["revised_text"] == "Lot: SAMPLE-001"
+
+
 def _review_audit_event(**overrides: object) -> dict[str, object]:
     event: dict[str, object] = {
         "event_type": "conversion_review.action_requested",
@@ -737,6 +789,14 @@ def _post_review_audit_event(audit_event: dict[str, object]) -> tuple[int, dict[
         (
             _review_audit_event(source_page=True),
             "audit_event.source_page must be a positive integer",
+        ),
+        (
+            _review_audit_event(document_id={"id": "phase0"}),
+            "audit_event.document_id is required",
+        ),
+        (
+            _review_audit_event(block_id=True),
+            "audit_event.block_id is required",
         ),
         (
             _review_audit_event(source_bbox=_review_bbox(unit="em")),

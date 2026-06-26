@@ -417,12 +417,14 @@ def _validate_review_event(audit_event: Any) -> dict[str, Any]:
     action = audit_event.get("action")
     if action not in {"edit", "approve"}:
         raise ValueError("audit_event.action is unsupported")
-    document_id = str(audit_event.get("document_id") or "").strip()
-    if not document_id:
+    document_id = audit_event.get("document_id")
+    if not isinstance(document_id, str) or not document_id.strip():
         raise ValueError("audit_event.document_id is required")
-    block_id = str(audit_event.get("block_id") or "").strip()
-    if not block_id:
+    document_id = document_id.strip()
+    block_id = audit_event.get("block_id")
+    if not isinstance(block_id, str) or not block_id.strip():
         raise ValueError("audit_event.block_id is required")
+    block_id = block_id.strip()
     source_page = audit_event.get("source_page")
     if not isinstance(source_page, int) or isinstance(source_page, bool) or source_page < 1:
         raise ValueError("audit_event.source_page must be a positive integer")
@@ -433,6 +435,8 @@ def _validate_review_event(audit_event: Any) -> dict[str, Any]:
     if not isinstance(original_text, str):
         raise ValueError("audit_event.original_text is required")
     revised_text = audit_event.get("revised_text")
+    if action == "approve" and revised_text is None:
+        revised_text = original_text
     if not isinstance(revised_text, str):
         raise ValueError("audit_event.revised_text is required")
     if action == "approve" and revised_text != original_text:
@@ -601,11 +605,29 @@ def _review_items(document_ir: DocumentIRV1) -> list[dict[str, Any]]:
             "warnings": block.review.warnings,
         }
         page = pages_by_number.get(block.source_page)
-        if page is not None:
-            item["source_bbox"] = asdict(block.bbox)
+        source_bbox = _review_source_bbox(block.bbox, page)
+        if source_bbox is not None:
+            item["source_bbox"] = source_bbox
             item["source_page_geometry"] = asdict(page)
         items.append(item)
     return items
+
+
+def _review_source_bbox(bbox: Any, page: Any) -> dict[str, Any] | None:
+    if page is None:
+        return None
+    values = (bbox.x, bbox.y, bbox.width, bbox.height, page.width, page.height)
+    if not all(isinstance(value, (int, float)) and math.isfinite(value) for value in values):
+        return None
+    if page.width <= 0 or page.height <= 0:
+        return None
+    if bbox.origin != "top-left" or bbox.unit != page.unit:
+        return None
+    if bbox.x < 0 or bbox.y < 0 or bbox.width <= 0 or bbox.height <= 0:
+        return None
+    if bbox.x + bbox.width > page.width or bbox.y + bbox.height > page.height:
+        return None
+    return asdict(bbox)
 
 
 def _http_result(result: dict[str, Any]) -> dict[str, Any]:

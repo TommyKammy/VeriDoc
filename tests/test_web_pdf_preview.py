@@ -62,7 +62,10 @@ def test_review_item_exposes_edit_and_approve_audit_events() -> None:
     assert "document_id: item.document_id" in html
     assert "block_id: item.block_id" in html
     assert "source_page: item.source_page" in html
-    assert "source_bbox: item.source_bbox || null" in html
+    assert "source_bbox: reviewAuditSourceBbox(item)" in html
+    assert "function reviewAuditSourceBbox(item)" in html
+    assert "validBbox(item.source_bbox, item.source_page_geometry)" in html
+    assert "event.revised_text = revisedText" in html
     assert "function requestReviewAction(item, action)" in html
     assert 'requestReviewAction(item, "edit")' in html
     assert 'requestReviewAction(item, "approve")' in html
