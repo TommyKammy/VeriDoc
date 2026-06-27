@@ -131,6 +131,7 @@ def test_approve_review_action_refreshes_saved_server_edits() -> None:
     assert "return reviewEvents;" in html
     assert "const reviewEvents = await refreshReviewAuditEvents(item);" in html
     assert "savedEditText = await loadLatestSavedReviewEditText(item);" in html
+    assert "async function prepareSavedReviewEditApproval(item)" in html
     assert "surfaceSavedReviewEditText(item, savedEditText);" in html
     assert 'text.dataset.reviewTextFor = item.block_id;' in html
     assert 'edit.value = savedEditText;' in html
@@ -141,21 +142,29 @@ def test_approve_review_action_refreshes_saved_server_edits() -> None:
         in html
     )
     assert re.search(
-        r'if \(action === "approve"\) \{\s+'
-        r"savedEditText = await loadLatestSavedReviewEditText\(item\);\s+"
+        r"async function prepareSavedReviewEditApproval\(item\) \{\s+"
+        r"const savedEditText = await loadLatestSavedReviewEditText\(item\);\s+"
         r"const refreshedBlockReason = reviewActionBlockReason\(item\);\s+"
         r"if \(refreshedBlockReason\) \{\s+"
         r"reviewActionStatus\.textContent = refreshedBlockReason;\s+"
         r'reviewActionStatus\.className = "page-status error";\s+'
-        r"return;\s+"
+        r"return \{ stop: true, savedEditText: null \};\s+"
         r"\}\s+"
-        r"if \(savedEditText !== null\) \{\s+"
+        r"if \(savedEditText === null\) return \{ stop: false, savedEditText: null \};\s+"
+        r"if \(reviewDraftText\(item\) === savedEditText\) \{\s+"
+        r"return \{ stop: false, savedEditText \};\s+"
+        r"\}\s+"
         r"surfaceSavedReviewEditText\(item, savedEditText\);\s+"
         r"reviewActionStatus\.textContent =\s+"
         r'"Saved review edit loaded\. Review the updated text, then approve again\.";\s+'
         r'reviewActionStatus\.className = "page-status";\s+'
-        r"return;\s+"
+        r"return \{ stop: true, savedEditText \};\s+"
         r"\}\s+"
+        r".+?"
+        r'if \(action === "approve"\) \{\s+'
+        r"const approvalReadiness = await prepareSavedReviewEditApproval\(item\);\s+"
+        r"savedEditText = approvalReadiness\.savedEditText;\s+"
+        r"if \(approvalReadiness\.stop\) return;\s+"
         r"\}\s+"
         r"const auditEvent = buildReviewAuditEvent\(item, action, savedEditText\);",
         html,

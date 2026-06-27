@@ -1521,6 +1521,25 @@
         if (text) text.textContent = savedEditText;
       }
 
+      async function prepareSavedReviewEditApproval(item) {
+        const savedEditText = await loadLatestSavedReviewEditText(item);
+        const refreshedBlockReason = reviewActionBlockReason(item);
+        if (refreshedBlockReason) {
+          reviewActionStatus.textContent = refreshedBlockReason;
+          reviewActionStatus.className = "page-status error";
+          return { stop: true, savedEditText: null };
+        }
+        if (savedEditText === null) return { stop: false, savedEditText: null };
+        if (reviewDraftText(item) === savedEditText) {
+          return { stop: false, savedEditText };
+        }
+        surfaceSavedReviewEditText(item, savedEditText);
+        reviewActionStatus.textContent =
+          "Saved review edit loaded. Review the updated text, then approve again.";
+        reviewActionStatus.className = "page-status";
+        return { stop: true, savedEditText };
+      }
+
       function sameReviewAuditTarget(event, item) {
         if (!event || event.document_id !== item.document_id || event.block_id !== item.block_id) {
           return false;
@@ -1602,20 +1621,9 @@
           actionStarted = true;
           setReviewActionPending(item, true);
           if (action === "approve") {
-            savedEditText = await loadLatestSavedReviewEditText(item);
-            const refreshedBlockReason = reviewActionBlockReason(item);
-            if (refreshedBlockReason) {
-              reviewActionStatus.textContent = refreshedBlockReason;
-              reviewActionStatus.className = "page-status error";
-              return;
-            }
-            if (savedEditText !== null) {
-              surfaceSavedReviewEditText(item, savedEditText);
-              reviewActionStatus.textContent =
-                "Saved review edit loaded. Review the updated text, then approve again.";
-              reviewActionStatus.className = "page-status";
-              return;
-            }
+            const approvalReadiness = await prepareSavedReviewEditApproval(item);
+            savedEditText = approvalReadiness.savedEditText;
+            if (approvalReadiness.stop) return;
           }
           const auditEvent = buildReviewAuditEvent(item, action, savedEditText);
           const response = await apiFetch("/api/review-events", {
