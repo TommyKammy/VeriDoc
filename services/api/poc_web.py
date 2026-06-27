@@ -58,6 +58,7 @@ ROLE_PERMISSIONS = {
         "job_events:read",
         "jobs:read",
         "review_events:read",
+        "templates:read",
     },
     "reviewer": {
         "convert",
@@ -66,6 +67,7 @@ ROLE_PERMISSIONS = {
         "jobs:read",
         "review_events:edit",
         "review_events:read",
+        "templates:read",
     },
     "approver": {
         "convert",
@@ -75,6 +77,7 @@ ROLE_PERMISSIONS = {
         "review_events:approve",
         "review_events:edit",
         "review_events:read",
+        "templates:read",
     },
     "admin": {
         "convert",
@@ -85,6 +88,8 @@ ROLE_PERMISSIONS = {
         "review_events:approve",
         "review_events:edit",
         "review_events:read",
+        "templates:manage",
+        "templates:read",
     },
 }
 HTTP_CONTENT_TYPE = re.compile(
@@ -155,6 +160,79 @@ class JobAuditEventStore:
             else:
                 events = self._events
             return deepcopy(events)
+
+
+class TemplateStore:
+    def __init__(self) -> None:
+        self._templates: dict[str, dict[str, Any]] = {}
+        self._lock = Lock()
+
+    @classmethod
+    def with_representative_defaults(cls) -> "TemplateStore":
+        store = cls()
+        for template in _representative_templates():
+            store.register_template(template)
+        return store
+
+    def register_template(self, request: dict[str, Any]) -> dict[str, Any]:
+        template_id = _validate_template_id(request.get("template_id"))
+        name = _validate_template_text_field(request.get("name"), "name")
+        category = _validate_template_text_field(request.get("category"), "category")
+        fields = _validate_template_fields(request.get("fields"))
+        content = _validate_template_text_field(request.get("content"), "content")
+        with self._lock:
+            existing = self._templates.get(template_id)
+            versions = [] if existing is None else existing["versions"]
+            version_number = len(versions) + 1
+            version = {
+                "version": version_number,
+                "fields": deepcopy(fields),
+                "content": content,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+            if existing is None:
+                record = {
+                    "template_id": template_id,
+                    "name": name,
+                    "category": category,
+                    "current_version": version_number,
+                    "versions": [version],
+                    "updated_at": version["created_at"],
+                }
+                self._templates[template_id] = record
+            else:
+                existing["name"] = name
+                existing["category"] = category
+                existing["current_version"] = version_number
+                existing["versions"].append(version)
+                existing["updated_at"] = version["created_at"]
+                record = existing
+            return deepcopy(record)
+
+    def list_templates(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return [
+                _template_summary(record)
+                for record in sorted(
+                    self._templates.values(),
+                    key=lambda item: item["template_id"],
+                )
+            ]
+
+    def get_template(self, template_id: str) -> dict[str, Any]:
+        with self._lock:
+            try:
+                return deepcopy(self._templates[template_id])
+            except KeyError as exc:
+                raise KeyError(f"unknown template_id: {template_id}") from exc
+
+    def latest_job_snapshot(self, template_id: str) -> dict[str, Any]:
+        record = self.get_template(template_id)
+        return {
+            "template_id": record["template_id"],
+            "template_version": record["current_version"],
+            "name": record["name"],
+        }
 
 
 def _review_workflow_event_view(audit_event: dict[str, Any]) -> dict[str, Any]:
@@ -252,6 +330,16 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 return
             self._handle_list_job_events(parsed_url.query)
             return
+        if path == "/api/templates":
+            if not self._require_permission("templates:read"):
+                return
+            self._handle_list_templates()
+            return
+        if path.startswith("/api/templates/"):
+            if not self._require_permission("templates:read"):
+                return
+            self._handle_get_template(path.removeprefix("/api/templates/"))
+            return
         if path.startswith("/api/jobs/"):
             authorized, role = self._authorized_role_for_permission("jobs:read")
             if not authorized:
@@ -284,6 +372,11 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/review-events":
             self._handle_review_event()
+            return
+        if path == "/api/templates":
+            if not self._require_permission("templates:manage"):
+                return
+            self._handle_register_template()
             return
         if path != "/api/convert":
             self._send_json({"error": "not_found"}, status=404)
@@ -324,6 +417,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             request = self._read_json_request()
             filename = str(request.get("filename") or "").strip()
             mode = str(request.get("mode") or "standard")
+            template = self._job_template_snapshot(request.get("template_id"))
             idempotency_key = str(
                 request.get("idempotency_key") or self.headers.get("Idempotency-Key") or ""
             )
@@ -331,6 +425,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 idempotency_key=idempotency_key,
                 filename=filename,
                 mode=mode,
+                template=template,
             )
         except RuntimeError as exc:
             self._send_json({"error": "job_conflict", "message": str(exc)}, status=409)
@@ -345,6 +440,35 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "invalid_job_request", "message": str(exc)}, status=400)
             return
         self._send_json({"job": _job_response(job, self._job_queue(), role=role)}, status=202)
+
+    def _handle_register_template(self) -> None:
+        try:
+            request = self._read_json_request()
+            template = self._template_store().register_template(request)
+        except ValueError as exc:
+            if str(exc) == "content_length_required":
+                self._send_json({"error": "content_length_required"}, status=411)
+                return
+            if str(exc) == "upload_too_large":
+                self._send_json({"error": "upload_too_large"}, status=413)
+                return
+            self._send_json({"error": "invalid_template_request", "message": str(exc)}, status=400)
+            return
+        self._send_json({"template": template}, status=201)
+
+    def _handle_list_templates(self) -> None:
+        self._send_json({"templates": self._template_store().list_templates()})
+
+    def _handle_get_template(self, template_id: str) -> None:
+        try:
+            template = self._template_store().get_template(_validate_template_id(template_id))
+        except KeyError:
+            self._send_json({"error": "template_not_found"}, status=404)
+            return
+        except ValueError as exc:
+            self._send_json({"error": "invalid_template_request", "message": str(exc)}, status=400)
+            return
+        self._send_json({"template": template})
 
     def _handle_list_jobs(self, query: str, *, role: str | None = None) -> None:
         parameters = parse_qs(query, keep_blank_values=True)
@@ -525,6 +649,18 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
     def _job_event_store(self) -> JobAuditEventStore:
         return getattr(self.server, "job_event_store", DEFAULT_JOB_AUDIT_EVENTS)
 
+    def _template_store(self) -> TemplateStore:
+        return getattr(self.server, "template_store", DEFAULT_TEMPLATE_STORE)
+
+    def _job_template_snapshot(self, raw_template_id: Any) -> dict[str, Any] | None:
+        if raw_template_id is None:
+            return None
+        template_id = _validate_template_id(raw_template_id)
+        try:
+            return self._template_store().latest_job_snapshot(template_id)
+        except KeyError as exc:
+            raise ValueError("template_id is unknown") from exc
+
     def _require_permission(self, permission: str) -> bool:
         authorized, _role = self._authorized_role_for_permission(permission)
         return authorized
@@ -658,6 +794,109 @@ def _local_principal_id(value: Any) -> str | None:
     return principal_id or None
 
 
+def _validate_template_id(value: Any) -> str:
+    if not isinstance(value, str):
+        raise ValueError("template_id is required")
+    template_id = value.strip()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{1,62}", template_id):
+        raise ValueError("template_id must use lowercase letters, numbers, hyphens, or underscores")
+    return template_id
+
+
+def _validate_template_text_field(value: Any, field_name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field_name} is required")
+    text = value.strip()
+    if len(text) > 4096:
+        raise ValueError(f"{field_name} is too long")
+    return text
+
+
+def _validate_template_fields(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or not value:
+        raise ValueError("fields must be a non-empty list")
+    fields: list[dict[str, Any]] = []
+    seen_names: set[str] = set()
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            raise ValueError(f"fields[{index}] must be an object")
+        name = item.get("name")
+        if not isinstance(name, str):
+            raise ValueError(f"fields[{index}].name is required")
+        field_name = name.strip()
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", field_name):
+            raise ValueError(f"fields[{index}].name is invalid")
+        if field_name in seen_names:
+            raise ValueError(f"fields[{index}].name duplicates an earlier field")
+        seen_names.add(field_name)
+        label = _validate_template_text_field(item.get("label"), f"fields[{index}].label")
+        required = item.get("required", False)
+        if not isinstance(required, bool):
+            raise ValueError(f"fields[{index}].required must be boolean")
+        fields.append({"name": field_name, "label": label, "required": required})
+    return fields
+
+
+def _template_summary(record: dict[str, Any]) -> dict[str, Any]:
+    latest_version = record["versions"][-1]
+    return {
+        "template_id": record["template_id"],
+        "name": record["name"],
+        "category": record["category"],
+        "current_version": record["current_version"],
+        "field_count": len(latest_version["fields"]),
+        "updated_at": record["updated_at"],
+    }
+
+
+def _representative_templates() -> list[dict[str, Any]]:
+    return [
+        {
+            "template_id": "batch-record",
+            "name": "Batch Record",
+            "category": "manufacturing",
+            "fields": [
+                {"name": "lot_number", "label": "Lot number", "required": True},
+                {"name": "operator", "label": "Operator", "required": True},
+            ],
+            "content": "Lot {{lot_number}} reviewed by {{operator}}",
+        },
+        {
+            "template_id": "deviation-report",
+            "name": "Deviation Report",
+            "category": "quality",
+            "fields": [
+                {"name": "deviation_id", "label": "Deviation ID", "required": True},
+                {"name": "impact", "label": "Impact summary", "required": True},
+            ],
+            "content": "Deviation {{deviation_id}}: {{impact}}",
+        },
+        {
+            "template_id": "coa-summary",
+            "name": "CoA Summary",
+            "category": "release",
+            "fields": [
+                {"name": "product_name", "label": "Product", "required": True},
+                {"name": "specification", "label": "Specification", "required": True},
+            ],
+            "content": "{{product_name}} conforms to {{specification}}",
+        },
+        {
+            "template_id": "validation-checklist",
+            "name": "Validation Checklist",
+            "category": "validation",
+            "fields": [
+                {"name": "protocol_id", "label": "Protocol ID", "required": True},
+                {"name": "reviewer", "label": "Reviewer", "required": True},
+            ],
+            "content": "Protocol {{protocol_id}} reviewed by {{reviewer}}",
+        },
+    ]
+
+
+DEFAULT_TEMPLATE_STORE = TemplateStore.with_representative_defaults()
+
+
 def _review_event_filters(query: str) -> dict[str, str]:
     parameters = parse_qs(query, keep_blank_values=True)
     allowed_filters = {"document_id", "block_id", "conversion_id", "action"}
@@ -729,6 +968,7 @@ def _job_response(
         "updated_at": job.updated_at,
         "has_result": _job_has_download(job),
         "available_actions": _job_actions(job, job_queue, role=role),
+        "template": deepcopy(job.template),
     }
 
 
