@@ -7,7 +7,6 @@ from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import base64
 import binascii
-import hashlib
 import json
 import math
 import os
@@ -441,7 +440,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
     def _authenticated_context(self) -> tuple[bool, dict[str, str | None] | None]:
         auth_tokens = _local_auth_tokens(self.server)
         if auth_tokens is None:
-            return True, {"role": None, "actor_id": "local-anonymous"}
+            return True, {"role": None, "actor_id": None}
         authorization = self.headers.get("Authorization") or ""
         prefix = "Bearer "
         if not authorization.startswith(prefix):
@@ -461,7 +460,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 status=401,
             )
             return False, None
-        return True, {"role": role, "actor_id": _local_actor_id(role, token)}
+        return True, {"role": role, "actor_id": _local_actor_id(auth_tokens, token, role)}
 
     def _role_has_permission(self, role: str | None, permission: str) -> bool:
         if role is None:
@@ -693,10 +692,10 @@ def _review_event_with_auth_context(
     audit_event: dict[str, Any],
     auth_context: dict[str, str | None] | None,
 ) -> dict[str, Any]:
-    actor_id = "local-anonymous"
+    actor_id = None
     actor_role = None
     if auth_context is not None:
-        actor_id = str(auth_context.get("actor_id") or actor_id)
+        actor_id = auth_context.get("actor_id")
         actor_role = auth_context.get("role")
     return {
         **audit_event,
@@ -717,7 +716,7 @@ def _validate_review_workflow_event(
     actor = audit_event.get("actor")
     actor_id = actor.get("id") if isinstance(actor, dict) else None
     if not isinstance(actor_id, str) or not actor_id:
-        raise RuntimeError("review approval requires an authenticated actor")
+        return
     for stored_event in reversed(stored_events):
         if stored_event.get("document_id") != audit_event["document_id"]:
             continue
@@ -729,12 +728,17 @@ def _validate_review_workflow_event(
         stored_actor_id = stored_actor.get("id") if isinstance(stored_actor, dict) else None
         if stored_actor_id == actor_id:
             raise RuntimeError("review approval must be performed by a different actor")
-        return
 
 
-def _local_actor_id(role: str, token: str) -> str:
-    token_digest = hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
-    return f"local:{role}:{token_digest}"
+def _local_actor_id(auth_tokens: dict[str, str], token: str, role: str) -> str:
+    same_role_tokens = [
+        candidate
+        for candidate, candidate_role in auth_tokens.items()
+        if candidate_role == role
+    ]
+    if len(same_role_tokens) == 1:
+        return f"local:{role}"
+    return f"local:{role}:{same_role_tokens.index(token) + 1}"
 
 
 def _utc_now_iso() -> str:
