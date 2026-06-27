@@ -1163,6 +1163,59 @@ def test_poc_http_api_scopes_approval_history_to_conversion_id() -> None:
     ]
 
 
+def test_poc_http_api_ignores_older_conversion_after_current_edit_match() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    store = ReviewAuditEventStore()
+    server.review_event_store = store
+    server.local_auth_tokens = _local_auth_tokens()
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        old_edit_status, _old_edit_body = _post_review_event_on_connection(
+            connection,
+            _review_audit_event(
+                conversion_id="conversion-old",
+                revised_text="Lot: SAMPLE-001 corrected",
+            ),
+            role_token="reviewer-token",
+        )
+        current_edit_status, _current_edit_body = _post_review_event_on_connection(
+            connection,
+            _review_audit_event(
+                conversion_id="conversion-current",
+                revised_text="Lot: SAMPLE-001 corrected",
+            ),
+            role_token="reviewer-token",
+        )
+        approve_status, approve_body = _post_review_event_on_connection(
+            connection,
+            _review_audit_event(
+                action="approve",
+                conversion_id="conversion-current",
+                original_text="Lot: SAMPLE-001",
+                revised_text="Lot: SAMPLE-001 corrected",
+            ),
+            role_token="admin-token",
+        )
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert old_edit_status == 202
+    assert current_edit_status == 202
+    assert approve_status == 202
+    assert approve_body["audit_event"]["conversion_id"] == "conversion-current"
+    assert [
+        (event["action"], event["conversion_id"])
+        for event in store.list_events()
+    ] == [
+        ("edit", "conversion-old"),
+        ("edit", "conversion-current"),
+        ("approve", "conversion-current"),
+    ]
+
+
 def test_poc_http_api_rejects_approval_with_unbound_conversion_id() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     store = ReviewAuditEventStore()

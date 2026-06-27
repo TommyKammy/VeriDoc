@@ -815,12 +815,18 @@ def _validate_review_workflow_event(
     actor_id = actor.get("id") if isinstance(actor, dict) else None
     audit_conversion_id = audit_event.get("conversion_id")
     latest_edit_revised_text = None
+    matched_audit_conversion_edit = False
     for stored_event in reversed(stored_events):
         if not _same_review_workflow_target_base(stored_event, audit_event):
             continue
         if _has_conflicting_review_conversion_id(stored_event, audit_event):
+            if matched_audit_conversion_edit:
+                continue
             _reject_cross_conversion_review_reuse(stored_event, audit_event, actor_id)
             continue
+        stored_conversion_id = stored_event.get("conversion_id")
+        if audit_conversion_id and stored_conversion_id == audit_conversion_id:
+            matched_audit_conversion_edit = True
         if latest_edit_revised_text is None:
             latest_edit_revised_text = stored_event.get("revised_text")
         stored_actor = stored_event.get("actor")
