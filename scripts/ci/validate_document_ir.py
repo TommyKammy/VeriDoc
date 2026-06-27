@@ -154,6 +154,14 @@ def validate_template_definition_consistency(template: dict[str, Any]) -> None:
                 ".source.anchor_id: "
                 f"references undeclared anchor {anchor_id!r}"
             )
+        anchor = anchors_by_id[anchor_id]
+        if source.get("direction") == "table_cell" and not _is_template_table_anchor(anchor):
+            raise ValidationError(
+                "$.fields"
+                f"[{index}]"
+                ".source.anchor_id: "
+                f"table_cell source references non-table anchor {anchor_id!r}"
+            )
         for rule_index, rule_id in enumerate(field.get("validation_rule_ids", [])):
             if rule_id not in rule_ids:
                 raise ValidationError(
@@ -184,8 +192,7 @@ def validate_template_definition_consistency(template: dict[str, Any]) -> None:
                 f"references undeclared anchor {anchor_id!r}"
             )
         anchor = anchors_by_id[anchor_id]
-        block_types = anchor.get("scope", {}).get("block_types", [])
-        if anchor.get("kind") != "table_header" or "table" not in block_types:
+        if not _is_template_table_anchor(anchor):
             raise ValidationError(
                 "$.tables"
                 f"[{index}]"
@@ -193,8 +200,10 @@ def validate_template_definition_consistency(template: dict[str, Any]) -> None:
                 f"references non-table anchor {anchor_id!r}"
             )
 
+    _validate_template_output_key_uniqueness(template)
+
     for index, rule in enumerate(template.get("validation_rules", [])):
-        _validate_template_rule_operands(rule, index, field_ids)
+        _validate_template_rule_operands(rule, index, fields_by_id)
 
     for index, field_mapping in enumerate(template.get("output_mapping", {}).get("field_map", [])):
         field_id = field_mapping.get("field_id")
@@ -245,6 +254,25 @@ def _unique_template_items(items: list[dict[str, Any]], key: str, path: str) -> 
     return items_by_id
 
 
+def _is_template_table_anchor(anchor: dict[str, Any]) -> bool:
+    block_types = anchor.get("scope", {}).get("block_types", [])
+    return anchor.get("kind") == "table_header" and "table" in block_types
+
+
+def _validate_template_output_key_uniqueness(template: dict[str, Any]) -> None:
+    seen_output_keys: dict[str, str] = {}
+    for section in ("fields", "tables"):
+        for index, item in enumerate(template.get(section, [])):
+            output_key = item.get("output_key")
+            path = f"$.{section}[{index}].output_key"
+            if output_key in seen_output_keys:
+                raise ValidationError(
+                    f"{path}: duplicates output_key {output_key!r} "
+                    f"already declared at {seen_output_keys[output_key]}"
+                )
+            seen_output_keys[output_key] = path
+
+
 def _validate_template_risk_rank(
     template: dict[str, Any],
     fields_by_id: dict[str, dict[str, Any]],
@@ -270,7 +298,12 @@ def _validate_template_risk_rank(
         )
 
 
-def _validate_template_rule_operands(rule: dict[str, Any], index: int, field_ids: set[str]) -> None:
+def _validate_template_rule_operands(
+    rule: dict[str, Any],
+    index: int,
+    fields_by_id: dict[str, dict[str, Any]],
+) -> None:
+    field_ids = set(fields_by_id)
     target = rule.get("target")
     if target not in field_ids:
         raise ValidationError(
@@ -281,8 +314,18 @@ def _validate_template_rule_operands(rule: dict[str, Any], index: int, field_ids
         )
 
     rule_type = rule.get("rule_type")
-    if rule_type == "type" and "expected_type" not in rule:
-        raise ValidationError(f"$.validation_rules[{index}].expected_type: required for type rule")
+    if rule_type == "type":
+        if "expected_type" not in rule:
+            raise ValidationError(f"$.validation_rules[{index}].expected_type: required for type rule")
+        expected_type = rule.get("expected_type")
+        declared_type = fields_by_id[target].get("value_type")
+        if expected_type != declared_type:
+            raise ValidationError(
+                "$.validation_rules"
+                f"[{index}]"
+                ".expected_type: "
+                f"{expected_type!r} does not match field {target!r} value_type {declared_type!r}"
+            )
     if rule_type == "range":
         if "minimum" not in rule and "maximum" not in rule:
             raise ValidationError(f"$.validation_rules[{index}]: range rule requires minimum or maximum")

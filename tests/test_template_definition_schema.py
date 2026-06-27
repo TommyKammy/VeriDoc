@@ -92,6 +92,20 @@ class TemplateDefinitionSchemaTest(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "references undeclared anchor"):
             self.validate_template(sample)
 
+    def test_table_cell_field_sources_must_reference_table_anchors(self) -> None:
+        sample = self.load_sample()
+        sample["fields"][0]["source"] = {
+            "anchor_id": "yield-table",
+            "direction": "table_cell",
+        }
+        self.validate_template(sample)
+
+        sample = self.load_sample()
+        sample["fields"][0]["source"]["direction"] = "table_cell"
+
+        with self.assertRaisesRegex(ValidationError, "table_cell source references non-table anchor"):
+            self.validate_template(sample)
+
     def test_risk_rank_levels_must_cover_used_levels(self) -> None:
         cases = (
             ("default_level", "medium", None),
@@ -149,6 +163,22 @@ class TemplateDefinitionSchemaTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValidationError, expected_error):
                     self.validate_template(sample)
 
+    def test_declared_output_keys_must_be_unique_across_fields_and_tables(self) -> None:
+        cases = (
+            ("field", "fields", 1, "batch.number", ("field_map", 1)),
+            ("table", "tables", 0, "batch.number", ("table_map", 0)),
+        )
+
+        for name, section, index, output_key, mapping_target in cases:
+            sample = self.load_sample()
+            sample[section][index]["output_key"] = output_key
+            mapping_section, mapping_index = mapping_target
+            sample["output_mapping"][mapping_section][mapping_index]["output_key"] = output_key
+
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(ValidationError, "duplicates output_key"):
+                    self.validate_template(sample)
+
     def test_validation_rules_require_operands_for_executable_rule_types(self) -> None:
         for rule_type, expected_error in (
             ("type", "expected_type"),
@@ -171,6 +201,22 @@ class TemplateDefinitionSchemaTest(unittest.TestCase):
                 validate(self.load_schema(), sample)
                 with self.assertRaisesRegex(ValidationError, expected_error):
                     validate_template_definition_consistency(sample)
+
+    def test_type_validation_rules_must_match_target_field_value_type(self) -> None:
+        sample = self.load_sample()
+        sample["validation_rules"].append(
+            {
+                "rule_id": "batch-number-type",
+                "target": "batch_number",
+                "rule_type": "type",
+                "severity": "error",
+                "message": "Batch number must be parsed as a number.",
+                "expected_type": "number",
+            }
+        )
+
+        with self.assertRaisesRegex(ValidationError, "does not match field 'batch_number' value_type 'string'"):
+            self.validate_template(sample)
 
     def test_validation_rule_operands_validate_when_present(self) -> None:
         sample = self.load_sample()
