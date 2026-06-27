@@ -7,7 +7,7 @@ from typing import Any, List, Optional
 
 SCHEMA_VERSION = "document-ir/v1"
 SOURCE_TYPES = {"pdf", "docx", "xlsx", "unknown"}
-BLOCK_TYPES = {"heading", "paragraph", "table", "field", "list_item"}
+BLOCK_TYPES = {"heading", "paragraph", "table", "field", "footnote", "list_item"}
 UNITS = {"pt", "px", "mm"}
 DEFAULT_PAGE_WIDTH_PT = 612.0
 DEFAULT_PAGE_HEIGHT_PT = 792.0

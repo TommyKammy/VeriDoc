@@ -54,7 +54,30 @@ class DocumentIrV1Test(unittest.TestCase):
         self.assertEqual("document-ir/v1", schema["properties"]["schema_version"]["const"])
         block_properties = schema["properties"]["blocks"]["items"]["properties"]
         self.assertIn("review", block_properties)
+        self.assertIn("footnote", block_properties["type"]["enum"])
         self.assertIn("warnings", schema["properties"])
+
+    def test_footnote_block_is_valid_document_ir_v1(self) -> None:
+        document_ir = self._document_ir_from_dataclasses(
+            pages=[DocumentPage(page_number=1, width=595.0, height=842.0)],
+            blocks=[
+                DocumentBlock(
+                    id="footnote-0001",
+                    type="footnote",
+                    text="OCR source note.",
+                    source_page=1,
+                    bbox=BoundingBox(x=72.0, y=744.0, width=360.0, height=18.0),
+                    extractor=ExtractorRef(name="unit-test"),
+                    confidence=0.95,
+                    review=ReviewState(requires_review=False, warnings=[]),
+                )
+            ],
+        )
+
+        result = validate_document_ir_v1(document_ir)
+
+        self.assertTrue(result.ok, result.errors)
+        self.assertFalse(result.requires_review, result.warnings)
 
     def test_pdf_parser_output_converts_to_valid_ir_v1_with_warnings(self) -> None:
         parser_output = {

@@ -9,7 +9,11 @@ import pytest
 from core.llm.conversion_plan import validate_conversion_plan
 from core.parsers.docx_extraction import extract_docx_structure
 from core.parsers.xlsx_extraction import extract_xlsx_structure
-from core.render.ooxml import render_docx_from_ir, render_xlsx_from_ir
+from core.render.ooxml import (
+    render_editable_docx_from_pdf_ir,
+    render_docx_from_ir,
+    render_xlsx_from_ir,
+)
 
 
 def _sample_ir() -> dict[str, object]:
@@ -71,6 +75,122 @@ def _sample_ir() -> dict[str, object]:
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_pdf_ir_v1_reconstructs_editable_docx_with_reviewable_provenance(
+    tmp_path: Path,
+) -> None:
+    document_ir = {
+        "schema_version": "document-ir/v1",
+        "document": {
+            "id": "pdf-reconstruction-sample",
+            "title": "PDF Reconstruction Sample",
+            "source_type": "pdf",
+        },
+        "pages": [
+            {"page_number": 1, "width": 595.0, "height": 842.0, "unit": "pt"},
+            {"page_number": 2, "width": 595.0, "height": 842.0, "unit": "pt"},
+        ],
+        "blocks": [
+            {
+                "id": "heading-1",
+                "type": "heading",
+                "text": "Manufacturing Record",
+                "source_page": 1,
+                "bbox": {"x": 72.0, "y": 64.0, "width": 240.0, "height": 24.0},
+                "extractor": {"name": "pymupdf", "version": "1.24.0"},
+                "confidence": 0.98,
+                "review": {"requires_review": False, "warnings": []},
+            },
+            {
+                "id": "paragraph-1",
+                "type": "paragraph",
+                "text": "Review each result before release.",
+                "source_page": 1,
+                "bbox": {"x": 72.0, "y": 104.0, "width": 300.0, "height": 18.0},
+                "extractor": {"name": "pymupdf", "version": "1.24.0"},
+                "confidence": 0.94,
+                "review": {"requires_review": False, "warnings": []},
+            },
+            {
+                "id": "footnote-1",
+                "type": "footnote",
+                "text": "Source note: OCR confidence below release threshold.",
+                "source_page": 2,
+                "bbox": {"x": 72.0, "y": 744.0, "width": 360.0, "height": 20.0},
+                "extractor": {"name": "pymupdf", "version": "1.24.0"},
+                "confidence": 0.7,
+                "review": {"requires_review": True, "warnings": ["low confidence"]},
+            },
+            {
+                "id": "table-1",
+                "type": "table",
+                "text": "Test\tResult\nAssay\t12.5",
+                "source_page": 1,
+                "bbox": {"x": 72.0, "y": 144.0, "width": 220.0, "height": 44.0},
+                "extractor": {"name": "pymupdf", "version": "1.24.0"},
+                "confidence": 0.6,
+                "review": {
+                    "requires_review": True,
+                    "warnings": ["blocks[3].parser marked block requires_review"],
+                },
+            },
+            {
+                "id": "footnote-2",
+                "type": "footnote",
+                "text": "Second source note.",
+                "source_page": 2,
+                "bbox": {"x": 72.0, "y": 768.0, "width": 240.0, "height": 20.0},
+                "extractor": {"name": "pymupdf", "version": "1.24.0"},
+                "confidence": 0.8,
+                "review": {"requires_review": False, "warnings": []},
+            },
+        ],
+        "warnings": ["document-level parser warning"],
+    }
+    output_path = tmp_path / "editable.docx"
+
+    render_editable_docx_from_pdf_ir(document_ir, output_path)
+
+    docx = extract_docx_structure(output_path)
+    assert [(block.kind, block.text, block.rows) for block in docx.blocks] == [
+        ("heading", "PDF Reconstruction Sample", None),
+        ("heading", "Manufacturing Record", None),
+        ("paragraph", "Review each result before release.", None),
+        ("table", "Test\tResult\nAssay\t12.5", [["Test", "Result"], ["Assay", "12.5"]]),
+    ]
+    with ZipFile(output_path) as archive:
+        names = set(archive.namelist())
+        document_xml = archive.read("word/document.xml").decode("utf-8")
+        relationships_xml = archive.read("word/_rels/document.xml.rels").decode("utf-8")
+        comments_xml = archive.read("word/comments.xml").decode("utf-8")
+        footnotes_xml = archive.read("word/footnotes.xml").decode("utf-8")
+
+    assert "word/comments.xml" in names
+    assert "word/footnotes.xml" in names
+    assert "relationships/comments" in relationships_xml
+    assert "relationships/footnotes" in relationships_xml
+    assert "w:footnoteReference" in document_xml
+    assert (
+        document_xml.index("Review each result before release.")
+        < document_xml.index('w:footnoteReference w:id="1"')
+        < document_xml.index("Assay")
+        < document_xml.index('w:footnoteReference w:id="2"')
+    )
+    assert footnotes_xml.count("<w:footnoteRef/>") == 2
+    assert '<w:footnote w:id="1"><w:p><w:r><w:footnoteRef/></w:r>' in footnotes_xml
+    assert '<w:footnote w:id="2"><w:p><w:r><w:footnoteRef/></w:r>' in footnotes_xml
+    assert "Source note: OCR confidence below release threshold." in footnotes_xml
+    assert "Second source note." in footnotes_xml
+    assert "document_warnings=document-level parser warning" in comments_xml
+    assert "block_id=table-1" in comments_xml
+    assert "source_page=1" in comments_xml
+    assert "bbox=72.0,144.0,220.0,44.0 pt" in comments_xml
+    assert "requires_review=true" in comments_xml
+    assert "blocks[3].parser marked block requires_review" in comments_xml
+    assert "block_id=footnote-1" in comments_xml
+    assert "block_id=footnote-2" in comments_xml
+    assert "low confidence" in comments_xml
 
 
 def test_same_ir_renders_deterministic_docx_and_xlsx_with_typed_cells(tmp_path: Path) -> None:
