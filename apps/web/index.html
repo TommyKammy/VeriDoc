@@ -1333,6 +1333,7 @@
         const title = document.createElement("strong");
         title.textContent = `${item.block_id} / page ${item.source_page}`;
         const text = document.createElement("div");
+        text.dataset.reviewTextFor = item.block_id;
         text.textContent = item.text;
         const badges = renderWarningBadges(item);
         const edit = document.createElement("textarea");
@@ -1454,8 +1455,6 @@
         if (item) {
           query.set("document_id", item.document_id);
           query.set("block_id", item.block_id);
-          const activeConversionId = state.latestResult?.conversion_id;
-          if (activeConversionId) query.set("conversion_id", activeConversionId);
         }
         const queryString = query.toString();
         const path = queryString ? `/api/review-events?${queryString}` : "/api/review-events";
@@ -1508,6 +1507,19 @@
           return typeof event.revised_text === "string" ? event.revised_text : null;
         }
         return null;
+      }
+
+      function surfaceSavedReviewEditText(item) {
+        const savedEditText = latestSavedReviewEditText(item);
+        if (savedEditText === null) return;
+        const edit = reviewList.querySelector(
+          `[data-review-edit-for="${CSS.escape(item.block_id)}"]`
+        );
+        if (edit) edit.value = savedEditText;
+        const text = reviewList.querySelector(
+          `[data-review-text-for="${CSS.escape(item.block_id)}"]`
+        );
+        if (text) text.textContent = savedEditText;
       }
 
       function sameReviewAuditTarget(event, item) {
@@ -1591,6 +1603,7 @@
           setReviewActionPending(item, true);
           if (action === "approve") {
             await refreshReviewAuditEvents(item);
+            surfaceSavedReviewEditText(item);
             const refreshedBlockReason = reviewActionBlockReason(item);
             if (refreshedBlockReason) {
               reviewActionStatus.textContent = refreshedBlockReason;

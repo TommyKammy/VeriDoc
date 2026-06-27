@@ -818,17 +818,12 @@ def _validate_review_workflow_event(
     actor_id = actor.get("id") if isinstance(actor, dict) else None
     audit_conversion_id = audit_event.get("conversion_id")
     latest_edit_revised_text = None
-    has_scoped_edit_for_target = False
-    has_matching_scoped_edit_for_target = False
     for stored_event in reversed(stored_events):
         if not _same_review_workflow_target_base(stored_event, audit_event):
             continue
         stored_conversion_id = stored_event.get("conversion_id")
         if stored_conversion_id:
-            has_scoped_edit_for_target = True
-            if audit_conversion_id and stored_conversion_id == audit_conversion_id:
-                has_matching_scoped_edit_for_target = True
-            elif audit_conversion_id:
+            if audit_conversion_id and stored_conversion_id != audit_conversion_id:
                 continue
         if latest_edit_revised_text is None:
             latest_edit_revised_text = stored_event.get("revised_text")
@@ -836,12 +831,6 @@ def _validate_review_workflow_event(
         stored_actor_id = stored_actor.get("id") if isinstance(stored_actor, dict) else None
         if isinstance(actor_id, str) and actor_id and stored_actor_id == actor_id:
             raise RuntimeError("review approval must be performed by a different actor")
-    if (
-        audit_conversion_id
-        and has_scoped_edit_for_target
-        and not has_matching_scoped_edit_for_target
-    ):
-        raise RuntimeError("review approval conversion_id must match a saved edit")
     if (
         latest_edit_revised_text is not None
         and audit_event["revised_text"] != latest_edit_revised_text

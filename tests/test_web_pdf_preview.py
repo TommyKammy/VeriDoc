@@ -102,6 +102,7 @@ def test_approve_review_action_uses_saved_edit_not_unsaved_draft() -> None:
 
     assert 'if (action === "edit" || action === "approve")' not in html
     assert "function latestSavedReviewEditText(item)" in html
+    assert "function surfaceSavedReviewEditText(item)" in html
     assert "function sameReviewAuditTarget(event, item)" in html
     assert "for (const event of state.reviewAuditEvents.slice().reverse())" in html
     assert 'if (event.action !== "edit" || !sameReviewAuditTarget(event, item)) continue;' in html
@@ -124,13 +125,18 @@ def test_approve_review_action_refreshes_saved_server_edits() -> None:
     assert "const query = new URLSearchParams();" in html
     assert 'query.set("document_id", item.document_id);' in html
     assert 'query.set("block_id", item.block_id);' in html
-    assert 'query.set("conversion_id", activeConversionId);' in html
+    assert 'query.set("conversion_id", activeConversionId);' not in html
     assert 'const response = await apiFetch(path);' in html
     assert 'apiFetch("/api/review-events");' not in html
     assert "state.reviewAuditEvents = reviewEvents;" in html
+    assert "surfaceSavedReviewEditText(item);" in html
+    assert 'text.dataset.reviewTextFor = item.block_id;' in html
+    assert 'edit.value = savedEditText;' in html
+    assert 'text.textContent = savedEditText;' in html
     assert re.search(
         r'if \(action === "approve"\) \{\s+'
         r"await refreshReviewAuditEvents\(item\);\s+"
+        r"surfaceSavedReviewEditText\(item\);\s+"
         r"const refreshedBlockReason = reviewActionBlockReason\(item\);\s+"
         r"if \(refreshedBlockReason\) \{\s+"
         r"reviewActionStatus\.textContent = refreshedBlockReason;\s+"

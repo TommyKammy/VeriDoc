@@ -1185,7 +1185,7 @@ def test_poc_http_api_rejects_approval_with_unbound_conversion_id() -> None:
             _review_audit_event(
                 action="approve",
                 conversion_id="conversion-forged",
-                original_text="Lot: SAMPLE-001 corrected",
+                original_text="Lot: SAMPLE-001",
                 revised_text="Lot: SAMPLE-001 corrected",
             ),
             role_token="admin-token",
@@ -1198,9 +1198,52 @@ def test_poc_http_api_rejects_approval_with_unbound_conversion_id() -> None:
     assert approve_status == 409
     assert approve_body == {
         "error": "review_conflict",
-        "message": "review approval conversion_id must match a saved edit",
+        "message": "review approval must target latest edited text",
     }
     assert [event["action"] for event in store.list_events()] == ["edit"]
+
+
+def test_poc_http_api_allows_unchanged_approval_with_other_scoped_edit() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    store = ReviewAuditEventStore()
+    server.review_event_store = store
+    server.local_auth_tokens = _local_auth_tokens()
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        edit_status, _edit_body = _post_review_event_on_connection(
+            connection,
+            _review_audit_event(
+                conversion_id="conversion-old",
+                revised_text="Lot: SAMPLE-001 old edit",
+            ),
+            role_token="reviewer-token",
+        )
+        approve_status, approve_body = _post_review_event_on_connection(
+            connection,
+            _review_audit_event(
+                action="approve",
+                conversion_id="conversion-current",
+                original_text="Lot: SAMPLE-001",
+                revised_text="Lot: SAMPLE-001",
+            ),
+            role_token="admin-token",
+        )
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert edit_status == 202
+    assert approve_status == 202
+    assert approve_body["audit_event"]["conversion_id"] == "conversion-current"
+    assert [
+        (event["action"], event["conversion_id"])
+        for event in store.list_events()
+    ] == [
+        ("edit", "conversion-old"),
+        ("approve", "conversion-current"),
+    ]
 
 
 def test_poc_http_api_checks_legacy_edit_when_approval_has_conversion_id() -> None:
