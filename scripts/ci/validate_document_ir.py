@@ -133,10 +133,16 @@ def validate_document_ir_consistency(document: dict[str, Any]) -> None:
 
 
 def validate_template_definition_consistency(template: dict[str, Any]) -> None:
-    anchor_ids = _unique_template_ids(template.get("anchors", []), "anchor_id", "$.anchors")
-    field_ids = _unique_template_ids(template.get("fields", []), "field_id", "$.fields")
-    table_ids = _unique_template_ids(template.get("tables", []), "table_id", "$.tables")
-    rule_ids = _unique_template_ids(template.get("validation_rules", []), "rule_id", "$.validation_rules")
+    anchors_by_id = _unique_template_items(template.get("anchors", []), "anchor_id", "$.anchors")
+    anchor_ids = set(anchors_by_id)
+    fields_by_id = _unique_template_items(template.get("fields", []), "field_id", "$.fields")
+    field_ids = set(fields_by_id)
+    tables_by_id = _unique_template_items(template.get("tables", []), "table_id", "$.tables")
+    table_ids = set(tables_by_id)
+    rules_by_id = _unique_template_items(template.get("validation_rules", []), "rule_id", "$.validation_rules")
+    rule_ids = set(rules_by_id)
+
+    _validate_template_risk_rank(template, fields_by_id, tables_by_id)
 
     for index, field in enumerate(template.get("fields", [])):
         source = field.get("source", {})
@@ -157,6 +163,16 @@ def validate_template_definition_consistency(template: dict[str, Any]) -> None:
                     f"[{rule_index}]"
                     f": references undeclared validation rule {rule_id!r}"
                 )
+            rule = rules_by_id[rule_id]
+            if rule.get("target") != field.get("field_id"):
+                raise ValidationError(
+                    "$.fields"
+                    f"[{index}]"
+                    ".validation_rule_ids"
+                    f"[{rule_index}]"
+                    f": validation rule {rule_id!r} targets {rule.get('target')!r}, "
+                    f"not field {field.get('field_id')!r}"
+                )
 
     for index, table in enumerate(template.get("tables", [])):
         anchor_id = table.get("anchor_id")
@@ -166,6 +182,15 @@ def validate_template_definition_consistency(template: dict[str, Any]) -> None:
                 f"[{index}]"
                 ".anchor_id: "
                 f"references undeclared anchor {anchor_id!r}"
+            )
+        anchor = anchors_by_id[anchor_id]
+        block_types = anchor.get("scope", {}).get("block_types", [])
+        if anchor.get("kind") != "table_header" or "table" not in block_types:
+            raise ValidationError(
+                "$.tables"
+                f"[{index}]"
+                ".anchor_id: "
+                f"references non-table anchor {anchor_id!r}"
             )
 
     for index, rule in enumerate(template.get("validation_rules", [])):
@@ -180,6 +205,14 @@ def validate_template_definition_consistency(template: dict[str, Any]) -> None:
                 ".field_id: "
                 f"references undeclared field {field_id!r}"
             )
+        expected_output_key = fields_by_id[field_id].get("output_key")
+        if field_mapping.get("output_key") != expected_output_key:
+            raise ValidationError(
+                "$.output_mapping.field_map"
+                f"[{index}]"
+                ".output_key: "
+                f"must match field {field_id!r} output_key {expected_output_key!r}"
+            )
 
     for index, table_mapping in enumerate(template.get("output_mapping", {}).get("table_map", [])):
         table_id = table_mapping.get("table_id")
@@ -190,16 +223,51 @@ def validate_template_definition_consistency(template: dict[str, Any]) -> None:
                 ".table_id: "
                 f"references undeclared table {table_id!r}"
             )
+        expected_output_key = tables_by_id[table_id].get("output_key")
+        if table_mapping.get("output_key") != expected_output_key:
+            raise ValidationError(
+                "$.output_mapping.table_map"
+                f"[{index}]"
+                ".output_key: "
+                f"must match table {table_id!r} output_key {expected_output_key!r}"
+            )
 
 
-def _unique_template_ids(items: list[dict[str, Any]], key: str, path: str) -> set[str]:
+def _unique_template_items(items: list[dict[str, Any]], key: str, path: str) -> dict[str, dict[str, Any]]:
+    items_by_id: dict[str, dict[str, Any]] = {}
     ids: set[str] = set()
     for index, item in enumerate(items):
         item_id = item.get(key)
         if item_id in ids:
             raise ValidationError(f"{path}[{index}].{key}: duplicates {item_id!r}")
         ids.add(item_id)
-    return ids
+        items_by_id[item_id] = item
+    return items_by_id
+
+
+def _validate_template_risk_rank(
+    template: dict[str, Any],
+    fields_by_id: dict[str, dict[str, Any]],
+    tables_by_id: dict[str, dict[str, Any]],
+) -> None:
+    risk_rank = template.get("risk_rank", {})
+    declared_levels = {
+        level.get("level")
+        for level in risk_rank.get("levels", [])
+    }
+    used_levels = {
+        risk_rank.get("default_level"),
+        *risk_rank.get("review_required_levels", []),
+        *(field.get("risk_level") for field in fields_by_id.values()),
+        *(table.get("risk_level") for table in tables_by_id.values()),
+    }
+    missing_levels = sorted(level for level in used_levels if level not in declared_levels)
+    if missing_levels:
+        raise ValidationError(
+            "$.risk_rank.levels: "
+            "missing level definition(s) for "
+            + ", ".join(repr(level) for level in missing_levels)
+        )
 
 
 def _validate_template_rule_operands(rule: dict[str, Any], index: int, field_ids: set[str]) -> None:

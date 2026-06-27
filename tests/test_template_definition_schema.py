@@ -92,6 +92,63 @@ class TemplateDefinitionSchemaTest(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "references undeclared anchor"):
             self.validate_template(sample)
 
+    def test_risk_rank_levels_must_cover_used_levels(self) -> None:
+        cases = (
+            ("default_level", "medium", None),
+            ("review_required_levels", "critical", None),
+            ("field.risk_level", "low", ("fields", 0)),
+            ("table.risk_level", "low", ("tables", 0)),
+        )
+
+        for name, removed_level, mutation_target in cases:
+            sample = self.load_sample()
+            if mutation_target is not None:
+                section, index = mutation_target
+                sample[section][index]["risk_level"] = removed_level
+            sample["risk_rank"]["levels"] = [
+                level
+                for level in sample["risk_rank"]["levels"]
+                if level["level"] != removed_level
+            ]
+
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(ValidationError, "risk_rank.levels"):
+                    self.validate_template(sample)
+
+    def test_field_validation_rule_ids_must_target_same_field(self) -> None:
+        sample = self.load_sample()
+        sample["fields"][1]["validation_rule_ids"] = ["batch-number-required"]
+
+        with self.assertRaisesRegex(ValidationError, "not field 'manufacturing_date'"):
+            self.validate_template(sample)
+
+    def test_tables_must_reference_table_anchors(self) -> None:
+        sample = self.load_sample()
+        sample["tables"][0]["anchor_id"] = "batch-header"
+
+        with self.assertRaisesRegex(ValidationError, "non-table anchor"):
+            self.validate_template(sample)
+
+        sample = self.load_sample()
+        sample["anchors"][1]["scope"]["block_types"] = ["paragraph"]
+
+        with self.assertRaisesRegex(ValidationError, "non-table anchor"):
+            self.validate_template(sample)
+
+    def test_output_mapping_keys_must_match_declared_output_keys(self) -> None:
+        cases = (
+            ("field_map", "output_mapping.field_map", "changed.batch_number"),
+            ("table_map", "output_mapping.table_map", "changed.yield_summary"),
+        )
+
+        for section, expected_error, output_key in cases:
+            sample = self.load_sample()
+            sample["output_mapping"][section][0]["output_key"] = output_key
+
+            with self.subTest(section=section):
+                with self.assertRaisesRegex(ValidationError, expected_error):
+                    self.validate_template(sample)
+
     def test_validation_rules_require_operands_for_executable_rule_types(self) -> None:
         for rule_type, expected_error in (
             ("type", "expected_type"),
