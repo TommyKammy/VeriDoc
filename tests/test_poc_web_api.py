@@ -1421,6 +1421,49 @@ def test_poc_http_api_uses_principal_id_for_review_separation() -> None:
     assert [event["action"] for event in store.list_events()] == ["edit"]
 
 
+def test_poc_http_api_rejects_same_principal_approval_with_forged_conversion_id() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    store = ReviewAuditEventStore()
+    server.review_event_store = store
+    server.local_auth_tokens = {
+        "same-reviewer-token": {"role": "reviewer", "principal_id": "same-person"},
+        "same-approver-token": {"role": "approver", "principal_id": "same-person"},
+    }
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        edit_status, _edit_body = _post_review_event_on_connection(
+            connection,
+            _review_audit_event(
+                conversion_id="conversion-saved",
+                revised_text="Lot: SAMPLE-001 corrected",
+            ),
+            role_token="same-reviewer-token",
+        )
+        approve_status, approve_body = _post_review_event_on_connection(
+            connection,
+            _review_audit_event(
+                action="approve",
+                conversion_id="conversion-forged",
+                original_text="Lot: SAMPLE-001 corrected",
+                revised_text="Lot: SAMPLE-001 corrected",
+            ),
+            role_token="same-approver-token",
+        )
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert edit_status == 202
+    assert approve_status == 409
+    assert approve_body == {
+        "error": "review_conflict",
+        "message": "review approval must be performed by a different actor",
+    }
+    assert [event["action"] for event in store.list_events()] == ["edit"]
+
+
 def test_review_event_store_validates_and_records_under_same_lock() -> None:
     store = ReviewAuditEventStore()
     store.record(

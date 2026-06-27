@@ -139,14 +139,14 @@ def test_approve_review_action_refreshes_saved_server_edits() -> None:
     assert re.search(
         r'if \(action === "approve"\) \{\s+'
         r"savedEditText = await loadLatestSavedReviewEditText\(item\);\s+"
-        r"if \(savedEditText !== null\) \{\s+"
-        r"surfaceSavedReviewEditText\(item, savedEditText\);\s+"
-        r"\}\s+"
         r"const refreshedBlockReason = reviewActionBlockReason\(item\);\s+"
         r"if \(refreshedBlockReason\) \{\s+"
         r"reviewActionStatus\.textContent = refreshedBlockReason;\s+"
         r'reviewActionStatus\.className = "page-status error";\s+'
         r"return;\s+"
+        r"\}\s+"
+        r"if \(savedEditText !== null\) \{\s+"
+        r"surfaceSavedReviewEditText\(item, savedEditText\);\s+"
         r"\}\s+"
         r"\}\s+"
         r"const auditEvent = buildReviewAuditEvent\(item, action, savedEditText\);",

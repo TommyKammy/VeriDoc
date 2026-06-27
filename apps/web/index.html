@@ -1603,14 +1603,14 @@
           setReviewActionPending(item, true);
           if (action === "approve") {
             savedEditText = await loadLatestSavedReviewEditText(item);
-            if (savedEditText !== null) {
-              surfaceSavedReviewEditText(item, savedEditText);
-            }
             const refreshedBlockReason = reviewActionBlockReason(item);
             if (refreshedBlockReason) {
               reviewActionStatus.textContent = refreshedBlockReason;
               reviewActionStatus.className = "page-status error";
               return;
+            }
+            if (savedEditText !== null) {
+              surfaceSavedReviewEditText(item, savedEditText);
             }
           }
           const auditEvent = buildReviewAuditEvent(item, action, savedEditText);
