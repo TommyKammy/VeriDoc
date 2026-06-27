@@ -794,6 +794,11 @@ def _validate_review_workflow_event(
         and audit_event["revised_text"] != latest_edit_revised_text
     ):
         _reject_stale_review_approval()
+    if (
+        latest_edit_revised_text is None
+        and audit_event["revised_text"] != audit_event["original_text"]
+    ):
+        _reject_stale_review_approval()
 
 
 def _reject_stale_review_approval() -> None:

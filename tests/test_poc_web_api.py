@@ -1203,6 +1203,22 @@ def test_poc_http_api_rejects_approval_for_stale_review_text() -> None:
     assert [event["action"] for event in store.list_events()] == ["edit"]
 
 
+def test_poc_http_api_rejects_changed_approval_without_saved_edit() -> None:
+    audit_event = _review_audit_event(
+        action="approve",
+        revised_text="Lot: SAMPLE-001 corrected",
+    )
+
+    status, body, events = _post_review_audit_event_with_store(audit_event)
+
+    assert status == 409
+    assert body == {
+        "error": "review_conflict",
+        "message": "review approval must target latest edited text",
+    }
+    assert events == []
+
+
 def test_poc_http_api_allows_approval_with_revised_text_target() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     store = ReviewAuditEventStore()
