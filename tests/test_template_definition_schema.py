@@ -48,6 +48,9 @@ class TemplateDefinitionSchemaTest(unittest.TestCase):
         def mismatched_field_rule_target(sample: dict[str, object]) -> None:
             sample["fields"][1]["validation_rule_ids"] = ["batch-number-required"]
 
+        def unlinked_rule_target(sample: dict[str, object]) -> None:
+            sample["fields"][0]["validation_rule_ids"] = []
+
         def table_cell_non_table_anchor(sample: dict[str, object]) -> None:
             sample["fields"][0]["source"]["direction"] = "table_cell"
 
@@ -70,6 +73,7 @@ class TemplateDefinitionSchemaTest(unittest.TestCase):
             ]
 
         def range_on_non_numeric_field(sample: dict[str, object]) -> None:
+            sample["fields"][0]["validation_rule_ids"].append("batch-number-range")
             sample["validation_rules"].append(
                 {
                     "rule_id": "batch-number-range",
@@ -83,6 +87,7 @@ class TemplateDefinitionSchemaTest(unittest.TestCase):
             )
 
         def type_rule_mismatch(sample: dict[str, object]) -> None:
+            sample["fields"][0]["validation_rule_ids"].append("batch-number-type")
             sample["validation_rules"].append(
                 {
                     "rule_id": "batch-number-type",
@@ -96,6 +101,7 @@ class TemplateDefinitionSchemaTest(unittest.TestCase):
 
         def allowed_values_type_mismatch(sample: dict[str, object]) -> None:
             sample["fields"][0]["value_type"] = "number"
+            sample["fields"][0]["validation_rule_ids"].append("batch-number-values")
             sample["validation_rules"].append(
                 {
                     "rule_id": "batch-number-values",
@@ -108,6 +114,7 @@ class TemplateDefinitionSchemaTest(unittest.TestCase):
             )
 
         def cross_field_incompatible_types(sample: dict[str, object]) -> None:
+            sample["fields"][1]["validation_rule_ids"].append("date-order")
             sample["validation_rules"].append(
                 {
                     "rule_id": "date-order",
@@ -124,6 +131,7 @@ class TemplateDefinitionSchemaTest(unittest.TestCase):
             ("non_document_ir_scope_block_type", non_document_ir_scope_block_type, "expected one of"),
             ("dangling_field_anchor", dangling_field_anchor, "references undeclared anchor"),
             ("mismatched_field_rule_target", mismatched_field_rule_target, "not field 'manufacturing_date'"),
+            ("unlinked_rule_target", unlinked_rule_target, "must include validation rule 'batch-number-required'"),
             ("table_cell_non_table_anchor", table_cell_non_table_anchor, "table_cell source references non-table anchor"),
             ("table_uses_non_table_anchor", table_uses_non_table_anchor, "non-table anchor"),
             ("conflicting_output_mapping", conflicting_output_mapping, "must match field 'batch_number' output_key"),
@@ -352,6 +360,7 @@ class TemplateDefinitionSchemaTest(unittest.TestCase):
             sample = self.load_sample()
             if rule_type == "range":
                 sample["fields"][0]["value_type"] = "number"
+            sample["fields"][0]["validation_rule_ids"].append(f"{rule_type}-rule")
             sample["validation_rules"].append(
                 {
                     "rule_id": f"{rule_type}-rule",
@@ -369,6 +378,7 @@ class TemplateDefinitionSchemaTest(unittest.TestCase):
 
     def test_type_validation_rules_must_match_target_field_value_type(self) -> None:
         sample = self.load_sample()
+        sample["fields"][0]["validation_rule_ids"].append("batch-number-type")
         sample["validation_rules"].append(
             {
                 "rule_id": "batch-number-type",
@@ -385,6 +395,7 @@ class TemplateDefinitionSchemaTest(unittest.TestCase):
 
     def test_range_validation_rules_require_numeric_targets(self) -> None:
         sample = self.load_sample()
+        sample["fields"][0]["validation_rule_ids"].append("batch-number-range")
         sample["validation_rules"].append(
             {
                 "rule_id": "batch-number-range",
@@ -403,6 +414,7 @@ class TemplateDefinitionSchemaTest(unittest.TestCase):
     def test_allowed_values_must_match_target_field_value_type(self) -> None:
         sample = self.load_sample()
         sample["fields"][0]["value_type"] = "number"
+        sample["fields"][0]["validation_rule_ids"].append("batch-number-values")
         sample["validation_rules"].append(
             {
                 "rule_id": "batch-number-values",
@@ -419,6 +431,7 @@ class TemplateDefinitionSchemaTest(unittest.TestCase):
 
     def test_cross_field_ordering_rules_require_compatible_value_types(self) -> None:
         sample = self.load_sample()
+        sample["fields"][1]["validation_rule_ids"].append("date-order")
         sample["validation_rules"].append(
             {
                 "rule_id": "date-order",
@@ -488,6 +501,8 @@ class TemplateDefinitionSchemaTest(unittest.TestCase):
             sample = self.load_sample()
             if batch_number_type is not None:
                 sample["fields"][0]["value_type"] = batch_number_type
+            target_field_index = 1 if rule["target"] == "manufacturing_date" else 0
+            sample["fields"][target_field_index]["validation_rule_ids"].append(rule["rule_id"])
             sample["validation_rules"].append(rule)
 
             with self.subTest(rule_id=rule["rule_id"]):

@@ -182,6 +182,20 @@ def validate_template_definition_consistency(template: dict[str, Any]) -> None:
                     f"not field {field.get('field_id')!r}"
                 )
 
+    for index, rule in enumerate(template.get("validation_rules", [])):
+        target = rule.get("target")
+        if target in fields_by_id:
+            rule_id = rule.get("rule_id")
+            target_rule_ids = fields_by_id[target].get("validation_rule_ids", [])
+            if rule_id not in target_rule_ids:
+                raise ValidationError(
+                    "$.validation_rules"
+                    f"[{index}]"
+                    ".target: "
+                    f"field {target!r} must include validation rule {rule_id!r} "
+                    "in validation_rule_ids"
+                )
+
     for index, table in enumerate(template.get("tables", [])):
         anchor_id = table.get("anchor_id")
         if anchor_id not in anchor_ids:
