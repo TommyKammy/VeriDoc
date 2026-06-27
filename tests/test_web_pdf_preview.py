@@ -58,7 +58,7 @@ def test_review_item_can_jump_to_preview_bbox() -> None:
 def test_review_item_exposes_edit_and_approve_audit_events() -> None:
     html = _web_html()
 
-    assert "function buildReviewAuditEvent(item, action)" in html
+    assert "function buildReviewAuditEvent(item, action, savedEditText = null)" in html
     assert 'event_type: "conversion_review.action_requested"' in html
     assert "document_id: item.document_id" in html
     assert "block_id: item.block_id" in html
@@ -84,7 +84,7 @@ def test_review_item_exposes_edit_and_approve_audit_events() -> None:
     assert "validBbox(item.source_bbox, item.source_page_geometry)" in html
     assert "jump.disabled = !reviewAuditSourceBbox(item)" in html
     assert 'if (action === "edit")' in html
-    assert 'const savedEditText = latestSavedReviewEditText(item);' in html
+    assert "savedEditText = latestSavedReviewEditText(item);" in html
     assert "event.revised_text = revisedText" in html
     assert "function requestReviewAction(item, action)" in html
     assert "try {" in html
@@ -102,15 +102,14 @@ def test_approve_review_action_uses_saved_edit_not_unsaved_draft() -> None:
 
     assert 'if (action === "edit" || action === "approve")' not in html
     assert "function latestSavedReviewEditText(item)" in html
-    assert "function surfaceSavedReviewEditText(item)" in html
+    assert "function surfaceSavedReviewEditText(item, savedEditText)" in html
     assert "function sameReviewAuditTarget(event, item)" in html
     assert "for (const event of state.reviewAuditEvents.slice().reverse())" in html
     assert 'if (event.action !== "edit" || !sameReviewAuditTarget(event, item)) continue;' in html
     assert re.search(
         r'\} else if \(action === "approve"\) \{\s+'
-        r"const savedEditText = latestSavedReviewEditText\(item\);\s+"
         r"if \(savedEditText !== null\) \{\s+"
-        r"event\.revised_text = savedEditText;\s+"
+        r"event\.revised_text = revisedText;\s+"
         r"\}\s+"
         r"\}",
         html,
@@ -129,14 +128,19 @@ def test_approve_review_action_refreshes_saved_server_edits() -> None:
     assert 'const response = await apiFetch(path);' in html
     assert 'apiFetch("/api/review-events");' not in html
     assert "state.reviewAuditEvents = reviewEvents;" in html
-    assert "surfaceSavedReviewEditText(item);" in html
+    assert "savedEditText = latestSavedReviewEditText(item);" in html
+    assert "surfaceSavedReviewEditText(item, savedEditText);" in html
     assert 'text.dataset.reviewTextFor = item.block_id;' in html
     assert 'edit.value = savedEditText;' in html
     assert 'text.textContent = savedEditText;' in html
+    assert "buildReviewAuditEvent(item, action, savedEditText);" in html
     assert re.search(
         r'if \(action === "approve"\) \{\s+'
         r"await refreshReviewAuditEvents\(item\);\s+"
-        r"surfaceSavedReviewEditText\(item\);\s+"
+        r"savedEditText = latestSavedReviewEditText\(item\);\s+"
+        r"if \(savedEditText !== null\) \{\s+"
+        r"surfaceSavedReviewEditText\(item, savedEditText\);\s+"
+        r"\}\s+"
         r"const refreshedBlockReason = reviewActionBlockReason\(item\);\s+"
         r"if \(refreshedBlockReason\) \{\s+"
         r"reviewActionStatus\.textContent = refreshedBlockReason;\s+"
@@ -144,7 +148,7 @@ def test_approve_review_action_refreshes_saved_server_edits() -> None:
         r"return;\s+"
         r"\}\s+"
         r"\}\s+"
-        r"const auditEvent = buildReviewAuditEvent\(item, action\);",
+        r"const auditEvent = buildReviewAuditEvent\(item, action, savedEditText\);",
         html,
         flags=re.S,
     )

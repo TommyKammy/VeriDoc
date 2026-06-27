@@ -1475,7 +1475,7 @@
         state.reviewAuditEvents = reviewEvents;
       }
 
-      function buildReviewAuditEvent(item, action) {
+      function buildReviewAuditEvent(item, action, savedEditText = null) {
         const revisedText = reviewDraftText(item);
         const event = {
           event_type: "conversion_review.action_requested",
@@ -1493,9 +1493,8 @@
         if (action === "edit") {
           event.revised_text = revisedText;
         } else if (action === "approve") {
-          const savedEditText = latestSavedReviewEditText(item);
           if (savedEditText !== null) {
-            event.revised_text = savedEditText;
+            event.revised_text = revisedText;
           }
         }
         return event;
@@ -1509,9 +1508,7 @@
         return null;
       }
 
-      function surfaceSavedReviewEditText(item) {
-        const savedEditText = latestSavedReviewEditText(item);
-        if (savedEditText === null) return;
+      function surfaceSavedReviewEditText(item, savedEditText) {
         const edit = reviewList.querySelector(
           `[data-review-edit-for="${CSS.escape(item.block_id)}"]`
         );
@@ -1594,6 +1591,7 @@
         const actionKey = reviewActionKey(item);
         const pendingOwner = Symbol(actionKey);
         let actionStarted = false;
+        let savedEditText = null;
         try {
           const blockReason = reviewActionBlockReason(item);
           if (blockReason) throw new Error(blockReason);
@@ -1603,7 +1601,10 @@
           setReviewActionPending(item, true);
           if (action === "approve") {
             await refreshReviewAuditEvents(item);
-            surfaceSavedReviewEditText(item);
+            savedEditText = latestSavedReviewEditText(item);
+            if (savedEditText !== null) {
+              surfaceSavedReviewEditText(item, savedEditText);
+            }
             const refreshedBlockReason = reviewActionBlockReason(item);
             if (refreshedBlockReason) {
               reviewActionStatus.textContent = refreshedBlockReason;
@@ -1611,7 +1612,7 @@
               return;
             }
           }
-          const auditEvent = buildReviewAuditEvent(item, action);
+          const auditEvent = buildReviewAuditEvent(item, action, savedEditText);
           const response = await apiFetch("/api/review-events", {
             method: "POST",
             headers: { "Content-Type": "application/json" },

@@ -156,20 +156,17 @@ def convert_uploaded_document(*, filename: str, content: bytes) -> dict[str, Any
     )
     validation = validate_document_ir_v1(document_ir)
     review_items = _review_items(document_ir)
-    payload = {
+    download_payload = {
         "document_ir": document_ir.to_dict(),
-        "conversion_id": conversion_id,
         "validation": asdict(validation),
         "review_items": review_items,
         "warnings": [*input_warnings, *validation.warnings],
     }
-    download_payload = {
-        key: value for key, value in payload.items() if key != "conversion_id"
-    }
     download_content = _strict_json_bytes(download_payload, indent=2)
     return {
         "status": _status(validation.ok, validation.requires_review),
-        **payload,
+        "conversion_id": conversion_id,
+        **download_payload,
         "download": {
             "filename": f"{Path(safe_filename).stem}.veridoc-result.json",
             "content_type": "application/json; charset=utf-8",
@@ -831,15 +828,12 @@ def _validate_review_workflow_event(
         stored_actor_id = stored_actor.get("id") if isinstance(stored_actor, dict) else None
         if isinstance(actor_id, str) and actor_id and stored_actor_id == actor_id:
             raise RuntimeError("review approval must be performed by a different actor")
-    if (
-        latest_edit_revised_text is not None
-        and audit_event["revised_text"] != latest_edit_revised_text
-    ):
-        _reject_stale_review_approval()
-    if (
-        latest_edit_revised_text is None
-        and audit_event["revised_text"] != audit_event["original_text"]
-    ):
+    expected_revised_text = (
+        latest_edit_revised_text
+        if latest_edit_revised_text is not None
+        else audit_event["original_text"]
+    )
+    if audit_event["revised_text"] != expected_revised_text:
         _reject_stale_review_approval()
 
 
