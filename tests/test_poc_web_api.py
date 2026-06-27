@@ -1126,6 +1126,43 @@ def test_poc_http_api_scopes_approval_history_to_conversion_id() -> None:
     ]
 
 
+def test_poc_http_api_checks_legacy_edit_when_approval_has_conversion_id() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    store = ReviewAuditEventStore()
+    server.review_event_store = store
+    server.local_auth_tokens = _local_auth_tokens()
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        legacy_edit_status, _legacy_edit_body = _post_review_event_on_connection(
+            connection,
+            _review_audit_event(revised_text="Lot: SAMPLE-001 legacy edit"),
+            role_token="reviewer-token",
+        )
+        approve_status, approve_body = _post_review_event_on_connection(
+            connection,
+            _review_audit_event(
+                action="approve",
+                conversion_id="conversion-current",
+                original_text="Lot: SAMPLE-001",
+                revised_text="Lot: SAMPLE-001",
+            ),
+            role_token="admin-token",
+        )
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert legacy_edit_status == 202
+    assert approve_status == 409
+    assert approve_body == {
+        "error": "review_conflict",
+        "message": "review approval must target latest edited text",
+    }
+    assert [event["action"] for event in store.list_events()] == ["edit"]
+
+
 def test_poc_http_api_rejects_approval_for_stale_review_text() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     store = ReviewAuditEventStore()
@@ -1329,6 +1366,44 @@ def test_poc_http_api_preserves_no_auth_review_approval_flow(
     assert [event["action"] for event in store.list_events()] == ["edit", "approve"]
 
 
+def test_poc_http_api_validates_no_auth_approval_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(poc_web.LOCAL_AUTH_TOKENS_ENV, raising=False)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    store = ReviewAuditEventStore()
+    server.review_event_store = store
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        edit_status, _edit_body = _post_review_event_on_connection(
+            connection,
+            _review_audit_event(revised_text="Lot: SAMPLE-001 corrected"),
+            role_token=None,
+        )
+        approve_status, approve_body = _post_review_event_on_connection(
+            connection,
+            _review_audit_event(
+                action="approve",
+                original_text="Lot: SAMPLE-001",
+                revised_text="Lot: SAMPLE-001",
+            ),
+            role_token=None,
+        )
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert edit_status == 202
+    assert approve_status == 409
+    assert approve_body == {
+        "error": "review_conflict",
+        "message": "review approval must target latest edited text",
+    }
+    assert [event["action"] for event in store.list_events()] == ["edit"]
+
+
 def test_poc_http_api_requires_configured_local_auth_token_for_review_events() -> None:
     audit_event = _review_audit_event()
 
@@ -1340,6 +1415,32 @@ def test_poc_http_api_requires_configured_local_auth_token_for_review_events() -
         "message": "Authorization bearer token is required",
     }
     assert events == []
+
+
+def test_poc_http_api_rejects_role_token_without_principal_id() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    store = ReviewAuditEventStore()
+    server.review_event_store = store
+    server.local_auth_tokens = {"reviewer-token": "reviewer"}
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        status, body = _post_review_event_on_connection(
+            connection,
+            _review_audit_event(),
+            role_token="reviewer-token",
+        )
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert status == 401
+    assert body == {
+        "error": "auth_required",
+        "message": "Authorization bearer token is invalid",
+    }
+    assert store.list_events() == []
 
 
 def test_poc_http_api_authenticates_review_events_before_parsing_payload() -> None:

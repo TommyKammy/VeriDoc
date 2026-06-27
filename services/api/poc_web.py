@@ -550,7 +550,7 @@ def _local_auth_tokens(server: Any) -> dict[str, dict[str, str | None]] | None:
         else:
             role_text = str(credential).strip()
             principal_id = None
-        if token_text and role_text in ROLES:
+        if token_text and role_text in ROLES and principal_id is not None:
             tokens[token_text] = {
                 "role": role_text,
                 "principal_id": principal_id,
@@ -569,7 +569,7 @@ def _local_auth_tokens_from_env(value: str) -> dict[str, dict[str, str | None]] 
             continue
         role_text, principal_id = _local_role_and_principal(identity)
         token_text = token.strip()
-        if role_text in ROLES and token_text:
+        if role_text in ROLES and principal_id is not None and token_text:
             tokens[token_text] = {"role": role_text, "principal_id": principal_id}
     return tokens
 
@@ -781,8 +781,6 @@ def _validate_review_workflow_event(
         return
     actor = audit_event.get("actor")
     actor_id = actor.get("id") if isinstance(actor, dict) else None
-    if not isinstance(actor_id, str) or not actor_id:
-        return
     latest_edit_revised_text = None
     for stored_event in reversed(stored_events):
         if not _same_review_workflow_target(stored_event, audit_event):
@@ -791,7 +789,7 @@ def _validate_review_workflow_event(
             latest_edit_revised_text = stored_event.get("revised_text")
         stored_actor = stored_event.get("actor")
         stored_actor_id = stored_actor.get("id") if isinstance(stored_actor, dict) else None
-        if stored_actor_id == actor_id:
+        if isinstance(actor_id, str) and actor_id and stored_actor_id == actor_id:
             raise RuntimeError("review approval must be performed by a different actor")
     if (
         latest_edit_revised_text is not None
@@ -812,16 +810,16 @@ def _same_review_workflow_target(
         return False
     stored_conversion_id = stored_event.get("conversion_id")
     audit_conversion_id = audit_event.get("conversion_id")
-    if stored_conversion_id or audit_conversion_id:
+    if stored_conversion_id and audit_conversion_id:
         return stored_conversion_id == audit_conversion_id
     return True
 
 
-def _local_actor_id(credential: dict[str, str | None]) -> str:
+def _local_actor_id(credential: dict[str, str | None]) -> str | None:
     principal_id = credential.get("principal_id")
     if principal_id:
         return f"local-principal:{principal_id}"
-    return f"local-{credential['token_id']}"
+    return None
 
 
 def _conversion_id() -> str:
