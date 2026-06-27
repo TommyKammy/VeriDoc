@@ -14,6 +14,7 @@ ASCII_NUMBER_RE = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?\Z")
 XLSX_RANGE_RE = re.compile(r"[A-Z]+[1-9][0-9]*:[A-Z]+[1-9][0-9]*\Z")
 XLSX_CELL_RE = re.compile(r"([A-Z]+)([1-9][0-9]*)\Z")
 SUPPORTED_BLOCK_TYPES = {"field", "heading", "list_item", "paragraph", "table"}
+EDITABLE_PDF_BLOCK_TYPES = SUPPORTED_BLOCK_TYPES | {"footnote"}
 
 
 def render_docx_from_ir(
@@ -145,6 +146,101 @@ def render_docx_from_ir(
 """,
         ),
     ] + comment_parts
+    _write_zip(output_path, parts)
+
+
+def render_editable_docx_from_pdf_ir(
+    document_ir: Mapping[str, Any],
+    output_path: str | Path,
+) -> None:
+    """Reconstruct PDF-derived Document IR v1 as editable DOCX structure."""
+    _validate_editable_pdf_ir(document_ir)
+    document = _mapping(document_ir.get("document"), "document")
+    title = _text(document.get("title"))
+    blocks = _editable_pdf_blocks(document_ir)
+    body_blocks = [block for block in blocks if _text(block.get("type")) != "footnote"]
+    footnote_blocks = [block for block in blocks if _text(block.get("type")) == "footnote"]
+    comment_ids = {_text(block.get("id")): index for index, block in enumerate(blocks)}
+    footnote_ids = {_text(block.get("id")): index for index, block in enumerate(footnote_blocks, start=1)}
+
+    body_parts = [_docx_paragraph(title, style="Heading1")]
+    body_parts.extend(
+        _docx_block(block, comment_id=comment_ids.get(_text(block.get("id"))))
+        for block in body_blocks
+    )
+    body_parts.extend(
+        _docx_footnote_reference_paragraph(
+            footnote_ids[_text(block.get("id"))],
+            comment_id=comment_ids.get(_text(block.get("id"))),
+        )
+        for block in footnote_blocks
+    )
+    body_parts.append("<w:sectPr/>")
+
+    comments = [
+        (comment_ids[_text(block.get("id"))], _editable_pdf_block_comment(block))
+        for block in blocks
+    ]
+    parts = [
+        (
+            "[Content_Types].xml",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  <Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>
+  <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+  <Override PartName="/word/comments.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml"/>
+  <Override PartName="/word/footnotes.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml"/>
+</Types>
+""",
+        ),
+        (
+            "_rels/.rels",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>
+""",
+        ),
+        (
+            "word/_rels/document.xml.rels",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="comments.xml"/>
+  <Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes" Target="footnotes.xml"/>
+</Relationships>
+""",
+        ),
+        ("word/styles.xml", _docx_styles_xml()),
+        ("word/numbering.xml", _docx_numbering_xml()),
+        (
+            "word/comments.xml",
+            _docx_comments_xml(comments),
+        ),
+        (
+            "word/footnotes.xml",
+            _docx_footnotes_xml(
+                [
+                    (footnote_ids[_text(block.get("id"))], _text(block.get("text")))
+                    for block in footnote_blocks
+                ]
+            ),
+        ),
+        (
+            "word/document.xml",
+            f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    {"".join(body_parts)}
+  </w:body>
+</w:document>
+""",
+        ),
+    ]
     _write_zip(output_path, parts)
 
 
@@ -343,6 +439,29 @@ def _blocks(document_ir: Mapping[str, Any]) -> Sequence[Mapping[str, Any]]:
     return blocks
 
 
+def _validate_editable_pdf_ir(document_ir: Mapping[str, Any]) -> None:
+    if _text(document_ir.get("schema_version")) != "document-ir/v1":
+        raise ValueError("document_ir.schema_version must be document-ir/v1")
+    document = _mapping(document_ir.get("document"), "document")
+    if _text(document.get("source_type")) != "pdf":
+        raise ValueError("document_ir.document.source_type must be pdf")
+    _editable_pdf_blocks(document_ir)
+
+
+def _editable_pdf_blocks(document_ir: Mapping[str, Any]) -> Sequence[Mapping[str, Any]]:
+    blocks = document_ir.get("blocks")
+    if not isinstance(blocks, Sequence) or isinstance(blocks, (str, bytes)):
+        raise ValueError("document_ir.blocks must be a list")
+    for block in blocks:
+        if not isinstance(block, Mapping):
+            raise ValueError("document_ir.blocks entries must be objects")
+        block_type = _text(block.get("type"))
+        if block_type not in EDITABLE_PDF_BLOCK_TYPES:
+            raise ValueError(f"unsupported document_ir.blocks type: {block_type!r}")
+    _unique_block_ids(blocks)
+    return blocks
+
+
 def _block_ids(blocks: Sequence[Mapping[str, Any]]) -> list[str]:
     return [_text(block.get("id")) for block in blocks]
 
@@ -458,6 +577,29 @@ def _docx_block(block: Mapping[str, Any], *, comment_id: int | None = None) -> s
     raise ValueError(f"unsupported document_ir.blocks type: {kind!r}")
 
 
+def _docx_footnote_reference_paragraph(
+    footnote_id: int,
+    *,
+    comment_id: int | None = None,
+) -> str:
+    comment_start = "" if comment_id is None else f'<w:commentRangeStart w:id="{comment_id}"/>'
+    comment_end = (
+        ""
+        if comment_id is None
+        else (
+            f'<w:commentRangeEnd w:id="{comment_id}"/>'
+            f'<w:r><w:commentReference w:id="{comment_id}"/></w:r>'
+        )
+    )
+    return (
+        "<w:p>"
+        f"{comment_start}"
+        f'<w:r><w:footnoteReference w:id="{footnote_id}"/></w:r>'
+        f"{comment_end}"
+        "</w:p>"
+    )
+
+
 def _docx_paragraph(
     text: str,
     *,
@@ -540,6 +682,53 @@ def _docx_table_rows(block: Mapping[str, Any]) -> Sequence[Sequence[str]]:
     if not sanitized_text:
         return [[""]]
     return [line.split("\t") for line in sanitized_text.split("\n")]
+
+
+def _editable_pdf_block_comment(block: Mapping[str, Any]) -> str:
+    block_id = _text(block.get("id"))
+    block_type = _text(block.get("type"))
+    review = _mapping_or_empty(block.get("review"))
+    warnings_value = review.get("warnings", [])
+    warnings = (
+        [_text(warning) for warning in warnings_value]
+        if isinstance(warnings_value, Sequence) and not isinstance(warnings_value, (str, bytes))
+        else []
+    )
+    parts = [
+        f"block_id={block_id}",
+        f"type={block_type}",
+        f"source_page={_text(block.get('source_page'))}",
+        f"bbox={_editable_pdf_bbox_text(block.get('bbox'))}",
+        f"extractor={_editable_pdf_extractor_text(block.get('extractor'))}",
+        f"confidence={_text(block.get('confidence'))}",
+        f"requires_review={str(review.get('requires_review') is True).lower()}",
+    ]
+    if warnings:
+        parts.append(f"warnings={'; '.join(warnings)}")
+    return "\n".join(parts)
+
+
+def _mapping_or_empty(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _editable_pdf_bbox_text(value: Any) -> str:
+    bbox = _mapping_or_empty(value)
+    unit = _text(bbox.get("unit") or "pt")
+    coordinates = [
+        _text(bbox.get("x")),
+        _text(bbox.get("y")),
+        _text(bbox.get("width")),
+        _text(bbox.get("height")),
+    ]
+    return f"{','.join(coordinates)} {unit}"
+
+
+def _editable_pdf_extractor_text(value: Any) -> str:
+    extractor = _mapping_or_empty(value)
+    name = _text(extractor.get("name") or value)
+    version = _text(extractor.get("version") or "unknown")
+    return f"{name}@{version}"
 
 
 def _split_field(text: str) -> tuple[str, str]:
@@ -739,6 +928,39 @@ def _xlsx_merge_cells_xml(ranges: Sequence[str]) -> str:
     return f'  <mergeCells count="{len(ranges)}">{merge_cells}</mergeCells>'
 
 
+def _docx_styles_xml() -> str:
+    return """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:style w:type="paragraph" w:default="1" w:styleId="Normal">
+    <w:name w:val="Normal"/>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="Heading1">
+    <w:name w:val="heading 1"/>
+    <w:basedOn w:val="Normal"/>
+    <w:next w:val="Normal"/>
+    <w:qFormat/>
+  </w:style>
+</w:styles>
+"""
+
+
+def _docx_numbering_xml() -> str:
+    return """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:abstractNum w:abstractNumId="0">
+    <w:lvl w:ilvl="0">
+      <w:start w:val="1"/>
+      <w:numFmt w:val="bullet"/>
+      <w:lvlText w:val="&#8226;"/>
+    </w:lvl>
+  </w:abstractNum>
+  <w:num w:numId="1">
+    <w:abstractNumId w:val="0"/>
+  </w:num>
+</w:numbering>
+"""
+
+
 def _docx_comments_xml(comments: Sequence[tuple[int, str]]) -> str:
     comment_xml = "".join(
         f'<w:comment w:id="{comment_id}" w:author="VeriDoc" w:initials="VD">'
@@ -750,6 +972,20 @@ def _docx_comments_xml(comments: Sequence[tuple[int, str]]) -> str:
 <w:comments xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
   {comment_xml}
 </w:comments>
+"""
+
+
+def _docx_footnotes_xml(footnotes: Sequence[tuple[int, str]]) -> str:
+    footnote_xml = "".join(
+        f'<w:footnote w:id="{footnote_id}"><w:p>{_docx_runs(text)}</w:p></w:footnote>'
+        for footnote_id, text in footnotes
+    )
+    return f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:footnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:footnote>
+  <w:footnote w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:footnote>
+  {footnote_xml}
+</w:footnotes>
 """
 
 
