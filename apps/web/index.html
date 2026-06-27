@@ -1449,8 +1449,17 @@
         return null;
       }
 
-      async function refreshReviewAuditEvents() {
-        const response = await apiFetch("/api/review-events");
+      async function refreshReviewAuditEvents(item) {
+        const query = new URLSearchParams();
+        if (item) {
+          query.set("document_id", item.document_id);
+          query.set("block_id", item.block_id);
+          const activeConversionId = state.latestResult?.conversion_id;
+          if (activeConversionId) query.set("conversion_id", activeConversionId);
+        }
+        const queryString = query.toString();
+        const path = queryString ? `/api/review-events?${queryString}` : "/api/review-events";
+        const response = await apiFetch(path);
         let body = {};
         try {
           const parsedBody = await response.json();
@@ -1581,7 +1590,13 @@
           actionStarted = true;
           setReviewActionPending(item, true);
           if (action === "approve") {
-            await refreshReviewAuditEvents();
+            await refreshReviewAuditEvents(item);
+            const refreshedBlockReason = reviewActionBlockReason(item);
+            if (refreshedBlockReason) {
+              reviewActionStatus.textContent = refreshedBlockReason;
+              reviewActionStatus.className = "page-status error";
+              return;
+            }
           }
           const auditEvent = buildReviewAuditEvent(item, action);
           const response = await apiFetch("/api/review-events", {

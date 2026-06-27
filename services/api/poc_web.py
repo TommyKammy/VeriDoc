@@ -163,7 +163,10 @@ def convert_uploaded_document(*, filename: str, content: bytes) -> dict[str, Any
         "review_items": review_items,
         "warnings": [*input_warnings, *validation.warnings],
     }
-    download_content = _strict_json_bytes(payload, indent=2)
+    download_payload = {
+        key: value for key, value in payload.items() if key != "conversion_id"
+    }
+    download_content = _strict_json_bytes(download_payload, indent=2)
     return {
         "status": _status(validation.ok, validation.requires_review),
         **payload,
@@ -208,7 +211,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/review-events":
             if not self._require_permission("review_events:read"):
                 return
-            self._handle_list_review_events()
+            self._handle_list_review_events(parsed_url.query)
             return
         if path.startswith("/api/jobs/"):
             authorized, role = self._authorized_role_for_permission("jobs:read")
@@ -412,8 +415,21 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             status=202,
         )
 
-    def _handle_list_review_events(self) -> None:
-        self._send_json({"review_events": self._review_event_store().list_events()})
+    def _handle_list_review_events(self, query: str) -> None:
+        try:
+            filters = _review_event_filters(query)
+        except ValueError as exc:
+            self._send_json(
+                {"error": "invalid_review_event_filter", "message": str(exc)},
+                status=400,
+            )
+            return
+        review_events = [
+            event
+            for event in self._review_event_store().list_events()
+            if _review_event_matches_filters(event, filters)
+        ]
+        self._send_json({"review_events": review_events})
 
     def _handle_job_result_download(self, job_id: str) -> None:
         try:
@@ -586,6 +602,27 @@ def _local_principal_id(value: Any) -> str | None:
         return None
     principal_id = str(value).strip()
     return principal_id or None
+
+
+def _review_event_filters(query: str) -> dict[str, str]:
+    parameters = parse_qs(query, keep_blank_values=True)
+    allowed_filters = {"document_id", "block_id", "conversion_id"}
+    unexpected_filters = sorted(set(parameters) - allowed_filters)
+    if unexpected_filters:
+        raise ValueError(f"{unexpected_filters[0]} filter is unsupported")
+    filters: dict[str, str] = {}
+    for name, values in parameters.items():
+        if len(values) > 1:
+            raise ValueError(f"{name} filter must be singular")
+        value = values[0].strip()
+        if not value:
+            raise ValueError(f"{name} filter must be non-empty")
+        filters[name] = value
+    return filters
+
+
+def _review_event_matches_filters(event: dict[str, Any], filters: dict[str, str]) -> bool:
+    return all(event.get(name) == value for name, value in filters.items())
 
 
 def _permission_label(permission: str) -> str:

@@ -102,7 +102,7 @@ def test_convert_uploaded_document_surfaces_review_items_and_download_payload() 
     ]
     assert result["download"]["filename"] == "phase0-output.veridoc-result.json"
     downloaded = json.loads(result["download"]["content"].decode("utf-8"))
-    assert downloaded["conversion_id"] == result["conversion_id"]
+    assert "conversion_id" not in downloaded
     assert downloaded["validation"]["requires_review"] is True
     assert downloaded["document_ir"]["blocks"][0]["review"]["requires_review"] is True
 
@@ -942,6 +942,43 @@ def test_poc_http_api_lists_server_side_review_action_audit_events() -> None:
     assert post_response.status == 202
     assert list_response.status == 200
     assert list_body == {"review_events": [post_body["audit_event"]]}
+
+
+def test_poc_http_api_filters_server_side_review_action_audit_events() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.review_event_store = ReviewAuditEventStore()
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        first_status, first_body = _post_review_event_on_connection(
+            connection,
+            _review_audit_event(conversion_id="conversion-current"),
+            role_token=None,
+        )
+        second_status, _second_body = _post_review_event_on_connection(
+            connection,
+            _review_audit_event(
+                block_id="block-0002",
+                conversion_id="conversion-other",
+            ),
+            role_token=None,
+        )
+        connection.request(
+            "GET",
+            "/api/review-events?document_id=phase0-output"
+            "&block_id=block-0001&conversion_id=conversion-current",
+        )
+        list_response = connection.getresponse()
+        list_body = json.loads(list_response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert first_status == 202
+    assert second_status == 202
+    assert list_response.status == 200
+    assert list_body == {"review_events": [first_body["audit_event"]]}
 
 
 def test_poc_http_api_does_not_persist_rejected_review_action_audit_event() -> None:
