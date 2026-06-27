@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import json
 import re
 from http.client import HTTPConnection
@@ -3071,6 +3072,74 @@ def test_poc_http_api_sanitizes_succeeded_job_result_and_downloads_result() -> N
     assert download_disposition == 'attachment; filename="invoiceX-Test: 1.pdf"'
     assert injected_header is None
     assert download_body == b'{"converted": true}'
+
+
+def test_poc_http_api_detects_output_hash_mismatch_and_blocks_redownload() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue()
+    created = server.job_queue.create_job(
+        idempotency_key="converted-hash-mismatch-1",
+        filename="converted-record.pdf",
+        mode="standard",
+    )
+    running = server.job_queue.start_next_job()
+    assert running is not None
+    original_output = b'{"converted": true}'
+    tampered_output = b'{"converted": false}'
+    server.job_queue.mark_succeeded(
+        created.job_id,
+        result={
+            "status": "converted",
+            "hashes": {
+                "source_sha256": hashlib.sha256(b"original source").hexdigest(),
+                "output_sha256": hashlib.sha256(original_output).hexdigest(),
+            },
+            "download": {
+                "filename": "converted-record.veridoc-result.json",
+                "content_type": "application/json; charset=utf-8",
+                "content": tampered_output,
+            },
+        },
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request("GET", "/api/jobs")
+        list_response = connection.getresponse()
+        list_body = json.loads(list_response.read().decode("utf-8"))
+        connection.request("GET", f"/api/jobs/{created.job_id}")
+        detail_response = connection.getresponse()
+        detail_body = json.loads(detail_response.read().decode("utf-8"))
+        connection.request("GET", f"/api/jobs/{created.job_id}/result")
+        download_response = connection.getresponse()
+        download_body = json.loads(download_response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    list_job = list_body["jobs"][0]
+    detail_job = detail_body["job"]
+    assert list_response.status == 200
+    assert detail_response.status == 200
+    assert list_job["has_result"] is False
+    assert detail_job["has_result"] is False
+    assert [action["action"] for action in detail_job["available_actions"]] == [
+        "open_detail"
+    ]
+    assert list_job["hash_verification"]["output"]["status"] == "mismatch"
+    assert detail_job["hash_verification"]["output"]["expected_sha256"] == hashlib.sha256(
+        original_output
+    ).hexdigest()
+    assert detail_job["hash_verification"]["output"]["actual_sha256"] == hashlib.sha256(
+        tampered_output
+    ).hexdigest()
+    assert detail_job["hashes"]["source_sha256"] == hashlib.sha256(b"original source").hexdigest()
+    assert download_response.status == 409
+    assert download_body == {
+        "error": "job_result_integrity_mismatch",
+        "message": "job result output hash does not match stored content",
+    }
 
 
 def test_poc_http_api_rejects_malformed_download_content_type() -> None:
