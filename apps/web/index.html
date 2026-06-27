@@ -1500,7 +1500,8 @@
         return event;
       }
 
-      function latestSavedReviewEditText(item) {
+      async function loadLatestSavedReviewEditText(item) {
+        await refreshReviewAuditEvents(item);
         for (const event of state.reviewAuditEvents.slice().reverse()) {
           if (event.action !== "edit" || !sameReviewAuditTarget(event, item)) continue;
           return typeof event.revised_text === "string" ? event.revised_text : null;
@@ -1600,8 +1601,7 @@
           actionStarted = true;
           setReviewActionPending(item, true);
           if (action === "approve") {
-            await refreshReviewAuditEvents(item);
-            savedEditText = latestSavedReviewEditText(item);
+            savedEditText = await loadLatestSavedReviewEditText(item);
             if (savedEditText !== null) {
               surfaceSavedReviewEditText(item, savedEditText);
             }
