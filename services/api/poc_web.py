@@ -7,6 +7,7 @@ from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import base64
 import binascii
+import hashlib
 import json
 import math
 import os
@@ -262,6 +263,7 @@ def convert_uploaded_document(*, filename: str, content: bytes) -> dict[str, Any
     """Convert one uploaded PoC document into IR, review details, and download bytes."""
     safe_filename = _safe_filename(filename)
     conversion_id = _conversion_id()
+    source_sha256 = _sha256_hex(content)
     parser_output, input_warnings = _parser_output_from_upload(safe_filename, content)
     document_ir = from_parser_output(
         parser_output,
@@ -278,9 +280,25 @@ def convert_uploaded_document(*, filename: str, content: bytes) -> dict[str, Any
         "warnings": [*input_warnings, *validation.warnings],
     }
     download_content = _strict_json_bytes(download_payload, indent=2)
+    output_sha256 = _sha256_hex(download_content)
     return {
         "status": _status(validation.ok, validation.requires_review),
         "conversion_id": conversion_id,
+        "hashes": {
+            "source_sha256": source_sha256,
+            "output_sha256": output_sha256,
+        },
+        "hash_verification": {
+            "source": {
+                "status": "recorded",
+                "sha256": source_sha256,
+            },
+            "output": {
+                "status": "match",
+                "expected_sha256": output_sha256,
+                "actual_sha256": output_sha256,
+            },
+        },
         **download_payload,
         "download": {
             "filename": f"{Path(safe_filename).stem}.veridoc-result.json",
@@ -614,6 +632,12 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             filename = _download_filename(download["filename"])
         except KeyError:
             self._send_json({"error": "job_not_found"}, status=404)
+            return
+        except RuntimeError as exc:
+            self._send_json(
+                {"error": "job_result_integrity_mismatch", "message": str(exc)},
+                status=409,
+            )
             return
         except ValueError as exc:
             self._send_json({"error": "job_result_unavailable", "message": str(exc)}, status=400)
@@ -956,6 +980,8 @@ def _job_response(
     *,
     role: str | None = None,
 ) -> dict[str, Any]:
+    hashes = _job_hashes(job)
+    hash_verification = _job_hash_verification(job)
     return {
         "job_id": job.job_id,
         "idempotency_key": job.idempotency_key,
@@ -966,6 +992,8 @@ def _job_response(
         "error": job.error,
         "created_at": job.created_at,
         "updated_at": job.updated_at,
+        "hashes": hashes,
+        "hash_verification": hash_verification,
         "has_result": _job_has_download(job),
         "available_actions": _job_actions(job, job_queue, role=role),
         "template": deepcopy(job.template),
@@ -995,7 +1023,7 @@ def _job_actions(
 def _job_has_download(job: JobRecord) -> bool:
     try:
         _job_download(job)
-    except ValueError:
+    except (RuntimeError, ValueError):
         return False
     return True
 
@@ -1299,11 +1327,68 @@ def _job_download(job: JobRecord) -> dict[str, Any]:
     content = download.get("content")
     if not filename or not isinstance(content, bytes):
         raise ValueError("job result download is invalid")
+    verification = _job_hash_verification(job)
+    if verification["output"]["status"] == "mismatch":
+        raise RuntimeError("job result output hash does not match stored content")
     return {
         "filename": filename,
         "content_type": _download_content_type(content_type),
         "content": content,
     }
+
+
+def _job_hashes(job: JobRecord) -> dict[str, str | None]:
+    result = job.result if isinstance(job.result, dict) else {}
+    raw_hashes = result.get("hashes") if isinstance(result, dict) else None
+    hashes = raw_hashes if isinstance(raw_hashes, dict) else {}
+    return {
+        "source_sha256": _sha256_value(hashes.get("source_sha256")),
+        "output_sha256": _sha256_value(hashes.get("output_sha256")),
+    }
+
+
+def _job_hash_verification(job: JobRecord) -> dict[str, Any]:
+    hashes = _job_hashes(job)
+    return {
+        "source": _source_hash_verification(hashes["source_sha256"]),
+        "output": _output_hash_verification(job, hashes["output_sha256"]),
+    }
+
+
+def _source_hash_verification(source_sha256: str | None) -> dict[str, Any]:
+    if source_sha256 is None:
+        return {"status": "missing"}
+    return {"status": "recorded", "sha256": source_sha256}
+
+
+def _output_hash_verification(job: JobRecord, expected_sha256: str | None) -> dict[str, Any]:
+    if expected_sha256 is None:
+        return {"status": "missing"}
+    result = job.result if isinstance(job.result, dict) else {}
+    download = result.get("download") if isinstance(result, dict) else None
+    content = download.get("content") if isinstance(download, dict) else None
+    if not isinstance(content, bytes):
+        return {"status": "missing_content", "expected_sha256": expected_sha256}
+    actual_sha256 = _sha256_hex(content)
+    status = "match" if actual_sha256 == expected_sha256 else "mismatch"
+    return {
+        "status": status,
+        "expected_sha256": expected_sha256,
+        "actual_sha256": actual_sha256,
+    }
+
+
+def _sha256_value(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip().lower()
+    if re.fullmatch(r"[0-9a-f]{64}", candidate):
+        return candidate
+    return None
+
+
+def _sha256_hex(content: bytes) -> str:
+    return hashlib.sha256(content).hexdigest()
 
 
 def _download_content_type(content_type: str) -> str:
