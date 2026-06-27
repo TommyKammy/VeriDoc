@@ -328,6 +328,18 @@ def _validate_template_risk_rank(
     tables_by_id: dict[str, dict[str, Any]],
 ) -> None:
     risk_rank = template.get("risk_rank", {})
+    seen_levels: dict[str, int] = {}
+    for index, level in enumerate(risk_rank.get("levels", [])):
+        level_name = level.get("level")
+        if level_name in seen_levels:
+            raise ValidationError(
+                "$.risk_rank.levels"
+                f"[{index}]"
+                ".level: "
+                f"duplicates level {level_name!r} already declared at "
+                f"$.risk_rank.levels[{seen_levels[level_name]}].level"
+            )
+        seen_levels[level_name] = index
     declared_levels = {
         level.get("level")
         for level in risk_rank.get("levels", [])

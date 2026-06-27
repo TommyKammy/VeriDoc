@@ -296,6 +296,18 @@ class TemplateDefinitionSchemaTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValidationError, "risk_rank.levels"):
                     self.validate_template(sample)
 
+    def test_risk_rank_levels_must_be_unique(self) -> None:
+        sample = self.load_sample()
+        sample["risk_rank"]["levels"].append(
+            {
+                "level": "critical",
+                "rank": 99,
+            }
+        )
+
+        with self.assertRaisesRegex(ValidationError, "duplicates level 'critical'"):
+            self.validate_template(sample)
+
     def test_field_validation_rule_ids_must_target_same_field(self) -> None:
         sample = self.load_sample()
         sample["fields"][1]["validation_rule_ids"] = ["batch-number-required"]
