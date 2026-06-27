@@ -1451,7 +1451,6 @@
 
       function buildReviewAuditEvent(item, action) {
         const revisedText = reviewDraftText(item);
-        const originalText = action === "approve" ? revisedText : item.text;
         const event = {
           event_type: "conversion_review.action_requested",
           action,
@@ -1459,13 +1458,13 @@
           block_id: item.block_id,
           source_page: reviewAuditSourcePage(item),
           source_bbox: reviewAuditSourceBbox(item),
-          original_text: originalText,
+          original_text: item.text,
           warnings: item.warnings || [],
         };
         if (state.latestResult && state.latestResult.conversion_id) {
           event.conversion_id = state.latestResult.conversion_id;
         }
-        if (action === "edit") {
+        if (action === "edit" || action === "approve") {
           event.revised_text = revisedText;
         }
         return event;

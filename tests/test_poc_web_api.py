@@ -1203,6 +1203,44 @@ def test_poc_http_api_rejects_approval_for_stale_review_text() -> None:
     assert [event["action"] for event in store.list_events()] == ["edit"]
 
 
+def test_poc_http_api_allows_approval_with_revised_text_target() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    store = ReviewAuditEventStore()
+    server.review_event_store = store
+    server.local_auth_tokens = _local_auth_tokens()
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        edit_status, _edit_body = _post_review_event_on_connection(
+            connection,
+            _review_audit_event(
+                conversion_id="conversion-current",
+                revised_text="Lot: SAMPLE-001 corrected",
+            ),
+            role_token="reviewer-token",
+        )
+        approve_status, approve_body = _post_review_event_on_connection(
+            connection,
+            _review_audit_event(
+                action="approve",
+                conversion_id="conversion-current",
+                original_text="Lot: SAMPLE-001",
+                revised_text="Lot: SAMPLE-001 corrected",
+            ),
+            role_token="admin-token",
+        )
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert edit_status == 202
+    assert approve_status == 202
+    assert approve_body["audit_event"]["original_text"] == "Lot: SAMPLE-001"
+    assert approve_body["audit_event"]["revised_text"] == "Lot: SAMPLE-001 corrected"
+    assert [event["action"] for event in store.list_events()] == ["edit", "approve"]
+
+
 def test_poc_http_api_uses_principal_id_for_review_separation() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     store = ReviewAuditEventStore()
@@ -1819,14 +1857,6 @@ def _local_auth_tokens() -> dict[str, dict[str, str]]:
         (
             _review_audit_event(source_bbox=_review_bbox(y=-1)),
             "audit_event.source_bbox origin coordinates must be non-negative",
-        ),
-        (
-            _review_audit_event(
-                action="approve",
-                original_text="Lot: SAMPLE-001",
-                revised_text="Lot: SAMPLE-001 corrected",
-            ),
-            "audit_event.revised_text must match original_text for approve",
         ),
     ],
 )

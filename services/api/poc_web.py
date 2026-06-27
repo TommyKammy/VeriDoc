@@ -735,8 +735,6 @@ def _validate_review_event(audit_event: Any) -> dict[str, Any]:
     if not isinstance(revised_text, str):
         raise ValueError("audit_event.revised_text is required")
     _validate_review_event_text("revised_text", revised_text)
-    if action == "approve" and revised_text != original_text:
-        raise ValueError("audit_event.revised_text must match original_text for approve")
     warnings = audit_event.get("warnings", [])
     if not isinstance(warnings, list) or not all(isinstance(item, str) for item in warnings):
         raise ValueError("audit_event.warnings must be strings")
@@ -793,7 +791,7 @@ def _validate_review_workflow_event(
             raise RuntimeError("review approval must be performed by a different actor")
     if (
         latest_edit_revised_text is not None
-        and audit_event["original_text"] != latest_edit_revised_text
+        and audit_event["revised_text"] != latest_edit_revised_text
     ):
         raise RuntimeError("review approval must target latest edited text")
 

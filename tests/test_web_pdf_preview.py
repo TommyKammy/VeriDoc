@@ -62,8 +62,7 @@ def test_review_item_exposes_edit_and_approve_audit_events() -> None:
     assert 'event_type: "conversion_review.action_requested"' in html
     assert "document_id: item.document_id" in html
     assert "block_id: item.block_id" in html
-    assert 'const originalText = action === "approve" ? revisedText : item.text' in html
-    assert "original_text: originalText" in html
+    assert "original_text: item.text" in html
     assert "event.conversion_id = state.latestResult.conversion_id" in html
     assert "source_page: reviewAuditSourcePage(item)" in html
     assert "function reviewAuditSourcePage(item)" in html
@@ -84,6 +83,7 @@ def test_review_item_exposes_edit_and_approve_audit_events() -> None:
     assert "if (!reviewAuditSourcePage(item)) return null;" in html
     assert "validBbox(item.source_bbox, item.source_page_geometry)" in html
     assert "jump.disabled = !reviewAuditSourceBbox(item)" in html
+    assert 'if (action === "edit" || action === "approve")' in html
     assert "event.revised_text = revisedText" in html
     assert "function requestReviewAction(item, action)" in html
     assert "try {" in html
