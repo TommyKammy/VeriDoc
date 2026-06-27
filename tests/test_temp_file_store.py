@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import json
+
+import pytest
 
 from services.api.temp_file_store import TemporaryFileStore
 
 
+TEST_KEY = b"0123456789abcdef0123456789abcdef"
+
+
 def test_temp_file_store_encrypts_tracks_retention_and_deletes_missing_safely(tmp_path):
     now = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
-    store = TemporaryFileStore(root=tmp_path, encryption_key=b"test-key", now=lambda: now)
+    store = TemporaryFileStore(root=tmp_path, encryption_key=TEST_KEY, now=lambda: now)
 
     record = store.save(
         category="upload",
@@ -38,7 +44,7 @@ def test_temp_file_store_encrypts_tracks_retention_and_deletes_missing_safely(tm
 
 def test_temp_file_store_cleanup_expired_removes_only_expired_artifacts(tmp_path):
     current = datetime(2026, 1, 2, 12, 0, 0, tzinfo=timezone.utc)
-    store = TemporaryFileStore(root=tmp_path, encryption_key=b"test-key", now=lambda: current)
+    store = TemporaryFileStore(root=tmp_path, encryption_key=TEST_KEY, now=lambda: current)
 
     expired = store.save(
         category="upload",
@@ -59,3 +65,56 @@ def test_temp_file_store_cleanup_expired_removes_only_expired_artifacts(tmp_path
     assert not expired.metadata_path.exists()
     assert retained.path.exists()
     assert store.read(retained.artifact_id) == b"retained"
+
+
+def test_temp_file_store_rejects_placeholder_encryption_key(tmp_path):
+    with pytest.raises(ValueError, match="placeholder"):
+        TemporaryFileStore(root=tmp_path, encryption_key=b"TODO")
+
+
+def test_temp_file_store_resolves_metadata_path_before_root_containment_check(tmp_path):
+    current = datetime(2026, 1, 2, 12, 0, 0, tzinfo=timezone.utc)
+    store = TemporaryFileStore(root=tmp_path / "store", encryption_key=TEST_KEY, now=lambda: current)
+    record = store.save(
+        category="upload",
+        filename="payload.txt",
+        content=b"payload",
+        retention=timedelta(hours=1),
+    )
+    outside_path = tmp_path / "outside.bin"
+    outside_path.write_bytes(b"outside")
+    metadata = json.loads(record.metadata_path.read_text(encoding="utf-8"))
+    metadata["path"] = str(record.storage_root / ".." / outside_path.name)
+    record.metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="escapes storage root"):
+        store.delete(record.artifact_id)
+    assert outside_path.read_bytes() == b"outside"
+    assert record.metadata_path.exists()
+
+
+def test_temp_file_store_cleanup_validates_metadata_id_against_filename(tmp_path):
+    current = datetime(2026, 1, 2, 12, 0, 0, tzinfo=timezone.utc)
+    store = TemporaryFileStore(root=tmp_path, encryption_key=TEST_KEY, now=lambda: current)
+    expired = store.save(
+        category="upload",
+        filename="expired.txt",
+        content=b"expired",
+        retention=timedelta(seconds=1),
+        created_at=current - timedelta(minutes=5),
+    )
+    retained = store.save(
+        category="result",
+        filename="retained.txt",
+        content=b"retained",
+        retention=timedelta(hours=1),
+    )
+    metadata = json.loads(expired.metadata_path.read_text(encoding="utf-8"))
+    metadata["artifact_id"] = retained.artifact_id
+    expired.metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    assert store.cleanup_expired() == []
+    assert expired.path.exists()
+    assert expired.metadata_path.exists()
+    assert retained.path.exists()
+    assert retained.metadata_path.exists()

@@ -13,6 +13,16 @@ from typing import Any, Callable
 
 ENCRYPTION_ALGORITHM = "hmac-sha256-stream"
 ARTIFACT_ID_PATTERN = re.compile(r"tmp-[0-9a-f]{32}")
+MIN_ENCRYPTION_KEY_BYTES = 32
+PLACEHOLDER_ENCRYPTION_KEYS = {
+    "changeme",
+    "change_me",
+    "change-me",
+    "placeholder",
+    "replace_me",
+    "replace-me",
+    "todo",
+}
 
 
 @dataclass(frozen=True)
@@ -55,10 +65,8 @@ class TemporaryFileStore:
         encryption_key: bytes,
         now: Callable[[], datetime] | None = None,
     ) -> None:
-        if not encryption_key:
-            raise ValueError("encryption_key is required")
+        self._key = _validate_encryption_key(encryption_key)
         self._root = root
-        self._key = bytes(encryption_key)
         self._now = now or (lambda: datetime.now(timezone.utc))
 
     def save(
@@ -116,7 +124,7 @@ class TemporaryFileStore:
 
     def read(self, artifact_id: str) -> bytes:
         metadata = self._read_metadata(artifact_id)
-        path = _path_from_metadata(self._root, metadata, "path")
+        path = _artifact_path_from_metadata(self._root, metadata, artifact_id)
         nonce = bytes.fromhex(_required_text(metadata, "nonce_hex"))
         encrypted = path.read_bytes()
         expected_mac = _required_text(metadata, "ciphertext_hmac_sha256")
@@ -129,11 +137,12 @@ class TemporaryFileStore:
         return content
 
     def delete(self, artifact_id: str) -> bool:
+        artifact_id = _validate_artifact_id(artifact_id)
         metadata_path = self._metadata_path_for_artifact(artifact_id)
         paths = [metadata_path]
         if metadata_path.is_file():
-            metadata = _load_metadata(metadata_path)
-            paths.insert(0, _path_from_metadata(self._root, metadata, "path"))
+            metadata = _load_artifact_metadata(metadata_path, artifact_id)
+            paths.insert(0, _artifact_path_from_metadata(self._root, metadata, artifact_id))
         else:
             paths.extend(self._root.glob(f"*/{artifact_id}.bin"))
 
@@ -152,19 +161,26 @@ class TemporaryFileStore:
         for metadata_path in sorted(self._root.glob("*/*.json")):
             try:
                 metadata = _load_metadata(metadata_path)
-                artifact_id = _required_text(metadata, "artifact_id")
+                artifact_id = _artifact_id_from_metadata_path(metadata_path)
+                if _required_text(metadata, "artifact_id") != artifact_id:
+                    continue
                 expires_at = _parse_datetime(_required_text(metadata, "expires_at"))
             except (ValueError, OSError):
                 continue
-            if expires_at <= now and self.delete(artifact_id):
-                removed.append(artifact_id)
+            if expires_at <= now:
+                try:
+                    was_removed = self.delete(artifact_id)
+                except (ValueError, OSError):
+                    continue
+                if was_removed:
+                    removed.append(artifact_id)
         return removed
 
     def _read_metadata(self, artifact_id: str) -> dict[str, Any]:
         metadata_path = self._metadata_path_for_artifact(artifact_id)
         if not metadata_path.is_file():
             raise FileNotFoundError(f"temporary artifact not found: {artifact_id}")
-        return _load_metadata(metadata_path)
+        return _load_artifact_metadata(metadata_path, artifact_id)
 
     def _metadata_path_for_artifact(self, artifact_id: str) -> Path:
         artifact_id = _validate_artifact_id(artifact_id)
@@ -203,6 +219,19 @@ def _encryption_metadata() -> dict[str, str | bool]:
     }
 
 
+def _validate_encryption_key(encryption_key: bytes) -> bytes:
+    key = bytes(encryption_key)
+    if not key:
+        raise ValueError("encryption_key is required")
+    normalized = key.decode("utf-8", errors="ignore").strip().lower()
+    normalized = re.sub(r"[^a-z0-9]+", "_", normalized).strip("_")
+    if normalized in PLACEHOLDER_ENCRYPTION_KEYS:
+        raise ValueError("encryption_key must not be a placeholder value")
+    if len(key) < MIN_ENCRYPTION_KEY_BYTES:
+        raise ValueError("encryption_key must be at least 32 bytes")
+    return key
+
+
 def _validate_category(category: str) -> str:
     if not re.fullmatch(r"[a-z][a-z0-9_-]{1,31}", category):
         raise ValueError("category must use lowercase letters, numbers, hyphens, or underscores")
@@ -229,6 +258,22 @@ def _load_metadata(path: Path) -> dict[str, Any]:
     return metadata
 
 
+def _load_artifact_metadata(metadata_path: Path, artifact_id: str) -> dict[str, Any]:
+    artifact_id = _validate_artifact_id(artifact_id)
+    if _artifact_id_from_metadata_path(metadata_path) != artifact_id:
+        raise ValueError("temporary artifact metadata filename mismatch")
+    metadata = _load_metadata(metadata_path)
+    if _required_text(metadata, "artifact_id") != artifact_id:
+        raise ValueError("temporary artifact metadata id mismatch")
+    return metadata
+
+
+def _artifact_id_from_metadata_path(metadata_path: Path) -> str:
+    if metadata_path.suffix != ".json":
+        raise ValueError("temporary artifact metadata filename is invalid")
+    return _validate_artifact_id(metadata_path.stem)
+
+
 def _required_text(metadata: dict[str, Any], field_name: str) -> str:
     value = metadata.get(field_name)
     if not isinstance(value, str) or not value:
@@ -237,11 +282,19 @@ def _required_text(metadata: dict[str, Any], field_name: str) -> str:
 
 
 def _path_from_metadata(root: Path, metadata: dict[str, Any], field_name: str) -> Path:
-    path = Path(_required_text(metadata, field_name))
+    root = root.resolve(strict=False)
+    path = Path(_required_text(metadata, field_name)).resolve(strict=False)
     try:
         path.relative_to(root)
     except ValueError as exc:
         raise ValueError("temporary artifact path escapes storage root") from exc
+    return path
+
+
+def _artifact_path_from_metadata(root: Path, metadata: dict[str, Any], artifact_id: str) -> Path:
+    path = _path_from_metadata(root, metadata, "path")
+    if path.name != f"{_validate_artifact_id(artifact_id)}.bin":
+        raise ValueError("temporary artifact path does not match metadata id")
     return path
 
 

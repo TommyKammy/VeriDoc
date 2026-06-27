@@ -32,11 +32,11 @@ has passed and leaves unexpired artifacts intact.
 
 ## Encryption Boundary
 
-The MVP implementation requires a configured key at construction time and writes
-encrypted bytes to disk with per-artifact nonces. Metadata records the
-`hmac-sha256-stream` boundary and the key source as `configured`; callers must
-wire the key from a trusted runtime secret source. Placeholder or empty keys are
-rejected.
+The MVP implementation requires a configured key of at least 32 bytes at
+construction time and writes encrypted bytes to disk with per-artifact nonces.
+Metadata records the `hmac-sha256-stream` boundary and the key source as
+`configured`; callers must wire the key from a trusted runtime secret source.
+Placeholder, too-short, or empty keys are rejected.
 
 Reads verify ciphertext HMAC and plaintext SHA-256 before returning bytes. If
 metadata is malformed, the file escapes the configured root, or integrity checks
