@@ -127,6 +127,23 @@ class TemplateDefinitionSchemaTest(unittest.TestCase):
                 }
             )
 
+        def required_rule_on_optional_field(sample: dict[str, object]) -> None:
+            sample["fields"][0]["required"] = False
+
+        def self_referential_cross_field(sample: dict[str, object]) -> None:
+            sample["fields"][0]["validation_rule_ids"].append("self-order")
+            sample["validation_rules"].append(
+                {
+                    "rule_id": "self-order",
+                    "target": "batch_number",
+                    "rule_type": "cross_field",
+                    "severity": "error",
+                    "message": "Batch number must be ordered against another field.",
+                    "related_target": "batch_number",
+                    "operator": "equals",
+                }
+            )
+
         cases: tuple[tuple[str, Callable[[dict[str, object]], None], str], ...] = (
             ("non_document_ir_scope_block_type", non_document_ir_scope_block_type, "expected one of"),
             ("dangling_field_anchor", dangling_field_anchor, "references undeclared anchor"),
@@ -142,6 +159,8 @@ class TemplateDefinitionSchemaTest(unittest.TestCase):
             ("type_rule_mismatch", type_rule_mismatch, "does not match field 'batch_number' value_type 'string'"),
             ("allowed_values_type_mismatch", allowed_values_type_mismatch, "cannot match field 'batch_number' value_type 'number'"),
             ("cross_field_incompatible_types", cross_field_incompatible_types, "requires date fields"),
+            ("required_rule_on_optional_field", required_rule_on_optional_field, "must be declared required"),
+            ("self_referential_cross_field", self_referential_cross_field, "cannot reference the target field"),
         )
 
         for name, mutate, expected_error in cases:
@@ -445,6 +464,31 @@ class TemplateDefinitionSchemaTest(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(ValidationError, "requires date fields"):
+            self.validate_template(sample)
+
+    def test_required_validation_rules_require_required_target_fields(self) -> None:
+        sample = self.load_sample()
+        sample["fields"][0]["required"] = False
+
+        with self.assertRaisesRegex(ValidationError, "must be declared required"):
+            self.validate_template(sample)
+
+    def test_cross_field_rules_cannot_target_the_same_field(self) -> None:
+        sample = self.load_sample()
+        sample["fields"][0]["validation_rule_ids"].append("self-order")
+        sample["validation_rules"].append(
+            {
+                "rule_id": "self-order",
+                "target": "batch_number",
+                "rule_type": "cross_field",
+                "severity": "error",
+                "message": "Batch number must be ordered against another field.",
+                "related_target": "batch_number",
+                "operator": "equals",
+            }
+        )
+
+        with self.assertRaisesRegex(ValidationError, "cannot reference the target field"):
             self.validate_template(sample)
 
     def test_validation_rule_operands_validate_when_present(self) -> None:

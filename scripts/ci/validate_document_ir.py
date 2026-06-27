@@ -364,6 +364,12 @@ def _validate_template_rule_operands(
 
     rule_type = rule.get("rule_type")
     declared_type = fields_by_id[target].get("value_type")
+    if rule_type == "required" and not fields_by_id[target].get("required"):
+        raise ValidationError(
+            "$.validation_rules"
+            f"[{index}]"
+            f": required rule target {target!r} must be declared required"
+        )
     if rule_type == "type":
         if "expected_type" not in rule:
             raise ValidationError(f"$.validation_rules[{index}].expected_type: required for type rule")
@@ -408,6 +414,13 @@ def _validate_template_rule_operands(
                 f"[{index}]"
                 ".related_target: "
                 f"references undeclared field {related_target!r}"
+            )
+        if related_target == target:
+            raise ValidationError(
+                "$.validation_rules"
+                f"[{index}]"
+                ".related_target: "
+                "cannot reference the target field"
             )
         if "operator" not in rule:
             raise ValidationError(f"$.validation_rules[{index}].operator: required for cross_field rule")
