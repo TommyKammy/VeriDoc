@@ -39,6 +39,9 @@ class TemplateDefinitionSchemaTest(unittest.TestCase):
         self.assertIn("references undeclared anchor", result.stderr)
 
     def test_cli_rejects_review_semantic_consistency_failures(self) -> None:
+        def non_document_ir_scope_block_type(sample: dict[str, object]) -> None:
+            sample["anchors"][0]["scope"]["block_types"] = ["footer"]
+
         def dangling_field_anchor(sample: dict[str, object]) -> None:
             sample["fields"][0]["source"]["anchor_id"] = "missing-anchor"
 
@@ -79,6 +82,31 @@ class TemplateDefinitionSchemaTest(unittest.TestCase):
                 }
             )
 
+        def type_rule_mismatch(sample: dict[str, object]) -> None:
+            sample["validation_rules"].append(
+                {
+                    "rule_id": "batch-number-type",
+                    "target": "batch_number",
+                    "rule_type": "type",
+                    "severity": "error",
+                    "message": "Batch number must be parsed as a number.",
+                    "expected_type": "number",
+                }
+            )
+
+        def allowed_values_type_mismatch(sample: dict[str, object]) -> None:
+            sample["fields"][0]["value_type"] = "number"
+            sample["validation_rules"].append(
+                {
+                    "rule_id": "batch-number-values",
+                    "target": "batch_number",
+                    "rule_type": "allowed_values",
+                    "severity": "warning",
+                    "message": "Batch number must be an allowed number.",
+                    "allowed_values": ["released"],
+                }
+            )
+
         def cross_field_incompatible_types(sample: dict[str, object]) -> None:
             sample["validation_rules"].append(
                 {
@@ -93,6 +121,7 @@ class TemplateDefinitionSchemaTest(unittest.TestCase):
             )
 
         cases: tuple[tuple[str, Callable[[dict[str, object]], None], str], ...] = (
+            ("non_document_ir_scope_block_type", non_document_ir_scope_block_type, "expected one of"),
             ("dangling_field_anchor", dangling_field_anchor, "references undeclared anchor"),
             ("mismatched_field_rule_target", mismatched_field_rule_target, "not field 'manufacturing_date'"),
             ("table_cell_non_table_anchor", table_cell_non_table_anchor, "table_cell source references non-table anchor"),
@@ -102,6 +131,8 @@ class TemplateDefinitionSchemaTest(unittest.TestCase):
             ("missing_output_mapping", missing_output_mapping, "missing mapping"),
             ("incomplete_risk_rank", incomplete_risk_rank, "risk_rank.levels"),
             ("range_on_non_numeric_field", range_on_non_numeric_field, "requires number field"),
+            ("type_rule_mismatch", type_rule_mismatch, "does not match field 'batch_number' value_type 'string'"),
+            ("allowed_values_type_mismatch", allowed_values_type_mismatch, "cannot match field 'batch_number' value_type 'number'"),
             ("cross_field_incompatible_types", cross_field_incompatible_types, "requires date fields"),
         )
 
