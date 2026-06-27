@@ -1464,10 +1464,34 @@
         if (state.latestResult && state.latestResult.conversion_id) {
           event.conversion_id = state.latestResult.conversion_id;
         }
-        if (action === "edit" || action === "approve") {
+        if (action === "edit") {
           event.revised_text = revisedText;
+        } else if (action === "approve") {
+          const savedEditText = latestSavedReviewEditText(item);
+          if (savedEditText !== null) {
+            event.revised_text = savedEditText;
+          }
         }
         return event;
+      }
+
+      function latestSavedReviewEditText(item) {
+        for (const event of state.reviewAuditEvents.slice().reverse()) {
+          if (event.action !== "edit" || !sameReviewAuditTarget(event, item)) continue;
+          return typeof event.revised_text === "string" ? event.revised_text : null;
+        }
+        return null;
+      }
+
+      function sameReviewAuditTarget(event, item) {
+        if (!event || event.document_id !== item.document_id || event.block_id !== item.block_id) {
+          return false;
+        }
+        const activeConversionId = state.latestResult?.conversion_id;
+        if (activeConversionId && event.conversion_id) {
+          return event.conversion_id === activeConversionId;
+        }
+        return true;
       }
 
       function reviewAuditSourcePage(item) {

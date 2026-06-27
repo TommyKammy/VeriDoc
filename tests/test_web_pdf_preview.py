@@ -83,7 +83,8 @@ def test_review_item_exposes_edit_and_approve_audit_events() -> None:
     assert "if (!reviewAuditSourcePage(item)) return null;" in html
     assert "validBbox(item.source_bbox, item.source_page_geometry)" in html
     assert "jump.disabled = !reviewAuditSourceBbox(item)" in html
-    assert 'if (action === "edit" || action === "approve")' in html
+    assert 'if (action === "edit")' in html
+    assert 'const savedEditText = latestSavedReviewEditText(item);' in html
     assert "event.revised_text = revisedText" in html
     assert "function requestReviewAction(item, action)" in html
     assert "try {" in html
@@ -94,6 +95,26 @@ def test_review_item_exposes_edit_and_approve_audit_events() -> None:
     assert 'requestReviewAction(item, "edit")' in html
     assert 'requestReviewAction(item, "approve")' in html
     assert "Review action event queued for audit" in html
+
+
+def test_approve_review_action_uses_saved_edit_not_unsaved_draft() -> None:
+    html = _web_html()
+
+    assert 'if (action === "edit" || action === "approve")' not in html
+    assert "function latestSavedReviewEditText(item)" in html
+    assert "function sameReviewAuditTarget(event, item)" in html
+    assert "for (const event of state.reviewAuditEvents.slice().reverse())" in html
+    assert 'if (event.action !== "edit" || !sameReviewAuditTarget(event, item)) continue;' in html
+    assert re.search(
+        r'\} else if \(action === "approve"\) \{\s+'
+        r"const savedEditText = latestSavedReviewEditText\(item\);\s+"
+        r"if \(savedEditText !== null\) \{\s+"
+        r"event\.revised_text = savedEditText;\s+"
+        r"\}\s+"
+        r"\}",
+        html,
+        flags=re.S,
+    )
 
 
 def test_review_actions_clear_and_reject_stale_file_selection() -> None:
