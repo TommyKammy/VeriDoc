@@ -312,23 +312,19 @@ def _table_required_column_score(
         return 1.0
 
     rows = _table_rows(value)
-    candidate_rows = _table_required_column_candidate_rows(rows, anchor, len(normalized_required_columns))
+    required_column_set = set(normalized_required_columns)
+    candidate_rows = _table_required_column_candidate_rows(rows, anchor, required_column_set)
     candidate_rows.extend(
-        _wrapped_cell_candidate_rows(rows, anchor, set(normalized_required_columns))
+        _wrapped_cell_candidate_rows(rows, anchor, required_column_set)
     )
     best_score = 0.0
     for row in candidate_rows:
-        column_names = {_normalized_column_name(cell) for cell in row}
-        column_names.discard("")
-        if not column_names:
-            continue
-        matched_columns = sum(1 for column in normalized_required_columns if column in column_names)
-        best_score = max(best_score, matched_columns / len(normalized_required_columns))
+        best_score = max(best_score, _row_required_column_score(row, required_column_set))
     return best_score
 
 
 def _table_required_column_candidate_rows(
-    rows: Sequence[Sequence[str]], anchor: Mapping[str, Any], required_column_count: int
+    rows: Sequence[Sequence[str]], anchor: Mapping[str, Any], required_columns: set[str]
 ) -> list[Sequence[str]]:
     anchor_index = _first_table_anchor_row_index(rows, anchor)
     candidate_rows: list[Sequence[str]] = []
@@ -336,9 +332,13 @@ def _table_required_column_candidate_rows(
         anchor_columns = _row_columns_excluding_anchor(rows[anchor_index], anchor)
         if anchor_columns:
             candidate_rows.append(anchor_columns)
-            return candidate_rows
+            if (
+                _row_required_column_score(anchor_columns, required_columns) >= 1.0
+                or not _looks_like_same_row_table_note(anchor_columns, required_columns)
+            ):
+                return candidate_rows
     for row in rows[anchor_index + 1 :]:
-        if len(row) == 1 and required_column_count > 1:
+        if len(row) == 1 and len(required_columns) > 1:
             continue
         candidate_rows.append(row)
         break
@@ -366,6 +366,38 @@ def _wrapped_cell_candidate_rows(
         else:
             candidates.append(combined_row)
     return candidates
+
+
+def _row_required_column_score(row: Sequence[str], required_columns: set[str]) -> float:
+    if not required_columns:
+        return 1.0
+    column_names = _row_column_name_candidates(row, required_columns)
+    if not column_names:
+        return 0.0
+    matched_columns = sum(1 for column in required_columns if column in column_names)
+    return matched_columns / len(required_columns)
+
+
+def _row_column_name_candidates(row: Sequence[str], required_columns: set[str]) -> set[str]:
+    column_names = {_normalized_column_name(cell) for cell in row}
+    column_names.discard("")
+    if not required_columns:
+        return column_names
+    for start in range(len(row)):
+        merged = ""
+        for end in range(start, len(row)):
+            merged = f"{merged} {row[end]}" if merged else str(row[end])
+            normalized_merged = _normalized_column_name(merged)
+            if normalized_merged in required_columns:
+                column_names.add(normalized_merged)
+    return column_names
+
+
+def _looks_like_same_row_table_note(row: Sequence[str], required_columns: set[str]) -> bool:
+    if len(row) != 1:
+        return False
+    normalized = _normalized_column_name(str(row[0]))
+    return normalized not in required_columns and " " in normalized
 
 
 def _first_table_anchor_row_index(rows: Sequence[Sequence[str]], anchor: Mapping[str, Any]) -> int:
@@ -437,15 +469,16 @@ def _split_table_row(value: str) -> list[str]:
 
 
 def _xlsx_cell_rows(value: str) -> list[list[str]]:
+    lines = [line for line in value.splitlines() if line.strip()]
     row_cells: dict[int, dict[int, str]] = {}
     saw_cell_ref = False
     last_cell_ref: tuple[int, int] | None = None
-    for line in value.splitlines():
-        if not line.strip():
-            continue
+    for line_index, line in enumerate(lines):
         cell = _xlsx_cell_line(line)
         if cell is None:
-            if _looks_like_delimited_table_row(line):
+            if _looks_like_delimited_table_row(line) and not _has_later_xlsx_cell_line(
+                lines, line_index
+            ):
                 return []
             if last_cell_ref is None:
                 return []
@@ -482,6 +515,10 @@ def _xlsx_cell_line(value: str) -> tuple[int, int, str] | None:
 
 def _looks_like_delimited_table_row(value: str) -> bool:
     return len(_split_table_row(value)) > 1
+
+
+def _has_later_xlsx_cell_line(lines: Sequence[str], start_index: int) -> bool:
+    return any(_xlsx_cell_line(line) is not None for line in lines[start_index + 1 :])
 
 
 def _xlsx_column_index(value: str) -> int:

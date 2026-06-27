@@ -224,6 +224,24 @@ class TemplateFingerprintTest(unittest.TestCase):
         self.assertTrue(result.requires_review)
         self.assertIn("template table 'yield_summary' required columns incomplete", result.warnings)
 
+    def test_same_row_table_note_does_not_hide_following_header(self) -> None:
+        template = self.template_definition()
+
+        result = match_template_fingerprint(
+            self.document_with_blocks(
+                table_text=(
+                    "Yield Summary\tAll yields in %\n"
+                    "step\texpected_yield\tactual_yield\n"
+                    "blend\t95\t94"
+                )
+            ),
+            template,
+        )
+
+        self.assertEqual(TemplateMatchClassification.KNOWN, result.classification)
+        self.assertFalse(result.requires_review)
+        self.assertNotIn("template table 'yield_summary' required columns incomplete", result.warnings)
+
     def test_absent_optional_anchor_does_not_lower_required_anchor_score(self) -> None:
         template = self.template_definition()
         template["anchors"] = [
@@ -519,6 +537,20 @@ class TemplateFingerprintTest(unittest.TestCase):
         self.assertEqual(TemplateMatchClassification.KNOWN, result.classification)
         self.assertNotIn("template table 'yield_summary' required columns incomplete", result.warnings)
 
+    def test_docx_manual_tab_inside_header_cell_can_match_required_column(self) -> None:
+        template = self.template_definition()
+        template["anchors"][1]["text"] = "Lot History"
+        template["tables"][0]["table_id"] = "lot_history"
+        template["tables"][0]["required_columns"] = ["Lot ID", "Value"]
+
+        result = match_template_fingerprint(
+            self.document_with_blocks(table_text="Lot History\nLot\tID\tValue\nBN-001\t123"),
+            template,
+        )
+
+        self.assertEqual(TemplateMatchClassification.KNOWN, result.classification)
+        self.assertNotIn("template table 'lot_history' required columns incomplete", result.warnings)
+
     def test_strict_table_anchor_can_match_later_cell(self) -> None:
         template = self.template_definition()
         template["anchors"][1]["match"] = "normalized"
@@ -579,6 +611,44 @@ class TemplateFingerprintTest(unittest.TestCase):
                         "dimension": "A1:C4",
                         "cells": [
                             {"ref": "A1", "value": "note\ncontinued", "value_type": "shared_string"},
+                            {"ref": "A2", "value": "Yield Summary", "value_type": "shared_string"},
+                            {"ref": "A3", "value": "step", "value_type": "shared_string"},
+                            {"ref": "B3", "value": "expected_yield", "value_type": "shared_string"},
+                            {"ref": "C3", "value": "actual_yield", "value_type": "shared_string"},
+                            {"ref": "A4", "value": "blend", "value_type": "shared_string"},
+                            {"ref": "B4", "value": "95", "value_type": "number"},
+                            {"ref": "C4", "value": "94", "value_type": "number"},
+                        ],
+                        "merged_ranges": [],
+                    }
+                ],
+            },
+            document_id="sample-xlsx",
+            title="Sample XLSX",
+            source_type="xlsx",
+        )
+
+        result = match_template_fingerprint(document, template)
+
+        self.assertEqual(TemplateMatchClassification.KNOWN, result.classification)
+        self.assertNotIn("template table 'yield_summary' required columns incomplete", result.warnings)
+
+    def test_xlsx_delimited_wrapped_cell_text_does_not_abort_row_reconstruction(self) -> None:
+        template = self.template_definition()
+        template["anchors"] = [template["anchors"][1]]
+        document = from_parser_output(
+            {
+                "source_path": "fixtures/sample.xlsx",
+                "sheets": [
+                    {
+                        "name": "Results",
+                        "dimension": "A1:C4",
+                        "cells": [
+                            {
+                                "ref": "A1",
+                                "value": "note\ncontinued, with comma",
+                                "value_type": "shared_string",
+                            },
                             {"ref": "A2", "value": "Yield Summary", "value_type": "shared_string"},
                             {"ref": "A3", "value": "step", "value_type": "shared_string"},
                             {"ref": "B3", "value": "expected_yield", "value_type": "shared_string"},
