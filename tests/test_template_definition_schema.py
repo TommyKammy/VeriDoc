@@ -192,6 +192,29 @@ class TemplateDefinitionSchemaTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValidationError, expected_error):
                     self.validate_template(sample)
 
+    def test_output_mapping_must_cover_declared_outputs(self) -> None:
+        cases = (
+            ("field_map", "fields", "manufacturing_date", "output_mapping.field_map"),
+            ("table_map", "tables", "yield_summary", "output_mapping.table_map"),
+        )
+
+        for mapping_section, declared_section, missing_id, expected_error in cases:
+            sample = self.load_sample()
+            sample["output_mapping"][mapping_section] = []
+            if mapping_section == "field_map":
+                sample["output_mapping"][mapping_section].append(
+                    {
+                        "field_id": sample[declared_section][0]["field_id"],
+                        "output_key": sample[declared_section][0]["output_key"],
+                    }
+                )
+
+            with self.subTest(mapping_section=mapping_section):
+                with self.assertRaisesRegex(ValidationError, expected_error):
+                    self.validate_template(sample)
+                with self.assertRaisesRegex(ValidationError, missing_id):
+                    self.validate_template(sample)
+
     def test_declared_output_keys_must_be_unique_across_fields_and_tables(self) -> None:
         cases = (
             ("field", "fields", 1, "batch.number", ("field_map", 1)),
@@ -216,6 +239,8 @@ class TemplateDefinitionSchemaTest(unittest.TestCase):
             ("cross_field", "related_target"),
         ):
             sample = self.load_sample()
+            if rule_type == "range":
+                sample["fields"][0]["value_type"] = "number"
             sample["validation_rules"].append(
                 {
                     "rule_id": f"{rule_type}-rule",
@@ -247,10 +272,60 @@ class TemplateDefinitionSchemaTest(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "does not match field 'batch_number' value_type 'string'"):
             self.validate_template(sample)
 
-    def test_validation_rule_operands_validate_when_present(self) -> None:
+    def test_range_validation_rules_require_numeric_targets(self) -> None:
         sample = self.load_sample()
-        sample["validation_rules"].extend(
-            [
+        sample["validation_rules"].append(
+            {
+                "rule_id": "batch-number-range",
+                "target": "batch_number",
+                "rule_type": "range",
+                "severity": "warning",
+                "message": "Batch number must stay within numeric bounds.",
+                "minimum": 0,
+                "maximum": 100,
+            }
+        )
+
+        with self.assertRaisesRegex(ValidationError, "requires number field"):
+            self.validate_template(sample)
+
+    def test_allowed_values_must_match_target_field_value_type(self) -> None:
+        sample = self.load_sample()
+        sample["fields"][0]["value_type"] = "number"
+        sample["validation_rules"].append(
+            {
+                "rule_id": "batch-number-values",
+                "target": "batch_number",
+                "rule_type": "allowed_values",
+                "severity": "warning",
+                "message": "Batch number must be an allowed number.",
+                "allowed_values": ["released"],
+            }
+        )
+
+        with self.assertRaisesRegex(ValidationError, "cannot match field 'batch_number' value_type 'number'"):
+            self.validate_template(sample)
+
+    def test_cross_field_ordering_rules_require_compatible_value_types(self) -> None:
+        sample = self.load_sample()
+        sample["validation_rules"].append(
+            {
+                "rule_id": "date-order",
+                "target": "manufacturing_date",
+                "rule_type": "cross_field",
+                "severity": "error",
+                "message": "Manufacturing date must not follow batch number.",
+                "related_target": "batch_number",
+                "operator": "before_or_equal",
+            }
+        )
+
+        with self.assertRaisesRegex(ValidationError, "requires date fields"):
+            self.validate_template(sample)
+
+    def test_validation_rule_operands_validate_when_present(self) -> None:
+        cases = (
+            (
                 {
                     "rule_id": "batch-number-type",
                     "target": "batch_number",
@@ -259,6 +334,9 @@ class TemplateDefinitionSchemaTest(unittest.TestCase):
                     "message": "Batch number must be parsed as a string.",
                     "expected_type": "string",
                 },
+                None,
+            ),
+            (
                 {
                     "rule_id": "yield-range",
                     "target": "batch_number",
@@ -268,6 +346,9 @@ class TemplateDefinitionSchemaTest(unittest.TestCase):
                     "minimum": 0,
                     "maximum": 100,
                 },
+                "number",
+            ),
+            (
                 {
                     "rule_id": "batch-status-values",
                     "target": "batch_number",
@@ -276,6 +357,9 @@ class TemplateDefinitionSchemaTest(unittest.TestCase):
                     "message": "Batch status must be one of the configured values.",
                     "allowed_values": ["released", "quarantined"],
                 },
+                None,
+            ),
+            (
                 {
                     "rule_id": "date-order",
                     "target": "manufacturing_date",
@@ -285,10 +369,18 @@ class TemplateDefinitionSchemaTest(unittest.TestCase):
                     "related_target": "batch_number",
                     "operator": "before_or_equal",
                 },
-            ]
+                "date",
+            ),
         )
 
-        self.validate_template(sample)
+        for rule, batch_number_type in cases:
+            sample = self.load_sample()
+            if batch_number_type is not None:
+                sample["fields"][0]["value_type"] = batch_number_type
+            sample["validation_rules"].append(rule)
+
+            with self.subTest(rule_id=rule["rule_id"]):
+                self.validate_template(sample)
 
 
 if __name__ == "__main__":

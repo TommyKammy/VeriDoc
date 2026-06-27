@@ -223,6 +223,13 @@ def validate_template_definition_consistency(template: dict[str, Any]) -> None:
                 f"must match field {field_id!r} output_key {expected_output_key!r}"
             )
 
+    _validate_template_output_mapping_coverage(
+        template.get("output_mapping", {}).get("field_map", []),
+        field_ids,
+        "field_id",
+        "$.output_mapping.field_map",
+    )
+
     for index, table_mapping in enumerate(template.get("output_mapping", {}).get("table_map", [])):
         table_id = table_mapping.get("table_id")
         if table_id not in table_ids:
@@ -240,6 +247,13 @@ def validate_template_definition_consistency(template: dict[str, Any]) -> None:
                 ".output_key: "
                 f"must match table {table_id!r} output_key {expected_output_key!r}"
             )
+
+    _validate_template_output_mapping_coverage(
+        template.get("output_mapping", {}).get("table_map", []),
+        table_ids,
+        "table_id",
+        "$.output_mapping.table_map",
+    )
 
 
 def _unique_template_items(items: list[dict[str, Any]], key: str, path: str) -> dict[str, dict[str, Any]]:
@@ -271,6 +285,27 @@ def _validate_template_output_key_uniqueness(template: dict[str, Any]) -> None:
                     f"already declared at {seen_output_keys[output_key]}"
                 )
             seen_output_keys[output_key] = path
+
+
+def _validate_template_output_mapping_coverage(
+    mappings: list[dict[str, Any]],
+    expected_ids: set[str],
+    key: str,
+    path: str,
+) -> None:
+    mapped_ids: set[str] = set()
+    for index, mapping in enumerate(mappings):
+        mapped_id = mapping.get(key)
+        if mapped_id in mapped_ids:
+            raise ValidationError(f"{path}[{index}].{key}: duplicates mapping for {mapped_id!r}")
+        mapped_ids.add(mapped_id)
+
+    missing_ids = sorted(expected_ids - mapped_ids)
+    if missing_ids:
+        raise ValidationError(
+            f"{path}: missing mapping(s) for "
+            + ", ".join(repr(item_id) for item_id in missing_ids)
+        )
 
 
 def _validate_template_risk_rank(
@@ -314,11 +349,11 @@ def _validate_template_rule_operands(
         )
 
     rule_type = rule.get("rule_type")
+    declared_type = fields_by_id[target].get("value_type")
     if rule_type == "type":
         if "expected_type" not in rule:
             raise ValidationError(f"$.validation_rules[{index}].expected_type: required for type rule")
         expected_type = rule.get("expected_type")
-        declared_type = fields_by_id[target].get("value_type")
         if expected_type != declared_type:
             raise ValidationError(
                 "$.validation_rules"
@@ -327,12 +362,28 @@ def _validate_template_rule_operands(
                 f"{expected_type!r} does not match field {target!r} value_type {declared_type!r}"
             )
     if rule_type == "range":
+        if declared_type != "number":
+            raise ValidationError(
+                "$.validation_rules"
+                f"[{index}]"
+                f": range rule target {target!r} requires number field, got {declared_type!r}"
+            )
         if "minimum" not in rule and "maximum" not in rule:
             raise ValidationError(f"$.validation_rules[{index}]: range rule requires minimum or maximum")
         if "minimum" in rule and "maximum" in rule and rule["minimum"] > rule["maximum"]:
             raise ValidationError(f"$.validation_rules[{index}]: minimum cannot exceed maximum")
-    if rule_type == "allowed_values" and "allowed_values" not in rule:
-        raise ValidationError(f"$.validation_rules[{index}].allowed_values: required for allowed_values rule")
+    if rule_type == "allowed_values":
+        if "allowed_values" not in rule:
+            raise ValidationError(f"$.validation_rules[{index}].allowed_values: required for allowed_values rule")
+        for value_index, value in enumerate(rule.get("allowed_values", [])):
+            if not _template_value_matches_type(value, declared_type):
+                raise ValidationError(
+                    "$.validation_rules"
+                    f"[{index}]"
+                    ".allowed_values"
+                    f"[{value_index}]"
+                    f": value {value!r} cannot match field {target!r} value_type {declared_type!r}"
+                )
     if rule_type == "cross_field":
         related_target = rule.get("related_target")
         if related_target is None:
@@ -346,6 +397,40 @@ def _validate_template_rule_operands(
             )
         if "operator" not in rule:
             raise ValidationError(f"$.validation_rules[{index}].operator: required for cross_field rule")
+        operator = rule.get("operator")
+        related_type = fields_by_id[related_target].get("value_type")
+        if operator in {"before", "before_or_equal", "after", "after_or_equal"}:
+            if declared_type != "date" or related_type != "date":
+                raise ValidationError(
+                    "$.validation_rules"
+                    f"[{index}]"
+                    f": operator {operator!r} requires date fields, got {declared_type!r} and {related_type!r}"
+                )
+        elif operator in {"less_than", "less_than_or_equal", "greater_than", "greater_than_or_equal"}:
+            if declared_type != "number" or related_type != "number":
+                raise ValidationError(
+                    "$.validation_rules"
+                    f"[{index}]"
+                    f": operator {operator!r} requires number fields, got {declared_type!r} and {related_type!r}"
+                )
+        elif declared_type != related_type:
+            raise ValidationError(
+                "$.validation_rules"
+                f"[{index}]"
+                f": operator {operator!r} requires matching field types, got {declared_type!r} and {related_type!r}"
+            )
+
+
+def _template_value_matches_type(value: Any, value_type: str) -> bool:
+    if value_type in {"string", "date"}:
+        return isinstance(value, str)
+    if value_type == "number":
+        return (isinstance(value, int) or isinstance(value, float)) and not isinstance(value, bool)
+    if value_type == "boolean":
+        return isinstance(value, bool)
+    if value_type == "enum":
+        return isinstance(value, (str, int, float, bool))
+    return False
 
 
 def validate_document_ir_v0_consistency(document: dict[str, Any]) -> None:
