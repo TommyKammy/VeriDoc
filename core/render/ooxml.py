@@ -14,7 +14,8 @@ ASCII_NUMBER_RE = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?\Z")
 XLSX_RANGE_RE = re.compile(r"[A-Z]+[1-9][0-9]*:[A-Z]+[1-9][0-9]*\Z")
 XLSX_CELL_RE = re.compile(r"([A-Z]+)([1-9][0-9]*)\Z")
 SUPPORTED_BLOCK_TYPES = {"field", "heading", "list_item", "paragraph", "table"}
-EDITABLE_PDF_BLOCK_TYPES = SUPPORTED_BLOCK_TYPES | {"footnote"}
+FOOTNOTE_BLOCK_TYPE = "footnote"
+EDITABLE_PDF_BLOCK_TYPES = SUPPORTED_BLOCK_TYPES | {FOOTNOTE_BLOCK_TYPE}
 
 
 def render_docx_from_ir(
@@ -158,7 +159,9 @@ def render_editable_docx_from_pdf_ir(
     document = _mapping(document_ir.get("document"), "document")
     title = _text(document.get("title"))
     blocks = _editable_pdf_blocks(document_ir)
-    footnote_blocks = [block for block in blocks if _text(block.get("type")) == "footnote"]
+    footnote_blocks = [
+        block for block in blocks if _text(block.get("type")) == FOOTNOTE_BLOCK_TYPE
+    ]
     document_warnings = _editable_pdf_document_warnings(document_ir)
     document_warning_comment_id = 0 if document_warnings else None
     first_block_comment_id = 1 if document_warnings else 0
@@ -171,7 +174,7 @@ def render_editable_docx_from_pdf_ir(
     body_parts = [_docx_paragraph(title, style="Heading1", comment_id=document_warning_comment_id)]
     for block in blocks:
         block_id = _text(block.get("id"))
-        if _text(block.get("type")) == "footnote":
+        if _text(block.get("type")) == FOOTNOTE_BLOCK_TYPE:
             body_parts.append(
                 _docx_footnote_reference_paragraph(
                     footnote_ids[block_id],
