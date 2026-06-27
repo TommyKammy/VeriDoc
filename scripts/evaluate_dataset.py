@@ -21,10 +21,10 @@ from core.llm.conversion_plan import ConversionPlanValidationError, validate_con
 
 DEFAULT_EVALUATION_CASES = Path("datasets/gold/evaluation_cases_v0.json")
 DEFAULT_LLM_STABILITY_RUNS = Path("datasets/gold/llm_stability_runs_v0.json")
-DEFAULT_POC_COMPARISON = Path("datasets/gold/poc_mode_comparison_v0.json")
+DEFAULT_POC_COMPARISON = Path("datasets/gold/poc_mode_comparison_v1.json")
 EVALUATION_CASES_SCHEMA_VERSION = "veridoc-evaluation-cases/v0"
 LLM_STABILITY_RUNS_SCHEMA_VERSION = "veridoc-llm-stability-runs/v0"
-POC_MODE_COMPARISON_SCHEMA_VERSION = "veridoc-poc-mode-comparison/v0"
+POC_MODE_COMPARISON_SCHEMA_VERSION = "veridoc-poc-mode-comparison/v1"
 HIGH_RISK_LABELS_SCHEMA_VERSION = "veridoc-high-risk-labels/v0"
 FIXTURE_MANIFEST_SCHEMA_VERSION = "veridoc-eval-fixtures/v0"
 FIXTURE_SCHEMA_VERSION = "veridoc-evaluation-fixture/v0"
@@ -112,11 +112,34 @@ class PoCModeMetrics:
 
 
 @dataclass(frozen=True)
+class ManualCorrectionTimeMetrics:
+    measurement_method: str
+    baseline_minutes: float
+    assisted_minutes: float
+    reduction_minutes: float
+    reduction_rate: float
+    target_reduction_rate: float
+    target_met: bool
+
+    def as_dict(self) -> dict[str, bool | float | str]:
+        return {
+            "measurement_method": self.measurement_method,
+            "baseline_minutes": self.baseline_minutes,
+            "assisted_minutes": self.assisted_minutes,
+            "reduction_minutes": self.reduction_minutes,
+            "reduction_rate": self.reduction_rate,
+            "target_reduction_rate": self.target_reduction_rate,
+            "target_met": self.target_met,
+        }
+
+
+@dataclass(frozen=True)
 class PoCComparisonMetrics:
     mode_count: int
     high_risk_false_auto_confirmed_count: int
     high_risk_false_auto_confirmed_target: int
     target_met: bool
+    manual_correction_time: ManualCorrectionTimeMetrics
     modes: tuple[PoCModeMetrics, ...]
 
     def as_dict(self) -> dict[str, object]:
@@ -126,6 +149,7 @@ class PoCComparisonMetrics:
             "high_risk_false_auto_confirmed_count": self.high_risk_false_auto_confirmed_count,
             "high_risk_false_auto_confirmed_target": self.high_risk_false_auto_confirmed_target,
             "target_met": self.target_met,
+            "manual_correction_time": self.manual_correction_time.as_dict(),
             "modes": [mode.as_dict() for mode in self.modes],
         }
 
@@ -873,6 +897,58 @@ def validate_non_negative_int(value: object, context: str) -> int:
     return value
 
 
+def validate_positive_minutes(value: object, context: str) -> float:
+    if not is_number(value):
+        raise EvaluationCaseError(f"{context} must be a finite number")
+    minutes = float(value)
+    if minutes <= 0.0:
+        raise EvaluationCaseError(f"{context} must be greater than 0")
+    return minutes
+
+
+def validate_non_negative_minutes(value: object, context: str) -> float:
+    if not is_number(value):
+        raise EvaluationCaseError(f"{context} must be a finite number")
+    minutes = float(value)
+    if minutes < 0.0:
+        raise EvaluationCaseError(f"{context} must be non-negative")
+    return minutes
+
+
+def evaluate_manual_correction_time(data: dict[str, Any]) -> ManualCorrectionTimeMetrics:
+    record = data.get("manual_correction_time")
+    if not isinstance(record, dict):
+        raise EvaluationCaseError("PoC comparison must define manual_correction_time")
+
+    method = record.get("measurement_method")
+    if not isinstance(method, str) or not normalized_text(method):
+        raise EvaluationCaseError("manual_correction_time.measurement_method must be non-empty")
+
+    baseline_minutes = validate_positive_minutes(
+        record.get("baseline_minutes"),
+        "manual_correction_time.baseline_minutes",
+    )
+    assisted_minutes = validate_non_negative_minutes(
+        record.get("assisted_minutes"),
+        "manual_correction_time.assisted_minutes",
+    )
+    target_reduction_rate = validate_ratio_metric(
+        record.get("target_reduction_rate"),
+        "manual_correction_time.target_reduction_rate",
+    )
+    reduction_minutes = baseline_minutes - assisted_minutes
+    reduction_rate = ratio(reduction_minutes, baseline_minutes)
+    return ManualCorrectionTimeMetrics(
+        measurement_method=normalized_text(method),
+        baseline_minutes=baseline_minutes,
+        assisted_minutes=assisted_minutes,
+        reduction_minutes=reduction_minutes,
+        reduction_rate=reduction_rate,
+        target_reduction_rate=target_reduction_rate,
+        target_met=reduction_rate >= target_reduction_rate,
+    )
+
+
 def high_risk_labels_path_from_comparison(data: dict[str, Any], repo_root: Path) -> Path:
     labels_path = data.get("high_risk_labels")
     if not isinstance(labels_path, str) or not labels_path:
@@ -1250,6 +1326,7 @@ def evaluate_poc_mode_comparison(
     )
     if target != 0:
         raise EvaluationCaseError("high-risk false auto-confirmation target must be 0")
+    manual_correction_time = evaluate_manual_correction_time(data)
 
     modes = data.get("modes")
     if not isinstance(modes, list):
@@ -1382,7 +1459,11 @@ def evaluate_poc_mode_comparison(
         mode_count=len(mode_metrics),
         high_risk_false_auto_confirmed_count=total_high_risk_false_auto_confirmed,
         high_risk_false_auto_confirmed_target=target,
-        target_met=total_high_risk_false_auto_confirmed <= target,
+        target_met=(
+            total_high_risk_false_auto_confirmed <= target
+            and manual_correction_time.target_met
+        ),
+        manual_correction_time=manual_correction_time,
         modes=tuple(sorted(mode_metrics, key=lambda item: mode_order[item.mode])),
     )
 

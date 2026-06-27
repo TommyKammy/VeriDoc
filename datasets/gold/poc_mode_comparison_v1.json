@@ -1,5 +1,5 @@
 {
-  "schema_version": "veridoc-poc-mode-comparison/v0",
+  "schema_version": "veridoc-poc-mode-comparison/v1",
   "dataset_manifest": "datasets/fixtures/manifest.json",
   "scope": {
     "phase": "phase0",
@@ -11,6 +11,12 @@
   "evaluation_cases": "datasets/gold/evaluation_cases_v0.json",
   "acceptance_targets": {
     "high_risk_false_auto_confirmed_count": 0
+  },
+  "manual_correction_time": {
+    "measurement_method": "Reviewer correction minutes for the public synthetic representative template: no_llm baseline versus high_quality assisted output.",
+    "baseline_minutes": 12.0,
+    "assisted_minutes": 5.0,
+    "target_reduction_rate": 0.4
   },
   "modes": [
     {
