@@ -21,10 +21,10 @@ from core.llm.conversion_plan import ConversionPlanValidationError, validate_con
 
 DEFAULT_EVALUATION_CASES = Path("datasets/gold/evaluation_cases_v0.json")
 DEFAULT_LLM_STABILITY_RUNS = Path("datasets/gold/llm_stability_runs_v0.json")
-DEFAULT_POC_COMPARISON = Path("datasets/gold/poc_mode_comparison_v0.json")
+DEFAULT_POC_COMPARISON = Path("datasets/gold/poc_mode_comparison_v1.json")
 EVALUATION_CASES_SCHEMA_VERSION = "veridoc-evaluation-cases/v0"
 LLM_STABILITY_RUNS_SCHEMA_VERSION = "veridoc-llm-stability-runs/v0"
-POC_MODE_COMPARISON_SCHEMA_VERSION = "veridoc-poc-mode-comparison/v0"
+POC_MODE_COMPARISON_SCHEMA_VERSION = "veridoc-poc-mode-comparison/v1"
 HIGH_RISK_LABELS_SCHEMA_VERSION = "veridoc-high-risk-labels/v0"
 FIXTURE_MANIFEST_SCHEMA_VERSION = "veridoc-eval-fixtures/v0"
 FIXTURE_SCHEMA_VERSION = "veridoc-evaluation-fixture/v0"
@@ -906,6 +906,15 @@ def validate_positive_minutes(value: object, context: str) -> float:
     return minutes
 
 
+def validate_non_negative_minutes(value: object, context: str) -> float:
+    if not is_number(value):
+        raise EvaluationCaseError(f"{context} must be a finite number")
+    minutes = float(value)
+    if minutes < 0.0:
+        raise EvaluationCaseError(f"{context} must be non-negative")
+    return minutes
+
+
 def evaluate_manual_correction_time(data: dict[str, Any]) -> ManualCorrectionTimeMetrics:
     record = data.get("manual_correction_time")
     if not isinstance(record, dict):
@@ -919,7 +928,7 @@ def evaluate_manual_correction_time(data: dict[str, Any]) -> ManualCorrectionTim
         record.get("baseline_minutes"),
         "manual_correction_time.baseline_minutes",
     )
-    assisted_minutes = validate_positive_minutes(
+    assisted_minutes = validate_non_negative_minutes(
         record.get("assisted_minutes"),
         "manual_correction_time.assisted_minutes",
     )

@@ -1,5 +1,5 @@
 {
-  "schema_version": "veridoc-poc-mode-comparison/v0",
+  "schema_version": "veridoc-poc-mode-comparison/v1",
   "dataset_manifest": "datasets/fixtures/manifest.json",
   "scope": {
     "phase": "phase0",

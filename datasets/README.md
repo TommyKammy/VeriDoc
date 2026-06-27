@@ -54,7 +54,7 @@ unstable examples.
 MVP acceptance comparison harness:
 
 ```sh
-python3 scripts/evaluate_dataset.py --poc-comparison datasets/gold/poc_mode_comparison_v0.json
+python3 scripts/evaluate_dataset.py --poc-comparison datasets/gold/poc_mode_comparison_v1.json
 ```
 
 The comparison harness emits JSON metrics for required PoC modes, high-risk

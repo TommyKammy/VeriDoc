@@ -16,7 +16,7 @@ SCRIPT_PATH = REPO_ROOT / "scripts" / "evaluate_dataset.py"
 CASES_PATH = REPO_ROOT / "datasets" / "gold" / "evaluation_cases_v0.json"
 HIGH_RISK_LABELS_PATH = REPO_ROOT / "datasets" / "gold" / "high_risk_labels_v0.json"
 LLM_STABILITY_RUNS_PATH = REPO_ROOT / "datasets" / "gold" / "llm_stability_runs_v0.json"
-POC_COMPARISON_PATH = REPO_ROOT / "datasets" / "gold" / "poc_mode_comparison_v0.json"
+POC_COMPARISON_PATH = REPO_ROOT / "datasets" / "gold" / "poc_mode_comparison_v1.json"
 
 
 spec = importlib.util.spec_from_file_location("evaluate_dataset", SCRIPT_PATH)
@@ -173,12 +173,33 @@ class EvaluateDatasetTest(unittest.TestCase):
         ):
             evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
 
+    def test_poc_mode_comparison_allows_zero_assisted_manual_correction_time(self) -> None:
+        data = self.valid_poc_comparison_data()
+        data["manual_correction_time"]["assisted_minutes"] = 0.0
+
+        metrics = evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
+        self.assertEqual(0.0, metrics.manual_correction_time.assisted_minutes)
+        self.assertEqual(12.0, metrics.manual_correction_time.reduction_minutes)
+        self.assertEqual(1.0, metrics.manual_correction_time.reduction_rate)
+        self.assertTrue(metrics.manual_correction_time.target_met)
+
     def test_poc_mode_comparison_rejects_inflated_manual_correction_time(self) -> None:
         data = self.valid_poc_comparison_data()
         data["manual_correction_time"]["assisted_minutes"] = 13.0
 
         with self.assertRaisesRegex(
             evaluate_dataset.EvaluationCaseError, "assisted_minutes"
+        ):
+            evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
+    def test_poc_mode_comparison_rejects_legacy_schema_without_manual_times(self) -> None:
+        data = self.valid_poc_comparison_data()
+        data["schema_version"] = "veridoc-poc-mode-comparison/v0"
+        data.pop("manual_correction_time")
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError, "unsupported PoC comparison schema_version"
         ):
             evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
 
