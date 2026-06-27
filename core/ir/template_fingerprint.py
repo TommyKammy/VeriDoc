@@ -126,7 +126,11 @@ def _best_anchor_match_score(anchor: Mapping[str, Any], blocks: Sequence[Documen
     if not matching_blocks:
         return 0.0
     scores = [
-        _text_match_score(str(anchor.get("text") or ""), block.text, str(anchor.get("match") or "normalized"))
+        _text_match_score(
+            str(anchor.get("text") or ""),
+            _block_anchor_text(anchor, block),
+            str(anchor.get("match") or "normalized"),
+        )
         for block in matching_blocks
     ]
     return max(scores, default=0.0)
@@ -140,8 +144,14 @@ def _blocks_matching_anchor(anchor: Mapping[str, Any], blocks: Sequence[Document
         block
         for block in blocks
         if _block_matches_scope(block, scope)
-        and _text_match_score(expected_text, block.text, match_mode) > 0.0
+        and _text_match_score(expected_text, _block_anchor_text(anchor, block), match_mode) > 0.0
     ]
+
+
+def _block_anchor_text(anchor: Mapping[str, Any], block: DocumentBlock) -> str:
+    if str(anchor.get("kind") or "") == "table_header" and block.type == "table":
+        return _table_header_text(block.text)
+    return block.text
 
 
 def _block_matches_scope(block: DocumentBlock, scope: Mapping[str, Any]) -> bool:
@@ -181,7 +191,7 @@ def _table_score(
 
         best_column_score = 0.0
         for block in table_blocks:
-            column_names = _table_column_names(block.text)
+            column_names = _table_column_names(block.text, anchor)
             matched_columns = sum(
                 1 for column in required_columns if _normalized_column_name(column) in column_names
             )
@@ -277,17 +287,91 @@ def _document_ir_review_warnings(document_ir: DocumentIRV1) -> list[str]:
     return warnings
 
 
-def _table_column_names(value: str) -> set[str]:
-    for line in value.splitlines():
-        cells = _table_row_cells(line)
-        if len(cells) > 1:
+def _table_header_text(value: str) -> str:
+    rows = _table_rows(value)
+    if not rows:
+        return ""
+    return "\t".join(rows[0])
+
+
+def _table_column_names(value: str, anchor: Mapping[str, Any]) -> set[str]:
+    for row in _table_rows(value):
+        if _row_matches_anchor(row, anchor):
+            continue
+        cells = [_normalized_column_name(cell) for cell in row]
+        cells = [cell for cell in cells if cell]
+        if cells:
             return set(cells)
     return set()
 
 
+def _row_matches_anchor(row: Sequence[str], anchor: Mapping[str, Any]) -> bool:
+    expected_text = str(anchor.get("text") or "")
+    if not expected_text:
+        return False
+    match_mode = str(anchor.get("match") or "normalized")
+    row_text = "\t".join(row)
+    first_cell = row[0] if row else ""
+    return (
+        _text_match_score(expected_text, row_text, match_mode) > 0.0
+        or _text_match_score(expected_text, first_cell, match_mode) > 0.0
+    )
+
+
+def _table_rows(value: str) -> list[list[str]]:
+    xlsx_rows = _xlsx_cell_rows(value)
+    if xlsx_rows:
+        return xlsx_rows
+    return [
+        cells
+        for line in value.splitlines()
+        if (cells := _table_row_cells(line))
+    ]
+
+
 def _table_row_cells(value: str) -> list[str]:
     return [
-        normalized_cell
+        cell.strip()
         for cell in re.split(r"\t+|\s*\|\s*|\s*,\s*|\s{2,}", value)
-        if (normalized_cell := _normalized_column_name(cell))
+        if _normalized_column_name(cell)
     ]
+
+
+def _xlsx_cell_rows(value: str) -> list[list[str]]:
+    row_cells: dict[int, dict[int, str]] = {}
+    saw_cell_ref = False
+    for line in value.splitlines():
+        if not line.strip():
+            continue
+        cell = _xlsx_cell_line(line)
+        if cell is None:
+            return []
+        saw_cell_ref = True
+        row_index, column_index, cell_value = cell
+        if not _normalized_column_name(cell_value):
+            continue
+        row_cells.setdefault(row_index, {})[column_index] = cell_value
+    if not saw_cell_ref:
+        return []
+    return [
+        [cell for _column, cell in sorted(columns.items())]
+        for _row, columns in sorted(row_cells.items())
+        if columns
+    ]
+
+
+def _xlsx_cell_line(value: str) -> tuple[int, int, str] | None:
+    match = re.match(r"^([A-Za-z]+)([1-9][0-9]*):(.*)$", value)
+    if not match:
+        return None
+    column_letters, row_number, cell_value = match.groups()
+    if cell_value.startswith(" "):
+        cell_value = cell_value[1:]
+    return int(row_number), _xlsx_column_index(column_letters), cell_value
+
+
+def _xlsx_column_index(value: str) -> int:
+    column_index = 0
+    for character in value.upper():
+        column_index = (column_index * 26) + (ord(character) - ord("A") + 1)
+    return column_index

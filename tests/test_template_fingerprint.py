@@ -11,6 +11,7 @@ from core.ir.document_ir_v1 import (
     DocumentPage,
     ExtractorRef,
     ReviewState,
+    from_parser_output,
 )
 from core.ir.template_fingerprint import (
     TemplateMatchClassification,
@@ -214,6 +215,68 @@ class TemplateFingerprintTest(unittest.TestCase):
         self.assertEqual(TemplateMatchClassification.UNKNOWN, result.classification)
         self.assertIn("batch-header", result.missing_anchor_ids)
         self.assertTrue(result.requires_review)
+
+    def test_exact_table_anchor_matches_table_header_text(self) -> None:
+        template = self.template_definition()
+        template["anchors"][1]["match"] = "exact"
+
+        result = match_template_fingerprint(
+            self.document_with_blocks(
+                table_text="Yield Summary\nstep\texpected_yield\tactual_yield"
+            ),
+            template,
+        )
+
+        self.assertEqual(TemplateMatchClassification.KNOWN, result.classification)
+        self.assertNotIn("yield-table", result.missing_anchor_ids)
+        self.assertNotIn("template table 'yield_summary' missing from document", result.warnings)
+
+    def test_single_column_required_table_header_is_supported(self) -> None:
+        template = self.template_definition()
+        template["anchors"][1]["text"] = "Lot History"
+        template["tables"][0]["table_id"] = "lot_history"
+        template["tables"][0]["required_columns"] = ["Lot Number"]
+
+        result = match_template_fingerprint(
+            self.document_with_blocks(table_text="Lot History\nLot Number\nBN-001"),
+            template,
+        )
+
+        self.assertEqual(TemplateMatchClassification.KNOWN, result.classification)
+        self.assertNotIn("template table 'lot_history' required columns incomplete", result.warnings)
+
+    def test_xlsx_cell_rows_are_reconstructed_for_required_columns(self) -> None:
+        template = self.template_definition()
+        template["anchors"] = [template["anchors"][1]]
+        document = from_parser_output(
+            {
+                "source_path": "fixtures/sample.xlsx",
+                "sheets": [
+                    {
+                        "name": "Results",
+                        "dimension": "A1:C3",
+                        "cells": [
+                            {"ref": "A1", "value": "Yield Summary", "value_type": "shared_string"},
+                            {"ref": "A2", "value": "step", "value_type": "shared_string"},
+                            {"ref": "B2", "value": "expected_yield", "value_type": "shared_string"},
+                            {"ref": "C2", "value": "actual_yield", "value_type": "shared_string"},
+                            {"ref": "A3", "value": "blend", "value_type": "shared_string"},
+                            {"ref": "B3", "value": "95", "value_type": "number"},
+                            {"ref": "C3", "value": "94", "value_type": "number"},
+                        ],
+                        "merged_ranges": [],
+                    }
+                ],
+            },
+            document_id="sample-xlsx",
+            title="Sample XLSX",
+            source_type="xlsx",
+        )
+
+        result = match_template_fingerprint(document, template)
+
+        self.assertEqual(TemplateMatchClassification.KNOWN, result.classification)
+        self.assertNotIn("template table 'yield_summary' required columns incomplete", result.warnings)
 
     def template_definition(self) -> dict[str, Any]:
         return {
