@@ -104,7 +104,7 @@ def test_approve_review_action_uses_saved_edit_not_unsaved_draft() -> None:
     assert "async function loadLatestSavedReviewEditText(item)" in html
     assert "function surfaceSavedReviewEditText(item, savedEditText)" in html
     assert "function sameReviewAuditTarget(event, item)" in html
-    assert "for (const event of state.reviewAuditEvents.slice().reverse())" in html
+    assert "for (const event of reviewEvents.slice().reverse())" in html
     assert 'if (event.action !== "edit" || !sameReviewAuditTarget(event, item)) continue;' in html
     assert re.search(
         r'\} else if \(action === "approve"\) \{\s+'
@@ -128,6 +128,8 @@ def test_approve_review_action_refreshes_saved_server_edits() -> None:
     assert 'const response = await apiFetch(path);' in html
     assert 'apiFetch("/api/review-events");' not in html
     assert "state.reviewAuditEvents = reviewEvents;" in html
+    assert "return reviewEvents;" in html
+    assert "const reviewEvents = await refreshReviewAuditEvents(item);" in html
     assert "savedEditText = await loadLatestSavedReviewEditText(item);" in html
     assert "surfaceSavedReviewEditText(item, savedEditText);" in html
     assert 'text.dataset.reviewTextFor = item.block_id;' in html

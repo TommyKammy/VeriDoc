@@ -1473,6 +1473,7 @@
           ? body.review_events.filter((event) => event && typeof event === "object")
           : [];
         state.reviewAuditEvents = reviewEvents;
+        return reviewEvents;
       }
 
       function buildReviewAuditEvent(item, action, savedEditText = null) {
@@ -1501,8 +1502,8 @@
       }
 
       async function loadLatestSavedReviewEditText(item) {
-        await refreshReviewAuditEvents(item);
-        for (const event of state.reviewAuditEvents.slice().reverse()) {
+        const reviewEvents = await refreshReviewAuditEvents(item);
+        for (const event of reviewEvents.slice().reverse()) {
           if (event.action !== "edit" || !sameReviewAuditTarget(event, item)) continue;
           return typeof event.revised_text === "string" ? event.revised_text : null;
         }
