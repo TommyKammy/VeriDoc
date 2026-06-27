@@ -616,6 +616,7 @@
         reviewAuditEvents: [],
         pendingReviewActions: new Map(),
         authGeneration: 0,
+        credentialAbortController: new AbortController(),
       };
 
       let savedAuthToken = "";
@@ -806,7 +807,9 @@
           if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
           setPageStatus(error.message, true);
         } finally {
-          createJob.disabled = false;
+          if (isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) {
+            createJob.disabled = false;
+          }
         }
       }
 
@@ -997,6 +1000,8 @@
       }
 
       function clearCredentialBoundState() {
+        state.credentialAbortController.abort();
+        state.credentialAbortController = new AbortController();
         state.authGeneration += 1;
         state.directConversionToken += 1;
         button.disabled = false;
@@ -1576,7 +1581,8 @@
         const token = activeAuthToken();
         const headers = { ...(options.headers || {}) };
         if (token) headers.Authorization = `Bearer ${token}`;
-        return fetch(url, { ...options, headers });
+        const signal = options.signal || state.credentialAbortController.signal;
+        return fetch(url, { ...options, headers, signal });
       }
 
       loadJobs();

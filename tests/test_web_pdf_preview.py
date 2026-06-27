@@ -99,8 +99,22 @@ def test_review_actions_clear_and_reject_stale_file_selection() -> None:
     assert 'input.addEventListener("change", () => {' in html
     assert "state.directConversionToken += 1;" in html
     assert "button.disabled = false;" in html
+    assert "credentialAbortController: new AbortController()" in html
+    assert "state.credentialAbortController.abort();" in html
+    assert "state.credentialAbortController = new AbortController();" in html
     assert "function isActiveDirectConversion(conversionToken)" in html
     assert "if (!isActiveDirectConversion(conversionToken)) return;" in html
+    assert "const signal = options.signal || state.credentialAbortController.signal;" in html
+    assert "return fetch(url, { ...options, headers, signal });" in html
+    assert re.search(
+        r"\} finally \{\s+"
+        r"if \(isActiveCredentialRequest\(requestAuthToken, requestAuthGeneration\)\) \{\s+"
+        r"createJob\.disabled = false;\s+"
+        r"\}\s+"
+        r"\}",
+        html,
+        flags=re.S,
+    )
     assert "clearReviewResult();" in html
     assert re.search(
         r'button\.addEventListener\("click", async \(\) => \{.*?'
