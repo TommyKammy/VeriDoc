@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Callable
 
 from scripts.ci.validate_document_ir import ValidationError, validate, validate_template_definition_consistency
 
@@ -32,9 +33,90 @@ class TemplateDefinitionSchemaTest(unittest.TestCase):
         sample = self.load_sample()
         sample["fields"][0]["source"]["anchor_id"] = "missing-anchor"
 
+        result = self.run_template_cli(sample)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("references undeclared anchor", result.stderr)
+
+    def test_cli_rejects_review_semantic_consistency_failures(self) -> None:
+        def dangling_field_anchor(sample: dict[str, object]) -> None:
+            sample["fields"][0]["source"]["anchor_id"] = "missing-anchor"
+
+        def mismatched_field_rule_target(sample: dict[str, object]) -> None:
+            sample["fields"][1]["validation_rule_ids"] = ["batch-number-required"]
+
+        def table_cell_non_table_anchor(sample: dict[str, object]) -> None:
+            sample["fields"][0]["source"]["direction"] = "table_cell"
+
+        def table_uses_non_table_anchor(sample: dict[str, object]) -> None:
+            sample["tables"][0]["anchor_id"] = "batch-header"
+
+        def conflicting_output_mapping(sample: dict[str, object]) -> None:
+            sample["output_mapping"]["field_map"][0]["output_key"] = "other.path"
+
+        def duplicate_output_key(sample: dict[str, object]) -> None:
+            sample["fields"][1]["output_key"] = "batch.number"
+            sample["output_mapping"]["field_map"][1]["output_key"] = "batch.number"
+
+        def missing_output_mapping(sample: dict[str, object]) -> None:
+            sample["output_mapping"]["field_map"] = sample["output_mapping"]["field_map"][:1]
+
+        def incomplete_risk_rank(sample: dict[str, object]) -> None:
+            sample["risk_rank"]["levels"] = [
+                level for level in sample["risk_rank"]["levels"] if level["level"] != "critical"
+            ]
+
+        def range_on_non_numeric_field(sample: dict[str, object]) -> None:
+            sample["validation_rules"].append(
+                {
+                    "rule_id": "batch-number-range",
+                    "target": "batch_number",
+                    "rule_type": "range",
+                    "severity": "warning",
+                    "message": "Batch number must stay within numeric bounds.",
+                    "minimum": 0,
+                    "maximum": 100,
+                }
+            )
+
+        def cross_field_incompatible_types(sample: dict[str, object]) -> None:
+            sample["validation_rules"].append(
+                {
+                    "rule_id": "date-order",
+                    "target": "manufacturing_date",
+                    "rule_type": "cross_field",
+                    "severity": "error",
+                    "message": "Manufacturing date must not follow batch number.",
+                    "related_target": "batch_number",
+                    "operator": "before_or_equal",
+                }
+            )
+
+        cases: tuple[tuple[str, Callable[[dict[str, object]], None], str], ...] = (
+            ("dangling_field_anchor", dangling_field_anchor, "references undeclared anchor"),
+            ("mismatched_field_rule_target", mismatched_field_rule_target, "not field 'manufacturing_date'"),
+            ("table_cell_non_table_anchor", table_cell_non_table_anchor, "table_cell source references non-table anchor"),
+            ("table_uses_non_table_anchor", table_uses_non_table_anchor, "non-table anchor"),
+            ("conflicting_output_mapping", conflicting_output_mapping, "must match field 'batch_number' output_key"),
+            ("duplicate_output_key", duplicate_output_key, "duplicates output_key"),
+            ("missing_output_mapping", missing_output_mapping, "missing mapping"),
+            ("incomplete_risk_rank", incomplete_risk_rank, "risk_rank.levels"),
+            ("range_on_non_numeric_field", range_on_non_numeric_field, "requires number field"),
+            ("cross_field_incompatible_types", cross_field_incompatible_types, "requires date fields"),
+        )
+
+        for name, mutate, expected_error in cases:
+            sample = self.load_sample()
+            mutate(sample)
+            with self.subTest(name=name):
+                result = self.run_template_cli(sample)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(expected_error, result.stderr)
+
+    def run_template_cli(self, template: dict[str, object]) -> subprocess.CompletedProcess[str]:
         with tempfile.TemporaryDirectory() as tmpdir:
             document_path = Path(tmpdir) / "template.json"
-            document_path.write_text(json.dumps(sample), encoding="utf-8")
+            document_path.write_text(json.dumps(template), encoding="utf-8")
 
             result = subprocess.run(
                 [
@@ -50,9 +132,7 @@ class TemplateDefinitionSchemaTest(unittest.TestCase):
                 capture_output=True,
                 text=True,
             )
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("references undeclared anchor", result.stderr)
+        return result
 
     def validate_template(self, template: dict[str, object]) -> None:
         validate(self.load_schema(), template)

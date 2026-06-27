@@ -5,7 +5,14 @@
 Phase3 template definitions are modeled by `core/ir/template-definition.schema.json`.
 The synthetic example in `core/ir/examples/sample-template-definition.json` covers
 template identity/versioning, document type, anchors, fields, tables, risk ranking,
-validation rules, and output mapping. Validate the schema/sample contract with:
+validation rules, and output mapping. Validate the schema shape and semantic
+cross-reference contract with:
+
+```bash
+python3 scripts/ci/validate_document_ir.py --schema core/ir/template-definition.schema.json --document core/ir/examples/sample-template-definition.json
+```
+
+Run the focused regression suite with:
 
 ```bash
 python3 -m unittest tests.test_template_definition_schema
