@@ -17,6 +17,7 @@ from tempfile import TemporaryDirectory
 from threading import Lock
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlsplit
+from uuid import uuid4
 from xml.etree.ElementTree import ParseError as XmlParseError
 from zipfile import BadZipFile
 
@@ -111,13 +112,30 @@ class ReviewAuditEventStore:
     ) -> dict[str, Any]:
         event = deepcopy(audit_event)
         with self._lock:
-            validate(event, deepcopy(self._events))
+            validate(event, [_review_workflow_event_view(item) for item in self._events])
             self._events.append(event)
         return deepcopy(event)
 
     def list_events(self) -> list[dict[str, Any]]:
         with self._lock:
             return deepcopy(self._events)
+
+
+def _review_workflow_event_view(audit_event: dict[str, Any]) -> dict[str, Any]:
+    actor = audit_event.get("actor")
+    actor_view = {
+        "id": actor.get("id") if isinstance(actor, dict) else None,
+        "role": actor.get("role") if isinstance(actor, dict) else None,
+    }
+    return {
+        "action": audit_event.get("action"),
+        "conversion_id": audit_event.get("conversion_id"),
+        "document_id": audit_event.get("document_id"),
+        "block_id": audit_event.get("block_id"),
+        "original_text": audit_event.get("original_text"),
+        "revised_text": audit_event.get("revised_text"),
+        "actor": actor_view,
+    }
 
 
 DEFAULT_REVIEW_AUDIT_EVENTS = ReviewAuditEventStore()
@@ -128,6 +146,7 @@ LLM_INFERENCE_PROFILE_FIELDS = ("id", "label", "provider", "model_family", "reco
 def convert_uploaded_document(*, filename: str, content: bytes) -> dict[str, Any]:
     """Convert one uploaded PoC document into IR, review details, and download bytes."""
     safe_filename = _safe_filename(filename)
+    conversion_id = _conversion_id()
     parser_output, input_warnings = _parser_output_from_upload(safe_filename, content)
     document_ir = from_parser_output(
         parser_output,
@@ -139,6 +158,7 @@ def convert_uploaded_document(*, filename: str, content: bytes) -> dict[str, Any
     review_items = _review_items(document_ir)
     payload = {
         "document_ir": document_ir.to_dict(),
+        "conversion_id": conversion_id,
         "validation": asdict(validation),
         "review_items": review_items,
         "warnings": [*input_warnings, *validation.warnings],
@@ -365,10 +385,13 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             accepted_event = _validate_review_event(raw_audit_event)
             stored_event = _review_event_with_auth_context(accepted_event, auth_context)
             event_store = self._review_event_store()
-            stored_event = event_store.record_validated(
-                stored_event,
-                _validate_review_workflow_event,
-            )
+            if stored_event["action"] == "approve":
+                stored_event = event_store.record_validated(
+                    stored_event,
+                    _validate_review_workflow_event,
+                )
+            else:
+                stored_event = event_store.record(stored_event)
         except RuntimeError as exc:
             self._send_json({"error": "review_conflict", "message": str(exc)}, status=409)
             return
@@ -473,7 +496,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 status=401,
             )
             return False, None
-        return True, {"role": role, "actor_id": _local_actor_id(auth_tokens, token, role)}
+        return True, {"role": role["role"], "actor_id": _local_actor_id(role)}
 
     def _role_has_permission(self, role: str | None, permission: str) -> bool:
         if role is None:
@@ -509,7 +532,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-def _local_auth_tokens(server: Any) -> dict[str, str] | None:
+def _local_auth_tokens(server: Any) -> dict[str, dict[str, str | None]] | None:
     configured = getattr(server, "local_auth_tokens", None)
     if configured is None:
         configured = _local_auth_tokens_from_env(os.environ.get(LOCAL_AUTH_TOKENS_ENV, ""))
@@ -517,28 +540,52 @@ def _local_auth_tokens(server: Any) -> dict[str, str] | None:
         return None
     if not isinstance(configured, dict):
         return {}
-    tokens: dict[str, str] = {}
-    for token, role in configured.items():
+    tokens: dict[str, dict[str, str | None]] = {}
+    sorted_credentials = sorted(configured.items(), key=lambda item: str(item[0]))
+    for index, (token, credential) in enumerate(sorted_credentials, start=1):
         token_text = str(token).strip()
-        role_text = str(role).strip()
+        if isinstance(credential, dict):
+            role_text = str(credential.get("role") or "").strip()
+            principal_id = _local_principal_id(credential.get("principal_id"))
+        else:
+            role_text = str(credential).strip()
+            principal_id = None
         if token_text and role_text in ROLES:
-            tokens[token_text] = role_text
+            tokens[token_text] = {
+                "role": role_text,
+                "principal_id": principal_id,
+                "token_id": f"token-{index}",
+            }
     return tokens
 
 
-def _local_auth_tokens_from_env(value: str) -> dict[str, str] | None:
+def _local_auth_tokens_from_env(value: str) -> dict[str, dict[str, str | None]] | None:
     if not value.strip():
         return None
-    tokens: dict[str, str] = {}
+    tokens: dict[str, dict[str, str | None]] = {}
     for entry in value.split(","):
-        role, separator, token = entry.partition("=")
+        identity, separator, token = entry.partition("=")
         if separator != "=":
             continue
-        role_text = role.strip()
+        role_text, principal_id = _local_role_and_principal(identity)
         token_text = token.strip()
         if role_text in ROLES and token_text:
-            tokens[token_text] = role_text
+            tokens[token_text] = {"role": role_text, "principal_id": principal_id}
     return tokens
+
+
+def _local_role_and_principal(identity: str) -> tuple[str, str | None]:
+    role, separator, principal = identity.strip().partition(":")
+    if separator != ":":
+        return role.strip(), None
+    return role.strip(), _local_principal_id(principal)
+
+
+def _local_principal_id(value: Any) -> str | None:
+    if value is None:
+        return None
+    principal_id = str(value).strip()
+    return principal_id or None
 
 
 def _permission_label(permission: str) -> str:
@@ -663,6 +710,11 @@ def _validate_review_event(audit_event: Any) -> dict[str, Any]:
     if not isinstance(document_id, str) or not document_id.strip():
         raise ValueError("audit_event.document_id is required")
     document_id = document_id.strip()
+    conversion_id = audit_event.get("conversion_id")
+    if conversion_id is not None:
+        if not isinstance(conversion_id, str) or not conversion_id.strip():
+            raise ValueError("audit_event.conversion_id must be a non-empty string")
+        conversion_id = conversion_id.strip()
     block_id = audit_event.get("block_id")
     if not isinstance(block_id, str) or not block_id.strip():
         raise ValueError("audit_event.block_id is required")
@@ -691,6 +743,7 @@ def _validate_review_event(audit_event: Any) -> dict[str, Any]:
     return {
         "event_type": "conversion_review.action_requested",
         "action": action,
+        "conversion_id": conversion_id,
         "document_id": document_id,
         "block_id": block_id,
         "source_page": source_page,
@@ -730,28 +783,49 @@ def _validate_review_workflow_event(
     actor_id = actor.get("id") if isinstance(actor, dict) else None
     if not isinstance(actor_id, str) or not actor_id:
         return
+    latest_edit_revised_text = None
     for stored_event in reversed(stored_events):
-        if stored_event.get("document_id") != audit_event["document_id"]:
+        if not _same_review_workflow_target(stored_event, audit_event):
             continue
-        if stored_event.get("block_id") != audit_event["block_id"]:
-            continue
-        if stored_event.get("action") != "edit":
-            continue
+        if latest_edit_revised_text is None:
+            latest_edit_revised_text = stored_event.get("revised_text")
         stored_actor = stored_event.get("actor")
         stored_actor_id = stored_actor.get("id") if isinstance(stored_actor, dict) else None
         if stored_actor_id == actor_id:
             raise RuntimeError("review approval must be performed by a different actor")
+    if (
+        latest_edit_revised_text is not None
+        and audit_event["original_text"] != latest_edit_revised_text
+    ):
+        raise RuntimeError("review approval must target latest edited text")
 
 
-def _local_actor_id(auth_tokens: dict[str, str], token: str, role: str) -> str:
-    same_role_tokens = [
-        candidate
-        for candidate, candidate_role in auth_tokens.items()
-        if candidate_role == role
-    ]
-    if len(same_role_tokens) == 1:
-        return f"local:{role}"
-    return f"local:{role}:{same_role_tokens.index(token) + 1}"
+def _same_review_workflow_target(
+    stored_event: dict[str, Any],
+    audit_event: dict[str, Any],
+) -> bool:
+    if stored_event.get("action") != "edit":
+        return False
+    if stored_event.get("document_id") != audit_event["document_id"]:
+        return False
+    if stored_event.get("block_id") != audit_event["block_id"]:
+        return False
+    stored_conversion_id = stored_event.get("conversion_id")
+    audit_conversion_id = audit_event.get("conversion_id")
+    if stored_conversion_id or audit_conversion_id:
+        return stored_conversion_id == audit_conversion_id
+    return True
+
+
+def _local_actor_id(credential: dict[str, str | None]) -> str:
+    principal_id = credential.get("principal_id")
+    if principal_id:
+        return f"local-principal:{principal_id}"
+    return f"local-{credential['token_id']}"
+
+
+def _conversion_id() -> str:
+    return f"conversion-{uuid4().hex}"
 
 
 def _utc_now_iso() -> str:
