@@ -283,11 +283,9 @@ def _normalized_column_name(value: str) -> str:
 def _document_ir_review_warnings(document_ir: DocumentIRV1) -> list[str]:
     warnings = list(document_ir.warnings)
     for block in document_ir.blocks:
-        if not block.review.requires_review:
-            continue
         if block.review.warnings:
             warnings.extend(block.review.warnings)
-        else:
+        elif block.review.requires_review:
             warnings.append(f"document block '{block.id}' requires review")
     return warnings
 
@@ -327,7 +325,7 @@ def _first_table_data_row_index(rows: Sequence[Sequence[str]], anchor: Mapping[s
     match_mode = str(anchor.get("match") or "normalized")
     for index, row in enumerate(rows):
         if _row_anchor_match_score(row, expected_text, match_mode) > 0.0:
-            return index + 1
+            return index
     return 0
 
 
@@ -353,26 +351,45 @@ def _table_rows(value: str) -> list[list[str]]:
 
 def _table_row_cells(value: str) -> list[str]:
     return [
-        cell.strip()
-        for cell in re.split(r"\t+|\s*\|\s*|\s*,\s*|\s{2,}", value)
+        cell
+        for cell in _split_table_row(value)
         if _normalized_column_name(cell)
     ]
+
+
+def _split_table_row(value: str) -> list[str]:
+    if "\t" in value:
+        return value.split("\t")
+    if "|" in value:
+        return value.split("|")
+    if "," in value:
+        return re.split(r"\s*,\s*", value)
+    return re.split(r"\s{2,}", value)
 
 
 def _xlsx_cell_rows(value: str) -> list[list[str]]:
     row_cells: dict[int, dict[int, str]] = {}
     saw_cell_ref = False
+    last_cell_ref: tuple[int, int] | None = None
     for line in value.splitlines():
         if not line.strip():
             continue
         cell = _xlsx_cell_line(line)
         if cell is None:
-            return []
+            if last_cell_ref is None:
+                return []
+            row_index, column_index = last_cell_ref
+            row_cells[row_index][column_index] = (
+                f"{row_cells[row_index][column_index]}\n{line}"
+            )
+            continue
         saw_cell_ref = True
         row_index, column_index, cell_value = cell
         if not _normalized_column_name(cell_value):
+            last_cell_ref = None
             continue
         row_cells.setdefault(row_index, {})[column_index] = cell_value
+        last_cell_ref = (row_index, column_index)
     if not saw_cell_ref:
         return []
     return [

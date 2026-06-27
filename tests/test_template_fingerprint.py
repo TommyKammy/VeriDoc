@@ -273,6 +273,19 @@ class TemplateFingerprintTest(unittest.TestCase):
         self.assertIn("document-level parser warning", result.warnings)
         self.assertIn("heuristic table requires review", result.warnings)
 
+    def test_warning_only_block_review_state_is_preserved(self) -> None:
+        template = self.template_definition()
+        document = self.document_with_blocks(
+            table_review_warnings=["schema-valid warning-only block"],
+            table_review_requires_review=False,
+        )
+
+        result = match_template_fingerprint(document, template)
+
+        self.assertEqual(TemplateMatchClassification.KNOWN, result.classification)
+        self.assertTrue(result.requires_review)
+        self.assertIn("schema-valid warning-only block", result.warnings)
+
     def test_exact_anchor_mode_does_not_normalize_case_or_whitespace(self) -> None:
         template = self.template_definition()
         anchors = template["anchors"]
@@ -302,6 +315,21 @@ class TemplateFingerprintTest(unittest.TestCase):
         self.assertNotIn("yield-table", result.missing_anchor_ids)
         self.assertNotIn("template table 'yield_summary' missing from document", result.warnings)
 
+    def test_exact_table_anchor_mode_does_not_strip_cell_whitespace(self) -> None:
+        template = self.template_definition()
+        template["anchors"][1]["match"] = "exact"
+
+        result = match_template_fingerprint(
+            self.document_with_blocks(
+                table_text=" Yield Summary \nstep\texpected_yield\tactual_yield"
+            ),
+            template,
+        )
+
+        self.assertEqual(TemplateMatchClassification.UNKNOWN, result.classification)
+        self.assertIn("yield-table", result.missing_anchor_ids)
+        self.assertTrue(result.requires_review)
+
     def test_single_column_required_table_header_is_supported(self) -> None:
         template = self.template_definition()
         template["anchors"][1]["text"] = "Lot History"
@@ -310,6 +338,35 @@ class TemplateFingerprintTest(unittest.TestCase):
 
         result = match_template_fingerprint(
             self.document_with_blocks(table_text="Lot History\nLot Number\nBN-001"),
+            template,
+        )
+
+        self.assertEqual(TemplateMatchClassification.KNOWN, result.classification)
+        self.assertNotIn("template table 'lot_history' required columns incomplete", result.warnings)
+
+    def test_required_columns_can_share_table_anchor_row(self) -> None:
+        template = self.template_definition()
+
+        result = match_template_fingerprint(
+            self.document_with_blocks(
+                table_text="Yield Summary\tstep\texpected_yield\tactual_yield\nblend\t95\t94"
+            ),
+            template,
+        )
+
+        self.assertEqual(TemplateMatchClassification.KNOWN, result.classification)
+        self.assertNotIn("template table 'yield_summary' required columns incomplete", result.warnings)
+
+    def test_tab_delimited_required_column_preserves_commas_inside_cells(self) -> None:
+        template = self.template_definition()
+        template["anchors"][1]["text"] = "Lot History"
+        template["tables"][0]["table_id"] = "lot_history"
+        template["tables"][0]["required_columns"] = ["Lot, Number", "Value"]
+
+        result = match_template_fingerprint(
+            self.document_with_blocks(
+                table_text="Lot History\nLot, Number\tValue\nBN-001\treleased"
+            ),
             template,
         )
 
@@ -334,6 +391,40 @@ class TemplateFingerprintTest(unittest.TestCase):
                             {"ref": "A3", "value": "blend", "value_type": "shared_string"},
                             {"ref": "B3", "value": "95", "value_type": "number"},
                             {"ref": "C3", "value": "94", "value_type": "number"},
+                        ],
+                        "merged_ranges": [],
+                    }
+                ],
+            },
+            document_id="sample-xlsx",
+            title="Sample XLSX",
+            source_type="xlsx",
+        )
+
+        result = match_template_fingerprint(document, template)
+
+        self.assertEqual(TemplateMatchClassification.KNOWN, result.classification)
+        self.assertNotIn("template table 'yield_summary' required columns incomplete", result.warnings)
+
+    def test_xlsx_wrapped_cell_text_does_not_abort_row_reconstruction(self) -> None:
+        template = self.template_definition()
+        template["anchors"] = [template["anchors"][1]]
+        document = from_parser_output(
+            {
+                "source_path": "fixtures/sample.xlsx",
+                "sheets": [
+                    {
+                        "name": "Results",
+                        "dimension": "A1:C4",
+                        "cells": [
+                            {"ref": "A1", "value": "note\ncontinued", "value_type": "shared_string"},
+                            {"ref": "A2", "value": "Yield Summary", "value_type": "shared_string"},
+                            {"ref": "A3", "value": "step", "value_type": "shared_string"},
+                            {"ref": "B3", "value": "expected_yield", "value_type": "shared_string"},
+                            {"ref": "C3", "value": "actual_yield", "value_type": "shared_string"},
+                            {"ref": "A4", "value": "blend", "value_type": "shared_string"},
+                            {"ref": "B4", "value": "95", "value_type": "number"},
+                            {"ref": "C4", "value": "94", "value_type": "number"},
                         ],
                         "merged_ranges": [],
                     }
@@ -388,6 +479,7 @@ class TemplateFingerprintTest(unittest.TestCase):
         *,
         pages: list[DocumentPage] | None = None,
         table_review_warnings: list[str] | None = None,
+        table_review_requires_review: bool | None = None,
     ) -> DocumentIRV1:
         blocks: list[DocumentBlock] = []
         if heading_text is not None:
@@ -401,6 +493,7 @@ class TemplateFingerprintTest(unittest.TestCase):
                     table_text,
                     y=180.0,
                     review_warnings=table_review_warnings,
+                    review_requires_review=table_review_requires_review,
                 )
             )
         return DocumentIRV1(
@@ -418,6 +511,7 @@ class TemplateFingerprintTest(unittest.TestCase):
         *,
         y: float = 72.0,
         review_warnings: list[str] | None = None,
+        review_requires_review: bool | None = None,
     ) -> DocumentBlock:
         warnings = review_warnings or []
         return DocumentBlock(
@@ -428,7 +522,12 @@ class TemplateFingerprintTest(unittest.TestCase):
             bbox=BoundingBox(x=72.0, y=y, width=180.0, height=24.0),
             extractor=ExtractorRef(name="fixture"),
             confidence=0.99,
-            review=ReviewState(requires_review=bool(warnings), warnings=warnings),
+            review=ReviewState(
+                requires_review=bool(warnings)
+                if review_requires_review is None
+                else review_requires_review,
+                warnings=warnings,
+            ),
         )
 
 
