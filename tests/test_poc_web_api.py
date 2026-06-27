@@ -2443,6 +2443,18 @@ def test_poc_http_api_registers_template_versions_and_jobs_keep_version_snapshot
         connection.request("GET", f"/api/jobs/{job['job']['job_id']}")
         refreshed_job_response = connection.getresponse()
         refreshed_job = json.loads(refreshed_job_response.read().decode("utf-8"))
+
+        connection.request(
+            "POST",
+            "/api/jobs",
+            body=create_job_payload,
+            headers={
+                "Content-Type": "application/json",
+                "Content-Length": str(len(create_job_payload)),
+            },
+        )
+        retried_job_response = connection.getresponse()
+        retried_job = json.loads(retried_job_response.read().decode("utf-8"))
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -2463,6 +2475,9 @@ def test_poc_http_api_registers_template_versions_and_jobs_keep_version_snapshot
     assert [version["version"] for version in detail["template"]["versions"]] == [1, 2, 3]
     assert refreshed_job_response.status == 200
     assert refreshed_job["job"]["template"]["template_version"] == 2
+    assert retried_job_response.status == 202
+    assert retried_job["job"]["job_id"] == job["job"]["job_id"]
+    assert retried_job["job"]["template"]["template_version"] == 2
 
 
 def test_poc_http_api_lists_representative_seed_templates() -> None:

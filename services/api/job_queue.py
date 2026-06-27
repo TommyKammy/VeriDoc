@@ -65,7 +65,7 @@ class JobQueue:
                 if (
                     existing.filename != filename
                     or existing.mode != mode
-                    or existing.template != template
+                    or not _same_template_binding(existing.template, template)
                 ):
                     raise ValueError("idempotency_key already bound to different job parameters")
                 return existing
@@ -175,3 +175,23 @@ class JobQueue:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _same_template_binding(
+    existing_template: dict[str, Any] | None,
+    requested_template: dict[str, Any] | None,
+) -> bool:
+    if existing_template is None or requested_template is None:
+        return existing_template is requested_template
+
+    existing_template_id = existing_template.get("template_id")
+    requested_template_id = requested_template.get("template_id")
+    if (
+        isinstance(existing_template_id, str)
+        and existing_template_id.strip()
+        and isinstance(requested_template_id, str)
+        and requested_template_id.strip()
+    ):
+        return existing_template_id == requested_template_id
+
+    return existing_template == requested_template
