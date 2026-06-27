@@ -116,9 +116,17 @@ class ReviewAuditEventStore:
             self._events.append(event)
         return deepcopy(event)
 
-    def list_events(self) -> list[dict[str, Any]]:
+    def list_events(self, filters: dict[str, str] | None = None) -> list[dict[str, Any]]:
         with self._lock:
-            return deepcopy(self._events)
+            if filters:
+                events = [
+                    event
+                    for event in self._events
+                    if _review_event_matches_filters(event, filters)
+                ]
+            else:
+                events = self._events
+            return deepcopy(events)
 
 
 def _review_workflow_event_view(audit_event: dict[str, Any]) -> dict[str, Any]:
@@ -421,11 +429,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 status=400,
             )
             return
-        review_events = [
-            event
-            for event in self._review_event_store().list_events()
-            if _review_event_matches_filters(event, filters)
-        ]
+        review_events = self._review_event_store().list_events(filters=filters)
         self._send_json({"review_events": review_events})
 
     def _handle_job_result_download(self, job_id: str) -> None:
@@ -865,7 +869,8 @@ def _reject_cross_conversion_review_reuse(
         stored_actor_id = stored_actor.get("id") if isinstance(stored_actor, dict) else None
         if isinstance(actor_id, str) and actor_id and stored_actor_id == actor_id:
             raise RuntimeError("review approval must be performed by a different actor")
-        _reject_stale_review_approval()
+        if audit_event.get("original_text") != audit_event["revised_text"]:
+            _reject_stale_review_approval()
 
 
 def _reject_stale_review_approval() -> None:

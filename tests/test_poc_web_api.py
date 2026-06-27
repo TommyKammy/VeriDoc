@@ -981,6 +981,52 @@ def test_poc_http_api_filters_server_side_review_action_audit_events() -> None:
     assert list_body == {"review_events": [first_body["audit_event"]]}
 
 
+def test_poc_http_api_filters_review_events_before_copying_payloads() -> None:
+    class CopyForbiddenText:
+        def __deepcopy__(self, _memo: dict[object, object]) -> object:
+            raise AssertionError("unrelated event payload was copied")
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    store = ReviewAuditEventStore()
+    server.review_event_store = store
+    unrelated_event = {
+        **_review_audit_event(
+            document_id="unrelated-document",
+            block_id="block-unrelated",
+            conversion_id="conversion-unrelated",
+        ),
+        "original_text": CopyForbiddenText(),
+        "revised_text": CopyForbiddenText(),
+        "actor": {"id": "local-principal:reviewer", "role": "reviewer"},
+        "occurred_at": "2026-06-27T00:00:00Z",
+    }
+    with store._lock:
+        store._events.append(unrelated_event)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        first_status, first_body = _post_review_event_on_connection(
+            connection,
+            _review_audit_event(conversion_id="conversion-current"),
+            role_token=None,
+        )
+        connection.request(
+            "GET",
+            "/api/review-events?document_id=phase0-output"
+            "&block_id=block-0001&conversion_id=conversion-current",
+        )
+        list_response = connection.getresponse()
+        list_body = json.loads(list_response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert first_status == 202
+    assert list_response.status == 200
+    assert list_body == {"review_events": [first_body["audit_event"]]}
+
+
 def test_poc_http_api_does_not_persist_rejected_review_action_audit_event() -> None:
     audit_event = _review_audit_event(source_bbox=_review_bbox(origin="bottom-left"))
 
@@ -1288,6 +1334,49 @@ def test_poc_http_api_allows_unchanged_approval_with_other_scoped_edit() -> None
         thread.join(timeout=5)
 
     assert edit_status == 202
+    assert approve_status == 202
+    assert approve_body["audit_event"]["conversion_id"] == "conversion-current"
+    assert [
+        (event["action"], event["conversion_id"])
+        for event in store.list_events()
+    ] == [
+        ("edit", "conversion-old"),
+        ("approve", "conversion-current"),
+    ]
+
+
+def test_poc_http_api_allows_unchanged_approval_matching_older_conversion_edit() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    store = ReviewAuditEventStore()
+    server.review_event_store = store
+    server.local_auth_tokens = _local_auth_tokens()
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        old_edit_status, _old_edit_body = _post_review_event_on_connection(
+            connection,
+            _review_audit_event(
+                conversion_id="conversion-old",
+                revised_text="Lot: SAMPLE-001",
+            ),
+            role_token="reviewer-token",
+        )
+        approve_status, approve_body = _post_review_event_on_connection(
+            connection,
+            _review_audit_event(
+                action="approve",
+                conversion_id="conversion-current",
+                original_text="Lot: SAMPLE-001",
+                revised_text="Lot: SAMPLE-001",
+            ),
+            role_token="admin-token",
+        )
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert old_edit_status == 202
     assert approve_status == 202
     assert approve_body["audit_event"]["conversion_id"] == "conversion-current"
     assert [
