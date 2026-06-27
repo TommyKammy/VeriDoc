@@ -94,7 +94,7 @@
                     "table",
                     "field",
                     "list_item",
-                    "footer"
+                    "footnote"
                   ]
                 }
               }
@@ -330,6 +330,51 @@
           },
           "message": {
             "type": "string"
+          },
+          "expected_type": {
+            "type": "string",
+            "enum": [
+              "string",
+              "number",
+              "date",
+              "boolean",
+              "enum"
+            ]
+          },
+          "minimum": {
+            "type": "number"
+          },
+          "maximum": {
+            "type": "number"
+          },
+          "allowed_values": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ]
+            }
+          },
+          "related_target": {
+            "type": "string"
+          },
+          "operator": {
+            "type": "string",
+            "enum": [
+              "equals",
+              "not_equals",
+              "before",
+              "before_or_equal",
+              "after",
+              "after_or_equal",
+              "less_than",
+              "less_than_or_equal",
+              "greater_than",
+              "greater_than_or_equal"
+            ]
           }
         }
       }

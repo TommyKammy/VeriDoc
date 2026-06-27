@@ -132,6 +132,111 @@ def validate_document_ir_consistency(document: dict[str, Any]) -> None:
     validate_document_ir_v0_consistency(document)
 
 
+def validate_template_definition_consistency(template: dict[str, Any]) -> None:
+    anchor_ids = _unique_template_ids(template.get("anchors", []), "anchor_id", "$.anchors")
+    field_ids = _unique_template_ids(template.get("fields", []), "field_id", "$.fields")
+    table_ids = _unique_template_ids(template.get("tables", []), "table_id", "$.tables")
+    rule_ids = _unique_template_ids(template.get("validation_rules", []), "rule_id", "$.validation_rules")
+
+    for index, field in enumerate(template.get("fields", [])):
+        source = field.get("source", {})
+        anchor_id = source.get("anchor_id")
+        if anchor_id not in anchor_ids:
+            raise ValidationError(
+                "$.fields"
+                f"[{index}]"
+                ".source.anchor_id: "
+                f"references undeclared anchor {anchor_id!r}"
+            )
+        for rule_index, rule_id in enumerate(field.get("validation_rule_ids", [])):
+            if rule_id not in rule_ids:
+                raise ValidationError(
+                    "$.fields"
+                    f"[{index}]"
+                    ".validation_rule_ids"
+                    f"[{rule_index}]"
+                    f": references undeclared validation rule {rule_id!r}"
+                )
+
+    for index, table in enumerate(template.get("tables", [])):
+        anchor_id = table.get("anchor_id")
+        if anchor_id not in anchor_ids:
+            raise ValidationError(
+                "$.tables"
+                f"[{index}]"
+                ".anchor_id: "
+                f"references undeclared anchor {anchor_id!r}"
+            )
+
+    for index, rule in enumerate(template.get("validation_rules", [])):
+        _validate_template_rule_operands(rule, index, field_ids)
+
+    for index, field_mapping in enumerate(template.get("output_mapping", {}).get("field_map", [])):
+        field_id = field_mapping.get("field_id")
+        if field_id not in field_ids:
+            raise ValidationError(
+                "$.output_mapping.field_map"
+                f"[{index}]"
+                ".field_id: "
+                f"references undeclared field {field_id!r}"
+            )
+
+    for index, table_mapping in enumerate(template.get("output_mapping", {}).get("table_map", [])):
+        table_id = table_mapping.get("table_id")
+        if table_id not in table_ids:
+            raise ValidationError(
+                "$.output_mapping.table_map"
+                f"[{index}]"
+                ".table_id: "
+                f"references undeclared table {table_id!r}"
+            )
+
+
+def _unique_template_ids(items: list[dict[str, Any]], key: str, path: str) -> set[str]:
+    ids: set[str] = set()
+    for index, item in enumerate(items):
+        item_id = item.get(key)
+        if item_id in ids:
+            raise ValidationError(f"{path}[{index}].{key}: duplicates {item_id!r}")
+        ids.add(item_id)
+    return ids
+
+
+def _validate_template_rule_operands(rule: dict[str, Any], index: int, field_ids: set[str]) -> None:
+    target = rule.get("target")
+    if target not in field_ids:
+        raise ValidationError(
+            "$.validation_rules"
+            f"[{index}]"
+            ".target: "
+            f"references undeclared field {target!r}"
+        )
+
+    rule_type = rule.get("rule_type")
+    if rule_type == "type" and "expected_type" not in rule:
+        raise ValidationError(f"$.validation_rules[{index}].expected_type: required for type rule")
+    if rule_type == "range":
+        if "minimum" not in rule and "maximum" not in rule:
+            raise ValidationError(f"$.validation_rules[{index}]: range rule requires minimum or maximum")
+        if "minimum" in rule and "maximum" in rule and rule["minimum"] > rule["maximum"]:
+            raise ValidationError(f"$.validation_rules[{index}]: minimum cannot exceed maximum")
+    if rule_type == "allowed_values" and "allowed_values" not in rule:
+        raise ValidationError(f"$.validation_rules[{index}].allowed_values: required for allowed_values rule")
+    if rule_type == "cross_field":
+        related_target = rule.get("related_target")
+        if related_target is None:
+            raise ValidationError(f"$.validation_rules[{index}].related_target: required for cross_field rule")
+        if related_target not in field_ids:
+            raise ValidationError(
+                "$.validation_rules"
+                f"[{index}]"
+                ".related_target: "
+                f"references undeclared field {related_target!r}"
+            )
+        if "operator" not in rule:
+            raise ValidationError(f"$.validation_rules[{index}].operator: required for cross_field rule")
+
+
 def validate_document_ir_v0_consistency(document: dict[str, Any]) -> None:
     pages_by_number: dict[int | float, dict[str, Any]] = {}
     for index, page in enumerate(document["pages"]):
