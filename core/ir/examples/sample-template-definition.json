@@ -1,0 +1,138 @@
+{
+  "template_id": "synthetic-batch-record-v1",
+  "version": "1.0.0",
+  "document_type": "batch_record",
+  "anchors": [
+    {
+      "anchor_id": "batch-header",
+      "kind": "heading",
+      "text": "Batch Production Record",
+      "match": "normalized",
+      "scope": {
+        "page": 1,
+        "block_types": [
+          "heading"
+        ]
+      }
+    },
+    {
+      "anchor_id": "yield-table",
+      "kind": "table_header",
+      "text": "Yield Summary",
+      "match": "contains",
+      "scope": {
+        "page": 1,
+        "block_types": [
+          "table"
+        ]
+      }
+    }
+  ],
+  "fields": [
+    {
+      "field_id": "batch_number",
+      "label": "Batch No.",
+      "value_type": "string",
+      "source": {
+        "anchor_id": "batch-header",
+        "direction": "below"
+      },
+      "required": true,
+      "risk_level": "high",
+      "validation_rule_ids": [
+        "batch-number-required"
+      ],
+      "output_key": "batch.number"
+    },
+    {
+      "field_id": "manufacturing_date",
+      "label": "Manufacturing Date",
+      "value_type": "date",
+      "source": {
+        "anchor_id": "batch-header",
+        "direction": "below"
+      },
+      "required": true,
+      "risk_level": "medium",
+      "validation_rule_ids": [
+        "manufacturing-date-required"
+      ],
+      "output_key": "batch.manufacturing_date"
+    }
+  ],
+  "tables": [
+    {
+      "table_id": "yield_summary",
+      "anchor_id": "yield-table",
+      "required_columns": [
+        "step",
+        "expected_yield",
+        "actual_yield"
+      ],
+      "row_scope": "non_empty_rows",
+      "risk_level": "high",
+      "output_key": "batch.yield_summary"
+    }
+  ],
+  "risk_rank": {
+    "default_level": "medium",
+    "levels": [
+      {
+        "level": "low",
+        "rank": 1
+      },
+      {
+        "level": "medium",
+        "rank": 2
+      },
+      {
+        "level": "high",
+        "rank": 3
+      },
+      {
+        "level": "critical",
+        "rank": 4
+      }
+    ],
+    "review_required_levels": [
+      "high",
+      "critical"
+    ]
+  },
+  "validation_rules": [
+    {
+      "rule_id": "batch-number-required",
+      "target": "batch_number",
+      "rule_type": "required",
+      "severity": "error",
+      "message": "Batch number must be present before template-derived review can proceed."
+    },
+    {
+      "rule_id": "manufacturing-date-required",
+      "target": "manufacturing_date",
+      "rule_type": "required",
+      "severity": "error",
+      "message": "Manufacturing date must be present before template-derived review can proceed."
+    }
+  ],
+  "output_mapping": {
+    "format": "json",
+    "root_key": "template_result",
+    "field_map": [
+      {
+        "field_id": "batch_number",
+        "output_key": "batch.number"
+      },
+      {
+        "field_id": "manufacturing_date",
+        "output_key": "batch.manufacturing_date"
+      }
+    ],
+    "table_map": [
+      {
+        "table_id": "yield_summary",
+        "output_key": "batch.yield_summary"
+      }
+    ]
+  }
+}
