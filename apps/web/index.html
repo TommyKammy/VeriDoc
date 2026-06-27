@@ -1449,6 +1449,24 @@
         return null;
       }
 
+      async function refreshReviewAuditEvents() {
+        const response = await apiFetch("/api/review-events");
+        let body = {};
+        try {
+          const parsedBody = await response.json();
+          body = parsedBody && typeof parsedBody === "object" ? parsedBody : {};
+        } catch (_error) {
+          body = {};
+        }
+        if (!response.ok) {
+          throw new Error(body.message || body.error || "Review audit events could not be loaded.");
+        }
+        const reviewEvents = Array.isArray(body.review_events)
+          ? body.review_events.filter((event) => event && typeof event === "object")
+          : [];
+        state.reviewAuditEvents = reviewEvents;
+      }
+
       function buildReviewAuditEvent(item, action) {
         const revisedText = reviewDraftText(item);
         const event = {
@@ -1562,6 +1580,9 @@
           state.pendingReviewActions.set(actionKey, pendingOwner);
           actionStarted = true;
           setReviewActionPending(item, true);
+          if (action === "approve") {
+            await refreshReviewAuditEvents();
+          }
           const auditEvent = buildReviewAuditEvent(item, action);
           const response = await apiFetch("/api/review-events", {
             method: "POST",

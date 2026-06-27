@@ -117,6 +117,22 @@ def test_approve_review_action_uses_saved_edit_not_unsaved_draft() -> None:
     )
 
 
+def test_approve_review_action_refreshes_saved_server_edits() -> None:
+    html = _web_html()
+
+    assert "async function refreshReviewAuditEvents()" in html
+    assert 'const response = await apiFetch("/api/review-events");' in html
+    assert "state.reviewAuditEvents = reviewEvents;" in html
+    assert re.search(
+        r'if \(action === "approve"\) \{\s+'
+        r"await refreshReviewAuditEvents\(\);\s+"
+        r"\}\s+"
+        r"const auditEvent = buildReviewAuditEvent\(item, action\);",
+        html,
+        flags=re.S,
+    )
+
+
 def test_review_actions_clear_and_reject_stale_file_selection() -> None:
     html = _web_html()
 
