@@ -13,6 +13,7 @@ from core.ir.document_ir_v1 import DocumentBlock, DocumentIRV1
 KNOWN_TEMPLATE_THRESHOLD = 0.95
 CAUTION_TEMPLATE_THRESHOLD = 0.80
 FAIL_CLOSED_MAX_SCORE = 0.79
+INCOMPLETE_REQUIRED_COLUMNS_MAX_SCORE = 0.94
 
 
 class TemplateMatchClassification(Enum):
@@ -93,7 +94,7 @@ def match_template_fingerprint(
             warnings.append("document pages do not satisfy template anchor scopes")
             fail_closed = True
 
-    table_score = _table_score(table_definitions, anchors, document_ir.blocks, warnings)
+    table_score, cap_below_known = _table_score(table_definitions, anchors, document_ir.blocks, warnings)
     warnings.extend(_document_ir_review_warnings(document_ir))
 
     score = _weighted_average(
@@ -105,6 +106,8 @@ def match_template_fingerprint(
     )
     if fail_closed:
         score = min(score, FAIL_CLOSED_MAX_SCORE)
+    elif cap_below_known:
+        score = min(score, INCOMPLETE_REQUIRED_COLUMNS_MAX_SCORE)
     score = _bounded_score(score)
     classification = classify_template_match(score)
     requires_review = bool(warnings) or classification is not TemplateMatchClassification.KNOWN
@@ -154,12 +157,13 @@ def _table_score(
     anchors: Sequence[Mapping[str, Any]],
     blocks: Sequence[DocumentBlock],
     warnings: list[str],
-) -> float:
+) -> tuple[float, bool]:
     if not table_definitions:
-        return 1.0
+        return 1.0, False
 
     anchors_by_id = {str(anchor.get("anchor_id") or ""): anchor for anchor in anchors}
     scores: list[float] = []
+    cap_below_known = False
     for table in table_definitions:
         table_id = str(table.get("table_id") or "<unknown>")
         anchor_id = str(table.get("anchor_id") or "")
@@ -179,13 +183,14 @@ def _table_score(
         for block in table_blocks:
             column_names = _table_column_names(block.text)
             matched_columns = sum(
-                1 for column in required_columns if _normalized_text(column) in column_names
+                1 for column in required_columns if _normalized_column_name(column) in column_names
             )
             best_column_score = max(best_column_score, matched_columns / len(required_columns))
         if best_column_score < 1.0:
             warnings.append(f"template table '{table_id}' required columns incomplete")
+            cap_below_known = True
         scores.append(best_column_score)
-    return sum(scores) / len(scores)
+    return sum(scores) / len(scores), cap_below_known
 
 
 def _text_match_score(expected: str, actual: str, match_mode: str) -> float:
@@ -256,6 +261,10 @@ def _normalized_text(value: str) -> str:
     return " ".join(value.casefold().split())
 
 
+def _normalized_column_name(value: str) -> str:
+    return _normalized_text(re.sub(r"[_-]+", " ", value))
+
+
 def _document_ir_review_warnings(document_ir: DocumentIRV1) -> list[str]:
     warnings = list(document_ir.warnings)
     for block in document_ir.blocks:
@@ -280,5 +289,5 @@ def _table_row_cells(value: str) -> list[str]:
     return [
         normalized_cell
         for cell in re.split(r"\t+|\s*\|\s*|\s*,\s*|\s{2,}", value)
-        if (normalized_cell := _normalized_text(cell))
+        if (normalized_cell := _normalized_column_name(cell))
     ]

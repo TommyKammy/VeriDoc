@@ -129,6 +129,45 @@ class TemplateFingerprintTest(unittest.TestCase):
         self.assertTrue(result.requires_review)
         self.assertIn("template table 'yield_summary' required columns incomplete", result.warnings)
 
+    def test_required_columns_normalize_template_and_header_separators(self) -> None:
+        template = self.template_definition()
+
+        result = match_template_fingerprint(
+            self.document_with_blocks(table_text="Yield Summary\nstep\texpected yield\tactual yield"),
+            template,
+        )
+
+        self.assertEqual(TemplateMatchClassification.KNOWN, result.classification)
+        self.assertGreaterEqual(result.score, 0.95)
+        self.assertFalse(result.requires_review)
+        self.assertNotIn("template table 'yield_summary' required columns incomplete", result.warnings)
+
+    def test_incomplete_required_columns_are_capped_below_known(self) -> None:
+        template = self.template_definition()
+        template["tables"][0]["required_columns"] = [
+            "step",
+            "expected_yield",
+            "actual_yield",
+            "variance",
+            "review_status",
+        ]
+
+        result = match_template_fingerprint(
+            self.document_with_blocks(
+                table_text=(
+                    "Yield Summary\n"
+                    "step\texpected_yield\tactual_yield\tvariance"
+                )
+            ),
+            template,
+        )
+
+        self.assertEqual(TemplateMatchClassification.CAUTION, result.classification)
+        self.assertGreaterEqual(result.score, 0.80)
+        self.assertLess(result.score, 0.95)
+        self.assertTrue(result.requires_review)
+        self.assertIn("template table 'yield_summary' required columns incomplete", result.warnings)
+
     def test_required_columns_must_come_from_header_row(self) -> None:
         template = self.template_definition()
 
