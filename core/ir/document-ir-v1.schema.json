@@ -104,6 +104,7 @@
               "paragraph",
               "table",
               "field",
+              "footnote",
               "list_item"
             ]
           },

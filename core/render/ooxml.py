@@ -158,29 +158,37 @@ def render_editable_docx_from_pdf_ir(
     document = _mapping(document_ir.get("document"), "document")
     title = _text(document.get("title"))
     blocks = _editable_pdf_blocks(document_ir)
-    body_blocks = [block for block in blocks if _text(block.get("type")) != "footnote"]
     footnote_blocks = [block for block in blocks if _text(block.get("type")) == "footnote"]
-    comment_ids = {_text(block.get("id")): index for index, block in enumerate(blocks)}
+    document_warnings = _editable_pdf_document_warnings(document_ir)
+    document_warning_comment_id = 0 if document_warnings else None
+    first_block_comment_id = 1 if document_warnings else 0
+    comment_ids = {
+        _text(block.get("id")): index
+        for index, block in enumerate(blocks, start=first_block_comment_id)
+    }
     footnote_ids = {_text(block.get("id")): index for index, block in enumerate(footnote_blocks, start=1)}
 
-    body_parts = [_docx_paragraph(title, style="Heading1")]
-    body_parts.extend(
-        _docx_block(block, comment_id=comment_ids.get(_text(block.get("id"))))
-        for block in body_blocks
-    )
-    body_parts.extend(
-        _docx_footnote_reference_paragraph(
-            footnote_ids[_text(block.get("id"))],
-            comment_id=comment_ids.get(_text(block.get("id"))),
-        )
-        for block in footnote_blocks
-    )
+    body_parts = [_docx_paragraph(title, style="Heading1", comment_id=document_warning_comment_id)]
+    for block in blocks:
+        block_id = _text(block.get("id"))
+        if _text(block.get("type")) == "footnote":
+            body_parts.append(
+                _docx_footnote_reference_paragraph(
+                    footnote_ids[block_id],
+                    comment_id=comment_ids.get(block_id),
+                )
+            )
+            continue
+        body_parts.append(_docx_block(block, comment_id=comment_ids.get(block_id)))
     body_parts.append("<w:sectPr/>")
 
-    comments = [
+    comments: list[tuple[int, str]] = []
+    if document_warning_comment_id is not None:
+        comments.append((document_warning_comment_id, _editable_pdf_document_warning_comment(document_warnings)))
+    comments.extend(
         (comment_ids[_text(block.get("id"))], _editable_pdf_block_comment(block))
         for block in blocks
-    ]
+    )
     parts = [
         (
             "[Content_Types].xml",
@@ -708,6 +716,17 @@ def _editable_pdf_block_comment(block: Mapping[str, Any]) -> str:
     return "\n".join(parts)
 
 
+def _editable_pdf_document_warnings(document_ir: Mapping[str, Any]) -> list[str]:
+    warnings_value = document_ir.get("warnings", [])
+    if not isinstance(warnings_value, Sequence) or isinstance(warnings_value, (str, bytes)):
+        return []
+    return [_text(warning) for warning in warnings_value if _text(warning)]
+
+
+def _editable_pdf_document_warning_comment(warnings: Sequence[str]) -> str:
+    return "document_warnings=" + "; ".join(warnings)
+
+
 def _mapping_or_empty(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
@@ -977,7 +996,8 @@ def _docx_comments_xml(comments: Sequence[tuple[int, str]]) -> str:
 
 def _docx_footnotes_xml(footnotes: Sequence[tuple[int, str]]) -> str:
     footnote_xml = "".join(
-        f'<w:footnote w:id="{footnote_id}"><w:p>{_docx_runs(text)}</w:p></w:footnote>'
+        f'<w:footnote w:id="{footnote_id}"><w:p><w:r><w:footnoteRef/></w:r>'
+        f"{_docx_runs(text)}</w:p></w:footnote>"
         for footnote_id, text in footnotes
     )
     return f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>

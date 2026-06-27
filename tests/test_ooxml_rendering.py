@@ -113,19 +113,6 @@ def test_pdf_ir_v1_reconstructs_editable_docx_with_reviewable_provenance(
                 "review": {"requires_review": False, "warnings": []},
             },
             {
-                "id": "table-1",
-                "type": "table",
-                "text": "Test\tResult\nAssay\t12.5",
-                "source_page": 1,
-                "bbox": {"x": 72.0, "y": 144.0, "width": 220.0, "height": 44.0},
-                "extractor": {"name": "pymupdf", "version": "1.24.0"},
-                "confidence": 0.6,
-                "review": {
-                    "requires_review": True,
-                    "warnings": ["blocks[2].parser marked block requires_review"],
-                },
-            },
-            {
                 "id": "footnote-1",
                 "type": "footnote",
                 "text": "Source note: OCR confidence below release threshold.",
@@ -135,8 +122,31 @@ def test_pdf_ir_v1_reconstructs_editable_docx_with_reviewable_provenance(
                 "confidence": 0.7,
                 "review": {"requires_review": True, "warnings": ["low confidence"]},
             },
+            {
+                "id": "table-1",
+                "type": "table",
+                "text": "Test\tResult\nAssay\t12.5",
+                "source_page": 1,
+                "bbox": {"x": 72.0, "y": 144.0, "width": 220.0, "height": 44.0},
+                "extractor": {"name": "pymupdf", "version": "1.24.0"},
+                "confidence": 0.6,
+                "review": {
+                    "requires_review": True,
+                    "warnings": ["blocks[3].parser marked block requires_review"],
+                },
+            },
+            {
+                "id": "footnote-2",
+                "type": "footnote",
+                "text": "Second source note.",
+                "source_page": 2,
+                "bbox": {"x": 72.0, "y": 768.0, "width": 240.0, "height": 20.0},
+                "extractor": {"name": "pymupdf", "version": "1.24.0"},
+                "confidence": 0.8,
+                "review": {"requires_review": False, "warnings": []},
+            },
         ],
-        "warnings": [],
+        "warnings": ["document-level parser warning"],
     }
     output_path = tmp_path / "editable.docx"
 
@@ -161,13 +171,25 @@ def test_pdf_ir_v1_reconstructs_editable_docx_with_reviewable_provenance(
     assert "relationships/comments" in relationships_xml
     assert "relationships/footnotes" in relationships_xml
     assert "w:footnoteReference" in document_xml
+    assert (
+        document_xml.index("Review each result before release.")
+        < document_xml.index('w:footnoteReference w:id="1"')
+        < document_xml.index("Assay")
+        < document_xml.index('w:footnoteReference w:id="2"')
+    )
+    assert footnotes_xml.count("<w:footnoteRef/>") == 2
+    assert '<w:footnote w:id="1"><w:p><w:r><w:footnoteRef/></w:r>' in footnotes_xml
+    assert '<w:footnote w:id="2"><w:p><w:r><w:footnoteRef/></w:r>' in footnotes_xml
     assert "Source note: OCR confidence below release threshold." in footnotes_xml
+    assert "Second source note." in footnotes_xml
+    assert "document_warnings=document-level parser warning" in comments_xml
     assert "block_id=table-1" in comments_xml
     assert "source_page=1" in comments_xml
     assert "bbox=72.0,144.0,220.0,44.0 pt" in comments_xml
     assert "requires_review=true" in comments_xml
-    assert "blocks[2].parser marked block requires_review" in comments_xml
+    assert "blocks[3].parser marked block requires_review" in comments_xml
     assert "block_id=footnote-1" in comments_xml
+    assert "block_id=footnote-2" in comments_xml
     assert "low confidence" in comments_xml
 
 
