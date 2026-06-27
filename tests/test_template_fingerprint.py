@@ -129,6 +129,39 @@ class TemplateFingerprintTest(unittest.TestCase):
         self.assertTrue(result.requires_review)
         self.assertIn("template table 'yield_summary' required columns incomplete", result.warnings)
 
+    def test_required_columns_must_come_from_header_row(self) -> None:
+        template = self.template_definition()
+
+        result = match_template_fingerprint(
+            self.document_with_blocks(
+                table_text=(
+                    "Yield Summary\n"
+                    "foo\tbar\tbaz\n"
+                    "step\t1\t2\n"
+                    "expected_yield\t95\t96\n"
+                    "actual_yield\t94\t95"
+                )
+            ),
+            template,
+        )
+
+        self.assertNotEqual(TemplateMatchClassification.KNOWN, result.classification)
+        self.assertTrue(result.requires_review)
+        self.assertIn("template table 'yield_summary' required columns incomplete", result.warnings)
+
+    def test_parser_review_state_is_preserved_for_known_template_matches(self) -> None:
+        template = self.template_definition()
+        document = self.document_with_blocks(table_review_warnings=["heuristic table requires review"])
+        document.warnings.append("document-level parser warning")
+
+        result = match_template_fingerprint(document, template)
+
+        self.assertEqual(TemplateMatchClassification.KNOWN, result.classification)
+        self.assertGreaterEqual(result.score, 0.95)
+        self.assertTrue(result.requires_review)
+        self.assertIn("document-level parser warning", result.warnings)
+        self.assertIn("heuristic table requires review", result.warnings)
+
     def test_exact_anchor_mode_does_not_normalize_case_or_whitespace(self) -> None:
         template = self.template_definition()
         anchors = template["anchors"]
@@ -181,6 +214,7 @@ class TemplateFingerprintTest(unittest.TestCase):
         table_text: str | None = "Yield Summary\nstep\texpected_yield\tactual_yield",
         *,
         pages: list[DocumentPage] | None = None,
+        table_review_warnings: list[str] | None = None,
     ) -> DocumentIRV1:
         blocks: list[DocumentBlock] = []
         if heading_text is not None:
@@ -188,7 +222,14 @@ class TemplateFingerprintTest(unittest.TestCase):
         if paragraph_text is not None:
             blocks.append(self.block("paragraph", paragraph_text, y=120.0))
         if table_text is not None:
-            blocks.append(self.block("table", table_text, y=180.0))
+            blocks.append(
+                self.block(
+                    "table",
+                    table_text,
+                    y=180.0,
+                    review_warnings=table_review_warnings,
+                )
+            )
         return DocumentIRV1(
             schema_version="document-ir/v1",
             document=DocumentInfo(id="fixture", title="Fixture", source_type="pdf"),
@@ -197,7 +238,15 @@ class TemplateFingerprintTest(unittest.TestCase):
             warnings=[],
         )
 
-    def block(self, block_type: str, text: str, *, y: float = 72.0) -> DocumentBlock:
+    def block(
+        self,
+        block_type: str,
+        text: str,
+        *,
+        y: float = 72.0,
+        review_warnings: list[str] | None = None,
+    ) -> DocumentBlock:
+        warnings = review_warnings or []
         return DocumentBlock(
             id=f"{block_type}-{int(y)}",
             type=block_type,
@@ -206,7 +255,7 @@ class TemplateFingerprintTest(unittest.TestCase):
             bbox=BoundingBox(x=72.0, y=y, width=180.0, height=24.0),
             extractor=ExtractorRef(name="fixture"),
             confidence=0.99,
-            review=ReviewState(requires_review=False, warnings=[]),
+            review=ReviewState(requires_review=bool(warnings), warnings=warnings),
         )
 
 

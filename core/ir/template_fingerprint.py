@@ -94,6 +94,7 @@ def match_template_fingerprint(
             fail_closed = True
 
     table_score = _table_score(table_definitions, anchors, document_ir.blocks, warnings)
+    warnings.extend(_document_ir_review_warnings(document_ir))
 
     score = _weighted_average(
         (
@@ -255,11 +256,29 @@ def _normalized_text(value: str) -> str:
     return " ".join(value.casefold().split())
 
 
+def _document_ir_review_warnings(document_ir: DocumentIRV1) -> list[str]:
+    warnings = list(document_ir.warnings)
+    for block in document_ir.blocks:
+        if not block.review.requires_review:
+            continue
+        if block.review.warnings:
+            warnings.extend(block.review.warnings)
+        else:
+            warnings.append(f"document block '{block.id}' requires review")
+    return warnings
+
+
 def _table_column_names(value: str) -> set[str]:
-    columns: set[str] = set()
     for line in value.splitlines():
-        for cell in re.split(r"\t+|\s*\|\s*|\s*,\s*|\s{2,}", line):
-            normalized_cell = _normalized_text(cell)
-            if normalized_cell:
-                columns.add(normalized_cell)
-    return columns
+        cells = _table_row_cells(line)
+        if len(cells) > 1:
+            return set(cells)
+    return set()
+
+
+def _table_row_cells(value: str) -> list[str]:
+    return [
+        normalized_cell
+        for cell in re.split(r"\t+|\s*\|\s*|\s*,\s*|\s{2,}", value)
+        if (normalized_cell := _normalized_text(cell))
+    ]
