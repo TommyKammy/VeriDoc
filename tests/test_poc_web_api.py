@@ -981,6 +981,50 @@ def test_poc_http_api_filters_server_side_review_action_audit_events() -> None:
     assert list_body == {"review_events": [first_body["audit_event"]]}
 
 
+def test_poc_http_api_filters_review_action_audit_events_by_action() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.review_event_store = ReviewAuditEventStore()
+    server.local_auth_tokens = _local_auth_tokens()
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        edit_status, edit_body = _post_review_event_on_connection(
+            connection,
+            _review_audit_event(
+                conversion_id="conversion-current",
+                revised_text="Lot: SAMPLE-001 corrected",
+            ),
+            role_token="reviewer-token",
+        )
+        approve_status, approve_body = _post_review_event_on_connection(
+            connection,
+            _review_audit_event(
+                action="approve",
+                conversion_id="conversion-current",
+                original_text="Lot: SAMPLE-001 corrected",
+                revised_text="Lot: SAMPLE-001 corrected",
+            ),
+            role_token="admin-token",
+        )
+        connection.request(
+            "GET",
+            "/api/review-events?action=approve",
+            headers={"Authorization": "Bearer viewer-token"},
+        )
+        list_response = connection.getresponse()
+        list_body = json.loads(list_response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert edit_status == 202
+    assert approve_status == 202
+    assert edit_body["audit_event"]["action"] == "edit"
+    assert list_response.status == 200
+    assert list_body == {"review_events": [approve_body["audit_event"]]}
+
+
 def test_poc_http_api_filters_review_events_before_copying_payloads() -> None:
     class CopyForbiddenText:
         def __deepcopy__(self, _memo: dict[object, object]) -> object:
@@ -2387,6 +2431,60 @@ def test_poc_http_api_lists_conversion_jobs_filtered_by_status() -> None:
     assert retried_job.job_id == failed_job.job_id
 
 
+def test_poc_http_api_persists_and_filters_job_audit_events() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue(max_attempts=1)
+    failed_job = server.job_queue.create_job(
+        idempotency_key="failed-1",
+        filename="failed-record.docx",
+        mode="standard",
+    )
+    running = server.job_queue.start_next_job()
+    assert running is not None
+    server.job_queue.mark_failed(failed_job.job_id, error="parser unavailable")
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request("GET", "/api/jobs?status=failed")
+        failed_response = connection.getresponse()
+        failed_body = json.loads(failed_response.read().decode("utf-8"))
+        retry_action = next(
+            action
+            for action in failed_body["jobs"][0]["available_actions"]
+            if action["action"] == "retry_conversion"
+        )
+        event_payload = json.dumps(
+            {
+                "job_id": failed_job.job_id,
+                "action": "retry_conversion",
+                "audit_event": retry_action["audit_event"],
+            }
+        ).encode("utf-8")
+        connection.request(
+            "POST",
+            "/api/job-events",
+            body=event_payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(event_payload))},
+        )
+        event_response = connection.getresponse()
+        event_body = json.loads(event_response.read().decode("utf-8"))
+        connection.request(
+            "GET",
+            f"/api/job-events?job_id={failed_job.job_id}&action=retry_conversion",
+        )
+        list_response = connection.getresponse()
+        list_body = json.loads(list_response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert failed_response.status == 200
+    assert event_response.status == 202
+    assert list_response.status == 200
+    assert list_body == {"job_events": [event_body["audit_event"]]}
+
+
 def test_poc_http_api_requires_admin_role_for_retry_job_event() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     server.job_queue = JobQueue(max_attempts=1)
@@ -2554,6 +2652,28 @@ def test_bundled_web_ui_plumbs_local_auth_token_into_api_fetches() -> None:
     assert "fetch(`/api/jobs${query}`)" not in html
     assert "fetch(\"/api/job-events\"" not in html
     assert "fetch(\"/api/review-events\"" not in html
+
+
+def test_bundled_web_ui_exposes_audit_log_search_and_export() -> None:
+    html = Path("apps/web/index.html").read_text(encoding="utf-8")
+
+    assert 'id="audit-title">Audit log' in html
+    assert 'id="audit-job-id"' in html
+    assert 'id="audit-document-id"' in html
+    assert 'id="audit-action"' in html
+    assert 'id="refresh-audit"' in html
+    assert 'id="export-audit"' in html
+    assert "async function refreshAuditLog()" in html
+    assert "function exportAuditLog()" in html
+    assert "function queryString(values)" in html
+    assert "apiFetch(`/api/job-events${queryString({ job_id: jobId, action })}`)" in html
+    assert (
+        "apiFetch(`/api/review-events${queryString({ document_id: documentId, action })}`)"
+        in html
+    )
+    assert "JSON.stringify({ audit_events: state.auditEvents }, null, 2)" in html
+    assert 'link.download = "veridoc-audit-log.json"' in html
+    assert "clearAuditLog()" in html
 
 
 def test_bundled_web_ui_clears_credential_bound_state_when_auth_token_changes() -> None:

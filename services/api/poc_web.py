@@ -55,11 +55,13 @@ LOCAL_AUTH_TOKENS_ENV = "VERIDOC_LOCAL_AUTH_TOKENS"
 ROLES = {"viewer", "reviewer", "approver", "admin"}
 ROLE_PERMISSIONS = {
     "viewer": {
+        "job_events:read",
         "jobs:read",
         "review_events:read",
     },
     "reviewer": {
         "convert",
+        "job_events:read",
         "jobs:create",
         "jobs:read",
         "review_events:edit",
@@ -67,6 +69,7 @@ ROLE_PERMISSIONS = {
     },
     "approver": {
         "convert",
+        "job_events:read",
         "jobs:create",
         "jobs:read",
         "review_events:approve",
@@ -75,6 +78,7 @@ ROLE_PERMISSIONS = {
     },
     "admin": {
         "convert",
+        "job_events:read",
         "jobs:create",
         "jobs:read",
         "jobs:retry",
@@ -129,6 +133,30 @@ class ReviewAuditEventStore:
             return deepcopy(events)
 
 
+class JobAuditEventStore:
+    def __init__(self) -> None:
+        self._events: list[dict[str, Any]] = []
+        self._lock = Lock()
+
+    def record(self, audit_event: dict[str, Any]) -> dict[str, Any]:
+        event = deepcopy(audit_event)
+        with self._lock:
+            self._events.append(event)
+        return deepcopy(event)
+
+    def list_events(self, filters: dict[str, str] | None = None) -> list[dict[str, Any]]:
+        with self._lock:
+            if filters:
+                events = [
+                    event
+                    for event in self._events
+                    if _job_event_matches_filters(event, filters)
+                ]
+            else:
+                events = self._events
+            return deepcopy(events)
+
+
 def _review_workflow_event_view(audit_event: dict[str, Any]) -> dict[str, Any]:
     actor = audit_event.get("actor")
     actor_view = {
@@ -147,6 +175,7 @@ def _review_workflow_event_view(audit_event: dict[str, Any]) -> dict[str, Any]:
 
 
 DEFAULT_REVIEW_AUDIT_EVENTS = ReviewAuditEventStore()
+DEFAULT_JOB_AUDIT_EVENTS = JobAuditEventStore()
 LLM_EXTRACTOR_NAME_TOKENS = ("llm", "gpt", "openai")
 LLM_INFERENCE_PROFILE_FIELDS = ("id", "label", "provider", "model_family", "recommended_model")
 
@@ -217,6 +246,11 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             if not self._require_permission("review_events:read"):
                 return
             self._handle_list_review_events(parsed_url.query)
+            return
+        if path == "/api/job-events":
+            if not self._require_permission("job_events:read"):
+                return
+            self._handle_list_job_events(parsed_url.query)
             return
         if path.startswith("/api/jobs/"):
             authorized, role = self._authorized_role_for_permission("jobs:read")
@@ -331,9 +365,10 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
         self._send_json({"jobs": [_job_response(job, job_queue, role=role) for job in jobs]})
 
     def _handle_job_event(self) -> None:
-        authenticated, role = self._authenticated_role()
+        authenticated, auth_context = self._authenticated_context()
         if not authenticated:
             return
+        role = auth_context["role"] if auth_context is not None else None
         try:
             request = self._read_json_request()
             job_id = str(request.get("job_id") or "")
@@ -348,6 +383,9 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             updated_job = job
             if action == "retry_conversion":
                 updated_job = job_queue.retry_failed_job(job_id)
+            stored_event = self._job_event_store().record(
+                _job_event_with_auth_context(accepted_event, auth_context)
+            )
         except KeyError:
             self._send_json({"error": "job_not_found"}, status=404)
             return
@@ -366,7 +404,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
         self._send_json(
             {
                 "accepted": True,
-                "audit_event": accepted_event,
+                "audit_event": stored_event,
                 "job": _job_response(updated_job, job_queue, role=role),
             },
             status=202,
@@ -432,6 +470,18 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
         review_events = self._review_event_store().list_events(filters=filters)
         self._send_json({"review_events": review_events})
 
+    def _handle_list_job_events(self, query: str) -> None:
+        try:
+            filters = _job_event_filters(query)
+        except ValueError as exc:
+            self._send_json(
+                {"error": "invalid_job_event_filter", "message": str(exc)},
+                status=400,
+            )
+            return
+        job_events = self._job_event_store().list_events(filters=filters)
+        self._send_json({"job_events": job_events})
+
     def _handle_job_result_download(self, job_id: str) -> None:
         try:
             job = self._job_queue().get_job(job_id)
@@ -471,6 +521,9 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
 
     def _review_event_store(self) -> ReviewAuditEventStore:
         return getattr(self.server, "review_event_store", DEFAULT_REVIEW_AUDIT_EVENTS)
+
+    def _job_event_store(self) -> JobAuditEventStore:
+        return getattr(self.server, "job_event_store", DEFAULT_JOB_AUDIT_EVENTS)
 
     def _require_permission(self, permission: str) -> bool:
         authorized, _role = self._authorized_role_for_permission(permission)
@@ -607,7 +660,7 @@ def _local_principal_id(value: Any) -> str | None:
 
 def _review_event_filters(query: str) -> dict[str, str]:
     parameters = parse_qs(query, keep_blank_values=True)
-    allowed_filters = {"document_id", "block_id", "conversion_id"}
+    allowed_filters = {"document_id", "block_id", "conversion_id", "action"}
     unexpected_filters = sorted(set(parameters) - allowed_filters)
     if unexpected_filters:
         raise ValueError(f"{unexpected_filters[0]} filter is unsupported")
@@ -626,8 +679,30 @@ def _review_event_matches_filters(event: dict[str, Any], filters: dict[str, str]
     return all(event.get(name) == value for name, value in filters.items())
 
 
+def _job_event_filters(query: str) -> dict[str, str]:
+    parameters = parse_qs(query, keep_blank_values=True)
+    allowed_filters = {"job_id", "action", "job_status"}
+    unexpected_filters = sorted(set(parameters) - allowed_filters)
+    if unexpected_filters:
+        raise ValueError(f"{unexpected_filters[0]} filter is unsupported")
+    filters: dict[str, str] = {}
+    for name, values in parameters.items():
+        if len(values) > 1:
+            raise ValueError(f"{name} filter must be singular")
+        value = values[0].strip()
+        if not value:
+            raise ValueError(f"{name} filter must be non-empty")
+        filters[name] = value
+    return filters
+
+
+def _job_event_matches_filters(event: dict[str, Any], filters: dict[str, str]) -> bool:
+    return all(event.get(name) == value for name, value in filters.items())
+
+
 def _permission_label(permission: str) -> str:
     labels = {
+        "job_events:read": "job_events_read",
         "review_events:approve": "review_approve",
         "review_events:edit": "review_edit",
     }
@@ -734,6 +809,25 @@ def _validate_job_event(
     if audit_event != expected_event:
         raise ValueError("audit_event does not match job action")
     return expected_event
+
+
+def _job_event_with_auth_context(
+    audit_event: dict[str, Any],
+    auth_context: dict[str, str | None] | None,
+) -> dict[str, Any]:
+    actor_id = None
+    actor_role = None
+    if auth_context is not None:
+        actor_id = auth_context.get("actor_id")
+        actor_role = auth_context.get("role")
+    return {
+        **audit_event,
+        "actor": {
+            "id": actor_id,
+            "role": actor_role,
+        },
+        "occurred_at": _utc_now_iso(),
+    }
 
 
 def _validate_review_event(audit_event: Any) -> dict[str, Any]:
