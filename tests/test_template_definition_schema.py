@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import copy
 import json
+import subprocess
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -24,6 +27,32 @@ class TemplateDefinitionSchemaTest(unittest.TestCase):
 
     def test_sample_template_definition_validates_against_schema(self) -> None:
         self.validate_template(self.load_sample())
+
+    def test_cli_applies_template_consistency_checks(self) -> None:
+        sample = self.load_sample()
+        sample["fields"][0]["source"]["anchor_id"] = "missing-anchor"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            document_path = Path(tmpdir) / "template.json"
+            document_path.write_text(json.dumps(sample), encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/ci/validate_document_ir.py",
+                    "--schema",
+                    str(SCHEMA_PATH.relative_to(REPO_ROOT)),
+                    "--document",
+                    str(document_path),
+                ],
+                cwd=REPO_ROOT,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("references undeclared anchor", result.stderr)
 
     def validate_template(self, template: dict[str, object]) -> None:
         validate(self.load_schema(), template)

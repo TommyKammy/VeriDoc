@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate a Document IR JSON file against the repository schema.
+"""Validate a Document IR or template-definition JSON file against a repository schema.
 
 The project does not yet declare a Python dependency stack, so this validator
 implements the small JSON Schema subset used by core/ir/document-ir-v0.schema.json.
@@ -451,6 +451,17 @@ def reject_json_constant(value: str) -> NoReturn:
     raise ValueError(f"non-finite JSON number is not allowed: {value}")
 
 
+def validate_consistency(schema: dict[str, Any], document: dict[str, Any], schema_path: Path) -> None:
+    schema_id = str(schema.get("$id", ""))
+    if schema_path.name == "template-definition.schema.json" or schema_id.endswith(
+        "/template-definition.schema.json"
+    ):
+        validate_template_definition_consistency(document)
+        return
+
+    validate_document_ir_consistency(document)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--schema", type=Path, required=True)
@@ -461,12 +472,12 @@ def main() -> int:
         schema = load_json(args.schema)
         document = load_json(args.document)
         validate(schema, document)
-        validate_document_ir_consistency(document)
+        validate_consistency(schema, document, args.schema)
     except (OSError, ValueError, json.JSONDecodeError, ValidationError) as exc:
-        print(f"Document IR validation failed: {exc}", file=sys.stderr)
+        print(f"Validation failed: {exc}", file=sys.stderr)
         return 1
 
-    print("Document IR validation passed.")
+    print("Validation passed.")
     return 0
 
 
