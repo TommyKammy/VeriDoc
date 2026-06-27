@@ -189,6 +189,57 @@ class TemplateFingerprintTest(unittest.TestCase):
         self.assertTrue(result.requires_review)
         self.assertIn("template table 'yield_summary' required columns incomplete", result.warnings)
 
+    def test_data_row_does_not_satisfy_required_column_headers(self) -> None:
+        template = self.template_definition()
+
+        result = match_template_fingerprint(
+            self.document_with_blocks(
+                table_text=(
+                    "Yield Summary\n"
+                    "foo\tbar\tbaz\n"
+                    "step\texpected_yield\tactual_yield"
+                )
+            ),
+            template,
+        )
+
+        self.assertNotEqual(TemplateMatchClassification.KNOWN, result.classification)
+        self.assertTrue(result.requires_review)
+        self.assertIn("template table 'yield_summary' required columns incomplete", result.warnings)
+
+    def test_optional_anchor_page_scope_does_not_fail_closed(self) -> None:
+        template = self.template_definition()
+        template["anchors"] = [
+            *template["anchors"],
+            {
+                "anchor_id": "optional-review-note",
+                "kind": "label",
+                "text": "Review Note",
+                "match": "contains",
+                "scope": {"page": 2, "block_types": ["paragraph"]},
+            },
+        ]
+        template["fields"] = [
+            {
+                "field_id": "review_note",
+                "label": "Review Note",
+                "value_type": "string",
+                "source": {"anchor_id": "optional-review-note", "direction": "same_block"},
+                "required": False,
+                "risk_level": "low",
+                "validation_rule_ids": [],
+                "output_key": "review.note",
+            }
+        ]
+
+        result = match_template_fingerprint(self.document_with_blocks(), template)
+
+        self.assertEqual(TemplateMatchClassification.CAUTION, result.classification)
+        self.assertGreaterEqual(result.score, 0.80)
+        self.assertLess(result.score, 0.95)
+        self.assertTrue(result.requires_review)
+        self.assertIn("optional-review-note", result.missing_anchor_ids)
+
     def test_table_anchor_scope_requires_real_table_block(self) -> None:
         template = self.template_definition()
         template["anchors"][1]["scope"]["block_types"] = ["paragraph", "table"]
@@ -372,6 +423,19 @@ class TemplateFingerprintTest(unittest.TestCase):
 
         self.assertEqual(TemplateMatchClassification.KNOWN, result.classification)
         self.assertNotIn("template table 'lot_history' required columns incomplete", result.warnings)
+
+    def test_coordinate_like_pdf_table_title_does_not_force_xlsx_rows(self) -> None:
+        template = self.template_definition()
+
+        result = match_template_fingerprint(
+            self.document_with_blocks(
+                table_text="A1: Yield Summary\nstep\texpected_yield\tactual_yield"
+            ),
+            template,
+        )
+
+        self.assertEqual(TemplateMatchClassification.KNOWN, result.classification)
+        self.assertNotIn("template table 'yield_summary' required columns incomplete", result.warnings)
 
     def test_xlsx_cell_rows_are_reconstructed_for_required_columns(self) -> None:
         template = self.template_definition()

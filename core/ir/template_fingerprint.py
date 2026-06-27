@@ -83,7 +83,11 @@ def match_template_fingerprint(
 
     scoped_pages = {
         page
-        for page in (_scope_page(_mapping(anchor.get("scope"))) for anchor in anchors)
+        for page in (
+            _scope_page(_mapping(anchor.get("scope")))
+            for anchor in anchors
+            if _anchor_is_required(anchor, required_anchor_ids)
+        )
         if page is not None
     }
     page_score = 1.0
@@ -306,9 +310,9 @@ def _table_required_column_score(
         return 1.0
 
     rows = _table_rows(value)
-    start_index = _first_table_data_row_index(rows, anchor)
+    candidate_rows = _table_required_column_candidate_rows(rows, anchor, len(normalized_required_columns))
     best_score = 0.0
-    for row in rows[start_index:]:
+    for row in candidate_rows:
         column_names = {_normalized_column_name(cell) for cell in row}
         column_names.discard("")
         if not column_names:
@@ -318,7 +322,24 @@ def _table_required_column_score(
     return best_score
 
 
-def _first_table_data_row_index(rows: Sequence[Sequence[str]], anchor: Mapping[str, Any]) -> int:
+def _table_required_column_candidate_rows(
+    rows: Sequence[Sequence[str]], anchor: Mapping[str, Any], required_column_count: int
+) -> list[Sequence[str]]:
+    anchor_index = _first_table_anchor_row_index(rows, anchor)
+    candidate_rows: list[Sequence[str]] = []
+    if anchor_index < len(rows):
+        anchor_columns = _row_columns_excluding_anchor(rows[anchor_index], anchor)
+        if anchor_columns:
+            candidate_rows.append(anchor_columns)
+    for row in rows[anchor_index + 1 :]:
+        if len(row) == 1 and required_column_count > 1:
+            continue
+        candidate_rows.append(row)
+        break
+    return candidate_rows
+
+
+def _first_table_anchor_row_index(rows: Sequence[Sequence[str]], anchor: Mapping[str, Any]) -> int:
     expected_text = str(anchor.get("text") or "")
     if not expected_text:
         return 0
@@ -327,6 +348,17 @@ def _first_table_data_row_index(rows: Sequence[Sequence[str]], anchor: Mapping[s
         if _row_anchor_match_score(row, expected_text, match_mode) > 0.0:
             return index
     return 0
+
+
+def _row_columns_excluding_anchor(row: Sequence[str], anchor: Mapping[str, Any]) -> Sequence[str]:
+    expected_text = str(anchor.get("text") or "")
+    if not expected_text:
+        return row
+    match_mode = str(anchor.get("match") or "normalized")
+    for index, cell in enumerate(row):
+        if _text_match_score(expected_text, cell, match_mode) > 0.0:
+            return [*row[:index], *row[index + 1 :]]
+    return []
 
 
 def _row_anchor_match_score(row: Sequence[str], expected_text: str, match_mode: str) -> float:
@@ -376,6 +408,8 @@ def _xlsx_cell_rows(value: str) -> list[list[str]]:
             continue
         cell = _xlsx_cell_line(line)
         if cell is None:
+            if _looks_like_delimited_table_row(line):
+                return []
             if last_cell_ref is None:
                 return []
             row_index, column_index = last_cell_ref
@@ -407,6 +441,10 @@ def _xlsx_cell_line(value: str) -> tuple[int, int, str] | None:
     if cell_value.startswith(" "):
         cell_value = cell_value[1:]
     return int(row_number), _xlsx_column_index(column_letters), cell_value
+
+
+def _looks_like_delimited_table_row(value: str) -> bool:
+    return "\t" in value or "|" in value
 
 
 def _xlsx_column_index(value: str) -> int:
