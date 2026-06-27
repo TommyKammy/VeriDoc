@@ -66,7 +66,7 @@ class TemporaryFileStore:
         now: Callable[[], datetime] | None = None,
     ) -> None:
         self._key = _validate_encryption_key(encryption_key)
-        self._root = root
+        self._root = root.resolve(strict=False)
         self._now = now or (lambda: datetime.now(timezone.utc))
 
     def save(
@@ -124,6 +124,10 @@ class TemporaryFileStore:
 
     def read(self, artifact_id: str) -> bytes:
         metadata = self._read_metadata(artifact_id)
+        expires_at = _parse_datetime(_required_text(metadata, "expires_at"))
+        if expires_at <= _as_utc(self._now()):
+            self.delete(artifact_id)
+            raise FileNotFoundError(f"temporary artifact expired: {artifact_id}")
         path = _artifact_path_from_metadata(self._root, metadata, artifact_id)
         nonce = bytes.fromhex(_required_text(metadata, "nonce_hex"))
         encrypted = path.read_bytes()
@@ -144,7 +148,7 @@ class TemporaryFileStore:
             metadata = _load_artifact_metadata(metadata_path, artifact_id)
             paths.insert(0, _artifact_path_from_metadata(self._root, metadata, artifact_id))
         else:
-            paths.extend(self._root.glob(f"*/{artifact_id}.bin"))
+            paths.extend(_fallback_artifact_paths(self._root, artifact_id))
 
         removed = False
         for path in paths:
@@ -158,7 +162,7 @@ class TemporaryFileStore:
     def cleanup_expired(self) -> list[str]:
         now = _as_utc(self._now())
         removed: list[str] = []
-        for metadata_path in sorted(self._root.glob("*/*.json")):
+        for metadata_path in _store_metadata_paths(self._root):
             try:
                 metadata = _load_metadata(metadata_path)
                 artifact_id = _artifact_id_from_metadata_path(metadata_path)
@@ -184,7 +188,7 @@ class TemporaryFileStore:
 
     def _metadata_path_for_artifact(self, artifact_id: str) -> Path:
         artifact_id = _validate_artifact_id(artifact_id)
-        matches = sorted(self._root.glob(f"*/{artifact_id}.json"))
+        matches = _store_metadata_paths(self._root, artifact_id=artifact_id)
         if len(matches) > 1:
             raise RuntimeError("temporary artifact id is ambiguous")
         if matches:
@@ -296,6 +300,47 @@ def _artifact_path_from_metadata(root: Path, metadata: dict[str, Any], artifact_
     if path.name != f"{_validate_artifact_id(artifact_id)}.bin":
         raise ValueError("temporary artifact path does not match metadata id")
     return path
+
+
+def _store_category_roots(root: Path) -> list[Path]:
+    try:
+        children = sorted(root.iterdir())
+    except FileNotFoundError:
+        return []
+    return [child for child in children if not child.is_symlink() and child.is_dir()]
+
+
+def _store_metadata_paths(root: Path, *, artifact_id: str | None = None) -> list[Path]:
+    if artifact_id is not None:
+        artifact_id = _validate_artifact_id(artifact_id)
+    paths: list[Path] = []
+    for category_root in _store_category_roots(root):
+        if artifact_id is None:
+            paths.extend(
+                path
+                for path in category_root.glob("*.json")
+                if path.is_file() and not path.is_symlink()
+            )
+        else:
+            path = category_root / f"{artifact_id}.json"
+            if path.is_file() and not path.is_symlink():
+                paths.append(path)
+    return sorted(paths)
+
+
+def _fallback_artifact_paths(root: Path, artifact_id: str) -> list[Path]:
+    artifact_id = _validate_artifact_id(artifact_id)
+    paths: list[Path] = []
+    for category_root in _store_category_roots(root):
+        path = category_root / f"{artifact_id}.bin"
+        if not path.is_file() or path.is_symlink():
+            continue
+        try:
+            path.resolve(strict=False).relative_to(root)
+        except ValueError:
+            continue
+        paths.append(path)
+    return sorted(paths)
 
 
 def _parse_datetime(value: str) -> datetime:
