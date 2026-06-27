@@ -136,6 +136,10 @@ def test_approve_review_action_refreshes_saved_server_edits() -> None:
     assert 'edit.value = savedEditText;' in html
     assert 'text.textContent = savedEditText;' in html
     assert "buildReviewAuditEvent(item, action, savedEditText);" in html
+    assert (
+        "Saved review edit loaded. Review the updated text, then approve again."
+        in html
+    )
     assert re.search(
         r'if \(action === "approve"\) \{\s+'
         r"savedEditText = await loadLatestSavedReviewEditText\(item\);\s+"
@@ -147,6 +151,10 @@ def test_approve_review_action_refreshes_saved_server_edits() -> None:
         r"\}\s+"
         r"if \(savedEditText !== null\) \{\s+"
         r"surfaceSavedReviewEditText\(item, savedEditText\);\s+"
+        r"reviewActionStatus\.textContent =\s+"
+        r'"Saved review edit loaded\. Review the updated text, then approve again\.";\s+'
+        r'reviewActionStatus\.className = "page-status";\s+'
+        r"return;\s+"
         r"\}\s+"
         r"\}\s+"
         r"const auditEvent = buildReviewAuditEvent\(item, action, savedEditText\);",

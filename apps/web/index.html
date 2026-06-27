@@ -1611,6 +1611,10 @@
             }
             if (savedEditText !== null) {
               surfaceSavedReviewEditText(item, savedEditText);
+              reviewActionStatus.textContent =
+                "Saved review edit loaded. Review the updated text, then approve again.";
+              reviewActionStatus.className = "page-status";
+              return;
             }
           }
           const auditEvent = buildReviewAuditEvent(item, action, savedEditText);
