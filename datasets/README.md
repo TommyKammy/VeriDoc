@@ -51,5 +51,15 @@ The stability harness emits JSON metrics for same-input N-run plan agreement,
 confirmed-value agreement, distinct output counts, and anonymized representative
 unstable examples.
 
+MVP acceptance comparison harness:
+
+```sh
+python3 scripts/evaluate_dataset.py --poc-comparison datasets/gold/poc_mode_comparison_v0.json
+```
+
+The comparison harness emits JSON metrics for required PoC modes, high-risk
+false auto-confirmed count, and manual correction-time reduction for the public
+synthetic representative template.
+
 This dataset is only a Phase 0 evaluation fixture set. It does not claim GMP
 fitness, production readiness, or suitability for business use.
