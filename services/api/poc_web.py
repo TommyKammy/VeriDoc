@@ -793,7 +793,11 @@ def _validate_review_workflow_event(
         latest_edit_revised_text is not None
         and audit_event["revised_text"] != latest_edit_revised_text
     ):
-        raise RuntimeError("review approval must target latest edited text")
+        _reject_stale_review_approval()
+
+
+def _reject_stale_review_approval() -> None:
+    raise RuntimeError("review approval must target latest edited text")
 
 
 def _same_review_workflow_target(
