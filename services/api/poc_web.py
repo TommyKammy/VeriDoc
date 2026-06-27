@@ -15,7 +15,7 @@ import re
 import sys
 from tempfile import TemporaryDirectory
 from threading import Lock
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import parse_qs, urlsplit
 from xml.etree.ElementTree import ParseError as XmlParseError
 from zipfile import BadZipFile
@@ -101,6 +101,17 @@ class ReviewAuditEventStore:
     def record(self, audit_event: dict[str, Any]) -> dict[str, Any]:
         event = deepcopy(audit_event)
         with self._lock:
+            self._events.append(event)
+        return deepcopy(event)
+
+    def record_validated(
+        self,
+        audit_event: dict[str, Any],
+        validate: Callable[[dict[str, Any], list[dict[str, Any]]], None],
+    ) -> dict[str, Any]:
+        event = deepcopy(audit_event)
+        with self._lock:
+            validate(event, deepcopy(self._events))
             self._events.append(event)
         return deepcopy(event)
 
@@ -354,8 +365,10 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             accepted_event = _validate_review_event(raw_audit_event)
             stored_event = _review_event_with_auth_context(accepted_event, auth_context)
             event_store = self._review_event_store()
-            _validate_review_workflow_event(stored_event, event_store.list_events())
-            stored_event = event_store.record(stored_event)
+            stored_event = event_store.record_validated(
+                stored_event,
+                _validate_review_workflow_event,
+            )
         except RuntimeError as exc:
             self._send_json({"error": "review_conflict", "message": str(exc)}, status=409)
             return

@@ -6,7 +6,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 import subprocess
 import sys
-from threading import Thread
+from threading import Event, Thread
 from typing import Optional
 from zipfile import ZIP_DEFLATED, ZipFile
 
@@ -1069,6 +1069,89 @@ def test_poc_http_api_scans_all_prior_review_edits_before_approval() -> None:
         "message": "review approval must be performed by a different actor",
     }
     assert [event["action"] for event in store.list_events()] == ["edit", "edit"]
+
+
+def test_review_event_store_validates_and_records_under_same_lock() -> None:
+    store = ReviewAuditEventStore()
+    store.record(
+        {
+            **_review_audit_event(revised_text="Lot: SAMPLE-001 reviewer edit"),
+            "actor": {"id": "local:reviewer", "role": "reviewer"},
+            "occurred_at": "2026-06-27T00:00:00Z",
+        }
+    )
+    approval_event = {
+        **_review_audit_event(
+            action="approve",
+            original_text="Lot: SAMPLE-001 reviewer edit",
+            revised_text="Lot: SAMPLE-001 reviewer edit",
+        ),
+        "actor": {"id": "local:admin", "role": "admin"},
+        "occurred_at": "2026-06-27T00:00:01Z",
+    }
+    concurrent_admin_edit = {
+        **_review_audit_event(
+            original_text="Lot: SAMPLE-001 reviewer edit",
+            revised_text="Lot: SAMPLE-001 admin edit",
+        ),
+        "actor": {"id": "local:admin", "role": "admin"},
+        "occurred_at": "2026-06-27T00:00:02Z",
+    }
+    validator_entered = Event()
+    release_validator = Event()
+    edit_started = Event()
+    thread_errors: list[BaseException] = []
+
+    def slow_validate(
+        audit_event: dict[str, object],
+        stored_events: list[dict[str, object]],
+    ) -> None:
+        validator_entered.set()
+        assert [
+            event["actor"]["id"]  # type: ignore[index]
+            for event in stored_events
+        ] == ["local:reviewer"]
+        assert release_validator.wait(timeout=5)
+        poc_web._validate_review_workflow_event(audit_event, stored_events)
+
+    def record_approval() -> None:
+        try:
+            store.record_validated(approval_event, slow_validate)
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            thread_errors.append(exc)
+
+    def record_concurrent_edit() -> None:
+        try:
+            edit_started.set()
+            store.record(concurrent_admin_edit)
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            thread_errors.append(exc)
+
+    approval_thread = Thread(target=record_approval)
+    approval_thread.start()
+    assert validator_entered.wait(timeout=5)
+
+    edit_thread = Thread(target=record_concurrent_edit)
+    edit_thread.start()
+    assert edit_started.wait(timeout=5)
+    edit_thread.join(timeout=0.05)
+    assert edit_thread.is_alive()
+
+    release_validator.set()
+    approval_thread.join(timeout=5)
+    edit_thread.join(timeout=5)
+
+    assert not approval_thread.is_alive()
+    assert not edit_thread.is_alive()
+    assert thread_errors == []
+    assert [
+        (event["action"], event["actor"]["id"])  # type: ignore[index]
+        for event in store.list_events()
+    ] == [
+        ("edit", "local:reviewer"),
+        ("approve", "local:admin"),
+        ("edit", "local:admin"),
+    ]
 
 
 def test_poc_http_api_preserves_no_auth_review_approval_flow(
