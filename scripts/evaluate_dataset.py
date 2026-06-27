@@ -932,10 +932,6 @@ def evaluate_manual_correction_time(data: dict[str, Any]) -> ManualCorrectionTim
         record.get("assisted_minutes"),
         "manual_correction_time.assisted_minutes",
     )
-    if assisted_minutes > baseline_minutes:
-        raise EvaluationCaseError(
-            "manual_correction_time.assisted_minutes must not exceed baseline_minutes"
-        )
     target_reduction_rate = validate_ratio_metric(
         record.get("target_reduction_rate"),
         "manual_correction_time.target_reduction_rate",

@@ -184,14 +184,19 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertEqual(1.0, metrics.manual_correction_time.reduction_rate)
         self.assertTrue(metrics.manual_correction_time.target_met)
 
-    def test_poc_mode_comparison_rejects_inflated_manual_correction_time(self) -> None:
+    def test_poc_mode_comparison_reports_slower_assisted_manual_correction_time(
+        self,
+    ) -> None:
         data = self.valid_poc_comparison_data()
         data["manual_correction_time"]["assisted_minutes"] = 13.0
 
-        with self.assertRaisesRegex(
-            evaluate_dataset.EvaluationCaseError, "assisted_minutes"
-        ):
-            evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+        metrics = evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
+        self.assertEqual(13.0, metrics.manual_correction_time.assisted_minutes)
+        self.assertEqual(-1.0, metrics.manual_correction_time.reduction_minutes)
+        self.assertEqual(-1 / 12, metrics.manual_correction_time.reduction_rate)
+        self.assertFalse(metrics.manual_correction_time.target_met)
+        self.assertFalse(metrics.target_met)
 
     def test_poc_mode_comparison_rejects_legacy_schema_without_manual_times(self) -> None:
         data = self.valid_poc_comparison_data()
