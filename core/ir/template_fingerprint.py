@@ -336,6 +336,7 @@ def _table_required_column_candidate_rows(
         anchor_columns = _row_columns_excluding_anchor(rows[anchor_index], anchor)
         if anchor_columns:
             candidate_rows.append(anchor_columns)
+            return candidate_rows
     for row in rows[anchor_index + 1 :]:
         if len(row) == 1 and required_column_count > 1:
             continue
@@ -385,16 +386,16 @@ def _row_columns_excluding_anchor(row: Sequence[str], anchor: Mapping[str, Any])
     match_mode = str(anchor.get("match") or "normalized")
     for index, cell in enumerate(row):
         if _text_match_score(expected_text, cell, match_mode) > 0.0:
-            return [*row[:index], *row[index + 1 :]]
+            return row[index + 1 :]
     return []
 
 
 def _row_anchor_match_score(row: Sequence[str], expected_text: str, match_mode: str) -> float:
     row_text = "\t".join(row)
-    first_cell = row[0] if row else ""
     return max(
-        _text_match_score(expected_text, row_text, match_mode),
-        _text_match_score(expected_text, first_cell, match_mode),
+        [_text_match_score(expected_text, row_text, match_mode)]
+        + [_text_match_score(expected_text, cell, match_mode) for cell in row],
+        default=0.0,
     )
 
 
@@ -480,7 +481,7 @@ def _xlsx_cell_line(value: str) -> tuple[int, int, str] | None:
 
 
 def _looks_like_delimited_table_row(value: str) -> bool:
-    return "\t" in value or "|" in value
+    return len(_split_table_row(value)) > 1
 
 
 def _xlsx_column_index(value: str) -> int:

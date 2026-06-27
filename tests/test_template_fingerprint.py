@@ -207,6 +207,23 @@ class TemplateFingerprintTest(unittest.TestCase):
         self.assertTrue(result.requires_review)
         self.assertIn("template table 'yield_summary' required columns incomplete", result.warnings)
 
+    def test_data_row_after_incomplete_same_row_anchor_does_not_satisfy_headers(self) -> None:
+        template = self.template_definition()
+
+        result = match_template_fingerprint(
+            self.document_with_blocks(
+                table_text=(
+                    "Yield Summary\tfoo\tbar\n"
+                    "step\texpected_yield\tactual_yield"
+                )
+            ),
+            template,
+        )
+
+        self.assertNotEqual(TemplateMatchClassification.KNOWN, result.classification)
+        self.assertTrue(result.requires_review)
+        self.assertIn("template table 'yield_summary' required columns incomplete", result.warnings)
+
     def test_absent_optional_anchor_does_not_lower_required_anchor_score(self) -> None:
         template = self.template_definition()
         template["anchors"] = [
@@ -471,6 +488,25 @@ class TemplateFingerprintTest(unittest.TestCase):
         self.assertEqual(TemplateMatchClassification.KNOWN, result.classification)
         self.assertNotIn("template table 'yield_summary' required columns incomplete", result.warnings)
 
+    def test_coordinate_like_pdf_title_preserves_comma_or_space_delimited_rows(self) -> None:
+        template = self.template_definition()
+
+        for table_text in (
+            "A1: Yield Summary\nstep,expected_yield,actual_yield",
+            "A1: Yield Summary\nstep  expected_yield  actual_yield",
+        ):
+            with self.subTest(table_text=table_text):
+                result = match_template_fingerprint(
+                    self.document_with_blocks(table_text=table_text),
+                    template,
+                )
+
+                self.assertEqual(TemplateMatchClassification.KNOWN, result.classification)
+                self.assertNotIn(
+                    "template table 'yield_summary' required columns incomplete",
+                    result.warnings,
+                )
+
     def test_docx_wrapped_header_cell_line_break_stays_in_header_row(self) -> None:
         template = self.template_definition()
         template["tables"][0]["required_columns"] = ["step", "expected yield", "actual yield"]
@@ -481,6 +517,21 @@ class TemplateFingerprintTest(unittest.TestCase):
         )
 
         self.assertEqual(TemplateMatchClassification.KNOWN, result.classification)
+        self.assertNotIn("template table 'yield_summary' required columns incomplete", result.warnings)
+
+    def test_strict_table_anchor_can_match_later_cell(self) -> None:
+        template = self.template_definition()
+        template["anchors"][1]["match"] = "normalized"
+
+        result = match_template_fingerprint(
+            self.document_with_blocks(
+                table_text="Report\tYield Summary\nstep\texpected_yield\tactual_yield"
+            ),
+            template,
+        )
+
+        self.assertEqual(TemplateMatchClassification.KNOWN, result.classification)
+        self.assertNotIn("yield-table", result.missing_anchor_ids)
         self.assertNotIn("template table 'yield_summary' required columns incomplete", result.warnings)
 
     def test_xlsx_cell_rows_are_reconstructed_for_required_columns(self) -> None:
