@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
@@ -52,11 +53,7 @@ def match_template_fingerprint(
 
     anchors = [_mapping(anchor) for anchor in _list_value(template_definition.get("anchors"))]
     table_definitions = [_mapping(table) for table in _list_value(template_definition.get("tables"))]
-    required_anchor_ids = {
-        str(table.get("anchor_id"))
-        for table in table_definitions
-        if isinstance(table.get("anchor_id"), str) and str(table.get("anchor_id")).strip()
-    }
+    required_anchor_ids = _required_anchor_ids(template_definition, table_definitions)
     page_numbers = {page.page_number for page in document_ir.pages}
     warnings: list[str] = []
     fail_closed = False
@@ -121,19 +118,26 @@ def match_template_fingerprint(
 
 
 def _best_anchor_match_score(anchor: Mapping[str, Any], blocks: Sequence[DocumentBlock]) -> float:
+    matching_blocks = _blocks_matching_anchor(anchor, blocks)
+    if not matching_blocks:
+        return 0.0
+    scores = [
+        _text_match_score(str(anchor.get("text") or ""), block.text, str(anchor.get("match") or "normalized"))
+        for block in matching_blocks
+    ]
+    return max(scores, default=0.0)
+
+
+def _blocks_matching_anchor(anchor: Mapping[str, Any], blocks: Sequence[DocumentBlock]) -> list[DocumentBlock]:
     scope = _mapping(anchor.get("scope"))
-    scoped_blocks = [
+    expected_text = str(anchor.get("text") or "")
+    match_mode = str(anchor.get("match") or "normalized")
+    return [
         block
         for block in blocks
         if _block_matches_scope(block, scope)
+        and _text_match_score(expected_text, block.text, match_mode) > 0.0
     ]
-    if not scoped_blocks:
-        return 0.0
-
-    expected_text = str(anchor.get("text") or "")
-    match_mode = str(anchor.get("match") or "normalized")
-    scores = [_text_match_score(expected_text, block.text, match_mode) for block in scoped_blocks]
-    return max(scores, default=0.0)
 
 
 def _block_matches_scope(block: DocumentBlock, scope: Mapping[str, Any]) -> bool:
@@ -159,11 +163,7 @@ def _table_score(
         table_id = str(table.get("table_id") or "<unknown>")
         anchor_id = str(table.get("anchor_id") or "")
         anchor = anchors_by_id.get(anchor_id, {})
-        table_blocks = [
-            block
-            for block in blocks
-            if block.type == "table" and (not anchor or _block_matches_scope(block, _mapping(anchor.get("scope"))))
-        ]
+        table_blocks = _blocks_matching_anchor(anchor, blocks) if anchor else []
         if not table_blocks:
             warnings.append(f"template table '{table_id}' missing from document")
             scores.append(0.0)
@@ -176,9 +176,9 @@ def _table_score(
 
         best_column_score = 0.0
         for block in table_blocks:
-            normalized_text = _normalized_text(block.text)
+            column_names = _table_column_names(block.text)
             matched_columns = sum(
-                1 for column in required_columns if _normalized_text(column) in normalized_text
+                1 for column in required_columns if _normalized_text(column) in column_names
             )
             best_column_score = max(best_column_score, matched_columns / len(required_columns))
         if best_column_score < 1.0:
@@ -188,6 +188,8 @@ def _table_score(
 
 
 def _text_match_score(expected: str, actual: str, match_mode: str) -> float:
+    if match_mode == "exact":
+        return 1.0 if expected and actual and expected == actual else 0.0
     normalized_expected = _normalized_text(expected)
     normalized_actual = _normalized_text(actual)
     if not normalized_expected or not normalized_actual:
@@ -201,6 +203,24 @@ def _anchor_is_required(anchor: Mapping[str, Any], required_anchor_ids: set[str]
     anchor_id = str(anchor.get("anchor_id") or "")
     kind = str(anchor.get("kind") or "")
     return kind in {"heading", "table_header"} or anchor_id in required_anchor_ids
+
+
+def _required_anchor_ids(
+    template_definition: Mapping[str, Any], table_definitions: Sequence[Mapping[str, Any]]
+) -> set[str]:
+    anchor_ids = {
+        str(table.get("anchor_id"))
+        for table in table_definitions
+        if isinstance(table.get("anchor_id"), str) and str(table.get("anchor_id")).strip()
+    }
+    for field in (_mapping(value) for value in _list_value(template_definition.get("fields"))):
+        if field.get("required") is not True:
+            continue
+        source = _mapping(field.get("source"))
+        anchor_id = source.get("anchor_id")
+        if isinstance(anchor_id, str) and anchor_id.strip():
+            anchor_ids.add(anchor_id)
+    return anchor_ids
 
 
 def _scope_page(value: Mapping[str, Any]) -> int | None:
@@ -233,3 +253,13 @@ def _list_value(value: Any) -> list[Any]:
 
 def _normalized_text(value: str) -> str:
     return " ".join(value.casefold().split())
+
+
+def _table_column_names(value: str) -> set[str]:
+    columns: set[str] = set()
+    for line in value.splitlines():
+        for cell in re.split(r"\t+|\s*\|\s*|\s*,\s*|\s{2,}", line):
+            normalized_cell = _normalized_text(cell)
+            if normalized_cell:
+                columns.add(normalized_cell)
+    return columns

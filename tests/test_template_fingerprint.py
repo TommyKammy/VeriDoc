@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from typing import Any
 
 from core.ir.document_ir_v1 import (
     BoundingBox,
@@ -62,7 +63,87 @@ class TemplateFingerprintTest(unittest.TestCase):
                 self.assertTrue(result.requires_review)
                 self.assertTrue(result.warnings)
 
-    def template_definition(self) -> dict[str, object]:
+    def test_missing_required_field_anchor_fails_closed_to_low_confidence(self) -> None:
+        template = self.template_definition()
+        template["anchors"] = [
+            *template["anchors"],
+            {
+                "anchor_id": "batch-number-label",
+                "kind": "label",
+                "text": "Batch No.",
+                "match": "contains",
+                "scope": {"page": 1, "block_types": ["paragraph"]},
+            },
+        ]
+        template["fields"] = [
+            {
+                "field_id": "batch_number",
+                "label": "Batch No.",
+                "value_type": "string",
+                "source": {"anchor_id": "batch-number-label", "direction": "same_block"},
+                "required": True,
+                "risk_level": "high",
+                "validation_rule_ids": ["batch-number-required"],
+                "output_key": "batch.number",
+            }
+        ]
+
+        result = match_template_fingerprint(
+            self.document_with_blocks(paragraph_text="Lot No. BN-001"),
+            template,
+        )
+
+        self.assertEqual(TemplateMatchClassification.UNKNOWN, result.classification)
+        self.assertLess(result.score, 0.80)
+        self.assertTrue(result.requires_review)
+        self.assertIn("batch-number-label", result.missing_anchor_ids)
+
+    def test_table_columns_are_scored_on_the_matched_anchor_block_only(self) -> None:
+        template = self.template_definition()
+        document = self.document_with_blocks(table_text="Yield Summary")
+        document.blocks.append(
+            self.block(
+                "table",
+                "Equipment Summary\nstep\texpected_yield\tactual_yield",
+                y=240.0,
+            )
+        )
+
+        result = match_template_fingerprint(document, template)
+
+        self.assertNotEqual(TemplateMatchClassification.KNOWN, result.classification)
+        self.assertTrue(result.requires_review)
+        self.assertIn("template table 'yield_summary' required columns incomplete", result.warnings)
+
+    def test_required_columns_match_whole_column_names(self) -> None:
+        template = self.template_definition()
+
+        result = match_template_fingerprint(
+            self.document_with_blocks(
+                table_text="Yield Summary\nsteps\texpected_yield_estimate\tvalid_actual_yield"
+            ),
+            template,
+        )
+
+        self.assertNotEqual(TemplateMatchClassification.KNOWN, result.classification)
+        self.assertTrue(result.requires_review)
+        self.assertIn("template table 'yield_summary' required columns incomplete", result.warnings)
+
+    def test_exact_anchor_mode_does_not_normalize_case_or_whitespace(self) -> None:
+        template = self.template_definition()
+        anchors = template["anchors"]
+        anchors[0]["match"] = "exact"
+
+        result = match_template_fingerprint(
+            self.document_with_blocks(heading_text=" batch production record "),
+            template,
+        )
+
+        self.assertEqual(TemplateMatchClassification.UNKNOWN, result.classification)
+        self.assertIn("batch-header", result.missing_anchor_ids)
+        self.assertTrue(result.requires_review)
+
+    def template_definition(self) -> dict[str, Any]:
         return {
             "template_id": "synthetic-batch-record-v1",
             "version": "1.0.0",
@@ -90,6 +171,7 @@ class TemplateFingerprintTest(unittest.TestCase):
                     "required_columns": ["step", "expected_yield", "actual_yield"],
                 }
             ],
+            "fields": [],
         }
 
     def document_with_blocks(
