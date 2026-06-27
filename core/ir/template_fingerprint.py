@@ -32,6 +32,12 @@ class TemplateFingerprintMatch:
     missing_anchor_ids: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class _ParsedTableRows:
+    rows: list[list[str]]
+    allow_merged_column_candidates: bool
+
+
 def classify_template_match(score: float) -> TemplateMatchClassification:
     """Classify a normalized template match score using Phase3 thresholds."""
     bounded_score = _bounded_score(score)
@@ -311,20 +317,37 @@ def _table_required_column_score(
     if not normalized_required_columns:
         return 1.0
 
-    rows = _table_rows(value)
+    parsed_rows = _parsed_table_rows(value)
+    rows = parsed_rows.rows
     required_column_set = set(normalized_required_columns)
-    candidate_rows = _table_required_column_candidate_rows(rows, anchor, required_column_set)
+    candidate_rows = _table_required_column_candidate_rows(
+        rows,
+        anchor,
+        required_column_set,
+        allow_merged_column_candidates=parsed_rows.allow_merged_column_candidates,
+    )
     candidate_rows.extend(
         _wrapped_cell_candidate_rows(rows, anchor, required_column_set)
     )
     best_score = 0.0
     for row in candidate_rows:
-        best_score = max(best_score, _row_required_column_score(row, required_column_set))
+        best_score = max(
+            best_score,
+            _row_required_column_score(
+                row,
+                required_column_set,
+                allow_merged_column_candidates=parsed_rows.allow_merged_column_candidates,
+            ),
+        )
     return best_score
 
 
 def _table_required_column_candidate_rows(
-    rows: Sequence[Sequence[str]], anchor: Mapping[str, Any], required_columns: set[str]
+    rows: Sequence[Sequence[str]],
+    anchor: Mapping[str, Any],
+    required_columns: set[str],
+    *,
+    allow_merged_column_candidates: bool,
 ) -> list[Sequence[str]]:
     anchor_index = _first_table_anchor_row_index(rows, anchor)
     candidate_rows: list[Sequence[str]] = []
@@ -333,7 +356,12 @@ def _table_required_column_candidate_rows(
         if anchor_columns:
             candidate_rows.append(anchor_columns)
             if (
-                _row_required_column_score(anchor_columns, required_columns) >= 1.0
+                _row_required_column_score(
+                    anchor_columns,
+                    required_columns,
+                    allow_merged_column_candidates=allow_merged_column_candidates,
+                )
+                >= 1.0
                 or not _looks_like_same_row_table_note(anchor_columns, required_columns)
             ):
                 return candidate_rows
@@ -368,20 +396,34 @@ def _wrapped_cell_candidate_rows(
     return candidates
 
 
-def _row_required_column_score(row: Sequence[str], required_columns: set[str]) -> float:
+def _row_required_column_score(
+    row: Sequence[str],
+    required_columns: set[str],
+    *,
+    allow_merged_column_candidates: bool,
+) -> float:
     if not required_columns:
         return 1.0
-    column_names = _row_column_name_candidates(row, required_columns)
+    column_names = _row_column_name_candidates(
+        row,
+        required_columns,
+        allow_merged_column_candidates=allow_merged_column_candidates,
+    )
     if not column_names:
         return 0.0
     matched_columns = sum(1 for column in required_columns if column in column_names)
     return matched_columns / len(required_columns)
 
 
-def _row_column_name_candidates(row: Sequence[str], required_columns: set[str]) -> set[str]:
+def _row_column_name_candidates(
+    row: Sequence[str],
+    required_columns: set[str],
+    *,
+    allow_merged_column_candidates: bool,
+) -> set[str]:
     column_names = {_normalized_column_name(cell) for cell in row}
     column_names.discard("")
-    if not required_columns:
+    if not required_columns or not allow_merged_column_candidates:
         return column_names
     for start in range(len(row)):
         merged = ""
@@ -440,14 +482,21 @@ def _row_matches_anchor(row: Sequence[str], anchor: Mapping[str, Any]) -> bool:
 
 
 def _table_rows(value: str) -> list[list[str]]:
+    return _parsed_table_rows(value).rows
+
+
+def _parsed_table_rows(value: str) -> _ParsedTableRows:
     xlsx_rows = _xlsx_cell_rows(value)
     if xlsx_rows:
-        return xlsx_rows
-    return [
-        cells
-        for line in value.splitlines()
-        if (cells := _table_row_cells(line))
-    ]
+        return _ParsedTableRows(rows=xlsx_rows, allow_merged_column_candidates=False)
+    return _ParsedTableRows(
+        rows=[
+            cells
+            for line in value.splitlines()
+            if (cells := _table_row_cells(line))
+        ],
+        allow_merged_column_candidates=True,
+    )
 
 
 def _table_row_cells(value: str) -> list[str]:

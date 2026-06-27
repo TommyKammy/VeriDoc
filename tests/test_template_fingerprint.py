@@ -599,6 +599,42 @@ class TemplateFingerprintTest(unittest.TestCase):
         self.assertEqual(TemplateMatchClassification.KNOWN, result.classification)
         self.assertNotIn("template table 'yield_summary' required columns incomplete", result.warnings)
 
+    def test_xlsx_header_cells_are_not_merged_to_satisfy_required_columns(self) -> None:
+        template = self.template_definition()
+        template["anchors"] = [template["anchors"][1]]
+        document = from_parser_output(
+            {
+                "source_path": "fixtures/sample.xlsx",
+                "sheets": [
+                    {
+                        "name": "Results",
+                        "dimension": "A1:D3",
+                        "cells": [
+                            {"ref": "A1", "value": "Yield Summary", "value_type": "shared_string"},
+                            {"ref": "A2", "value": "step", "value_type": "shared_string"},
+                            {"ref": "B2", "value": "expected", "value_type": "shared_string"},
+                            {"ref": "C2", "value": "yield", "value_type": "shared_string"},
+                            {"ref": "D2", "value": "actual_yield", "value_type": "shared_string"},
+                            {"ref": "A3", "value": "blend", "value_type": "shared_string"},
+                            {"ref": "B3", "value": "95", "value_type": "number"},
+                            {"ref": "C3", "value": "96", "value_type": "number"},
+                            {"ref": "D3", "value": "94", "value_type": "number"},
+                        ],
+                        "merged_ranges": [],
+                    }
+                ],
+            },
+            document_id="sample-xlsx",
+            title="Sample XLSX",
+            source_type="xlsx",
+        )
+
+        result = match_template_fingerprint(document, template)
+
+        self.assertNotEqual(TemplateMatchClassification.KNOWN, result.classification)
+        self.assertTrue(result.requires_review)
+        self.assertIn("template table 'yield_summary' required columns incomplete", result.warnings)
+
     def test_xlsx_wrapped_cell_text_does_not_abort_row_reconstruction(self) -> None:
         template = self.template_definition()
         template["anchors"] = [template["anchors"][1]]
