@@ -68,17 +68,19 @@ def match_template_fingerprint(
 
     matched_anchor_ids: list[str] = []
     missing_anchor_ids: list[str] = []
-    anchor_score = 0.0
+    anchor_scores: list[float] = []
     for anchor in anchors:
         anchor_id = str(anchor.get("anchor_id") or "")
         match_score = _best_anchor_match_score(anchor, document_ir.blocks)
-        anchor_score += match_score
+        is_required = _anchor_is_required(anchor, required_anchor_ids)
+        if is_required or match_score > 0.0:
+            anchor_scores.append(match_score)
         if match_score > 0.0:
             matched_anchor_ids.append(anchor_id)
         else:
             missing_anchor_ids.append(anchor_id)
-            warnings.append(f"template anchor '{anchor_id or '<unknown>'}' missing from document")
-            if _anchor_is_required(anchor, required_anchor_ids):
+            if is_required:
+                warnings.append(f"template anchor '{anchor_id or '<unknown>'}' missing from document")
                 fail_closed = True
 
     scoped_pages = {
@@ -103,7 +105,7 @@ def match_template_fingerprint(
 
     score = _weighted_average(
         (
-            (anchor_score / len(anchors), 0.60) if anchors else (0.0, 0.60),
+            (sum(anchor_scores) / len(anchor_scores), 0.60) if anchor_scores else (0.0, 0.60),
             (page_score, 0.20),
             (table_score, 0.20),
         )
@@ -311,6 +313,9 @@ def _table_required_column_score(
 
     rows = _table_rows(value)
     candidate_rows = _table_required_column_candidate_rows(rows, anchor, len(normalized_required_columns))
+    candidate_rows.extend(
+        _wrapped_cell_candidate_rows(rows, anchor, set(normalized_required_columns))
+    )
     best_score = 0.0
     for row in candidate_rows:
         column_names = {_normalized_column_name(cell) for cell in row}
@@ -337,6 +342,29 @@ def _table_required_column_candidate_rows(
         candidate_rows.append(row)
         break
     return candidate_rows
+
+
+def _wrapped_cell_candidate_rows(
+    rows: Sequence[Sequence[str]], anchor: Mapping[str, Any], required_columns: set[str]
+) -> list[Sequence[str]]:
+    anchor_index = _first_table_anchor_row_index(rows, anchor)
+    candidates: list[Sequence[str]] = []
+    for index in range(anchor_index, len(rows) - 1):
+        row = rows[index]
+        next_row = rows[index + 1]
+        if len(row) < 2 or len(next_row) < 2:
+            continue
+        joined_cell = f"{row[-1]}\n{next_row[0]}"
+        if _normalized_column_name(joined_cell) not in required_columns:
+            continue
+        combined_row = [*row[:-1], joined_cell, *next_row[1:]]
+        if _row_matches_anchor(combined_row, anchor):
+            anchor_columns = _row_columns_excluding_anchor(combined_row, anchor)
+            if anchor_columns:
+                candidates.append(anchor_columns)
+        else:
+            candidates.append(combined_row)
+    return candidates
 
 
 def _first_table_anchor_row_index(rows: Sequence[Sequence[str]], anchor: Mapping[str, Any]) -> int:
@@ -368,6 +396,14 @@ def _row_anchor_match_score(row: Sequence[str], expected_text: str, match_mode: 
         _text_match_score(expected_text, row_text, match_mode),
         _text_match_score(expected_text, first_cell, match_mode),
     )
+
+
+def _row_matches_anchor(row: Sequence[str], anchor: Mapping[str, Any]) -> bool:
+    expected_text = str(anchor.get("text") or "")
+    if not expected_text:
+        return False
+    match_mode = str(anchor.get("match") or "normalized")
+    return _row_anchor_match_score(row, expected_text, match_mode) > 0.0
 
 
 def _table_rows(value: str) -> list[list[str]]:

@@ -207,6 +207,40 @@ class TemplateFingerprintTest(unittest.TestCase):
         self.assertTrue(result.requires_review)
         self.assertIn("template table 'yield_summary' required columns incomplete", result.warnings)
 
+    def test_absent_optional_anchor_does_not_lower_required_anchor_score(self) -> None:
+        template = self.template_definition()
+        template["anchors"] = [
+            template["anchors"][0],
+            {
+                "anchor_id": "optional-review-note",
+                "kind": "label",
+                "text": "Review Note",
+                "match": "contains",
+                "scope": {"page": 1, "block_types": ["paragraph"]},
+            },
+        ]
+        template["tables"] = []
+        template["fields"] = [
+            {
+                "field_id": "review_note",
+                "label": "Review Note",
+                "value_type": "string",
+                "source": {"anchor_id": "optional-review-note", "direction": "same_block"},
+                "required": False,
+                "risk_level": "low",
+                "validation_rule_ids": [],
+                "output_key": "review.note",
+            }
+        ]
+
+        result = match_template_fingerprint(self.document_with_blocks(table_text=None), template)
+
+        self.assertEqual(TemplateMatchClassification.KNOWN, result.classification)
+        self.assertGreaterEqual(result.score, 0.95)
+        self.assertFalse(result.requires_review)
+        self.assertIn("optional-review-note", result.missing_anchor_ids)
+        self.assertNotIn("template anchor 'optional-review-note' missing from document", result.warnings)
+
     def test_optional_anchor_page_scope_does_not_fail_closed(self) -> None:
         template = self.template_definition()
         template["anchors"] = [
@@ -234,11 +268,11 @@ class TemplateFingerprintTest(unittest.TestCase):
 
         result = match_template_fingerprint(self.document_with_blocks(), template)
 
-        self.assertEqual(TemplateMatchClassification.CAUTION, result.classification)
-        self.assertGreaterEqual(result.score, 0.80)
-        self.assertLess(result.score, 0.95)
-        self.assertTrue(result.requires_review)
+        self.assertEqual(TemplateMatchClassification.KNOWN, result.classification)
+        self.assertGreaterEqual(result.score, 0.95)
+        self.assertFalse(result.requires_review)
         self.assertIn("optional-review-note", result.missing_anchor_ids)
+        self.assertNotIn("template anchor 'optional-review-note' missing from document", result.warnings)
 
     def test_table_anchor_scope_requires_real_table_block(self) -> None:
         template = self.template_definition()
@@ -431,6 +465,18 @@ class TemplateFingerprintTest(unittest.TestCase):
             self.document_with_blocks(
                 table_text="A1: Yield Summary\nstep\texpected_yield\tactual_yield"
             ),
+            template,
+        )
+
+        self.assertEqual(TemplateMatchClassification.KNOWN, result.classification)
+        self.assertNotIn("template table 'yield_summary' required columns incomplete", result.warnings)
+
+    def test_docx_wrapped_header_cell_line_break_stays_in_header_row(self) -> None:
+        template = self.template_definition()
+        template["tables"][0]["required_columns"] = ["step", "expected yield", "actual yield"]
+
+        result = match_template_fingerprint(
+            self.document_with_blocks(table_text="Yield Summary\nstep\tExpected\nYield\tActual Yield"),
             template,
         )
 
