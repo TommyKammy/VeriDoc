@@ -276,6 +276,17 @@
         color: var(--danger);
       }
 
+      .audit-filters {
+        align-items: end;
+      }
+
+      .audit-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        justify-content: flex-end;
+      }
+
       .review-item {
         margin-top: 10px;
         padding-top: 10px;
@@ -576,6 +587,45 @@
         </div>
       </section>
 
+      <section class="panel" style="margin-top: 16px" aria-labelledby="audit-title">
+        <div class="toolbar">
+          <h2 id="audit-title">Audit log</h2>
+          <div class="audit-actions">
+            <button id="refresh-audit" class="secondary" type="button">Refresh audit</button>
+            <button id="export-audit" class="secondary" type="button">Export JSON</button>
+          </div>
+        </div>
+        <div class="form-grid audit-filters" style="margin-top: 14px">
+          <div class="field">
+            <label for="audit-job-id">Job ID</label>
+            <input id="audit-job-id" />
+          </div>
+          <div class="field">
+            <label for="audit-document-id">Document ID</label>
+            <input id="audit-document-id" />
+          </div>
+          <div class="field">
+            <label for="audit-action">Action</label>
+            <input id="audit-action" />
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>When</th>
+                <th>Type</th>
+                <th>Action</th>
+                <th>Subject</th>
+                <th>Actor</th>
+              </tr>
+            </thead>
+            <tbody id="audit-body"></tbody>
+          </table>
+        </div>
+        <div id="audit-empty" class="empty" hidden>No audit events match the current filters.</div>
+      </section>
+
       <section id="pdf-preview-panel" class="panel" style="margin-top: 16px" aria-labelledby="pdf-preview-title" hidden>
         <div class="preview-toolbar">
           <div>
@@ -614,6 +664,8 @@
         availableReviewActions: [],
         previewPage: 1,
         reviewAuditEvents: [],
+        auditEvents: [],
+        auditExportUrl: "",
         pendingReviewActions: new Map(),
         authGeneration: 0,
         credentialAbortController: new AbortController(),
@@ -658,6 +710,13 @@
       const reviewActionStatus = document.querySelector("#review-action-status");
       const downloadLink = document.querySelector("#download-link");
       const rawResult = document.querySelector("#raw-result");
+      const refreshAudit = document.querySelector("#refresh-audit");
+      const exportAudit = document.querySelector("#export-audit");
+      const auditJobId = document.querySelector("#audit-job-id");
+      const auditDocumentId = document.querySelector("#audit-document-id");
+      const auditAction = document.querySelector("#audit-action");
+      const auditBody = document.querySelector("#audit-body");
+      const auditEmpty = document.querySelector("#audit-empty");
       const pdfPreviewPanel = document.querySelector("#pdf-preview-panel");
       const pdfPreviewStatus = document.querySelector("#pdf-preview-status");
       const previewPageSelect = document.querySelector("#preview-page-select");
@@ -694,6 +753,8 @@
       detailOpen.addEventListener("click", () => loadJobDetail(state.selectedJob.job_id));
       detailDownload.addEventListener("click", () => downloadSelectedJobResult());
       detailRetry.addEventListener("click", () => retrySelectedConversion());
+      refreshAudit.addEventListener("click", () => refreshAuditLog());
+      exportAudit.addEventListener("click", () => exportAuditLog());
       input.addEventListener("change", () => {
         state.directConversionToken += 1;
         button.disabled = false;
@@ -936,6 +997,120 @@
         return `${stem}.veridoc-result.json`;
       }
 
+      async function refreshAuditLog() {
+        const requestAuthToken = activeAuthToken();
+        const requestAuthGeneration = state.authGeneration;
+        const jobId = auditJobId.value.trim();
+        const documentId = auditDocumentId.value.trim();
+        const action = auditAction.value.trim();
+        setPageStatus("Loading audit log...");
+        try {
+          const requests = [];
+          if (!documentId) {
+            requests.push(
+              apiFetch(`/api/job-events${queryString({ job_id: jobId, action })}`)
+                .then(async (response) => ({ kind: "job", response, body: await response.json() }))
+            );
+          }
+          if (!jobId) {
+            requests.push(
+              apiFetch(`/api/review-events${queryString({ document_id: documentId, action })}`)
+                .then(async (response) => ({ kind: "review", response, body: await response.json() }))
+            );
+          }
+          const results = await Promise.all(requests);
+          if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
+          const events = [];
+          for (const result of results) {
+            if (!result.response.ok) {
+              throw new Error(result.body.message || result.body.error || "audit log failed");
+            }
+            const sourceEvents =
+              result.kind === "job" ? result.body.job_events : result.body.review_events;
+            for (const event of Array.isArray(sourceEvents) ? sourceEvents : []) {
+              events.push({ audit_kind: result.kind, ...event });
+            }
+          }
+          state.auditEvents = events.sort(compareAuditEvents);
+          renderAuditLog();
+          setPageStatus(`${state.auditEvents.length} audit event${state.auditEvents.length === 1 ? "" : "s"} loaded.`);
+        } catch (error) {
+          if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
+          setPageStatus(error.message, true);
+        }
+      }
+
+      function queryString(values) {
+        const parameters = new URLSearchParams();
+        for (const [name, value] of Object.entries(values)) {
+          if (value) parameters.set(name, value);
+        }
+        const text = parameters.toString();
+        return text ? `?${text}` : "";
+      }
+
+      function compareAuditEvents(left, right) {
+        return String(right.occurred_at || "").localeCompare(String(left.occurred_at || ""));
+      }
+
+      function renderAuditLog() {
+        auditBody.replaceChildren(...state.auditEvents.map(renderAuditRow));
+        auditEmpty.hidden = state.auditEvents.length > 0;
+      }
+
+      function renderAuditRow(event) {
+        const row = document.createElement("tr");
+        row.append(
+          cell(event.occurred_at || "pending"),
+          cell(event.audit_kind),
+          cell(event.action || "unknown"),
+          cell(auditSubject(event)),
+          cell(auditActor(event))
+        );
+        return row;
+      }
+
+      function auditSubject(event) {
+        if (event.audit_kind === "job") return event.job_id || "unknown job";
+        const parts = [event.document_id, event.block_id].filter(Boolean);
+        return parts.length ? parts.join(" / ") : "unknown document";
+      }
+
+      function auditActor(event) {
+        const actor = event.actor || {};
+        return [actor.role, actor.id].filter(Boolean).join(" / ") || "unauthenticated";
+      }
+
+      function exportAuditLog() {
+        if (state.auditEvents.length === 0) {
+          setPageStatus("No audit events loaded for export.", true);
+          return;
+        }
+        if (state.auditExportUrl) URL.revokeObjectURL(state.auditExportUrl);
+        const blob = new Blob(
+          [JSON.stringify({ audit_events: state.auditEvents }, null, 2)],
+          { type: "application/json" }
+        );
+        state.auditExportUrl = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = state.auditExportUrl;
+        link.download = "veridoc-audit-log.json";
+        document.body.append(link);
+        link.click();
+        link.remove();
+        setPageStatus("Audit log export prepared.");
+      }
+
+      function clearAuditLog() {
+        if (state.auditExportUrl) {
+          URL.revokeObjectURL(state.auditExportUrl);
+          state.auditExportUrl = "";
+        }
+        state.auditEvents = [];
+        auditBody.replaceChildren();
+        auditEmpty.hidden = false;
+      }
+
       function renderJobs() {
         jobsBody.replaceChildren(...state.jobs.map(renderJobRow));
         jobsEmpty.hidden = state.jobs.length > 0;
@@ -1007,6 +1182,7 @@
         button.disabled = false;
         createJob.disabled = false;
         clearJobState();
+        clearAuditLog();
         clearSourcePreview();
         clearReviewResult();
       }
