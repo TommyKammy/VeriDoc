@@ -43,6 +43,19 @@
         margin-bottom: 18px;
       }
 
+      .auth-controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: end;
+        justify-content: flex-end;
+      }
+
+      .auth-controls .field {
+        width: min(260px, 100%);
+        flex: 0 1 260px;
+      }
+
       h1,
       h2,
       h3,
@@ -461,7 +474,15 @@
     <main>
       <header>
         <h1>VeriDoc Jobs</h1>
-        <div id="page-status" class="page-status" role="status"></div>
+        <div class="auth-controls">
+          <div class="field">
+            <label for="auth-token">API token</label>
+            <input id="auth-token" autocomplete="off" spellcheck="false" />
+          </div>
+          <button id="save-auth-token" class="secondary" type="button">Save token</button>
+          <button id="clear-auth-token" class="secondary" type="button">Clear token</button>
+          <div id="page-status" class="page-status" role="status"></div>
+        </div>
       </header>
 
       <div class="layout">
@@ -578,7 +599,7 @@
       </section>
     </main>
 
-    <script>
+    <script type="module">
       const state = {
         jobs: [],
         selectedJob: null,
@@ -590,15 +611,22 @@
         pdfRenderToken: 0,
         directConversionToken: 0,
         latestResult: null,
+        availableReviewActions: [],
         previewPage: 1,
         reviewAuditEvents: [],
         pendingReviewActions: new Map(),
+        authGeneration: 0,
+        credentialAbortController: new AbortController(),
       };
 
+      let savedAuthToken = "";
       const PDFJS_MODULE_URL = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.min.mjs";
       const PDFJS_WORKER_URL = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs";
 
       const pageStatus = document.querySelector("#page-status");
+      const authToken = document.querySelector("#auth-token");
+      const saveAuthToken = document.querySelector("#save-auth-token");
+      const clearAuthToken = document.querySelector("#clear-auth-token");
       const jobsBody = document.querySelector("#jobs-body");
       const jobsEmpty = document.querySelector("#jobs-empty");
       const refreshJobs = document.querySelector("#refresh-jobs");
@@ -640,6 +668,26 @@
       const bboxLayer = document.querySelector("#bbox-layer");
       const bboxInvalid = document.querySelector("#bbox-invalid");
 
+      authToken.value = activeAuthToken();
+      saveAuthToken.addEventListener("click", () => {
+        const token = authToken.value.trim();
+        clearCredentialBoundState();
+        savedAuthToken = token;
+        authToken.value = "";
+        if (token) {
+          setPageStatus("API token saved.");
+        } else {
+          setPageStatus("API token cleared.");
+        }
+        loadJobs();
+      });
+      clearAuthToken.addEventListener("click", () => {
+        savedAuthToken = "";
+        authToken.value = "";
+        clearCredentialBoundState();
+        setPageStatus("API token cleared.");
+        loadJobs();
+      });
       refreshJobs.addEventListener("click", () => loadJobs());
       statusFilter.addEventListener("change", () => loadJobs());
       createJob.addEventListener("click", () => createConversionJob());
@@ -669,7 +717,7 @@
           if (!isActiveDirectConversion(conversionToken)) return;
           setSourcePreview(file, fileBytes);
           const contentBase64 = arrayBufferToBase64(fileBytes);
-          const response = await fetch("/api/convert", {
+          const response = await apiFetch("/api/convert", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ filename: file.name, content_base64: contentBase64 }),
@@ -702,10 +750,13 @@
       async function loadJobs() {
         const filter = statusFilter.value;
         const query = filter ? `?status=${encodeURIComponent(filter)}` : "";
+        const requestAuthToken = activeAuthToken();
+        const requestAuthGeneration = state.authGeneration;
         setPageStatus("Loading jobs...");
         try {
-          const response = await fetch(`/api/jobs${query}`);
+          const response = await apiFetch(`/api/jobs${query}`);
           const body = await response.json();
+          if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
           if (!response.ok) throw new Error(body.message || body.error || "job list failed");
           state.jobs = body.jobs;
           const refreshedSelection = state.selectedJob
@@ -720,6 +771,7 @@
           }
           setPageStatus(`${body.jobs.length} job${body.jobs.length === 1 ? "" : "s"} loaded.`);
         } catch (error) {
+          if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
           setPageStatus(error.message, true);
         }
       }
@@ -730,9 +782,11 @@
           setPageStatus("Filename is required.", true);
           return;
         }
+        const requestAuthToken = activeAuthToken();
+        const requestAuthGeneration = state.authGeneration;
         createJob.disabled = true;
         try {
-          const response = await fetch("/api/jobs", {
+          const response = await apiFetch("/api/jobs", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -742,36 +796,49 @@
             }),
           });
           const body = await response.json();
+          if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
           if (!response.ok) throw new Error(body.message || body.error || "job create failed");
           state.selectedJob = body.job;
           await loadJobs();
+          if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
           renderDetail(body.job);
           setPageStatus(`Created ${body.job.job_id}.`);
         } catch (error) {
+          if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
           setPageStatus(error.message, true);
         } finally {
-          createJob.disabled = false;
+          if (isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) {
+            createJob.disabled = false;
+          }
         }
       }
 
       async function loadJobDetail(jobId) {
+        const requestAuthToken = activeAuthToken();
+        const requestAuthGeneration = state.authGeneration;
         setPageStatus("Loading job detail...");
         try {
-          const response = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`);
+          const response = await apiFetch(`/api/jobs/${encodeURIComponent(jobId)}`);
           const body = await response.json();
+          if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
           if (!response.ok) throw new Error(body.message || body.error || "job detail failed");
           renderDetail(body.job);
           setPageStatus(`Opened ${body.job.job_id}.`);
         } catch (error) {
+          if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
           setPageStatus(error.message, true);
         }
       }
 
-      async function sendJobAction(actionName) {
+      async function sendJobAction(
+        actionName,
+        requestAuthToken = activeAuthToken(),
+        requestAuthGeneration = state.authGeneration
+      ) {
         const job = state.selectedJob;
         const action = findAction(job, actionName);
         if (!action) return null;
-        const response = await fetch("/api/job-events", {
+        const response = await apiFetch("/api/job-events", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -781,44 +848,75 @@
           }),
         });
         const body = await response.json();
+        if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return null;
         if (!response.ok) throw new Error(body.message || body.error || "job action failed");
         return { job, action, body };
       }
 
       async function downloadSelectedJobResult() {
+        const requestAuthToken = activeAuthToken();
+        const requestAuthGeneration = state.authGeneration;
         try {
-          const accepted = await sendJobAction("download_result");
+          const accepted = await sendJobAction(
+            "download_result",
+            requestAuthToken,
+            requestAuthGeneration
+          );
           if (!accepted) return;
-          await downloadJobResult(accepted.job);
+          if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
+          const downloaded = await downloadJobResult(
+            accepted.job,
+            requestAuthToken,
+            requestAuthGeneration
+          );
+          if (!downloaded || !isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
           setPageStatus(`${accepted.action.label} event accepted and downloaded.`);
         } catch (error) {
+          if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
           setPageStatus(error.message, true);
         }
       }
 
       async function retrySelectedConversion() {
+        const requestAuthToken = activeAuthToken();
+        const requestAuthGeneration = state.authGeneration;
         try {
-          const accepted = await sendJobAction("retry_conversion");
+          const accepted = await sendJobAction(
+            "retry_conversion",
+            requestAuthToken,
+            requestAuthGeneration
+          );
           if (!accepted) return;
+          if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
           if (accepted.body.job) {
             const body = accepted.body;
             renderDetail(body.job);
             await loadJobs();
+            if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
             renderDetail(body.job);
           }
+          if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
           setPageStatus(`${accepted.action.label} event accepted for audit.`);
         } catch (error) {
+          if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
           setPageStatus(error.message, true);
         }
       }
 
-      async function downloadJobResult(job) {
-        const response = await fetch(`/api/jobs/${encodeURIComponent(job.job_id)}/result`);
+      async function downloadJobResult(
+        job,
+        requestAuthToken = activeAuthToken(),
+        requestAuthGeneration = state.authGeneration
+      ) {
+        const response = await apiFetch(`/api/jobs/${encodeURIComponent(job.job_id)}/result`);
+        if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return false;
         if (!response.ok) {
           const body = await response.json();
+          if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return false;
           throw new Error(body.message || body.error || "result download failed");
         }
         const blob = await response.blob();
+        if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return false;
         const url = URL.createObjectURL(blob);
         const link = document.createElement("a");
         link.href = url;
@@ -827,6 +925,7 @@
         link.click();
         link.remove();
         window.setTimeout(() => URL.revokeObjectURL(url), 0);
+        return true;
       }
 
       function downloadFilename(response, job) {
@@ -895,6 +994,34 @@
         renderJobs();
       }
 
+      function clearJobState() {
+        state.jobs = [];
+        clearDetail();
+      }
+
+      function clearCredentialBoundState() {
+        state.credentialAbortController.abort();
+        state.credentialAbortController = new AbortController();
+        state.authGeneration += 1;
+        state.directConversionToken += 1;
+        button.disabled = false;
+        createJob.disabled = false;
+        clearJobState();
+        clearSourcePreview();
+        clearReviewResult();
+      }
+
+      function isActiveCredentialRequest(requestAuthToken, requestAuthGeneration) {
+        return (
+          state.authGeneration === requestAuthGeneration &&
+          activeAuthToken() === requestAuthToken
+        );
+      }
+
+      function activeAuthToken() {
+        return savedAuthToken;
+      }
+
       function findAction(job, actionName) {
         return job?.available_actions?.find((action) => action.action === actionName);
       }
@@ -927,6 +1054,9 @@
 
       function renderResult(result) {
         state.latestResult = result;
+        state.availableReviewActions = Array.isArray(result.available_review_actions)
+          ? result.available_review_actions.filter((action) => typeof action === "string")
+          : [];
         status.textContent = result.status;
         status.className = `status ${result.status}`;
         reviewList.replaceChildren(...result.review_items.map(renderReviewItem));
@@ -978,6 +1108,7 @@
       function clearPreview() {
         state.pdfRenderToken += 1;
         state.latestResult = null;
+        state.availableReviewActions = [];
         state.previewPage = 1;
         pdfPreviewPanel.hidden = true;
         previewPageSelect.replaceChildren();
@@ -1219,14 +1350,16 @@
         approve.type = "button";
         approve.textContent = "Approve";
         approve.dataset.reviewActionKey = reviewActionKey(item);
-        approve.disabled = !reviewActionAvailable(item);
+        approve.dataset.reviewActionName = "approve";
+        approve.disabled = !reviewActionAvailable(item, "approve");
         approve.addEventListener("click", () => requestReviewAction(item, "approve"));
         const requestEdit = document.createElement("button");
         requestEdit.className = "secondary";
         requestEdit.type = "button";
         requestEdit.textContent = "Save edit";
         requestEdit.dataset.reviewActionKey = reviewActionKey(item);
-        requestEdit.disabled = !reviewActionAvailable(item);
+        requestEdit.dataset.reviewActionName = "edit";
+        requestEdit.disabled = !reviewActionAvailable(item, "edit");
         requestEdit.addEventListener("click", () => requestReviewAction(item, "edit"));
         const actions = document.createElement("div");
         actions.className = "review-actions";
@@ -1366,8 +1499,8 @@
         return "";
       }
 
-      function reviewActionAvailable(item) {
-        return !reviewActionBlockReason(item);
+      function reviewActionAvailable(item, action) {
+        return !reviewActionBlockReason(item) && state.availableReviewActions.includes(action);
       }
 
       function reviewActionKey(item) {
@@ -1379,7 +1512,8 @@
           `[data-review-action-key="${CSS.escape(reviewActionKey(item))}"]`
         );
         controls.forEach((control) => {
-          control.disabled = isPending || !reviewActionAvailable(item);
+          control.disabled =
+            isPending || !reviewActionAvailable(item, control.dataset.reviewActionName);
         });
       }
 
@@ -1402,7 +1536,7 @@
           actionStarted = true;
           setReviewActionPending(item, true);
           const auditEvent = buildReviewAuditEvent(item, action);
-          const response = await fetch("/api/review-events", {
+          const response = await apiFetch("/api/review-events", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ audit_event: auditEvent }),
@@ -1441,6 +1575,14 @@
             setReviewActionPending(item, false);
           }
         }
+      }
+
+      function apiFetch(url, options = {}) {
+        const token = activeAuthToken();
+        const headers = { ...(options.headers || {}) };
+        if (token) headers.Authorization = `Bearer ${token}`;
+        const signal = options.signal || state.credentialAbortController.signal;
+        return fetch(url, { ...options, headers, signal });
       }
 
       loadJobs();

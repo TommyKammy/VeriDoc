@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 from threading import Thread
+from typing import Optional
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
@@ -806,6 +807,53 @@ def test_poc_http_api_returns_json_safe_download_content() -> None:
     assert downloaded["document_ir"]["document"]["id"] == "upload"
 
 
+def test_poc_http_api_scopes_review_actions_by_conversion_role() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.local_auth_tokens = _local_auth_tokens()
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = json.dumps(
+            {
+                "filename": "upload.txt",
+                "content": "Unstructured OCR fallback text",
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/convert",
+            body=payload,
+            headers={
+                "Authorization": "Bearer reviewer-token",
+                "Content-Type": "application/json",
+                "Content-Length": str(len(payload)),
+            },
+        )
+        reviewer_response = connection.getresponse()
+        reviewer_body = json.loads(reviewer_response.read().decode("utf-8"))
+        connection.request(
+            "POST",
+            "/api/convert",
+            body=payload,
+            headers={
+                "Authorization": "Bearer approver-token",
+                "Content-Type": "application/json",
+                "Content-Length": str(len(payload)),
+            },
+        )
+        approver_response = connection.getresponse()
+        approver_body = json.loads(approver_response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert reviewer_response.status == 200
+    assert reviewer_body["available_review_actions"] == ["edit"]
+    assert approver_response.status == 200
+    assert approver_body["available_review_actions"] == ["edit", "approve"]
+
+
 def test_poc_http_api_accepts_review_action_audit_event() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     thread = Thread(target=server.serve_forever, daemon=True)
@@ -903,6 +951,115 @@ def test_poc_http_api_does_not_persist_rejected_review_action_audit_event() -> N
     assert body == {
         "error": "invalid_review_event",
         "message": "audit_event.source_bbox.origin must be top-left",
+    }
+    assert events == []
+
+
+def test_poc_http_api_rejects_review_approve_without_approver_role() -> None:
+    audit_event = _review_audit_event(action="approve", revised_text="Lot: SAMPLE-001")
+
+    status, body, events = _post_review_audit_event_with_store(
+        audit_event,
+        role_token="reviewer-token",
+    )
+
+    assert status == 403
+    assert body == {
+        "error": "forbidden",
+        "message": "role reviewer cannot perform review_approve",
+    }
+    assert events == []
+
+
+def test_poc_http_api_requires_configured_local_auth_token_for_review_events() -> None:
+    audit_event = _review_audit_event()
+
+    status, body, events = _post_review_audit_event_with_store(audit_event, role_token=None)
+
+    assert status == 401
+    assert body == {
+        "error": "auth_required",
+        "message": "Authorization bearer token is required",
+    }
+    assert events == []
+
+
+def test_poc_http_api_authenticates_review_events_before_parsing_payload() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    store = ReviewAuditEventStore()
+    server.review_event_store = store
+    server.local_auth_tokens = _local_auth_tokens()
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = b"{not valid json"
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/review-events",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 401
+    assert body == {
+        "error": "auth_required",
+        "message": "Authorization bearer token is required",
+    }
+    assert store.list_events() == []
+
+
+def test_poc_http_api_rejects_read_only_review_role_before_parsing_payload() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    store = ReviewAuditEventStore()
+    server.review_event_store = store
+    server.local_auth_tokens = _local_auth_tokens()
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = b"{not valid json"
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/review-events",
+            body=payload,
+            headers={
+                "Authorization": "Bearer viewer-token",
+                "Content-Type": "application/json",
+                "Content-Length": str(len(payload)),
+            },
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 403
+    assert body == {
+        "error": "forbidden",
+        "message": "role viewer cannot perform review_edit",
+    }
+    assert store.list_events() == []
+
+
+def test_poc_http_api_rejects_viewer_review_edit() -> None:
+    audit_event = _review_audit_event()
+
+    status, body, events = _post_review_audit_event_with_store(
+        audit_event,
+        role_token="viewer-token",
+    )
+
+    assert status == 403
+    assert body == {
+        "error": "forbidden",
+        "message": "role viewer cannot perform review_edit",
     }
     assert events == []
 
@@ -1089,27 +1246,48 @@ def _review_bbox(**overrides: object) -> dict[str, object]:
     return bbox
 
 
-def _post_review_audit_event(audit_event: dict[str, object]) -> tuple[int, dict[str, object]]:
-    status, body, _events = _post_review_audit_event_with_store(audit_event)
+def _post_review_audit_event(
+    audit_event: dict[str, object],
+    *,
+    role_token: Optional[str] = "auto",
+) -> tuple[int, dict[str, object]]:
+    status, body, _events = _post_review_audit_event_with_store(
+        audit_event,
+        role_token=role_token,
+    )
     return status, body
 
 
 def _post_review_audit_event_with_store(
     audit_event: dict[str, object],
+    *,
+    role_token: Optional[str] = "auto",
 ) -> tuple[int, dict[str, object], list[dict[str, object]]]:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     store = ReviewAuditEventStore()
     server.review_event_store = store
+    server.local_auth_tokens = _local_auth_tokens()
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
         payload = json.dumps({"audit_event": audit_event}).encode("utf-8")
         connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        selected_token = role_token
+        if selected_token == "auto" and audit_event.get("action") != "approve":
+            selected_token = "reviewer-token"
+        if selected_token == "auto" and audit_event.get("action") == "approve":
+            selected_token = "approver-token"
+        headers = {
+            "Content-Type": "application/json",
+            "Content-Length": str(len(payload)),
+        }
+        if selected_token:
+            headers["Authorization"] = f"Bearer {selected_token}"
         connection.request(
             "POST",
             "/api/review-events",
             body=payload,
-            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+            headers=headers,
         )
         response = connection.getresponse()
         body = json.loads(response.read().decode("utf-8"))
@@ -1117,6 +1295,15 @@ def _post_review_audit_event_with_store(
         server.shutdown()
         thread.join(timeout=5)
     return response.status, body, store.list_events()
+
+
+def _local_auth_tokens() -> dict[str, str]:
+    return {
+        "viewer-token": "viewer",
+        "reviewer-token": "reviewer",
+        "approver-token": "approver",
+        "admin-token": "admin",
+    }
 
 
 @pytest.mark.parametrize(
@@ -1311,6 +1498,322 @@ def test_poc_http_api_lists_conversion_jobs_filtered_by_status() -> None:
     assert next_job.job_id == queued_job.job_id
     assert retried_job is not None
     assert retried_job.job_id == failed_job.job_id
+
+
+def test_poc_http_api_requires_admin_role_for_retry_job_event() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue(max_attempts=1)
+    server.local_auth_tokens = _local_auth_tokens()
+    failed_job = server.job_queue.create_job(
+        idempotency_key="failed-1",
+        filename="failed-record.docx",
+        mode="standard",
+    )
+    running = server.job_queue.start_next_job()
+    assert running is not None
+    server.job_queue.mark_failed(failed_job.job_id, error="parser unavailable")
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "GET",
+            "/api/jobs?status=failed",
+            headers={"Authorization": "Bearer reviewer-token"},
+        )
+        failed_response = connection.getresponse()
+        failed_body = json.loads(failed_response.read().decode("utf-8"))
+        connection.request(
+            "GET",
+            f"/api/jobs/{failed_job.job_id}",
+            headers={"Authorization": "Bearer reviewer-token"},
+        )
+        reviewer_detail_response = connection.getresponse()
+        reviewer_detail_body = json.loads(reviewer_detail_response.read().decode("utf-8"))
+        forged_retry_event = {
+            "event_type": "conversion_job.action_requested",
+            "job_id": failed_job.job_id,
+            "job_status": "failed",
+            "action": "retry_conversion",
+        }
+        event_payload = json.dumps(
+            {
+                "job_id": failed_job.job_id,
+                "action": "retry_conversion",
+                "audit_event": forged_retry_event,
+            }
+        ).encode("utf-8")
+        connection.request(
+            "POST",
+            "/api/job-events",
+            body=event_payload,
+            headers={
+                "Authorization": "Bearer reviewer-token",
+                "Content-Type": "application/json",
+                "Content-Length": str(len(event_payload)),
+            },
+        )
+        reviewer_response = connection.getresponse()
+        reviewer_body = json.loads(reviewer_response.read().decode("utf-8"))
+        assert server.job_queue.get_job(failed_job.job_id).status == "failed"
+        connection.request(
+            "GET",
+            "/api/jobs?status=failed",
+            headers={"Authorization": "Bearer admin-token"},
+        )
+        admin_failed_response = connection.getresponse()
+        admin_failed_body = json.loads(admin_failed_response.read().decode("utf-8"))
+        retry_action = next(
+            action
+            for action in admin_failed_body["jobs"][0]["available_actions"]
+            if action["action"] == "retry_conversion"
+        )
+        admin_event_payload = json.dumps(
+            {
+                "job_id": failed_job.job_id,
+                "action": "retry_conversion",
+                "audit_event": retry_action["audit_event"],
+            }
+        ).encode("utf-8")
+        connection.request(
+            "POST",
+            "/api/job-events",
+            body=admin_event_payload,
+            headers={
+                "Authorization": "Bearer admin-token",
+                "Content-Type": "application/json",
+                "Content-Length": str(len(admin_event_payload)),
+            },
+        )
+        admin_response = connection.getresponse()
+        admin_body = json.loads(admin_response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert failed_response.status == 200
+    assert [action["action"] for action in failed_body["jobs"][0]["available_actions"]] == [
+        "open_detail"
+    ]
+    assert reviewer_detail_response.status == 200
+    assert [
+        action["action"] for action in reviewer_detail_body["job"]["available_actions"]
+    ] == ["open_detail"]
+    assert reviewer_response.status == 403
+    assert reviewer_body == {
+        "error": "forbidden",
+        "message": "role reviewer cannot perform jobs_retry",
+    }
+    assert admin_failed_response.status == 200
+    assert admin_response.status == 202
+    assert admin_body["job"]["status"] == "queued"
+    assert server.job_queue.get_job(failed_job.job_id).status == "queued"
+
+
+def test_poc_http_api_authenticates_job_events_before_parsing_payload() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue(max_attempts=1)
+    server.local_auth_tokens = _local_auth_tokens()
+    failed_job = server.job_queue.create_job(
+        idempotency_key="failed-1",
+        filename="failed-record.docx",
+        mode="standard",
+    )
+    running = server.job_queue.start_next_job()
+    assert running is not None
+    server.job_queue.mark_failed(failed_job.job_id, error="parser unavailable")
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = b"{not valid json"
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/job-events",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 401
+    assert body == {
+        "error": "auth_required",
+        "message": "Authorization bearer token is required",
+    }
+    assert server.job_queue.get_job(failed_job.job_id).status == "failed"
+
+
+def test_bundled_web_ui_plumbs_local_auth_token_into_api_fetches() -> None:
+    html = (Path(__file__).resolve().parents[1] / "apps" / "web" / "index.html").read_text()
+
+    assert '<script type="module">' in html
+    assert "<script>" not in html
+    assert 'id="auth-token"' in html
+    assert 'let savedAuthToken = "";' in html
+    assert "savedAuthToken = token" in html
+    assert "savedAuthToken = \"\"" in html
+    assert "function activeAuthToken()" in html
+    assert "return savedAuthToken;" in html
+    assert "const token = activeAuthToken();" in html
+    assert "sessionStorage" not in html
+    assert "localStorage" not in html
+    assert "function apiFetch" in html
+    assert "headers.Authorization = `Bearer ${token}`" in html
+    assert "fetch(\"/api/convert\"" not in html
+    assert "fetch(`/api/jobs${query}`)" not in html
+    assert "fetch(\"/api/job-events\"" not in html
+    assert "fetch(\"/api/review-events\"" not in html
+
+
+def test_bundled_web_ui_clears_credential_bound_state_when_auth_token_changes() -> None:
+    html = Path("apps/web/index.html").read_text(encoding="utf-8")
+
+    save_handler = re.search(
+        r'saveAuthToken\.addEventListener\("click", \(\) => \{(?P<body>.*?)\n      \}\);',
+        html,
+        re.DOTALL,
+    )
+    clear_handler = re.search(
+        r'clearAuthToken\.addEventListener\("click", \(\) => \{(?P<body>.*?)\n      \}\);',
+        html,
+        re.DOTALL,
+    )
+    credential_clear = re.search(
+        r"function clearCredentialBoundState\(\) \{(?P<body>.*?)\n      \}",
+        html,
+        re.DOTALL,
+    )
+    review_clear = re.search(
+        r"function clearReviewResult\(\) \{(?P<body>.*?)\n      \}",
+        html,
+        re.DOTALL,
+    )
+    preview_clear = re.search(
+        r"function clearPreview\(\) \{(?P<body>.*?)\n      \}",
+        html,
+        re.DOTALL,
+    )
+
+    assert save_handler is not None
+    assert clear_handler is not None
+    assert credential_clear is not None
+    assert review_clear is not None
+    assert preview_clear is not None
+    save_body = save_handler.group("body")
+    clear_body = clear_handler.group("body")
+    credential_clear_body = credential_clear.group("body")
+    review_clear_body = review_clear.group("body")
+    preview_clear_body = preview_clear.group("body")
+    assert save_body.index("clearCredentialBoundState()") < save_body.index(
+        "savedAuthToken = token"
+    )
+    assert save_body.index("savedAuthToken = token") < save_body.index("authToken.value = \"\"")
+    assert clear_body.index("savedAuthToken = \"\"") < clear_body.index(
+        "clearCredentialBoundState()"
+    )
+    assert clear_body.index("clearCredentialBoundState()") < clear_body.index("loadJobs()")
+    assert "state.authGeneration += 1" in credential_clear_body
+    assert "state.directConversionToken += 1" in credential_clear_body
+    assert "button.disabled = false" in credential_clear_body
+    assert "createJob.disabled = false" in credential_clear_body
+    assert "clearJobState()" in credential_clear_body
+    assert "clearSourcePreview()" in credential_clear_body
+    assert "clearReviewResult()" in credential_clear_body
+    assert "reviewList.replaceChildren()" in review_clear_body
+    assert "rawResult.textContent = \"\"" in review_clear_body
+    assert "clearDownload()" in review_clear_body
+    assert "state.latestResult = null" in preview_clear_body
+    assert "state.availableReviewActions = []" in preview_clear_body
+
+
+def test_bundled_web_ui_guards_credential_bound_job_responses() -> None:
+    html = Path("apps/web/index.html").read_text(encoding="utf-8")
+
+    def js_between(start: str, end: str) -> str:
+        start_index = html.index(start)
+        return html[start_index:html.index(end, start_index)]
+
+    create_job_body = js_between(
+        "async function createConversionJob()",
+        "async function loadJobDetail(jobId)",
+    )
+    load_detail_body = js_between(
+        "async function loadJobDetail(jobId)",
+        "async function sendJobAction(",
+    )
+    send_action_body = js_between(
+        "async function sendJobAction(",
+        "async function downloadSelectedJobResult()",
+    )
+    download_selected_body = js_between(
+        "async function downloadSelectedJobResult()",
+        "async function retrySelectedConversion()",
+    )
+    retry_body = js_between(
+        "async function retrySelectedConversion()",
+        "async function downloadJobResult(",
+    )
+    download_result_body = js_between(
+        "async function downloadJobResult(",
+        "function downloadFilename(response, job)",
+    )
+
+    assert create_job_body.index("await loadJobs();") < create_job_body.index(
+        "if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;",
+        create_job_body.index("await loadJobs();"),
+    ) < create_job_body.index("renderDetail(body.job);", create_job_body.index("await loadJobs();"))
+    assert "const requestAuthToken = activeAuthToken();" in create_job_body
+    assert "const requestAuthToken = activeAuthToken();" in load_detail_body
+    assert load_detail_body.index("const body = await response.json();") < load_detail_body.index(
+        "if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;"
+    ) < load_detail_body.index("renderDetail(body.job);")
+    assert send_action_body.index("const body = await response.json();") < send_action_body.index(
+        "if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return null;"
+    ) < send_action_body.index("if (!response.ok)")
+    assert '"download_result",\n            requestAuthToken,\n            requestAuthGeneration' in download_selected_body
+    assert "const downloaded = await downloadJobResult(" in download_selected_body
+    assert "if (!downloaded || !isActiveCredentialRequest" in download_selected_body
+    assert '"retry_conversion",\n            requestAuthToken,\n            requestAuthGeneration' in retry_body
+    assert retry_body.index("await loadJobs();") < retry_body.index(
+        "if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;",
+        retry_body.index("await loadJobs();"),
+    ) < retry_body.index("renderDetail(body.job);", retry_body.index("await loadJobs();"))
+    assert "return false;" in download_result_body
+    assert "return true;" in download_result_body
+
+
+def test_bundled_web_ui_scopes_review_actions_from_api_permissions() -> None:
+    html = Path("apps/web/index.html").read_text(encoding="utf-8")
+
+    render_result = re.search(
+        r"function renderResult\(result\) \{(?P<body>.*?)\n      \}",
+        html,
+        re.DOTALL,
+    )
+    render_item = re.search(
+        r"function renderReviewItem\(item\) \{(?P<body>.*?)\n      \}",
+        html,
+        re.DOTALL,
+    )
+    pending_handler = re.search(
+        r"function setReviewActionPending\(item, isPending\) \{(?P<body>.*?)\n      \}",
+        html,
+        re.DOTALL,
+    )
+
+    assert render_result is not None
+    assert render_item is not None
+    assert pending_handler is not None
+    assert "result.available_review_actions" in render_result.group("body")
+    assert 'approve.dataset.reviewActionName = "approve"' in render_item.group("body")
+    assert 'approve.disabled = !reviewActionAvailable(item, "approve")' in render_item.group("body")
+    assert 'requestEdit.dataset.reviewActionName = "edit"' in render_item.group("body")
+    assert 'requestEdit.disabled = !reviewActionAvailable(item, "edit")' in render_item.group("body")
+    assert "control.dataset.reviewActionName" in pending_handler.group("body")
 
 
 def test_poc_http_api_sanitizes_succeeded_job_result_and_downloads_result() -> None:
@@ -1819,7 +2322,7 @@ def test_web_job_detail_actions_perform_download_and_retry_side_effects() -> Non
     html = Path("apps/web/index.html").read_text(encoding="utf-8")
 
     action_handler = re.search(
-        r"async function sendJobAction\(actionName\) \{(?P<body>.*?)\n      \}",
+        r"async function sendJobAction\(\s*actionName,.*?\) \{(?P<body>.*?)\n      \}",
         html,
         re.DOTALL,
     )
@@ -1834,7 +2337,7 @@ def test_web_job_detail_actions_perform_download_and_retry_side_effects() -> Non
         re.DOTALL,
     )
     download_handler = re.search(
-        r"async function downloadJobResult\(job\) \{(?P<body>.*?)\n      \}",
+        r"async function downloadJobResult\(\s*job,.*?\) \{(?P<body>.*?)\n      \}",
         html,
         re.DOTALL,
     )
@@ -1850,13 +2353,13 @@ def test_web_job_detail_actions_perform_download_and_retry_side_effects() -> Non
 
     assert 'detailDownload.addEventListener("click", () => downloadSelectedJobResult())' in html
     assert 'detailRetry.addEventListener("click", () => retrySelectedConversion())' in html
-    assert 'fetch("/api/job-events"' in action_body
-    assert 'sendJobAction("download_result")' in selected_download_body
-    assert "await downloadJobResult(accepted.job)" in selected_download_body
-    assert 'sendJobAction("retry_conversion")' in selected_retry_body
+    assert 'apiFetch("/api/job-events"' in action_body
+    assert 'sendJobAction(\n            "download_result"' in selected_download_body
+    assert "await downloadJobResult(\n            accepted.job" in selected_download_body
+    assert 'sendJobAction(\n            "retry_conversion"' in selected_retry_body
     assert "await loadJobs()" in selected_retry_body
     assert "renderDetail(body.job)" in selected_retry_body
-    assert 'fetch(`/api/jobs/${encodeURIComponent(job.job_id)}/result`)' in download_body
+    assert 'apiFetch(`/api/jobs/${encodeURIComponent(job.job_id)}/result`)' in download_body
     assert "await response.blob()" in download_body
     assert "URL.createObjectURL(blob)" in download_body
     assert "link.click()" in download_body
@@ -1880,3 +2383,62 @@ def test_web_job_list_refresh_updates_selected_detail_snapshot() -> None:
     )
     assert "renderDetail(refreshedSelection)" in load_jobs_body
     assert "clearDetail()" in load_jobs_body
+
+
+def test_web_job_list_refresh_ignores_stale_auth_token_responses() -> None:
+    html = Path("apps/web/index.html").read_text(encoding="utf-8")
+
+    load_jobs_handler = re.search(
+        r"async function loadJobs\(\) \{(?P<body>.*?)\n      \}",
+        html,
+        re.DOTALL,
+    )
+    create_job_handler = re.search(
+        r"async function createConversionJob\(\) \{(?P<body>.*?)\n      \}",
+        html,
+        re.DOTALL,
+    )
+
+    assert load_jobs_handler is not None
+    assert create_job_handler is not None
+    load_jobs_body = load_jobs_handler.group("body")
+    create_job_body = create_job_handler.group("body")
+    assert "const requestAuthToken = activeAuthToken()" in load_jobs_body
+    assert "const requestAuthGeneration = state.authGeneration" in load_jobs_body
+    assert (
+        "if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;"
+        in load_jobs_body
+    )
+    assert (
+        load_jobs_body.index("const body = await response.json()")
+        < load_jobs_body.index(
+            "if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;"
+        )
+        < load_jobs_body.index("if (!response.ok) throw")
+        < load_jobs_body.index("state.jobs = body.jobs")
+    )
+    assert (
+        load_jobs_body.rindex(
+            "if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;"
+        )
+        < load_jobs_body.index("setPageStatus(error.message, true)")
+    )
+    assert "const requestAuthToken = activeAuthToken()" in create_job_body
+    assert "const requestAuthGeneration = state.authGeneration" in create_job_body
+    assert (
+        create_job_body.index("const body = await response.json()")
+        < create_job_body.index(
+            "if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;"
+        )
+        < create_job_body.index("if (!response.ok) throw")
+        < create_job_body.index("state.selectedJob = body.job")
+    )
+    assert (
+        create_job_body.rindex(
+            "if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;"
+        )
+        < create_job_body.index("setPageStatus(error.message, true)")
+    )
+    assert "function isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)" in html
+    assert "state.authGeneration === requestAuthGeneration" in html
+    assert "activeAuthToken() === requestAuthToken" in html

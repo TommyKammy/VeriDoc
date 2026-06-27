@@ -71,8 +71,11 @@ def test_review_item_exposes_edit_and_approve_audit_events() -> None:
     assert "function reviewActionBlockReason(item)" in html
     assert 'state.latestResult.status === "blocked"' in html
     assert "Review actions are disabled for blocked conversions." in html
-    assert "approve.disabled = !reviewActionAvailable(item)" in html
-    assert "requestEdit.disabled = !reviewActionAvailable(item)" in html
+    assert "result.available_review_actions" in html
+    assert 'approve.dataset.reviewActionName = "approve"' in html
+    assert 'approve.disabled = !reviewActionAvailable(item, "approve")' in html
+    assert 'requestEdit.dataset.reviewActionName = "edit"' in html
+    assert 'requestEdit.disabled = !reviewActionAvailable(item, "edit")' in html
     assert "source_bbox: reviewAuditSourceBbox(item)" in html
     assert "function reviewAuditSourceBbox(item)" in html
     assert "if (!reviewAuditSourcePage(item)) return null;" in html
@@ -96,8 +99,22 @@ def test_review_actions_clear_and_reject_stale_file_selection() -> None:
     assert 'input.addEventListener("change", () => {' in html
     assert "state.directConversionToken += 1;" in html
     assert "button.disabled = false;" in html
+    assert "credentialAbortController: new AbortController()" in html
+    assert "state.credentialAbortController.abort();" in html
+    assert "state.credentialAbortController = new AbortController();" in html
     assert "function isActiveDirectConversion(conversionToken)" in html
     assert "if (!isActiveDirectConversion(conversionToken)) return;" in html
+    assert "const signal = options.signal || state.credentialAbortController.signal;" in html
+    assert "return fetch(url, { ...options, headers, signal });" in html
+    assert re.search(
+        r"\} finally \{\s+"
+        r"if \(isActiveCredentialRequest\(requestAuthToken, requestAuthGeneration\)\) \{\s+"
+        r"createJob\.disabled = false;\s+"
+        r"\}\s+"
+        r"\}",
+        html,
+        flags=re.S,
+    )
     assert "clearReviewResult();" in html
     assert re.search(
         r'button\.addEventListener\("click", async \(\) => \{.*?'
