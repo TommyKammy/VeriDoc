@@ -1,0 +1,442 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://veridoc.local/schemas/template-definition.schema.json",
+  "title": "VeriDoc Template Definition",
+  "description": "Template definition schema for Phase3 business-template matching inputs. This schema models public, synthetic template metadata and expected extraction surfaces only.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "template_id",
+    "version",
+    "document_type",
+    "anchors",
+    "fields",
+    "tables",
+    "risk_rank",
+    "validation_rules",
+    "output_mapping"
+  ],
+  "properties": {
+    "template_id": {
+      "type": "string"
+    },
+    "version": {
+      "type": "string"
+    },
+    "document_type": {
+      "type": "string",
+      "enum": [
+        "batch_record",
+        "certificate_of_analysis",
+        "standard_operating_procedure",
+        "equipment_log",
+        "other"
+      ]
+    },
+    "anchors": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "anchor_id",
+          "kind",
+          "text",
+          "match",
+          "scope"
+        ],
+        "properties": {
+          "anchor_id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "heading",
+              "label",
+              "table_header",
+              "footer",
+              "metadata"
+            ]
+          },
+          "text": {
+            "type": "string"
+          },
+          "match": {
+            "type": "string",
+            "enum": [
+              "exact",
+              "contains",
+              "normalized"
+            ]
+          },
+          "scope": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "page",
+              "block_types"
+            ],
+            "properties": {
+              "page": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "block_types": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "heading",
+                    "paragraph",
+                    "table",
+                    "field",
+                    "list_item",
+                    "footnote"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "fields": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "field_id",
+          "label",
+          "value_type",
+          "source",
+          "required",
+          "risk_level",
+          "validation_rule_ids",
+          "output_key"
+        ],
+        "properties": {
+          "field_id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "value_type": {
+            "type": "string",
+            "enum": [
+              "string",
+              "number",
+              "date",
+              "boolean",
+              "enum"
+            ]
+          },
+          "source": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "anchor_id",
+              "direction"
+            ],
+            "properties": {
+              "anchor_id": {
+                "type": "string"
+              },
+              "direction": {
+                "type": "string",
+                "enum": [
+                  "same_block",
+                  "right",
+                  "below",
+                  "table_cell"
+                ]
+              }
+            }
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "risk_level": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ]
+          },
+          "validation_rule_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "output_key": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "tables": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "table_id",
+          "anchor_id",
+          "required_columns",
+          "row_scope",
+          "risk_level",
+          "output_key"
+        ],
+        "properties": {
+          "table_id": {
+            "type": "string"
+          },
+          "anchor_id": {
+            "type": "string"
+          },
+          "required_columns": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string"
+            }
+          },
+          "row_scope": {
+            "type": "string",
+            "enum": [
+              "all_rows",
+              "non_empty_rows",
+              "matched_rows"
+            ]
+          },
+          "risk_level": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ]
+          },
+          "output_key": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "risk_rank": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "default_level",
+        "levels",
+        "review_required_levels"
+      ],
+      "properties": {
+        "default_level": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "critical"
+          ]
+        },
+        "levels": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "level",
+              "rank"
+            ],
+            "properties": {
+              "level": {
+                "type": "string",
+                "enum": [
+                  "low",
+                  "medium",
+                  "high",
+                  "critical"
+                ]
+              },
+              "rank": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        },
+        "review_required_levels": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ]
+          }
+        }
+      }
+    },
+    "validation_rules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "rule_id",
+          "target",
+          "rule_type",
+          "severity",
+          "message"
+        ],
+        "properties": {
+          "rule_id": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          },
+          "rule_type": {
+            "type": "string",
+            "enum": [
+              "required",
+              "type",
+              "range",
+              "allowed_values",
+              "cross_field"
+            ]
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "info",
+              "warning",
+              "error"
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "expected_type": {
+            "type": "string",
+            "enum": [
+              "string",
+              "number",
+              "date",
+              "boolean",
+              "enum"
+            ]
+          },
+          "minimum": {
+            "type": "number"
+          },
+          "maximum": {
+            "type": "number"
+          },
+          "allowed_values": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ]
+            }
+          },
+          "related_target": {
+            "type": "string"
+          },
+          "operator": {
+            "type": "string",
+            "enum": [
+              "equals",
+              "not_equals",
+              "before",
+              "before_or_equal",
+              "after",
+              "after_or_equal",
+              "less_than",
+              "less_than_or_equal",
+              "greater_than",
+              "greater_than_or_equal"
+            ]
+          }
+        }
+      }
+    },
+    "output_mapping": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "root_key",
+        "field_map",
+        "table_map"
+      ],
+      "properties": {
+        "format": {
+          "type": "string",
+          "enum": [
+            "json"
+          ]
+        },
+        "root_key": {
+          "type": "string"
+        },
+        "field_map": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "field_id",
+              "output_key"
+            ],
+            "properties": {
+              "field_id": {
+                "type": "string"
+              },
+              "output_key": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "table_map": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "table_id",
+              "output_key"
+            ],
+            "properties": {
+              "table_id": {
+                "type": "string"
+              },
+              "output_key": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate a Document IR JSON file against the repository schema.
+"""Validate a Document IR or template-definition JSON file against a repository schema.
 
 The project does not yet declare a Python dependency stack, so this validator
 implements the small JSON Schema subset used by core/ir/document-ir-v0.schema.json.
@@ -132,6 +132,346 @@ def validate_document_ir_consistency(document: dict[str, Any]) -> None:
     validate_document_ir_v0_consistency(document)
 
 
+def validate_template_definition_consistency(template: dict[str, Any]) -> None:
+    anchors_by_id = _unique_template_items(template.get("anchors", []), "anchor_id", "$.anchors")
+    anchor_ids = set(anchors_by_id)
+    fields_by_id = _unique_template_items(template.get("fields", []), "field_id", "$.fields")
+    field_ids = set(fields_by_id)
+    tables_by_id = _unique_template_items(template.get("tables", []), "table_id", "$.tables")
+    table_ids = set(tables_by_id)
+    rules_by_id = _unique_template_items(template.get("validation_rules", []), "rule_id", "$.validation_rules")
+    rule_ids = set(rules_by_id)
+
+    _validate_template_risk_rank(template, fields_by_id, tables_by_id)
+
+    for index, field in enumerate(template.get("fields", [])):
+        source = field.get("source", {})
+        anchor_id = source.get("anchor_id")
+        if anchor_id not in anchor_ids:
+            raise ValidationError(
+                "$.fields"
+                f"[{index}]"
+                ".source.anchor_id: "
+                f"references undeclared anchor {anchor_id!r}"
+            )
+        anchor = anchors_by_id[anchor_id]
+        if source.get("direction") == "table_cell" and not _is_template_table_anchor(anchor):
+            raise ValidationError(
+                "$.fields"
+                f"[{index}]"
+                ".source.anchor_id: "
+                f"table_cell source references non-table anchor {anchor_id!r}"
+            )
+        for rule_index, rule_id in enumerate(field.get("validation_rule_ids", [])):
+            if rule_id not in rule_ids:
+                raise ValidationError(
+                    "$.fields"
+                    f"[{index}]"
+                    ".validation_rule_ids"
+                    f"[{rule_index}]"
+                    f": references undeclared validation rule {rule_id!r}"
+                )
+            rule = rules_by_id[rule_id]
+            if rule.get("target") != field.get("field_id"):
+                raise ValidationError(
+                    "$.fields"
+                    f"[{index}]"
+                    ".validation_rule_ids"
+                    f"[{rule_index}]"
+                    f": validation rule {rule_id!r} targets {rule.get('target')!r}, "
+                    f"not field {field.get('field_id')!r}"
+                )
+
+    for index, rule in enumerate(template.get("validation_rules", [])):
+        target = rule.get("target")
+        if target in fields_by_id:
+            rule_id = rule.get("rule_id")
+            target_rule_ids = fields_by_id[target].get("validation_rule_ids", [])
+            if rule_id not in target_rule_ids:
+                raise ValidationError(
+                    "$.validation_rules"
+                    f"[{index}]"
+                    ".target: "
+                    f"field {target!r} must include validation rule {rule_id!r} "
+                    "in validation_rule_ids"
+                )
+
+    for index, table in enumerate(template.get("tables", [])):
+        anchor_id = table.get("anchor_id")
+        if anchor_id not in anchor_ids:
+            raise ValidationError(
+                "$.tables"
+                f"[{index}]"
+                ".anchor_id: "
+                f"references undeclared anchor {anchor_id!r}"
+            )
+        anchor = anchors_by_id[anchor_id]
+        if not _is_template_table_anchor(anchor):
+            raise ValidationError(
+                "$.tables"
+                f"[{index}]"
+                ".anchor_id: "
+                f"references non-table anchor {anchor_id!r}"
+            )
+
+    _validate_template_output_key_uniqueness(template)
+
+    for index, rule in enumerate(template.get("validation_rules", [])):
+        _validate_template_rule_operands(rule, index, fields_by_id)
+
+    for index, field_mapping in enumerate(template.get("output_mapping", {}).get("field_map", [])):
+        field_id = field_mapping.get("field_id")
+        if field_id not in field_ids:
+            raise ValidationError(
+                "$.output_mapping.field_map"
+                f"[{index}]"
+                ".field_id: "
+                f"references undeclared field {field_id!r}"
+            )
+        expected_output_key = fields_by_id[field_id].get("output_key")
+        if field_mapping.get("output_key") != expected_output_key:
+            raise ValidationError(
+                "$.output_mapping.field_map"
+                f"[{index}]"
+                ".output_key: "
+                f"must match field {field_id!r} output_key {expected_output_key!r}"
+            )
+
+    _validate_template_output_mapping_coverage(
+        template.get("output_mapping", {}).get("field_map", []),
+        field_ids,
+        "field_id",
+        "$.output_mapping.field_map",
+    )
+
+    for index, table_mapping in enumerate(template.get("output_mapping", {}).get("table_map", [])):
+        table_id = table_mapping.get("table_id")
+        if table_id not in table_ids:
+            raise ValidationError(
+                "$.output_mapping.table_map"
+                f"[{index}]"
+                ".table_id: "
+                f"references undeclared table {table_id!r}"
+            )
+        expected_output_key = tables_by_id[table_id].get("output_key")
+        if table_mapping.get("output_key") != expected_output_key:
+            raise ValidationError(
+                "$.output_mapping.table_map"
+                f"[{index}]"
+                ".output_key: "
+                f"must match table {table_id!r} output_key {expected_output_key!r}"
+            )
+
+    _validate_template_output_mapping_coverage(
+        template.get("output_mapping", {}).get("table_map", []),
+        table_ids,
+        "table_id",
+        "$.output_mapping.table_map",
+    )
+
+
+def _unique_template_items(items: list[dict[str, Any]], key: str, path: str) -> dict[str, dict[str, Any]]:
+    items_by_id: dict[str, dict[str, Any]] = {}
+    ids: set[str] = set()
+    for index, item in enumerate(items):
+        item_id = item.get(key)
+        if item_id in ids:
+            raise ValidationError(f"{path}[{index}].{key}: duplicates {item_id!r}")
+        ids.add(item_id)
+        items_by_id[item_id] = item
+    return items_by_id
+
+
+def _is_template_table_anchor(anchor: dict[str, Any]) -> bool:
+    block_types = anchor.get("scope", {}).get("block_types", [])
+    return anchor.get("kind") == "table_header" and "table" in block_types
+
+
+def _validate_template_output_key_uniqueness(template: dict[str, Any]) -> None:
+    seen_output_keys: dict[str, str] = {}
+    for section in ("fields", "tables"):
+        for index, item in enumerate(template.get(section, [])):
+            output_key = item.get("output_key")
+            path = f"$.{section}[{index}].output_key"
+            if output_key in seen_output_keys:
+                raise ValidationError(
+                    f"{path}: duplicates output_key {output_key!r} "
+                    f"already declared at {seen_output_keys[output_key]}"
+                )
+            seen_output_keys[output_key] = path
+
+
+def _validate_template_output_mapping_coverage(
+    mappings: list[dict[str, Any]],
+    expected_ids: set[str],
+    key: str,
+    path: str,
+) -> None:
+    mapped_ids: set[str] = set()
+    for index, mapping in enumerate(mappings):
+        mapped_id = mapping.get(key)
+        if mapped_id in mapped_ids:
+            raise ValidationError(f"{path}[{index}].{key}: duplicates mapping for {mapped_id!r}")
+        mapped_ids.add(mapped_id)
+
+    missing_ids = sorted(expected_ids - mapped_ids)
+    if missing_ids:
+        raise ValidationError(
+            f"{path}: missing mapping(s) for "
+            + ", ".join(repr(item_id) for item_id in missing_ids)
+        )
+
+
+def _validate_template_risk_rank(
+    template: dict[str, Any],
+    fields_by_id: dict[str, dict[str, Any]],
+    tables_by_id: dict[str, dict[str, Any]],
+) -> None:
+    risk_rank = template.get("risk_rank", {})
+    seen_levels: dict[str, int] = {}
+    for index, level in enumerate(risk_rank.get("levels", [])):
+        level_name = level.get("level")
+        if level_name in seen_levels:
+            raise ValidationError(
+                "$.risk_rank.levels"
+                f"[{index}]"
+                ".level: "
+                f"duplicates level {level_name!r} already declared at "
+                f"$.risk_rank.levels[{seen_levels[level_name]}].level"
+            )
+        seen_levels[level_name] = index
+    declared_levels = {
+        level.get("level")
+        for level in risk_rank.get("levels", [])
+    }
+    used_levels = {
+        risk_rank.get("default_level"),
+        *risk_rank.get("review_required_levels", []),
+        *(field.get("risk_level") for field in fields_by_id.values()),
+        *(table.get("risk_level") for table in tables_by_id.values()),
+    }
+    missing_levels = sorted(level for level in used_levels if level not in declared_levels)
+    if missing_levels:
+        raise ValidationError(
+            "$.risk_rank.levels: "
+            "missing level definition(s) for "
+            + ", ".join(repr(level) for level in missing_levels)
+        )
+
+
+def _validate_template_rule_operands(
+    rule: dict[str, Any],
+    index: int,
+    fields_by_id: dict[str, dict[str, Any]],
+) -> None:
+    field_ids = set(fields_by_id)
+    target = rule.get("target")
+    if target not in field_ids:
+        raise ValidationError(
+            "$.validation_rules"
+            f"[{index}]"
+            ".target: "
+            f"references undeclared field {target!r}"
+        )
+
+    rule_type = rule.get("rule_type")
+    declared_type = fields_by_id[target].get("value_type")
+    if rule_type == "required" and not fields_by_id[target].get("required"):
+        raise ValidationError(
+            "$.validation_rules"
+            f"[{index}]"
+            f": required rule target {target!r} must be declared required"
+        )
+    if rule_type == "type":
+        if "expected_type" not in rule:
+            raise ValidationError(f"$.validation_rules[{index}].expected_type: required for type rule")
+        expected_type = rule.get("expected_type")
+        if expected_type != declared_type:
+            raise ValidationError(
+                "$.validation_rules"
+                f"[{index}]"
+                ".expected_type: "
+                f"{expected_type!r} does not match field {target!r} value_type {declared_type!r}"
+            )
+    if rule_type == "range":
+        if declared_type != "number":
+            raise ValidationError(
+                "$.validation_rules"
+                f"[{index}]"
+                f": range rule target {target!r} requires number field, got {declared_type!r}"
+            )
+        if "minimum" not in rule and "maximum" not in rule:
+            raise ValidationError(f"$.validation_rules[{index}]: range rule requires minimum or maximum")
+        if "minimum" in rule and "maximum" in rule and rule["minimum"] > rule["maximum"]:
+            raise ValidationError(f"$.validation_rules[{index}]: minimum cannot exceed maximum")
+    if rule_type == "allowed_values":
+        if "allowed_values" not in rule:
+            raise ValidationError(f"$.validation_rules[{index}].allowed_values: required for allowed_values rule")
+        for value_index, value in enumerate(rule.get("allowed_values", [])):
+            if not _template_value_matches_type(value, declared_type):
+                raise ValidationError(
+                    "$.validation_rules"
+                    f"[{index}]"
+                    ".allowed_values"
+                    f"[{value_index}]"
+                    f": value {value!r} cannot match field {target!r} value_type {declared_type!r}"
+                )
+    if rule_type == "cross_field":
+        related_target = rule.get("related_target")
+        if related_target is None:
+            raise ValidationError(f"$.validation_rules[{index}].related_target: required for cross_field rule")
+        if related_target not in field_ids:
+            raise ValidationError(
+                "$.validation_rules"
+                f"[{index}]"
+                ".related_target: "
+                f"references undeclared field {related_target!r}"
+            )
+        if related_target == target:
+            raise ValidationError(
+                "$.validation_rules"
+                f"[{index}]"
+                ".related_target: "
+                "cannot reference the target field"
+            )
+        if "operator" not in rule:
+            raise ValidationError(f"$.validation_rules[{index}].operator: required for cross_field rule")
+        operator = rule.get("operator")
+        related_type = fields_by_id[related_target].get("value_type")
+        if operator in {"before", "before_or_equal", "after", "after_or_equal"}:
+            if declared_type != "date" or related_type != "date":
+                raise ValidationError(
+                    "$.validation_rules"
+                    f"[{index}]"
+                    f": operator {operator!r} requires date fields, got {declared_type!r} and {related_type!r}"
+                )
+        elif operator in {"less_than", "less_than_or_equal", "greater_than", "greater_than_or_equal"}:
+            if declared_type != "number" or related_type != "number":
+                raise ValidationError(
+                    "$.validation_rules"
+                    f"[{index}]"
+                    f": operator {operator!r} requires number fields, got {declared_type!r} and {related_type!r}"
+                )
+        elif declared_type != related_type:
+            raise ValidationError(
+                "$.validation_rules"
+                f"[{index}]"
+                f": operator {operator!r} requires matching field types, got {declared_type!r} and {related_type!r}"
+            )
+
+
+def _template_value_matches_type(value: Any, value_type: str) -> bool:
+    if value_type in {"string", "date"}:
+        return isinstance(value, str)
+    if value_type == "number":
+        return (isinstance(value, int) or isinstance(value, float)) and not isinstance(value, bool)
+    if value_type == "boolean":
+        return isinstance(value, bool)
+    if value_type == "enum":
+        return isinstance(value, (str, int, float, bool))
+    return False
+
+
 def validate_document_ir_v0_consistency(document: dict[str, Any]) -> None:
     pages_by_number: dict[int | float, dict[str, Any]] = {}
     for index, page in enumerate(document["pages"]):
@@ -235,6 +575,17 @@ def reject_json_constant(value: str) -> NoReturn:
     raise ValueError(f"non-finite JSON number is not allowed: {value}")
 
 
+def validate_consistency(schema: dict[str, Any], document: dict[str, Any], schema_path: Path) -> None:
+    schema_id = str(schema.get("$id", ""))
+    if schema_path.name == "template-definition.schema.json" or schema_id.endswith(
+        "/template-definition.schema.json"
+    ):
+        validate_template_definition_consistency(document)
+        return
+
+    validate_document_ir_consistency(document)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--schema", type=Path, required=True)
@@ -245,12 +596,12 @@ def main() -> int:
         schema = load_json(args.schema)
         document = load_json(args.document)
         validate(schema, document)
-        validate_document_ir_consistency(document)
+        validate_consistency(schema, document, args.schema)
     except (OSError, ValueError, json.JSONDecodeError, ValidationError) as exc:
-        print(f"Document IR validation failed: {exc}", file=sys.stderr)
+        print(f"Validation failed: {exc}", file=sys.stderr)
         return 1
 
-    print("Document IR validation passed.")
+    print("Validation passed.")
     return 0
 
 
