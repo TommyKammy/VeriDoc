@@ -125,14 +125,7 @@ def _best_anchor_match_score(anchor: Mapping[str, Any], blocks: Sequence[Documen
     matching_blocks = _blocks_matching_anchor(anchor, blocks)
     if not matching_blocks:
         return 0.0
-    scores = [
-        _text_match_score(
-            str(anchor.get("text") or ""),
-            _block_anchor_text(anchor, block),
-            str(anchor.get("match") or "normalized"),
-        )
-        for block in matching_blocks
-    ]
+    scores = [_anchor_block_match_score(anchor, block) for block in matching_blocks]
     return max(scores, default=0.0)
 
 
@@ -143,18 +136,31 @@ def _blocks_matching_anchor(anchor: Mapping[str, Any], blocks: Sequence[Document
     return [
         block
         for block in blocks
-        if _block_matches_scope(block, scope)
-        and _text_match_score(expected_text, _block_anchor_text(anchor, block), match_mode) > 0.0
+        if _block_matches_anchor_scope(anchor, block, scope)
+        and _anchor_block_match_score(anchor, block, expected_text, match_mode) > 0.0
     ]
 
 
-def _block_anchor_text(anchor: Mapping[str, Any], block: DocumentBlock) -> str:
-    if str(anchor.get("kind") or "") == "table_header" and block.type == "table":
-        return _table_header_text(block.text)
-    return block.text
+def _anchor_block_match_score(
+    anchor: Mapping[str, Any],
+    block: DocumentBlock,
+    expected_text: str | None = None,
+    match_mode: str | None = None,
+) -> float:
+    expected = str(anchor.get("text") or "") if expected_text is None else expected_text
+    mode = str(anchor.get("match") or "normalized") if match_mode is None else match_mode
+    if str(anchor.get("kind") or "") == "table_header":
+        if block.type != "table":
+            return 0.0
+        return _table_anchor_match_score(block.text, expected, mode)
+    return _text_match_score(expected, block.text, mode)
 
 
-def _block_matches_scope(block: DocumentBlock, scope: Mapping[str, Any]) -> bool:
+def _block_matches_anchor_scope(
+    anchor: Mapping[str, Any], block: DocumentBlock, scope: Mapping[str, Any]
+) -> bool:
+    if str(anchor.get("kind") or "") == "table_header" and block.type != "table":
+        return False
     page = _scope_page(scope)
     if page is not None and block.source_page != page:
         return False
@@ -191,11 +197,10 @@ def _table_score(
 
         best_column_score = 0.0
         for block in table_blocks:
-            column_names = _table_column_names(block.text, anchor)
-            matched_columns = sum(
-                1 for column in required_columns if _normalized_column_name(column) in column_names
+            best_column_score = max(
+                best_column_score,
+                _table_required_column_score(block.text, anchor, required_columns),
             )
-            best_column_score = max(best_column_score, matched_columns / len(required_columns))
         if best_column_score < 1.0:
             warnings.append(f"template table '{table_id}' required columns incomplete")
             cap_below_known = True
@@ -287,34 +292,51 @@ def _document_ir_review_warnings(document_ir: DocumentIRV1) -> list[str]:
     return warnings
 
 
-def _table_header_text(value: str) -> str:
+def _table_anchor_match_score(value: str, expected_text: str, match_mode: str) -> float:
+    return max(
+        (_row_anchor_match_score(row, expected_text, match_mode) for row in _table_rows(value)),
+        default=0.0,
+    )
+
+
+def _table_required_column_score(
+    value: str, anchor: Mapping[str, Any], required_columns: Sequence[str]
+) -> float:
+    normalized_required_columns = [_normalized_column_name(column) for column in required_columns]
+    normalized_required_columns = [column for column in normalized_required_columns if column]
+    if not normalized_required_columns:
+        return 1.0
+
     rows = _table_rows(value)
-    if not rows:
-        return ""
-    return "\t".join(rows[0])
-
-
-def _table_column_names(value: str, anchor: Mapping[str, Any]) -> set[str]:
-    for row in _table_rows(value):
-        if _row_matches_anchor(row, anchor):
+    start_index = _first_table_data_row_index(rows, anchor)
+    best_score = 0.0
+    for row in rows[start_index:]:
+        column_names = {_normalized_column_name(cell) for cell in row}
+        column_names.discard("")
+        if not column_names:
             continue
-        cells = [_normalized_column_name(cell) for cell in row]
-        cells = [cell for cell in cells if cell]
-        if cells:
-            return set(cells)
-    return set()
+        matched_columns = sum(1 for column in normalized_required_columns if column in column_names)
+        best_score = max(best_score, matched_columns / len(normalized_required_columns))
+    return best_score
 
 
-def _row_matches_anchor(row: Sequence[str], anchor: Mapping[str, Any]) -> bool:
+def _first_table_data_row_index(rows: Sequence[Sequence[str]], anchor: Mapping[str, Any]) -> int:
     expected_text = str(anchor.get("text") or "")
     if not expected_text:
-        return False
+        return 0
     match_mode = str(anchor.get("match") or "normalized")
+    for index, row in enumerate(rows):
+        if _row_anchor_match_score(row, expected_text, match_mode) > 0.0:
+            return index + 1
+    return 0
+
+
+def _row_anchor_match_score(row: Sequence[str], expected_text: str, match_mode: str) -> float:
     row_text = "\t".join(row)
     first_cell = row[0] if row else ""
-    return (
-        _text_match_score(expected_text, row_text, match_mode) > 0.0
-        or _text_match_score(expected_text, first_cell, match_mode) > 0.0
+    return max(
+        _text_match_score(expected_text, row_text, match_mode),
+        _text_match_score(expected_text, first_cell, match_mode),
     )
 
 

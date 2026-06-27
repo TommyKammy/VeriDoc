@@ -189,6 +189,77 @@ class TemplateFingerprintTest(unittest.TestCase):
         self.assertTrue(result.requires_review)
         self.assertIn("template table 'yield_summary' required columns incomplete", result.warnings)
 
+    def test_table_anchor_scope_requires_real_table_block(self) -> None:
+        template = self.template_definition()
+        template["anchors"][1]["scope"]["block_types"] = ["paragraph", "table"]
+
+        result = match_template_fingerprint(
+            self.document_with_blocks(
+                paragraph_text="Yield Summary\nstep\texpected_yield\tactual_yield",
+                table_text=None,
+            ),
+            template,
+        )
+
+        self.assertEqual(TemplateMatchClassification.UNKNOWN, result.classification)
+        self.assertIn("yield-table", result.missing_anchor_ids)
+        self.assertTrue(result.requires_review)
+
+    def test_table_header_anchor_scans_rows_beyond_first_row(self) -> None:
+        template = self.template_definition()
+        template["anchors"] = [template["anchors"][1]]
+        document = from_parser_output(
+            {
+                "source_path": "fixtures/sample.xlsx",
+                "sheets": [
+                    {
+                        "name": "Results",
+                        "dimension": "A1:C5",
+                        "cells": [
+                            {"ref": "A1", "value": "Workbook metadata", "value_type": "shared_string"},
+                            {"ref": "A2", "value": "Prepared by QA", "value_type": "shared_string"},
+                            {"ref": "A3", "value": "Yield Summary", "value_type": "shared_string"},
+                            {"ref": "A4", "value": "step", "value_type": "shared_string"},
+                            {"ref": "B4", "value": "expected_yield", "value_type": "shared_string"},
+                            {"ref": "C4", "value": "actual_yield", "value_type": "shared_string"},
+                            {"ref": "A5", "value": "blend", "value_type": "shared_string"},
+                            {"ref": "B5", "value": "95", "value_type": "number"},
+                            {"ref": "C5", "value": "94", "value_type": "number"},
+                        ],
+                        "merged_ranges": [],
+                    }
+                ],
+            },
+            document_id="sample-xlsx",
+            title="Sample XLSX",
+            source_type="xlsx",
+        )
+
+        result = match_template_fingerprint(document, template)
+
+        self.assertEqual(TemplateMatchClassification.KNOWN, result.classification)
+        self.assertNotIn("yield-table", result.missing_anchor_ids)
+        self.assertNotIn("template table 'yield_summary' required columns incomplete", result.warnings)
+
+    def test_required_columns_scan_past_note_rows(self) -> None:
+        template = self.template_definition()
+
+        result = match_template_fingerprint(
+            self.document_with_blocks(
+                table_text=(
+                    "Yield Summary\n"
+                    "All yields in %\n"
+                    "step\texpected_yield\tactual_yield\n"
+                    "blend\t95\t94"
+                )
+            ),
+            template,
+        )
+
+        self.assertEqual(TemplateMatchClassification.KNOWN, result.classification)
+        self.assertFalse(result.requires_review)
+        self.assertNotIn("template table 'yield_summary' required columns incomplete", result.warnings)
+
     def test_parser_review_state_is_preserved_for_known_template_matches(self) -> None:
         template = self.template_definition()
         document = self.document_with_blocks(table_review_warnings=["heuristic table requires review"])
