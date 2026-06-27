@@ -2334,6 +2334,176 @@ def test_poc_http_api_creates_idempotent_conversion_job() -> None:
     assert status["job"]["mode"] == "standard"
 
 
+def test_poc_http_api_registers_template_versions_and_jobs_keep_version_snapshot() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue()
+    server.template_store = poc_web.TemplateStore()
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        create_template_payload = json.dumps(
+            {
+                "template_id": "batch-record",
+                "name": "Batch Record",
+                "category": "manufacturing",
+                "fields": [
+                    {"name": "lot_number", "label": "Lot number", "required": True},
+                    {"name": "operator", "label": "Operator", "required": False},
+                ],
+                "content": "Lot {{lot_number}} reviewed by {{operator}}",
+            }
+        ).encode("utf-8")
+        connection.request(
+            "POST",
+            "/api/templates",
+            body=create_template_payload,
+            headers={
+                "Content-Type": "application/json",
+                "Content-Length": str(len(create_template_payload)),
+            },
+        )
+        created_response = connection.getresponse()
+        created = json.loads(created_response.read().decode("utf-8"))
+
+        update_template_payload = json.dumps(
+            {
+                "template_id": "batch-record",
+                "name": "Batch Record",
+                "category": "manufacturing",
+                "fields": [
+                    {"name": "lot_number", "label": "Lot number", "required": True},
+                    {"name": "operator", "label": "Operator", "required": True},
+                    {"name": "approver", "label": "Approver", "required": False},
+                ],
+                "content": "Lot {{lot_number}} reviewed by {{operator}} and {{approver}}",
+            }
+        ).encode("utf-8")
+        connection.request(
+            "POST",
+            "/api/templates",
+            body=update_template_payload,
+            headers={
+                "Content-Type": "application/json",
+                "Content-Length": str(len(update_template_payload)),
+            },
+        )
+        updated_response = connection.getresponse()
+        updated = json.loads(updated_response.read().decode("utf-8"))
+
+        create_job_payload = json.dumps(
+            {
+                "idempotency_key": "upload-with-template",
+                "filename": "batch-record.pdf",
+                "mode": "standard",
+                "template_id": "batch-record",
+            }
+        ).encode("utf-8")
+        connection.request(
+            "POST",
+            "/api/jobs",
+            body=create_job_payload,
+            headers={
+                "Content-Type": "application/json",
+                "Content-Length": str(len(create_job_payload)),
+            },
+        )
+        job_response = connection.getresponse()
+        job = json.loads(job_response.read().decode("utf-8"))
+
+        third_template_payload = json.dumps(
+            {
+                "template_id": "batch-record",
+                "name": "Batch Record",
+                "category": "manufacturing",
+                "fields": [
+                    {"name": "lot_number", "label": "Lot number", "required": True},
+                    {"name": "operator", "label": "Operator", "required": True},
+                    {"name": "approver", "label": "Approver", "required": True},
+                ],
+                "content": "Final {{lot_number}} / {{operator}} / {{approver}}",
+            }
+        ).encode("utf-8")
+        connection.request(
+            "POST",
+            "/api/templates",
+            body=third_template_payload,
+            headers={
+                "Content-Type": "application/json",
+                "Content-Length": str(len(third_template_payload)),
+            },
+        )
+        third_response = connection.getresponse()
+        third = json.loads(third_response.read().decode("utf-8"))
+
+        connection.request("GET", "/api/templates/batch-record")
+        detail_response = connection.getresponse()
+        detail = json.loads(detail_response.read().decode("utf-8"))
+
+        connection.request("GET", f"/api/jobs/{job['job']['job_id']}")
+        refreshed_job_response = connection.getresponse()
+        refreshed_job = json.loads(refreshed_job_response.read().decode("utf-8"))
+
+        connection.request(
+            "POST",
+            "/api/jobs",
+            body=create_job_payload,
+            headers={
+                "Content-Type": "application/json",
+                "Content-Length": str(len(create_job_payload)),
+            },
+        )
+        retried_job_response = connection.getresponse()
+        retried_job = json.loads(retried_job_response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert created_response.status == 201
+    assert created["template"]["current_version"] == 1
+    assert updated_response.status == 201
+    assert updated["template"]["current_version"] == 2
+    assert job_response.status == 202
+    assert job["job"]["template"] == {
+        "template_id": "batch-record",
+        "template_version": 2,
+        "name": "Batch Record",
+    }
+    assert third_response.status == 201
+    assert third["template"]["current_version"] == 3
+    assert detail_response.status == 200
+    assert [version["version"] for version in detail["template"]["versions"]] == [1, 2, 3]
+    assert refreshed_job_response.status == 200
+    assert refreshed_job["job"]["template"]["template_version"] == 2
+    assert retried_job_response.status == 202
+    assert retried_job["job"]["job_id"] == job["job"]["job_id"]
+    assert retried_job["job"]["template"]["template_version"] == 2
+
+
+def test_poc_http_api_lists_representative_seed_templates() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.template_store = poc_web.TemplateStore.with_representative_defaults()
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request("GET", "/api/templates")
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 200
+    assert len(body["templates"]) == 4
+    assert {template["template_id"] for template in body["templates"]} == {
+        "batch-record",
+        "deviation-report",
+        "coa-summary",
+        "validation-checklist",
+    }
+
+
 def test_poc_http_api_lists_conversion_jobs_filtered_by_status() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     server.job_queue = JobQueue(max_attempts=1)
@@ -2674,6 +2844,23 @@ def test_bundled_web_ui_exposes_audit_log_search_and_export() -> None:
     assert "JSON.stringify({ audit_events: state.auditEvents }, null, 2)" in html
     assert 'link.download = "veridoc-audit-log.json"' in html
     assert "clearAuditLog()" in html
+
+
+def test_bundled_web_ui_exposes_template_management_and_job_binding() -> None:
+    html = Path("apps/web/index.html").read_text(encoding="utf-8")
+
+    assert 'id="templates-title">Templates' in html
+    assert 'id="job-template"' in html
+    assert 'id="template-id"' in html
+    assert 'id="template-fields"' in html
+    assert 'id="save-template"' in html
+    assert "async function loadTemplates()" in html
+    assert "async function saveTemplateVersion()" in html
+    assert 'apiFetch("/api/templates")' in html
+    assert 'apiFetch("/api/templates", {' in html
+    assert "template_id: jobTemplate.value || undefined" in html
+    assert "job.template.template_version" in html
+    assert "clearTemplateState()" in html
 
 
 def test_bundled_web_ui_clears_credential_bound_state_when_auth_token_changes() -> None:

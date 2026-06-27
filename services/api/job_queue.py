@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from threading import Lock
@@ -19,6 +20,7 @@ class JobRecord:
     filename: str
     mode: str
     status: JobStatus
+    template: dict[str, Any] | None = None
     attempts: int = 0
     result: dict[str, Any] | None = None
     error: str | None = None
@@ -39,7 +41,14 @@ class JobQueue:
         self._pending_job_ids: deque[str] = deque()
         self._lock = Lock()
 
-    def create_job(self, *, idempotency_key: str, filename: str, mode: str) -> JobRecord:
+    def create_job(
+        self,
+        *,
+        idempotency_key: str,
+        filename: str,
+        mode: str,
+        template: dict[str, Any] | None = None,
+    ) -> JobRecord:
         key = idempotency_key.strip()
         if not key:
             raise ValueError("idempotency_key is required")
@@ -53,7 +62,11 @@ class JobQueue:
             existing_id = self._idempotency_index.get(key)
             if existing_id is not None:
                 existing = self._jobs[existing_id]
-                if existing.filename != filename or existing.mode != mode:
+                if (
+                    existing.filename != filename
+                    or existing.mode != mode
+                    or not _same_template_binding(existing.template, template)
+                ):
                     raise ValueError("idempotency_key already bound to different job parameters")
                 return existing
             if mode == "high_quality" and self._has_active_high_quality_job():
@@ -64,6 +77,7 @@ class JobQueue:
                 filename=filename,
                 mode=mode,
                 status="queued",
+                template=deepcopy(template),
             )
             self._jobs[job.job_id] = job
             self._idempotency_index[key] = job.job_id
@@ -161,3 +175,23 @@ class JobQueue:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _same_template_binding(
+    existing_template: dict[str, Any] | None,
+    requested_template: dict[str, Any] | None,
+) -> bool:
+    if existing_template is None or requested_template is None:
+        return existing_template is requested_template
+
+    existing_template_id = existing_template.get("template_id")
+    requested_template_id = requested_template.get("template_id")
+    if (
+        isinstance(existing_template_id, str)
+        and existing_template_id.strip()
+        and isinstance(requested_template_id, str)
+        and requested_template_id.strip()
+    ):
+        return existing_template_id == requested_template_id
+
+    return existing_template == requested_template

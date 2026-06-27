@@ -287,6 +287,27 @@
         justify-content: flex-end;
       }
 
+      .template-list {
+        display: grid;
+        gap: 10px;
+        margin-top: 14px;
+      }
+
+      .template-list-item {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px 14px;
+        align-items: center;
+        justify-content: space-between;
+        padding-bottom: 10px;
+        border-bottom: 1px solid #e5e9f0;
+      }
+
+      .template-list-item:last-child {
+        padding-bottom: 0;
+        border-bottom: 0;
+      }
+
       .review-item {
         margin-top: 10px;
         padding-top: 10px;
@@ -516,6 +537,12 @@
               </select>
             </div>
             <div class="field">
+              <label for="job-template">Template</label>
+              <select id="job-template">
+                <option value="">none</option>
+              </select>
+            </div>
+            <div class="field">
               <label for="status-filter">Status filter</label>
               <select id="status-filter">
                 <option value="">all</option>
@@ -554,6 +581,7 @@
               <div class="detail-row"><strong>Status</strong><span id="detail-status"></span></div>
               <div class="detail-row"><strong>Filename</strong><span id="detail-filename"></span></div>
               <div class="detail-row"><strong>Mode</strong><span id="detail-mode"></span></div>
+              <div class="detail-row"><strong>Template</strong><span id="detail-template"></span></div>
               <div class="detail-row"><strong>Attempts</strong><span id="detail-attempts"></span></div>
               <div class="detail-row"><strong>Error</strong><span id="detail-error"></span></div>
             </div>
@@ -566,6 +594,38 @@
           </div>
         </section>
       </div>
+
+      <section class="panel" style="margin-top: 16px" aria-labelledby="templates-title">
+        <div class="toolbar">
+          <h2 id="templates-title">Templates</h2>
+          <button id="refresh-templates" class="secondary" type="button">Refresh templates</button>
+        </div>
+        <div class="form-grid" style="margin-top: 14px">
+          <div class="field">
+            <label for="template-id">Template ID</label>
+            <input id="template-id" value="batch-record" />
+          </div>
+          <div class="field">
+            <label for="template-name">Name</label>
+            <input id="template-name" value="Batch Record" />
+          </div>
+          <div class="field">
+            <label for="template-category">Category</label>
+            <input id="template-category" value="manufacturing" />
+          </div>
+          <div class="field">
+            <label for="template-fields">Fields JSON</label>
+            <input id="template-fields" value='[{"name":"lot_number","label":"Lot number","required":true}]' />
+          </div>
+          <div class="field">
+            <label for="template-content">Content</label>
+            <input id="template-content" value="Lot {{lot_number}}" />
+          </div>
+          <button id="save-template" type="button">Save template</button>
+        </div>
+        <div id="template-list" class="template-list"></div>
+        <div id="templates-empty" class="empty" hidden>No templates registered.</div>
+      </section>
 
       <section class="panel" style="margin-top: 16px" aria-labelledby="direct-title">
         <h2 id="direct-title">Direct convert</h2>
@@ -666,6 +726,7 @@
         reviewAuditEvents: [],
         auditEvents: [],
         auditExportUrl: "",
+        templates: [],
         pendingReviewActions: new Map(),
         authGeneration: 0,
         credentialAbortController: new AbortController(),
@@ -685,7 +746,17 @@
       const createJob = document.querySelector("#create-job");
       const jobFilename = document.querySelector("#job-filename");
       const jobMode = document.querySelector("#job-mode");
+      const jobTemplate = document.querySelector("#job-template");
       const statusFilter = document.querySelector("#status-filter");
+      const refreshTemplates = document.querySelector("#refresh-templates");
+      const saveTemplate = document.querySelector("#save-template");
+      const templateId = document.querySelector("#template-id");
+      const templateName = document.querySelector("#template-name");
+      const templateCategory = document.querySelector("#template-category");
+      const templateFields = document.querySelector("#template-fields");
+      const templateContent = document.querySelector("#template-content");
+      const templateList = document.querySelector("#template-list");
+      const templatesEmpty = document.querySelector("#templates-empty");
       const detailEmpty = document.querySelector("#detail-empty");
       const detailContent = document.querySelector("#detail-content");
       const detailOpen = document.querySelector("#detail-open");
@@ -696,6 +767,7 @@
         status: document.querySelector("#detail-status"),
         filename: document.querySelector("#detail-filename"),
         mode: document.querySelector("#detail-mode"),
+        template: document.querySelector("#detail-template"),
         attempts: document.querySelector("#detail-attempts"),
         error: document.querySelector("#detail-error"),
         raw: document.querySelector("#detail-raw"),
@@ -739,6 +811,7 @@
           setPageStatus("API token cleared.");
         }
         loadJobs();
+        loadTemplates();
       });
       clearAuthToken.addEventListener("click", () => {
         savedAuthToken = "";
@@ -746,10 +819,13 @@
         clearCredentialBoundState();
         setPageStatus("API token cleared.");
         loadJobs();
+        loadTemplates();
       });
       refreshJobs.addEventListener("click", () => loadJobs());
       statusFilter.addEventListener("change", () => loadJobs());
       createJob.addEventListener("click", () => createConversionJob());
+      refreshTemplates.addEventListener("click", () => loadTemplates());
+      saveTemplate.addEventListener("click", () => saveTemplateVersion());
       detailOpen.addEventListener("click", () => loadJobDetail(state.selectedJob.job_id));
       detailDownload.addEventListener("click", () => downloadSelectedJobResult());
       detailRetry.addEventListener("click", () => retrySelectedConversion());
@@ -854,6 +930,7 @@
               idempotency_key: `web-${Date.now()}-${filename}`,
               filename,
               mode: jobMode.value,
+              template_id: jobTemplate.value || undefined,
             }),
           });
           const body = await response.json();
@@ -870,6 +947,56 @@
         } finally {
           if (isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) {
             createJob.disabled = false;
+          }
+        }
+      }
+
+      async function loadTemplates() {
+        const requestAuthToken = activeAuthToken();
+        const requestAuthGeneration = state.authGeneration;
+        try {
+          const response = await apiFetch("/api/templates");
+          const body = await response.json();
+          if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
+          if (!response.ok) throw new Error(body.message || body.error || "template list failed");
+          state.templates = body.templates;
+          renderTemplates();
+        } catch (error) {
+          if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
+          setPageStatus(error.message, true);
+        }
+      }
+
+      async function saveTemplateVersion() {
+        const requestAuthToken = activeAuthToken();
+        const requestAuthGeneration = state.authGeneration;
+        saveTemplate.disabled = true;
+        try {
+          const fields = JSON.parse(templateFields.value);
+          const response = await apiFetch("/api/templates", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              template_id: templateId.value,
+              name: templateName.value,
+              category: templateCategory.value,
+              fields,
+              content: templateContent.value,
+            }),
+          });
+          const body = await response.json();
+          if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
+          if (!response.ok) throw new Error(body.message || body.error || "template save failed");
+          await loadTemplates();
+          if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
+          jobTemplate.value = body.template.template_id;
+          setPageStatus(`Saved template ${body.template.template_id} v${body.template.current_version}.`);
+        } catch (error) {
+          if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
+          setPageStatus(error.message, true);
+        } finally {
+          if (isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) {
+            saveTemplate.disabled = false;
           }
         }
       }
@@ -1111,6 +1238,50 @@
         auditEmpty.hidden = false;
       }
 
+      function renderTemplates() {
+        templateList.replaceChildren(...state.templates.map(renderTemplateItem));
+        templatesEmpty.hidden = state.templates.length > 0;
+        const selectedTemplate = jobTemplate.value;
+        jobTemplate.replaceChildren(
+          option("none", ""),
+          ...state.templates.map((template) =>
+            option(`${template.name} v${template.current_version}`, template.template_id)
+          )
+        );
+        if (state.templates.some((template) => template.template_id === selectedTemplate)) {
+          jobTemplate.value = selectedTemplate;
+        }
+      }
+
+      function renderTemplateItem(template) {
+        const wrapper = document.createElement("div");
+        wrapper.className = "template-list-item";
+        const summary = document.createElement("div");
+        const title = document.createElement("strong");
+        title.textContent = `${template.name} v${template.current_version}`;
+        const meta = document.createElement("div");
+        meta.className = "page-status";
+        meta.textContent = `${template.template_id} / ${template.category} / ${template.field_count} fields`;
+        summary.append(title, meta);
+        const select = document.createElement("button");
+        select.className = "secondary";
+        select.type = "button";
+        select.textContent = "Use for jobs";
+        select.addEventListener("click", () => {
+          jobTemplate.value = template.template_id;
+          setPageStatus(`Selected ${template.template_id} for new jobs.`);
+        });
+        wrapper.append(summary, select);
+        return wrapper;
+      }
+
+      function option(label, value) {
+        const item = document.createElement("option");
+        item.value = value;
+        item.textContent = label;
+        return item;
+      }
+
       function renderJobs() {
         jobsBody.replaceChildren(...state.jobs.map(renderJobRow));
         jobsEmpty.hidden = state.jobs.length > 0;
@@ -1153,6 +1324,9 @@
         detailFields.status.replaceChildren(statusBadge(job.status));
         detailFields.filename.textContent = job.filename;
         detailFields.mode.textContent = job.mode;
+        detailFields.template.textContent = job.template
+          ? `${job.template.name} v${job.template.template_version}`
+          : "none";
         detailFields.attempts.textContent = String(job.attempts);
         detailFields.error.textContent = job.error || "none";
         detailFields.raw.textContent = JSON.stringify(job, null, 2);
@@ -1174,6 +1348,11 @@
         clearDetail();
       }
 
+      function clearTemplateState() {
+        state.templates = [];
+        renderTemplates();
+      }
+
       function clearCredentialBoundState() {
         state.credentialAbortController.abort();
         state.credentialAbortController = new AbortController();
@@ -1181,7 +1360,9 @@
         state.directConversionToken += 1;
         button.disabled = false;
         createJob.disabled = false;
+        saveTemplate.disabled = false;
         clearJobState();
+        clearTemplateState();
         clearAuditLog();
         clearSourcePreview();
         clearReviewResult();
@@ -1852,6 +2033,7 @@
       }
 
       loadJobs();
+      loadTemplates();
     </script>
   </body>
 </html>

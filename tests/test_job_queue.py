@@ -31,6 +31,64 @@ def test_job_queue_persists_state_transitions_and_idempotent_creation() -> None:
     assert queue.get_job(created.job_id).status == "succeeded"
 
 
+def test_job_queue_idempotent_retry_keeps_original_template_version() -> None:
+    queue = JobQueue()
+
+    created = queue.create_job(
+        idempotency_key="upload-with-template",
+        filename="batch-record.pdf",
+        mode="standard",
+        template={
+            "template_id": "batch-record",
+            "template_version": 2,
+            "name": "Batch Record",
+        },
+    )
+    duplicate = queue.create_job(
+        idempotency_key="upload-with-template",
+        filename="batch-record.pdf",
+        mode="standard",
+        template={
+            "template_id": "batch-record",
+            "template_version": 3,
+            "name": "Batch Record",
+        },
+    )
+
+    assert duplicate.job_id == created.job_id
+    assert duplicate.template == {
+        "template_id": "batch-record",
+        "template_version": 2,
+        "name": "Batch Record",
+    }
+
+
+def test_job_queue_idempotent_retry_rejects_different_template_binding() -> None:
+    queue = JobQueue()
+    queue.create_job(
+        idempotency_key="upload-with-template",
+        filename="batch-record.pdf",
+        mode="standard",
+        template={
+            "template_id": "batch-record",
+            "template_version": 2,
+            "name": "Batch Record",
+        },
+    )
+
+    with pytest.raises(ValueError, match="idempotency_key already bound"):
+        queue.create_job(
+            idempotency_key="upload-with-template",
+            filename="batch-record.pdf",
+            mode="standard",
+            template={
+                "template_id": "coa",
+                "template_version": 1,
+                "name": "Certificate of Analysis",
+            },
+        )
+
+
 def test_job_queue_retries_failed_job_with_bounded_attempts() -> None:
     queue = JobQueue(max_attempts=2)
     created = queue.create_job(
