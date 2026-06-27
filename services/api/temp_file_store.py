@@ -14,6 +14,22 @@ from typing import Any, Callable
 ENCRYPTION_ALGORITHM = "hmac-sha256-stream"
 ARTIFACT_ID_PATTERN = re.compile(r"tmp-[0-9a-f]{32}")
 MIN_ENCRYPTION_KEY_BYTES = 32
+NONCE_BYTES = 16
+METADATA_AUTH_FIELDS = (
+    "artifact_id",
+    "category",
+    "original_filename",
+    "storage_root",
+    "path",
+    "metadata_path",
+    "created_at",
+    "expires_at",
+    "sha256",
+    "size_bytes",
+    "encryption",
+    "nonce_hex",
+    "ciphertext_hmac_sha256",
+)
 PLACEHOLDER_ENCRYPTION_KEYS = {
     "changeme",
     "change_me",
@@ -88,12 +104,11 @@ class TemporaryFileStore:
         created = _as_utc(created_at or self._now())
         expires = created + retention
         artifact_id = f"tmp-{secrets.token_hex(16)}"
-        artifact_dir = self._category_root(category)
-        artifact_dir.mkdir(parents=True, exist_ok=True)
+        artifact_dir = self._ensure_category_root(category)
         path = artifact_dir / f"{artifact_id}.bin"
         metadata_path = artifact_dir / f"{artifact_id}.json"
 
-        nonce = secrets.token_bytes(16)
+        nonce = secrets.token_bytes(NONCE_BYTES)
         encrypted = _crypt(content, key=self._key, nonce=nonce)
         mac = _mac(encrypted, key=self._key, nonce=nonce)
         path.write_bytes(encrypted)
@@ -116,6 +131,7 @@ class TemporaryFileStore:
             "nonce_hex": nonce.hex(),
             "ciphertext_hmac_sha256": mac,
         }
+        metadata["metadata_hmac_sha256"] = _metadata_mac(metadata, key=self._key)
         metadata_path.write_text(
             json.dumps(metadata, sort_keys=True, indent=2),
             encoding="utf-8",
@@ -130,6 +146,8 @@ class TemporaryFileStore:
             raise FileNotFoundError(f"temporary artifact expired: {artifact_id}")
         path = _artifact_path_from_metadata(self._root, metadata, artifact_id)
         nonce = bytes.fromhex(_required_text(metadata, "nonce_hex"))
+        if len(nonce) != NONCE_BYTES:
+            raise ValueError("temporary artifact nonce length is invalid")
         encrypted = path.read_bytes()
         expected_mac = _required_text(metadata, "ciphertext_hmac_sha256")
         if not hmac.compare_digest(_mac(encrypted, key=self._key, nonce=nonce), expected_mac):
@@ -145,7 +163,7 @@ class TemporaryFileStore:
         metadata_path = self._metadata_path_for_artifact(artifact_id)
         paths = [metadata_path]
         if metadata_path.is_file():
-            metadata = _load_artifact_metadata(metadata_path, artifact_id)
+            metadata = _load_artifact_metadata(metadata_path, artifact_id, key=self._key)
             paths.insert(0, _artifact_path_from_metadata(self._root, metadata, artifact_id))
         else:
             paths.extend(_fallback_artifact_paths(self._root, artifact_id))
@@ -164,12 +182,10 @@ class TemporaryFileStore:
         removed: list[str] = []
         for metadata_path in _store_metadata_paths(self._root):
             try:
-                metadata = _load_metadata(metadata_path)
                 artifact_id = _artifact_id_from_metadata_path(metadata_path)
-                if _required_text(metadata, "artifact_id") != artifact_id:
-                    continue
+                metadata = _load_artifact_metadata(metadata_path, artifact_id, key=self._key)
                 expires_at = _parse_datetime(_required_text(metadata, "expires_at"))
-            except (ValueError, OSError):
+            except (RuntimeError, ValueError, OSError):
                 continue
             if expires_at <= now:
                 try:
@@ -184,7 +200,7 @@ class TemporaryFileStore:
         metadata_path = self._metadata_path_for_artifact(artifact_id)
         if not metadata_path.is_file():
             raise FileNotFoundError(f"temporary artifact not found: {artifact_id}")
-        return _load_artifact_metadata(metadata_path, artifact_id)
+        return _load_artifact_metadata(metadata_path, artifact_id, key=self._key)
 
     def _metadata_path_for_artifact(self, artifact_id: str) -> Path:
         artifact_id = _validate_artifact_id(artifact_id)
@@ -197,6 +213,16 @@ class TemporaryFileStore:
 
     def _category_root(self, category: str) -> Path:
         return self._root / category
+
+    def _ensure_category_root(self, category: str) -> Path:
+        self._root.mkdir(parents=True, exist_ok=True)
+        category_root = self._category_root(category)
+        if category_root.is_symlink():
+            raise ValueError("temporary artifact category directory is invalid")
+        category_root.mkdir(exist_ok=True)
+        if category_root.is_symlink() or not category_root.is_dir():
+            raise ValueError("temporary artifact category directory is invalid")
+        return category_root
 
 
 def _crypt(content: bytes, *, key: bytes, nonce: bytes) -> bytes:
@@ -262,13 +288,20 @@ def _load_metadata(path: Path) -> dict[str, Any]:
     return metadata
 
 
-def _load_artifact_metadata(metadata_path: Path, artifact_id: str) -> dict[str, Any]:
+def _load_artifact_metadata(
+    metadata_path: Path,
+    artifact_id: str,
+    *,
+    key: bytes | None = None,
+) -> dict[str, Any]:
     artifact_id = _validate_artifact_id(artifact_id)
     if _artifact_id_from_metadata_path(metadata_path) != artifact_id:
         raise ValueError("temporary artifact metadata filename mismatch")
     metadata = _load_metadata(metadata_path)
     if _required_text(metadata, "artifact_id") != artifact_id:
         raise ValueError("temporary artifact metadata id mismatch")
+    if key is not None:
+        _verify_metadata_mac(metadata, key=key)
     return metadata
 
 
@@ -283,6 +316,27 @@ def _required_text(metadata: dict[str, Any], field_name: str) -> str:
     if not isinstance(value, str) or not value:
         raise ValueError(f"temporary artifact metadata missing {field_name}")
     return value
+
+
+def _metadata_mac(metadata: dict[str, Any], *, key: bytes) -> str:
+    try:
+        payload = {field_name: metadata[field_name] for field_name in METADATA_AUTH_FIELDS}
+    except KeyError as exc:
+        raise ValueError("temporary artifact metadata missing authenticated field") from exc
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("utf-8")
+    return hmac.new(key, encoded, hashlib.sha256).hexdigest()
+
+
+def _verify_metadata_mac(metadata: dict[str, Any], *, key: bytes) -> None:
+    expected_mac = _required_text(metadata, "metadata_hmac_sha256")
+    actual_mac = _metadata_mac(metadata, key=key)
+    if not hmac.compare_digest(actual_mac, expected_mac):
+        raise RuntimeError("temporary artifact metadata integrity check failed")
 
 
 def _path_from_metadata(root: Path, metadata: dict[str, Any], field_name: str) -> Path:

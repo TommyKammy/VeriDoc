@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from services.api.temp_file_store import TemporaryFileStore
+from services.api.temp_file_store import TemporaryFileStore, _metadata_mac
 
 
 TEST_KEY = b"0123456789abcdef0123456789abcdef"
@@ -107,12 +107,51 @@ def test_temp_file_store_read_rejects_expired_artifact_before_returning_bytes(tm
     assert not expired.metadata_path.exists()
 
 
+def test_temp_file_store_read_authenticates_expiry_metadata_before_trusting_it(tmp_path):
+    current = datetime(2026, 1, 2, 12, 0, 0, tzinfo=timezone.utc)
+    store = TemporaryFileStore(root=tmp_path, encryption_key=TEST_KEY, now=lambda: current)
+    expired = store.save(
+        category="upload",
+        filename="expired.txt",
+        content=b"expired",
+        retention=timedelta(seconds=1),
+        created_at=current - timedelta(minutes=5),
+    )
+    metadata = json.loads(expired.metadata_path.read_text(encoding="utf-8"))
+    metadata["expires_at"] = (current + timedelta(hours=1)).isoformat()
+    expired.metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="metadata integrity"):
+        store.read(expired.artifact_id)
+
+    assert expired.path.exists()
+    assert expired.metadata_path.exists()
+
+
+def test_temp_file_store_read_rejects_authenticated_variable_length_nonce(tmp_path):
+    current = datetime(2026, 1, 2, 12, 0, 0, tzinfo=timezone.utc)
+    store = TemporaryFileStore(root=tmp_path, encryption_key=TEST_KEY, now=lambda: current)
+    record = store.save(
+        category="upload",
+        filename="payload.txt",
+        content=b"payload",
+        retention=timedelta(hours=1),
+    )
+    metadata = json.loads(record.metadata_path.read_text(encoding="utf-8"))
+    metadata["nonce_hex"] = metadata["nonce_hex"] + "00"
+    metadata["metadata_hmac_sha256"] = _metadata_mac(metadata, key=TEST_KEY)
+    record.metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="nonce length"):
+        store.read(record.artifact_id)
+
+
 def test_temp_file_store_rejects_placeholder_encryption_key(tmp_path):
     with pytest.raises(ValueError, match="placeholder"):
         TemporaryFileStore(root=tmp_path, encryption_key=b"TODO")
 
 
-def test_temp_file_store_resolves_metadata_path_before_root_containment_check(tmp_path):
+def test_temp_file_store_rejects_tampered_metadata_path_before_unlinking(tmp_path):
     current = datetime(2026, 1, 2, 12, 0, 0, tzinfo=timezone.utc)
     store = TemporaryFileStore(root=tmp_path / "store", encryption_key=TEST_KEY, now=lambda: current)
     record = store.save(
@@ -127,7 +166,7 @@ def test_temp_file_store_resolves_metadata_path_before_root_containment_check(tm
     metadata["path"] = str(record.storage_root / ".." / outside_path.name)
     record.metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
 
-    with pytest.raises(ValueError, match="escapes storage root"):
+    with pytest.raises(RuntimeError, match="metadata integrity"):
         store.delete(record.artifact_id)
     assert outside_path.read_bytes() == b"outside"
     assert record.metadata_path.exists()
@@ -158,6 +197,25 @@ def test_temp_file_store_cleanup_validates_metadata_id_against_filename(tmp_path
     assert expired.metadata_path.exists()
     assert retained.path.exists()
     assert retained.metadata_path.exists()
+
+
+def test_temp_file_store_save_rejects_symlinked_category_directory(tmp_path):
+    store_root = tmp_path / "store"
+    outside_root = tmp_path / "outside"
+    store_root.mkdir()
+    outside_root.mkdir()
+    (store_root / "upload").symlink_to(outside_root, target_is_directory=True)
+    store = TemporaryFileStore(root=store_root, encryption_key=TEST_KEY)
+
+    with pytest.raises(ValueError, match="category directory"):
+        store.save(
+            category="upload",
+            filename="payload.txt",
+            content=b"payload",
+            retention=timedelta(hours=1),
+        )
+
+    assert list(outside_root.iterdir()) == []
 
 
 def test_temp_file_store_missing_metadata_fallback_delete_skips_symlinked_category(

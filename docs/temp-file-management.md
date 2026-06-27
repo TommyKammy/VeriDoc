@@ -38,6 +38,7 @@ Metadata records the `hmac-sha256-stream` boundary and the key source as
 `configured`; callers must wire the key from a trusted runtime secret source.
 Placeholder, too-short, or empty keys are rejected.
 
-Reads verify ciphertext HMAC and plaintext SHA-256 before returning bytes. If
-metadata is malformed, the file escapes the configured root, or integrity checks
-fail, the read fails closed.
+Reads verify metadata HMAC before trusting retention fields, require the expected
+nonce length, and then verify ciphertext HMAC and plaintext SHA-256 before
+returning bytes. If metadata is malformed, the file escapes the configured root,
+or integrity checks fail, the read fails closed.
