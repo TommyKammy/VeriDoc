@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import asdict
+from datetime import datetime, timezone
 from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import base64
 import binascii
+import hashlib
 import json
 import math
 import os
@@ -333,9 +335,10 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
         )
 
     def _handle_review_event(self) -> None:
-        authenticated, role = self._authenticated_role()
+        authenticated, auth_context = self._authenticated_context()
         if not authenticated:
             return
+        role = auth_context["role"] if auth_context is not None else None
         if not self._role_has_permission(role, "review_events:edit"):
             return
         try:
@@ -350,7 +353,13 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             if not self._role_has_permission(role, permission):
                 return
             accepted_event = _validate_review_event(raw_audit_event)
-            stored_event = self._review_event_store().record(accepted_event)
+            stored_event = _review_event_with_auth_context(accepted_event, auth_context)
+            event_store = self._review_event_store()
+            _validate_review_workflow_event(stored_event, event_store.list_events())
+            stored_event = event_store.record(stored_event)
+        except RuntimeError as exc:
+            self._send_json({"error": "review_conflict", "message": str(exc)}, status=409)
+            return
         except ValueError as exc:
             if str(exc) == "content_length_required":
                 self._send_json({"error": "content_length_required"}, status=411)
@@ -424,9 +433,15 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
         return True, role
 
     def _authenticated_role(self) -> tuple[bool, str | None]:
+        authenticated, auth_context = self._authenticated_context()
+        if not authenticated:
+            return False, None
+        return True, auth_context["role"] if auth_context is not None else None
+
+    def _authenticated_context(self) -> tuple[bool, dict[str, str | None] | None]:
         auth_tokens = _local_auth_tokens(self.server)
         if auth_tokens is None:
-            return True, None
+            return True, {"role": None, "actor_id": "local-anonymous"}
         authorization = self.headers.get("Authorization") or ""
         prefix = "Bearer "
         if not authorization.startswith(prefix):
@@ -446,7 +461,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 status=401,
             )
             return False, None
-        return True, role
+        return True, {"role": role, "actor_id": _local_actor_id(role, token)}
 
     def _role_has_permission(self, role: str | None, permission: str) -> bool:
         if role is None:
@@ -672,6 +687,58 @@ def _validate_review_event(audit_event: Any) -> dict[str, Any]:
         "revised_text": revised_text,
         "warnings": warnings,
     }
+
+
+def _review_event_with_auth_context(
+    audit_event: dict[str, Any],
+    auth_context: dict[str, str | None] | None,
+) -> dict[str, Any]:
+    actor_id = "local-anonymous"
+    actor_role = None
+    if auth_context is not None:
+        actor_id = str(auth_context.get("actor_id") or actor_id)
+        actor_role = auth_context.get("role")
+    return {
+        **audit_event,
+        "actor": {
+            "id": actor_id,
+            "role": actor_role,
+        },
+        "occurred_at": _utc_now_iso(),
+    }
+
+
+def _validate_review_workflow_event(
+    audit_event: dict[str, Any],
+    stored_events: list[dict[str, Any]],
+) -> None:
+    if audit_event["action"] != "approve":
+        return
+    actor = audit_event.get("actor")
+    actor_id = actor.get("id") if isinstance(actor, dict) else None
+    if not isinstance(actor_id, str) or not actor_id:
+        raise RuntimeError("review approval requires an authenticated actor")
+    for stored_event in reversed(stored_events):
+        if stored_event.get("document_id") != audit_event["document_id"]:
+            continue
+        if stored_event.get("block_id") != audit_event["block_id"]:
+            continue
+        if stored_event.get("action") != "edit":
+            continue
+        stored_actor = stored_event.get("actor")
+        stored_actor_id = stored_actor.get("id") if isinstance(stored_actor, dict) else None
+        if stored_actor_id == actor_id:
+            raise RuntimeError("review approval must be performed by a different actor")
+        return
+
+
+def _local_actor_id(role: str, token: str) -> str:
+    token_digest = hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
+    return f"local:{role}:{token_digest}"
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def _validate_review_event_text(field_name: str, value: str) -> None:

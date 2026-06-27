@@ -971,6 +971,59 @@ def test_poc_http_api_rejects_review_approve_without_approver_role() -> None:
     assert events == []
 
 
+def test_poc_http_api_rejects_same_actor_approving_prior_review_edit() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    store = ReviewAuditEventStore()
+    server.review_event_store = store
+    server.local_auth_tokens = _local_auth_tokens()
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        headers = {"Authorization": "Bearer admin-token", "Content-Type": "application/json"}
+
+        edit_payload = json.dumps({"audit_event": _review_audit_event()}).encode("utf-8")
+        connection.request(
+            "POST",
+            "/api/review-events",
+            body=edit_payload,
+            headers={**headers, "Content-Length": str(len(edit_payload))},
+        )
+        edit_response = connection.getresponse()
+        edit_body = json.loads(edit_response.read().decode("utf-8"))
+
+        approve_payload = json.dumps(
+            {
+                "audit_event": _review_audit_event(
+                    action="approve",
+                    original_text="Lot: SAMPLE-001 corrected",
+                    revised_text="Lot: SAMPLE-001 corrected",
+                )
+            }
+        ).encode("utf-8")
+        connection.request(
+            "POST",
+            "/api/review-events",
+            body=approve_payload,
+            headers={**headers, "Content-Length": str(len(approve_payload))},
+        )
+        approve_response = connection.getresponse()
+        approve_body = json.loads(approve_response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert edit_response.status == 202
+    assert edit_body["audit_event"]["actor"]["role"] == "admin"
+    assert edit_body["audit_event"]["occurred_at"].endswith("Z")
+    assert approve_response.status == 409
+    assert approve_body == {
+        "error": "review_conflict",
+        "message": "review approval must be performed by a different actor",
+    }
+    assert [event["action"] for event in store.list_events()] == ["edit"]
+
+
 def test_poc_http_api_requires_configured_local_auth_token_for_review_events() -> None:
     audit_event = _review_audit_event()
 
