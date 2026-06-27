@@ -58,10 +58,12 @@ def test_review_item_can_jump_to_preview_bbox() -> None:
 def test_review_item_exposes_edit_and_approve_audit_events() -> None:
     html = _web_html()
 
-    assert "function buildReviewAuditEvent(item, action)" in html
+    assert "function buildReviewAuditEvent(item, action, savedEditText = null)" in html
     assert 'event_type: "conversion_review.action_requested"' in html
     assert "document_id: item.document_id" in html
     assert "block_id: item.block_id" in html
+    assert "original_text: item.text" in html
+    assert "event.conversion_id = state.latestResult.conversion_id" in html
     assert "source_page: reviewAuditSourcePage(item)" in html
     assert "function reviewAuditSourcePage(item)" in html
     assert "Number.isInteger(item.source_page)" in html
@@ -81,6 +83,8 @@ def test_review_item_exposes_edit_and_approve_audit_events() -> None:
     assert "if (!reviewAuditSourcePage(item)) return null;" in html
     assert "validBbox(item.source_bbox, item.source_page_geometry)" in html
     assert "jump.disabled = !reviewAuditSourceBbox(item)" in html
+    assert 'if (action === "edit")' in html
+    assert "savedEditText = await loadLatestSavedReviewEditText(item);" in html
     assert "event.revised_text = revisedText" in html
     assert "function requestReviewAction(item, action)" in html
     assert "try {" in html
@@ -91,6 +95,81 @@ def test_review_item_exposes_edit_and_approve_audit_events() -> None:
     assert 'requestReviewAction(item, "edit")' in html
     assert 'requestReviewAction(item, "approve")' in html
     assert "Review action event queued for audit" in html
+
+
+def test_approve_review_action_uses_saved_edit_not_unsaved_draft() -> None:
+    html = _web_html()
+
+    assert 'if (action === "edit" || action === "approve")' not in html
+    assert "async function loadLatestSavedReviewEditText(item)" in html
+    assert "function surfaceSavedReviewEditText(item, savedEditText)" in html
+    assert "function sameReviewAuditTarget(event, item)" in html
+    assert "for (const event of reviewEvents.slice().reverse())" in html
+    assert 'if (event.action !== "edit" || !sameReviewAuditTarget(event, item)) continue;' in html
+    assert re.search(
+        r'\} else if \(action === "approve"\) \{\s+'
+        r"if \(savedEditText !== null\) \{\s+"
+        r"event\.revised_text = revisedText;\s+"
+        r"\}\s+"
+        r"\}",
+        html,
+        flags=re.S,
+    )
+
+
+def test_approve_review_action_refreshes_saved_server_edits() -> None:
+    html = _web_html()
+
+    assert "async function refreshReviewAuditEvents(item)" in html
+    assert "const query = new URLSearchParams();" in html
+    assert 'query.set("document_id", item.document_id);' in html
+    assert 'query.set("block_id", item.block_id);' in html
+    assert 'query.set("conversion_id", activeConversionId);' not in html
+    assert 'const response = await apiFetch(path);' in html
+    assert 'apiFetch("/api/review-events");' not in html
+    assert "state.reviewAuditEvents = reviewEvents;" in html
+    assert "return reviewEvents;" in html
+    assert "const reviewEvents = await refreshReviewAuditEvents(item);" in html
+    assert "savedEditText = await loadLatestSavedReviewEditText(item);" in html
+    assert "async function prepareSavedReviewEditApproval(item)" in html
+    assert "surfaceSavedReviewEditText(item, savedEditText);" in html
+    assert 'text.dataset.reviewTextFor = item.block_id;' in html
+    assert 'edit.value = savedEditText;' in html
+    assert 'text.textContent = savedEditText;' in html
+    assert "buildReviewAuditEvent(item, action, savedEditText);" in html
+    assert (
+        "Saved review edit loaded. Review the updated text, then approve again."
+        in html
+    )
+    assert re.search(
+        r"async function prepareSavedReviewEditApproval\(item\) \{\s+"
+        r"const savedEditText = await loadLatestSavedReviewEditText\(item\);\s+"
+        r"const refreshedBlockReason = reviewActionBlockReason\(item\);\s+"
+        r"if \(refreshedBlockReason\) \{\s+"
+        r"reviewActionStatus\.textContent = refreshedBlockReason;\s+"
+        r'reviewActionStatus\.className = "page-status error";\s+'
+        r"return \{ stop: true, savedEditText: null \};\s+"
+        r"\}\s+"
+        r"if \(savedEditText === null\) return \{ stop: false, savedEditText: null \};\s+"
+        r"if \(reviewDraftText\(item\) === savedEditText\) \{\s+"
+        r"return \{ stop: false, savedEditText \};\s+"
+        r"\}\s+"
+        r"surfaceSavedReviewEditText\(item, savedEditText\);\s+"
+        r"reviewActionStatus\.textContent =\s+"
+        r'"Saved review edit loaded\. Review the updated text, then approve again\.";\s+'
+        r'reviewActionStatus\.className = "page-status";\s+'
+        r"return \{ stop: true, savedEditText \};\s+"
+        r"\}\s+"
+        r".+?"
+        r'if \(action === "approve"\) \{\s+'
+        r"const approvalReadiness = await prepareSavedReviewEditApproval\(item\);\s+"
+        r"savedEditText = approvalReadiness\.savedEditText;\s+"
+        r"if \(approvalReadiness\.stop\) return;\s+"
+        r"\}\s+"
+        r"const auditEvent = buildReviewAuditEvent\(item, action, savedEditText\);",
+        html,
+        flags=re.S,
+    )
 
 
 def test_review_actions_clear_and_reject_stale_file_selection() -> None:

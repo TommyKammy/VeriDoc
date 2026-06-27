@@ -1333,6 +1333,7 @@
         const title = document.createElement("strong");
         title.textContent = `${item.block_id} / page ${item.source_page}`;
         const text = document.createElement("div");
+        text.dataset.reviewTextFor = item.block_id;
         text.textContent = item.text;
         const badges = renderWarningBadges(item);
         const edit = document.createElement("textarea");
@@ -1449,7 +1450,33 @@
         return null;
       }
 
-      function buildReviewAuditEvent(item, action) {
+      async function refreshReviewAuditEvents(item) {
+        const query = new URLSearchParams();
+        if (item) {
+          query.set("document_id", item.document_id);
+          query.set("block_id", item.block_id);
+        }
+        const queryString = query.toString();
+        const path = queryString ? `/api/review-events?${queryString}` : "/api/review-events";
+        const response = await apiFetch(path);
+        let body = {};
+        try {
+          const parsedBody = await response.json();
+          body = parsedBody && typeof parsedBody === "object" ? parsedBody : {};
+        } catch (_error) {
+          body = {};
+        }
+        if (!response.ok) {
+          throw new Error(body.message || body.error || "Review audit events could not be loaded.");
+        }
+        const reviewEvents = Array.isArray(body.review_events)
+          ? body.review_events.filter((event) => event && typeof event === "object")
+          : [];
+        state.reviewAuditEvents = reviewEvents;
+        return reviewEvents;
+      }
+
+      function buildReviewAuditEvent(item, action, savedEditText = null) {
         const revisedText = reviewDraftText(item);
         const event = {
           event_type: "conversion_review.action_requested",
@@ -1461,10 +1488,67 @@
           original_text: item.text,
           warnings: item.warnings || [],
         };
+        if (state.latestResult && state.latestResult.conversion_id) {
+          event.conversion_id = state.latestResult.conversion_id;
+        }
         if (action === "edit") {
           event.revised_text = revisedText;
+        } else if (action === "approve") {
+          if (savedEditText !== null) {
+            event.revised_text = revisedText;
+          }
         }
         return event;
+      }
+
+      async function loadLatestSavedReviewEditText(item) {
+        const reviewEvents = await refreshReviewAuditEvents(item);
+        for (const event of reviewEvents.slice().reverse()) {
+          if (event.action !== "edit" || !sameReviewAuditTarget(event, item)) continue;
+          return typeof event.revised_text === "string" ? event.revised_text : null;
+        }
+        return null;
+      }
+
+      function surfaceSavedReviewEditText(item, savedEditText) {
+        const edit = reviewList.querySelector(
+          `[data-review-edit-for="${CSS.escape(item.block_id)}"]`
+        );
+        if (edit) edit.value = savedEditText;
+        const text = reviewList.querySelector(
+          `[data-review-text-for="${CSS.escape(item.block_id)}"]`
+        );
+        if (text) text.textContent = savedEditText;
+      }
+
+      async function prepareSavedReviewEditApproval(item) {
+        const savedEditText = await loadLatestSavedReviewEditText(item);
+        const refreshedBlockReason = reviewActionBlockReason(item);
+        if (refreshedBlockReason) {
+          reviewActionStatus.textContent = refreshedBlockReason;
+          reviewActionStatus.className = "page-status error";
+          return { stop: true, savedEditText: null };
+        }
+        if (savedEditText === null) return { stop: false, savedEditText: null };
+        if (reviewDraftText(item) === savedEditText) {
+          return { stop: false, savedEditText };
+        }
+        surfaceSavedReviewEditText(item, savedEditText);
+        reviewActionStatus.textContent =
+          "Saved review edit loaded. Review the updated text, then approve again.";
+        reviewActionStatus.className = "page-status";
+        return { stop: true, savedEditText };
+      }
+
+      function sameReviewAuditTarget(event, item) {
+        if (!event || event.document_id !== item.document_id || event.block_id !== item.block_id) {
+          return false;
+        }
+        const activeConversionId = state.latestResult?.conversion_id;
+        if (activeConversionId && event.conversion_id) {
+          return event.conversion_id === activeConversionId;
+        }
+        return true;
       }
 
       function reviewAuditSourcePage(item) {
@@ -1528,6 +1612,7 @@
         const actionKey = reviewActionKey(item);
         const pendingOwner = Symbol(actionKey);
         let actionStarted = false;
+        let savedEditText = null;
         try {
           const blockReason = reviewActionBlockReason(item);
           if (blockReason) throw new Error(blockReason);
@@ -1535,7 +1620,12 @@
           state.pendingReviewActions.set(actionKey, pendingOwner);
           actionStarted = true;
           setReviewActionPending(item, true);
-          const auditEvent = buildReviewAuditEvent(item, action);
+          if (action === "approve") {
+            const approvalReadiness = await prepareSavedReviewEditApproval(item);
+            savedEditText = approvalReadiness.savedEditText;
+            if (approvalReadiness.stop) return;
+          }
+          const auditEvent = buildReviewAuditEvent(item, action, savedEditText);
           const response = await apiFetch("/api/review-events", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
