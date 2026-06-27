@@ -868,13 +868,14 @@ def _reject_cross_conversion_review_reuse(
     audit_event: dict[str, Any],
     actor_id: str | None,
 ) -> None:
-    if stored_event.get("revised_text") == audit_event["revised_text"]:
-        stored_actor = stored_event.get("actor")
-        stored_actor_id = stored_actor.get("id") if isinstance(stored_actor, dict) else None
-        if isinstance(actor_id, str) and actor_id and stored_actor_id == actor_id:
-            raise RuntimeError("review approval must be performed by a different actor")
-        if audit_event.get("original_text") != audit_event["revised_text"]:
-            _reject_stale_review_approval()
+    if stored_event.get("revised_text") != audit_event["revised_text"]:
+        return
+    stored_actor = stored_event.get("actor")
+    stored_actor_id = stored_actor.get("id") if isinstance(stored_actor, dict) else None
+    if isinstance(actor_id, str) and actor_id and stored_actor_id == actor_id:
+        raise RuntimeError("review approval must be performed by a different actor")
+    if audit_event.get("original_text") != audit_event["revised_text"]:
+        _reject_stale_review_approval()
 
 
 def _reject_stale_review_approval() -> None:
