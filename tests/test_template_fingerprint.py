@@ -1479,6 +1479,54 @@ class TemplateFingerprintTest(unittest.TestCase):
         self.assertTrue(mapped["batch_number"].requires_review)
         self.assertEqual({"template_result": {}}, result.output)
 
+    def test_below_label_anchor_rejects_label_like_note_block_as_value(self) -> None:
+        template = self.template_definition()
+        template["anchors"].append(
+            {
+                "anchor_id": "batch-number-label",
+                "kind": "label",
+                "text": "Batch No.",
+                "match": "normalized",
+                "scope": {"page": 1, "block_types": ["paragraph"]},
+            }
+        )
+        template["fields"] = [
+            {
+                "field_id": "batch_number",
+                "label": "Batch No.",
+                "value_type": "string",
+                "source": {"anchor_id": "batch-number-label", "direction": "below"},
+                "required": True,
+                "risk_level": "medium",
+                "validation_rule_ids": [],
+                "output_key": "batch.number",
+            }
+        ]
+        document = DocumentIRV1(
+            schema_version="document-ir/v1",
+            document=DocumentInfo(id="fixture", title="Fixture", source_type="pdf"),
+            pages=[DocumentPage(page_number=1, width=612.0, height=792.0)],
+            blocks=[
+                self.block("heading", "Batch Production Record"),
+                self.block("paragraph", "Batch No.", y=120.0, block_id="batch-label"),
+                self.block(
+                    "paragraph",
+                    "Notes: batch number is pending assignment",
+                    y=144.0,
+                    block_id="note-block",
+                ),
+                self.block("paragraph", "BN-001", y=180.0, block_id="later-value"),
+            ],
+            warnings=[],
+        )
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertIsNone(mapped["batch_number"].value)
+        self.assertTrue(mapped["batch_number"].requires_review)
+        self.assertEqual({"template_result": {}}, result.output)
+
     def test_below_label_anchor_rejects_known_anchor_text_as_value(self) -> None:
         template = self.template_definition()
         template["anchors"].append(

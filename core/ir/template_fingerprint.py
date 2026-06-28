@@ -1121,9 +1121,15 @@ def _looks_like_unlabeled_below_value_block(value: str) -> bool:
     if len(nonempty_lines) != 1:
         return False
     line = nonempty_lines[0]
+    if _looks_like_label_or_note_line(line):
+        return False
     if _looks_like_unlabeled_section_heading(line):
         return False
     return "\t" not in line and "|" not in line
+
+
+def _looks_like_label_or_note_line(value: str) -> bool:
+    return bool(re.search(r"\S\s*[:：=]\s*\S", value))
 
 
 def _looks_like_unlabeled_section_heading(value: str) -> bool:
