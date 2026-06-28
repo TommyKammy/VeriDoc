@@ -203,6 +203,8 @@ class TemplateDefinitionSchemaTest(unittest.TestCase):
         for key in (
             "template_id",
             "version",
+            "status",
+            "effective",
             "document_type",
             "anchors",
             "fields",
@@ -224,6 +226,8 @@ class TemplateDefinitionSchemaTest(unittest.TestCase):
         invalid_values = {
             "template_id": 102,
             "version": 1,
+            "status": "retired",
+            "effective": [],
             "document_type": ["batch_record"],
             "anchors": {},
             "fields": {},
@@ -238,6 +242,13 @@ class TemplateDefinitionSchemaTest(unittest.TestCase):
             with self.subTest(key=key):
                 with self.assertRaises(ValidationError):
                     validate(schema, invalid)
+
+    def test_template_effective_metadata_must_be_well_ordered(self) -> None:
+        sample = self.load_sample()
+        sample["effective"]["until"] = "2025-12-31T00:00:00Z"
+
+        with self.assertRaisesRegex(ValidationError, "effective.until"):
+            self.validate_template(sample)
 
     def test_scope_block_types_follow_document_ir_v1_block_types(self) -> None:
         schema = self.load_schema()

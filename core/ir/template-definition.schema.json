@@ -8,6 +8,8 @@
   "required": [
     "template_id",
     "version",
+    "status",
+    "effective",
     "document_type",
     "anchors",
     "fields",
@@ -22,6 +24,28 @@
     },
     "version": {
       "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "active",
+        "inactive"
+      ]
+    },
+    "effective": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "from"
+      ],
+      "properties": {
+        "from": {
+          "type": "string"
+        },
+        "until": {
+          "type": "string"
+        }
+      }
     },
     "document_type": {
       "type": "string",

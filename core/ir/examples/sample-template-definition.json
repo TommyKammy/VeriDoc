@@ -1,6 +1,10 @@
 {
   "template_id": "synthetic-batch-record-v1",
   "version": "1.0.0",
+  "status": "active",
+  "effective": {
+    "from": "2026-01-01T00:00:00Z"
+  },
   "document_type": "batch_record",
   "anchors": [
     {
