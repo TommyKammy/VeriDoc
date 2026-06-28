@@ -1230,6 +1230,34 @@ class TemplateFingerprintTest(unittest.TestCase):
         self.assertTrue(mapped["actual_yield"].requires_review)
         self.assertEqual({"template_result": {}}, result.output)
 
+    def test_tabular_table_cell_mapping_preserves_blank_cells_before_value_column(self) -> None:
+        template = self.template_definition()
+        template["tables"][0]["required_columns"] = ["actual_yield"]
+        template["fields"] = [
+            {
+                "field_id": "actual_yield",
+                "label": "actual_yield",
+                "value_type": "number",
+                "source": {"anchor_id": "yield-table", "direction": "table_cell"},
+                "required": True,
+                "risk_level": "high",
+                "validation_rule_ids": [],
+                "output_key": "batch.actual_yield",
+            }
+        ]
+        document = self.document_with_blocks(
+            table_text=(
+                "Yield Summary\tstep\texpected_yield\tactual_yield\tvariance\n"
+                "blend\t\t94\t1"
+            )
+        )
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertEqual("94", mapped["actual_yield"].value)
+        self.assertEqual(2, mapped["actual_yield"].evidence["column_index"])
+
     def test_review_required_extracted_value_is_not_confirmed_in_output(self) -> None:
         template = self.template_definition()
         template["fields"] = [
@@ -1477,6 +1505,37 @@ class TemplateFingerprintTest(unittest.TestCase):
     def test_table_cell_mapping_does_not_search_data_rows_for_optional_header(self) -> None:
         template = self.template_definition()
         template["tables"][0]["required_columns"] = ["step"]
+        template["fields"] = [
+            {
+                "field_id": "actual_yield",
+                "label": "actual_yield",
+                "value_type": "number",
+                "source": {"anchor_id": "yield-table", "direction": "table_cell"},
+                "required": True,
+                "risk_level": "high",
+                "validation_rule_ids": [],
+                "output_key": "batch.actual_yield",
+            }
+        ]
+        document = self.document_with_blocks(
+            table_text=(
+                "Yield Summary\n"
+                "step\texpected_yield\n"
+                "actual_yield\tvariance\n"
+                "94\t1"
+            )
+        )
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertIsNone(mapped["actual_yield"].value)
+        self.assertTrue(mapped["actual_yield"].requires_review)
+        self.assertEqual({"template_result": {}}, result.output)
+
+    def test_table_cell_mapping_without_required_columns_does_not_promote_data_row_label(self) -> None:
+        template = self.template_definition()
+        template["tables"][0]["required_columns"] = []
         template["fields"] = [
             {
                 "field_id": "actual_yield",

@@ -211,11 +211,7 @@ def apply_template_field_mapping(
         or str(field.get("output_key") or field.get("field_id") or "")
         for field in fields
     }
-    table_output_keys_by_id_for_conflicts = {
-        f"table:{mapping.get('table_id')}": str(mapping.get("output_key") or "")
-        for mapping in (_mapping(value) for value in _list_value(output_mapping.get("table_map")))
-        if isinstance(mapping.get("table_id"), str) and isinstance(mapping.get("output_key"), str)
-    }
+    table_output_keys_by_id_for_conflicts = _table_output_keys_for_conflicts(output_mapping)
     output_conflicts = _output_key_conflicts(
         {**output_keys_by_field_id_for_conflicts, **table_output_keys_by_id_for_conflicts}
     )
@@ -606,11 +602,8 @@ def _extract_template_nearby_field(
                 allow_anchor_fallback=False,
             )
             if value is None:
-                value = _field_value_from_below_label_anchor(
-                    block.text,
-                    label,
-                    anchor_text,
-                    stop_markers=stop_markers,
+                value = _field_value_from_label_anchor_below(
+                    block.text, field_label=label, anchor_text=anchor_text, stop_markers=stop_markers
                 )
             if value:
                 return _template_value(block, value, 0.95, direction=direction)
@@ -728,6 +721,14 @@ def _table_cell_value_at_physical_column(row: Sequence[str], column_index: int) 
     return value or None
 
 
+def _table_output_keys_for_conflicts(output_mapping: Mapping[str, Any]) -> dict[str, str]:
+    return {
+        f"table:{mapping.get('table_id')}": str(mapping.get("output_key") or "")
+        for mapping in (_mapping(value) for value in _list_value(output_mapping.get("table_map")))
+        if isinstance(mapping.get("table_id"), str) and isinstance(mapping.get("output_key"), str)
+    }
+
+
 def _field_stop_markers(
     field: Mapping[str, Any], fields: Sequence[Mapping[str, Any]]
 ) -> tuple[str, ...]:
@@ -760,17 +761,17 @@ def _field_value_from_text(
     return _value_after_marker(text, anchor_text, stop_markers=stop_markers)
 
 
-def _field_value_from_below_label_anchor(
+def _field_value_from_label_anchor_below(
     text: str,
-    label: str,
-    anchor_text: str,
     *,
+    field_label: str,
+    anchor_text: str,
     stop_markers: Sequence[str] = (),
 ) -> str | None:
-    if _normalized_text(label) != _normalized_text(anchor_text):
+    if _normalized_text(field_label) != _normalized_text(anchor_text):
         return None
     value = _value_before_next_marker(text.strip(), stop_markers).strip()
-    if not value or _normalized_text(value) == _normalized_text(label):
+    if not value or _normalized_text(value) == _normalized_text(field_label):
         return None
     return value
 
@@ -937,10 +938,8 @@ def _table_header_row_index(
                 return index
             return None
         return None
-    for index, row in enumerate(rows[anchor_index:], start=anchor_index):
-        candidate_row = _row_columns_excluding_anchor(row, anchor) if index == anchor_index else row
-        if index != anchor_index and _looks_like_wrapped_header_fragment(candidate_row, rows, index):
-            continue
+
+    for index, candidate_row in _table_header_candidates_without_required_columns(rows, anchor_index, anchor):
         if _row_column_index(
             candidate_row,
             normalized_label,
@@ -965,6 +964,25 @@ def _table_header_candidate_row(
         if anchor_columns:
             return anchor_columns, column_offset
     return row, 0
+
+
+def _table_header_candidates_without_required_columns(
+    rows: Sequence[Sequence[str]],
+    anchor_index: int,
+    anchor: Mapping[str, Any],
+) -> list[tuple[int, Sequence[str]]]:
+    candidates: list[tuple[int, Sequence[str]]] = []
+    if anchor_index < len(rows):
+        anchor_columns = _row_columns_excluding_anchor(rows[anchor_index], anchor)
+        if anchor_columns:
+            candidates.append((anchor_index, anchor_columns))
+    for index in range(anchor_index + 1, len(rows)):
+        row = rows[index]
+        if _looks_like_wrapped_header_fragment(row, rows, index):
+            continue
+        candidates.append((index, row))
+        break
+    return candidates
 
 
 def _row_column_index(
