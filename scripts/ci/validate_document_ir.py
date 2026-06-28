@@ -19,6 +19,12 @@ from pathlib import Path
 from typing import Any, NoReturn
 
 
+TEMPLATE_TIMESTAMP_RE = re.compile(
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T"
+    r"[0-9]{2}:[0-9]{2}:[0-9]{2}"
+    r"(\.[0-9]{1,6})?"
+    r"(Z|[+-][0-9]{2}:[0-9]{2})$"
+)
 ANNOTATION_KEYS = {"$schema", "$id", "title", "description"}
 SUPPORTED_KEYS = {
     *ANNOTATION_KEYS,
@@ -86,7 +92,7 @@ def validate(schema: dict[str, Any], value: Any, path: tuple[str, ...] = ()) -> 
         raise ValidationError(f"{format_path(path)}: expected one of {allowed}")
 
     if "pattern" in schema and isinstance(value, str):
-        if re.search(schema["pattern"], value) is None:
+        if re.fullmatch(schema["pattern"], value) is None:
             raise ValidationError(f"{format_path(path)}: expected to match pattern {schema['pattern']!r}")
 
     if "type" in schema:
@@ -299,6 +305,10 @@ def _validate_template_effective_metadata(template: dict[str, Any]) -> None:
 
 
 def _parse_template_timestamp(value: str, path: str) -> datetime:
+    if TEMPLATE_TIMESTAMP_RE.fullmatch(value) is None:
+        raise ValidationError(
+            f"{path}: must be an ISO-8601 timestamp with timezone and at most 6 fractional digits"
+        )
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError as exc:

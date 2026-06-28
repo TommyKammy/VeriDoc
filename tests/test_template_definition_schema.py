@@ -259,11 +259,15 @@ class TemplateDefinitionSchemaTest(unittest.TestCase):
             self.validate_template(sample)
 
     def test_version_metadata_must_match_registry_semver(self) -> None:
-        sample = self.load_sample()
-        sample["version"] = "v1"
+        invalid_versions = ("v1", "1.0.0\n", "\u0661.0.0")
 
-        with self.assertRaisesRegex(ValidationError, "pattern"):
-            self.validate_template(sample)
+        for version in invalid_versions:
+            sample = self.load_sample()
+            sample["version"] = version
+
+            with self.subTest(version=version):
+                with self.assertRaisesRegex(ValidationError, "pattern"):
+                    self.validate_template(sample)
 
     def test_effective_metadata_requires_timezone_aware_timestamps(self) -> None:
         for timestamp in ("2026-01-01T00:00:00", "not-a-timestamp"):
@@ -273,6 +277,25 @@ class TemplateDefinitionSchemaTest(unittest.TestCase):
             with self.subTest(timestamp=timestamp):
                 with self.assertRaises(ValidationError):
                     self.validate_template(sample)
+
+    def test_effective_metadata_rejects_fractional_seconds_beyond_microseconds(self) -> None:
+        for key in ("from", "until"):
+            sample = self.load_sample()
+            sample["effective"]["from"] = "2026-01-01T00:00:00Z"
+            sample["effective"][key] = "2026-01-01T00:00:00.1234567Z"
+            if key == "until":
+                sample["effective"]["until"] = "2026-01-01T00:00:01.1234567Z"
+
+            with self.subTest(key=key):
+                with self.assertRaisesRegex(ValidationError, "pattern"):
+                    self.validate_template(sample)
+
+    def test_effective_metadata_accepts_microsecond_precision(self) -> None:
+        sample = self.load_sample()
+        sample["effective"]["from"] = "2026-01-01T00:00:00.123456Z"
+        sample["effective"]["until"] = "2026-01-01T00:00:01.123456Z"
+
+        self.validate_template(sample)
 
     def test_scope_block_types_follow_document_ir_v1_block_types(self) -> None:
         schema = self.load_schema()

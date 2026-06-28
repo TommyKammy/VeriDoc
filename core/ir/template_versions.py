@@ -6,7 +6,13 @@ from datetime import datetime, timezone
 from typing import Any, Iterable
 
 
-_SEMVER_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
+_SEMVER_RE = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
+_EFFECTIVE_TIMESTAMP_RE = re.compile(
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T"
+    r"[0-9]{2}:[0-9]{2}:[0-9]{2}"
+    r"(\.[0-9]{1,6})?"
+    r"(Z|[+-][0-9]{2}:[0-9]{2})$"
+)
 _ACTIVE_STATUS = "active"
 _INACTIVE_STATUS = "inactive"
 _SUPPORTED_STATUSES = {_ACTIVE_STATUS, _INACTIVE_STATUS}
@@ -140,6 +146,10 @@ def _is_effective_at(template: dict[str, Any], as_of: datetime) -> bool:
 
 
 def _parse_effective_timestamp(value: str, path: str) -> datetime:
+    if _EFFECTIVE_TIMESTAMP_RE.fullmatch(value) is None:
+        raise TemplateVersionError(
+            f"{path} must be an ISO-8601 timestamp with timezone and at most 6 fractional digits"
+        )
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError as exc:
