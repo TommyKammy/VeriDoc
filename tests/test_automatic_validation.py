@@ -435,6 +435,127 @@ def test_common_date_label_id_aliases_require_review() -> None:
     assert "risk_gate" in decision.failed_rules
 
 
+def test_numeric_value_type_requires_review() -> None:
+    decision = validate_extracted_item(
+        expected=_expected_item(
+            label_id="actual_yield",
+            expected_value="98.5",
+            risk_level="medium",
+            requires_review=False,
+            value_type="number",
+        ),
+        actual=_actual_item(
+            label_id="actual_yield",
+            value="98.5",
+            auto_confirmed=True,
+            value_type="number",
+        ),
+    )
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert decision.requires_review is True
+    assert "risk_gate" in decision.failed_rules
+
+
+def test_status_label_id_alias_requires_review_as_judgment() -> None:
+    decision = validate_extracted_item(
+        expected=_expected_item(
+            label_id="release_status",
+            expected_value="Approved",
+            risk_level="medium",
+            requires_review=False,
+        ),
+        actual=_actual_item(
+            label_id="release_status",
+            value="Approved",
+            auto_confirmed=True,
+        ),
+    )
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert decision.requires_review is True
+    assert "risk_gate" in decision.failed_rules
+
+
+def test_value_metadata_source_comparison_ignores_non_source_fields() -> None:
+    source = _evidence()
+    decision = validate_extracted_item(
+        expected=_expected_item(
+            label_id="summary_note",
+            expected_value="Reviewed note",
+            risk_level="medium",
+            requires_review=False,
+            fixture_id="fixture-001",
+            document_id="doc-001",
+            block_id="block-001",
+            value_metadata={
+                "source_page": source["source_page"],
+                "bbox": source["bbox"],
+                "extractor": {"name": "pymupdf-text"},
+                "confidence_model": "baseline",
+            },
+        ),
+        actual=_actual_item(
+            label_id="summary_note",
+            value="Reviewed note",
+            fixture_id="fixture-001",
+            document_id="doc-001",
+            block_id="block-001",
+            value_metadata={
+                "source_page": source["source_page"],
+                "bbox": source["bbox"],
+                "extractor": {"name": "pymupdf-text"},
+                "confidence_model": "rerun",
+            },
+        ),
+    )
+
+    assert decision.auto_confirm_allowed is True
+    assert decision.status is ValidationStatus.PASS
+    assert "provenance" not in decision.failed_rules
+
+
+def test_value_metadata_extractor_mismatch_blocks_without_provenance_failure() -> None:
+    source = _evidence()
+    decision = validate_extracted_item(
+        expected=_expected_item(
+            label_id="summary_note",
+            expected_value="Reviewed note",
+            risk_level="medium",
+            requires_review=False,
+            fixture_id="fixture-001",
+            document_id="doc-001",
+            block_id="block-001",
+            value_metadata={
+                "source_page": source["source_page"],
+                "bbox": source["bbox"],
+                "extractor": {"name": "pymupdf-text"},
+            },
+        ),
+        actual=_actual_item(
+            label_id="summary_note",
+            value="Reviewed note",
+            auto_confirmed=True,
+            fixture_id="fixture-001",
+            document_id="doc-001",
+            block_id="block-001",
+            value_metadata={
+                "source_page": source["source_page"],
+                "bbox": source["bbox"],
+                "extractor": {"name": "pymupdf-text-table-heuristic"},
+            },
+        ),
+    )
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert decision.requires_review is True
+    assert decision.failed_rules == ("risk_gate",)
+    assert "extraction engine mismatch requires human review" in decision.warnings
+
+
 def test_malformed_item_risk_level_blocks_auto_confirm() -> None:
     decision = validate_extracted_item(
         expected=_expected_item(risk_level="todo", requires_review=False),
@@ -763,6 +884,42 @@ def test_table_cells_apply_gmp_condition_gates() -> None:
         "table cell extraction engine mismatch requires human review"
         in decision.warnings
     )
+
+
+def test_table_level_risk_requires_review_for_matching_cells() -> None:
+    source = _evidence()
+    expected_table = {
+        "id": "table-001",
+        "fixture_table_id": "table-001",
+        "risk_level": "high",
+        "cells": [
+            {
+                "id": "table-001-r1-c1",
+                "text": "SAMPLE-LOT-001",
+                "source": source,
+                "requires_review": False,
+                "risk_level": "medium",
+            },
+        ],
+    }
+    actual_table = {
+        "id": "table-001",
+        "cells": [
+            {
+                "id": "table-001-r1-c1",
+                "text": "SAMPLE-LOT-001",
+                "source": source,
+                "auto_confirmed": True,
+            },
+        ],
+    }
+
+    decision = validate_table_consistency(expected_table, actual_table)
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert decision.requires_review is True
+    assert "risk_gate" in decision.failed_rules
 
 
 def test_table_cell_missing_expected_source_blocks_auto_confirm() -> None:

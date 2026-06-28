@@ -65,6 +65,8 @@ GMP_REVIEW_CATEGORY_ALIASES = {
     "result": "judgment",
     "decision": "judgment",
     "disposition": "judgment",
+    "status": "judgment",
+    "release_status": "judgment",
     "operator": "person",
     "reviewer": "person",
     "approver": "person",
@@ -177,10 +179,14 @@ def validate_table_consistency(
         expected_table.get("fixture_table_id"), expected_table.get("id")
     ):
         failed_rules.append("table_consistency")
+    table_explicit_review_required = _requires_review(expected_table) or _requires_review(
+        actual_table
+    )
+    table_high_risk = _is_high_risk(expected_table) or _is_high_risk(actual_table)
 
     expected_cells = _cells_by_id(expected_table.get("cells"))
     actual_cells = _cells_by_id(actual_table.get("cells"))
-    table_requires_review = False
+    table_requires_review = table_explicit_review_required or table_high_risk
     if expected_cells is None or actual_cells is None:
         failed_rules.append("table_consistency")
     else:
@@ -225,7 +231,11 @@ def validate_table_consistency(
             explicit_review_required = _requires_review(expected_cell) or _requires_review(
                 actual_cell
             )
-            high_risk = _is_high_risk(expected_cell) or _is_high_risk(actual_cell)
+            high_risk = (
+                table_high_risk
+                or _is_high_risk(expected_cell)
+                or _is_high_risk(actual_cell)
+            )
             category_requires_review = _gmp_category_requires_review(
                 expected_cell
             ) or _gmp_category_requires_review(actual_cell)
@@ -336,7 +346,10 @@ def _record_source_anchor(record: Mapping[str, Any]) -> object:
     if isinstance(value_metadata, Mapping) and (
         "source_page" in value_metadata or "bbox" in value_metadata
     ):
-        return value_metadata
+        return {
+            "source_page": value_metadata.get("source_page"),
+            "bbox": value_metadata.get("bbox"),
+        }
     return None
 
 
@@ -407,12 +420,13 @@ def _has_malformed_review_flag(record: Mapping[str, Any]) -> bool:
 
 
 def _gmp_category_requires_review(record: Mapping[str, Any]) -> bool:
-    category = _normalized_category(record.get("gmp_review_category"))
-    if not category:
-        category = _normalized_category(record.get("field_category"))
-    if not category:
-        category = _normalized_category(record.get("label_id"))
-    return category in GMP_REVIEW_REQUIRED_CATEGORIES
+    categories = (
+        _normalized_category(record.get("gmp_review_category")),
+        _normalized_category(record.get("field_category")),
+        _normalized_category(record.get("label_id")),
+        _category_from_value_type(record.get("value_type")),
+    )
+    return any(category in GMP_REVIEW_REQUIRED_CATEGORIES for category in categories)
 
 
 def _normalized_category(value: object) -> str:
@@ -425,6 +439,15 @@ def _normalized_category(value: object) -> str:
     if normalized.endswith(("_date", "_time", "_timestamp", "_datetime")):
         return "date_time"
     return normalized
+
+
+def _category_from_value_type(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    normalized = value.strip().casefold().replace("-", "_").replace(" ", "_")
+    if normalized in {"number", "numeric", "integer", "int", "float", "decimal"}:
+        return "numeric_value"
+    return ""
 
 
 def _gmp_condition_review_warnings(
