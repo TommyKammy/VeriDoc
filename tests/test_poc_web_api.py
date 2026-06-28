@@ -2348,11 +2348,55 @@ def test_poc_http_api_registers_template_versions_and_jobs_keep_version_snapshot
                 "template_id": "batch-record",
                 "name": "Batch Record",
                 "category": "manufacturing",
-                "fields": [
-                    {"name": "lot_number", "label": "Lot number", "required": True},
-                    {"name": "operator", "label": "Operator", "required": False},
+                "document_type": "batch_record",
+                "anchors": [
+                    {
+                        "anchor_id": "batch-header",
+                        "kind": "heading",
+                        "text": "Batch Production Record",
+                        "match": "normalized",
+                    }
                 ],
-                "content": "Lot {{lot_number}} reviewed by {{operator}}",
+                "fields": [
+                    {
+                        "field_id": "lot_number",
+                        "label": "Lot number",
+                        "required": True,
+                        "risk_level": "high",
+                        "output_key": "batch.lot_number",
+                    },
+                    {"field_id": "operator", "label": "Operator", "required": False},
+                ],
+                "tables": [
+                    {
+                        "table_id": "yield_summary",
+                        "anchor_id": "batch-header",
+                        "required_columns": ["step", "actual_yield"],
+                        "output_key": "batch.yield_summary",
+                    }
+                ],
+                "risk_rank": {
+                    "default_level": "medium",
+                    "levels": [{"level": "high", "rank": 3}],
+                    "review_required_levels": ["high"],
+                },
+                "validation_rules": [
+                    {
+                        "rule_id": "lot-required",
+                        "target": "lot_number",
+                        "rule_type": "required",
+                        "severity": "error",
+                        "message": "Lot number is required.",
+                    }
+                ],
+                "output_mapping": {
+                    "format": "json",
+                    "root_key": "template_result",
+                    "field_map": [{"field_id": "lot_number", "output_key": "batch.lot_number"}],
+                    "table_map": [
+                        {"table_id": "yield_summary", "output_key": "batch.yield_summary"}
+                    ],
+                },
             }
         ).encode("utf-8")
         connection.request(
@@ -2474,6 +2518,15 @@ def test_poc_http_api_registers_template_versions_and_jobs_keep_version_snapshot
     assert third["template"]["current_version"] == 3
     assert detail_response.status == 200
     assert [version["version"] for version in detail["template"]["versions"]] == [1, 2, 3]
+    first_version = detail["template"]["versions"][0]
+    assert first_version["document_type"] == "batch_record"
+    assert first_version["anchors"][0]["anchor_id"] == "batch-header"
+    assert first_version["fields"][0]["field_id"] == "lot_number"
+    assert first_version["fields"][0]["risk_level"] == "high"
+    assert first_version["tables"][0]["table_id"] == "yield_summary"
+    assert first_version["risk_rank"]["review_required_levels"] == ["high"]
+    assert first_version["validation_rules"][0]["rule_id"] == "lot-required"
+    assert first_version["output_mapping"]["field_map"][0]["output_key"] == "batch.lot_number"
     assert refreshed_job_response.status == 200
     assert refreshed_job["job"]["template"]["template_version"] == 2
     assert retried_job_response.status == 202
@@ -2854,11 +2907,26 @@ def test_bundled_web_ui_exposes_template_management_and_job_binding() -> None:
     assert 'id="job-template"' in html
     assert 'id="template-id"' in html
     assert 'id="template-fields"' in html
+    assert 'id="template-document-type"' in html
+    assert 'id="template-anchors"' in html
+    assert 'id="template-tables"' in html
+    assert 'id="template-risk-rank"' in html
+    assert 'id="template-validation-rules"' in html
+    assert 'id="template-output-mapping"' in html
+    assert 'id="template-version-select"' in html
+    assert 'id="template-detail-raw"' in html
     assert 'id="save-template"' in html
     assert "async function loadTemplates()" in html
     assert "async function saveTemplateVersion()" in html
+    assert "async function loadTemplateDetail(templateId)" in html
+    assert "function renderTemplateDetail(template)" in html
     assert 'apiFetch("/api/templates")' in html
     assert 'apiFetch("/api/templates", {' in html
+    assert "document_type: templateDocumentType.value" in html
+    assert "anchors: parseTemplateJson(templateAnchors, \"anchors\")" in html
+    assert "risk_rank: parseTemplateJson(templateRiskRank, \"risk_rank\")" in html
+    assert "validation_rules: parseTemplateJson(templateValidationRules, \"validation_rules\")" in html
+    assert "output_mapping: parseTemplateJson(templateOutputMapping, \"output_mapping\")" in html
     assert "template_id: jobTemplate.value || undefined" in html
     assert "job.template.template_version" in html
     assert "clearTemplateState()" in html

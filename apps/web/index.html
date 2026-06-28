@@ -82,6 +82,7 @@
       button,
       input,
       select,
+      textarea,
       a[download] {
         font: inherit;
       }
@@ -118,7 +119,8 @@
       }
 
       input,
-      select {
+      select,
+      textarea {
         width: 100%;
         min-height: 38px;
         padding: 7px 10px;
@@ -131,6 +133,14 @@
       input[type="file"] {
         padding: 7px 0;
         border: 0;
+      }
+
+      textarea {
+        min-height: 104px;
+        resize: vertical;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 13px;
+        line-height: 1.45;
       }
 
       section {
@@ -306,6 +316,14 @@
       .template-list-item:last-child {
         padding-bottom: 0;
         border-bottom: 0;
+      }
+
+      .template-detail {
+        margin-top: 14px;
+      }
+
+      .template-detail pre {
+        max-height: 240px;
       }
 
       .review-item {
@@ -614,17 +632,46 @@
             <input id="template-category" value="manufacturing" />
           </div>
           <div class="field">
-            <label for="template-fields">Fields JSON</label>
-            <input id="template-fields" value='[{"name":"lot_number","label":"Lot number","required":true}]' />
+            <label for="template-document-type">Document type</label>
+            <input id="template-document-type" value="batch_record" />
           </div>
           <div class="field">
-            <label for="template-content">Content</label>
-            <input id="template-content" value="Lot {{lot_number}}" />
+            <label for="template-fields">Fields JSON</label>
+            <textarea id="template-fields">[{"field_id":"lot_number","label":"Lot number","required":true,"risk_level":"high","output_key":"batch.lot_number"}]</textarea>
+          </div>
+          <div class="field">
+            <label for="template-anchors">Anchors JSON</label>
+            <textarea id="template-anchors">[{"anchor_id":"batch-header","kind":"heading","text":"Batch Production Record","match":"normalized"}]</textarea>
+          </div>
+          <div class="field">
+            <label for="template-tables">Tables JSON</label>
+            <textarea id="template-tables">[]</textarea>
+          </div>
+          <div class="field">
+            <label for="template-risk-rank">Risk rank JSON</label>
+            <textarea id="template-risk-rank">{"default_level":"medium","levels":[{"level":"medium","rank":2},{"level":"high","rank":3}],"review_required_levels":["high"]}</textarea>
+          </div>
+          <div class="field">
+            <label for="template-validation-rules">Validation rules JSON</label>
+            <textarea id="template-validation-rules">[{"rule_id":"lot-required","target":"lot_number","rule_type":"required","severity":"error","message":"Lot number is required."}]</textarea>
+          </div>
+          <div class="field">
+            <label for="template-output-mapping">Output mapping JSON</label>
+            <textarea id="template-output-mapping">{"format":"json","root_key":"template_result","field_map":[{"field_id":"lot_number","output_key":"batch.lot_number"}],"table_map":[]}</textarea>
           </div>
           <button id="save-template" type="button">Save template</button>
         </div>
         <div id="template-list" class="template-list"></div>
         <div id="templates-empty" class="empty" hidden>No templates registered.</div>
+        <div id="template-detail" class="template-detail" hidden>
+          <div class="form-grid">
+            <div class="field">
+              <label for="template-version-select">Version</label>
+              <select id="template-version-select"></select>
+            </div>
+          </div>
+          <pre id="template-detail-raw"></pre>
+        </div>
       </section>
 
       <section class="panel" style="margin-top: 16px" aria-labelledby="direct-title">
@@ -727,6 +774,7 @@
         auditEvents: [],
         auditExportUrl: "",
         templates: [],
+        selectedTemplate: null,
         pendingReviewActions: new Map(),
         authGeneration: 0,
         credentialAbortController: new AbortController(),
@@ -753,10 +801,18 @@
       const templateId = document.querySelector("#template-id");
       const templateName = document.querySelector("#template-name");
       const templateCategory = document.querySelector("#template-category");
+      const templateDocumentType = document.querySelector("#template-document-type");
       const templateFields = document.querySelector("#template-fields");
-      const templateContent = document.querySelector("#template-content");
+      const templateAnchors = document.querySelector("#template-anchors");
+      const templateTables = document.querySelector("#template-tables");
+      const templateRiskRank = document.querySelector("#template-risk-rank");
+      const templateValidationRules = document.querySelector("#template-validation-rules");
+      const templateOutputMapping = document.querySelector("#template-output-mapping");
       const templateList = document.querySelector("#template-list");
       const templatesEmpty = document.querySelector("#templates-empty");
+      const templateDetail = document.querySelector("#template-detail");
+      const templateVersionSelect = document.querySelector("#template-version-select");
+      const templateDetailRaw = document.querySelector("#template-detail-raw");
       const detailEmpty = document.querySelector("#detail-empty");
       const detailContent = document.querySelector("#detail-content");
       const detailOpen = document.querySelector("#detail-open");
@@ -826,6 +882,7 @@
       createJob.addEventListener("click", () => createConversionJob());
       refreshTemplates.addEventListener("click", () => loadTemplates());
       saveTemplate.addEventListener("click", () => saveTemplateVersion());
+      templateVersionSelect.addEventListener("change", () => renderSelectedTemplateVersion());
       detailOpen.addEventListener("click", () => loadJobDetail(state.selectedJob.job_id));
       detailDownload.addEventListener("click", () => downloadSelectedJobResult());
       detailRetry.addEventListener("click", () => retrySelectedConversion());
@@ -972,7 +1029,6 @@
         const requestAuthGeneration = state.authGeneration;
         saveTemplate.disabled = true;
         try {
-          const fields = JSON.parse(templateFields.value);
           const response = await apiFetch("/api/templates", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -980,8 +1036,13 @@
               template_id: templateId.value,
               name: templateName.value,
               category: templateCategory.value,
-              fields,
-              content: templateContent.value,
+              document_type: templateDocumentType.value,
+              anchors: parseTemplateJson(templateAnchors, "anchors"),
+              fields: parseTemplateJson(templateFields, "fields"),
+              tables: parseTemplateJson(templateTables, "tables"),
+              risk_rank: parseTemplateJson(templateRiskRank, "risk_rank"),
+              validation_rules: parseTemplateJson(templateValidationRules, "validation_rules"),
+              output_mapping: parseTemplateJson(templateOutputMapping, "output_mapping"),
             }),
           });
           const body = await response.json();
@@ -990,6 +1051,7 @@
           await loadTemplates();
           if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
           jobTemplate.value = body.template.template_id;
+          renderTemplateDetail(body.template);
           setPageStatus(`Saved template ${body.template.template_id} v${body.template.current_version}.`);
         } catch (error) {
           if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
@@ -1261,8 +1323,13 @@
         title.textContent = `${template.name} v${template.current_version}`;
         const meta = document.createElement("div");
         meta.className = "page-status";
-        meta.textContent = `${template.template_id} / ${template.category} / ${template.field_count} fields`;
+        meta.textContent = `${template.template_id} / ${template.document_type || template.category} / ${template.field_count} fields / ${template.version_count || template.current_version} versions`;
         summary.append(title, meta);
+        const inspect = document.createElement("button");
+        inspect.className = "secondary";
+        inspect.type = "button";
+        inspect.textContent = "Edit details";
+        inspect.addEventListener("click", () => loadTemplateDetail(template.template_id));
         const select = document.createElement("button");
         select.className = "secondary";
         select.type = "button";
@@ -1271,8 +1338,69 @@
           jobTemplate.value = template.template_id;
           setPageStatus(`Selected ${template.template_id} for new jobs.`);
         });
-        wrapper.append(summary, select);
+        const actions = document.createElement("div");
+        actions.className = "action-row";
+        actions.append(inspect, select);
+        wrapper.append(summary, actions);
         return wrapper;
+      }
+
+      async function loadTemplateDetail(templateId) {
+        const requestAuthToken = activeAuthToken();
+        const requestAuthGeneration = state.authGeneration;
+        try {
+          const response = await apiFetch(`/api/templates/${encodeURIComponent(templateId)}`);
+          const body = await response.json();
+          if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
+          if (!response.ok) throw new Error(body.message || body.error || "template detail failed");
+          renderTemplateDetail(body.template);
+          setPageStatus(`Loaded template ${body.template.template_id}.`);
+        } catch (error) {
+          if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
+          setPageStatus(error.message, true);
+        }
+      }
+
+      function renderTemplateDetail(template) {
+        state.selectedTemplate = template;
+        templateId.value = template.template_id;
+        templateName.value = template.name;
+        templateCategory.value = template.category;
+        templateVersionSelect.replaceChildren(
+          ...template.versions.map((version) => option(`v${version.version}`, String(version.version)))
+        );
+        templateVersionSelect.value = String(template.current_version);
+        renderSelectedTemplateVersion();
+        templateDetail.hidden = false;
+      }
+
+      function renderSelectedTemplateVersion() {
+        const template = state.selectedTemplate;
+        if (!template) return;
+        const versionNumber = Number(templateVersionSelect.value || template.current_version);
+        const version =
+          template.versions.find((item) => item.version === versionNumber) ||
+          template.versions[template.versions.length - 1];
+        templateDocumentType.value = version.document_type || template.document_type || template.category;
+        templateAnchors.value = jsonText(version.anchors || []);
+        templateFields.value = jsonText(version.fields || []);
+        templateTables.value = jsonText(version.tables || []);
+        templateRiskRank.value = jsonText(version.risk_rank || {});
+        templateValidationRules.value = jsonText(version.validation_rules || []);
+        templateOutputMapping.value = jsonText(version.output_mapping || {});
+        templateDetailRaw.textContent = JSON.stringify({ ...template, selected_version: version }, null, 2);
+      }
+
+      function parseTemplateJson(field, fieldName) {
+        try {
+          return JSON.parse(field.value);
+        } catch (_error) {
+          throw new Error(`${fieldName} JSON is invalid.`);
+        }
+      }
+
+      function jsonText(value) {
+        return JSON.stringify(value, null, 2);
       }
 
       function option(label, value) {
@@ -1350,6 +1478,10 @@
 
       function clearTemplateState() {
         state.templates = [];
+        state.selectedTemplate = null;
+        templateDetail.hidden = true;
+        templateVersionSelect.replaceChildren();
+        templateDetailRaw.textContent = "";
         renderTemplates();
       }
 
