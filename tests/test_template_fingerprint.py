@@ -15,6 +15,7 @@ from core.ir.document_ir_v1 import (
 )
 from core.ir.template_fingerprint import (
     TemplateMatchClassification,
+    apply_template_field_mapping,
     classify_template_match,
     match_template_fingerprint,
 )
@@ -900,6 +901,74 @@ class TemplateFingerprintTest(unittest.TestCase):
         self.assertNotEqual(TemplateMatchClassification.KNOWN, result.classification)
         self.assertTrue(result.requires_review)
         self.assertIn("template table 'yield_summary' required columns incomplete", result.warnings)
+
+    def test_known_template_field_mapping_extracts_values_with_evidence(self) -> None:
+        template = self.template_definition()
+        template["fields"] = [
+            {
+                "field_id": "batch_number",
+                "label": "Batch No.",
+                "value_type": "string",
+                "source": {"anchor_id": "batch-header", "direction": "below"},
+                "required": True,
+                "risk_level": "high",
+                "validation_rule_ids": [],
+                "output_key": "batch.number",
+            },
+            {
+                "field_id": "actual_yield",
+                "label": "actual_yield",
+                "value_type": "number",
+                "source": {"anchor_id": "yield-table", "direction": "table_cell"},
+                "required": True,
+                "risk_level": "high",
+                "validation_rule_ids": [],
+                "output_key": "batch.actual_yield",
+            },
+            {
+                "field_id": "missing_required",
+                "label": "Disposition",
+                "value_type": "string",
+                "source": {"anchor_id": "batch-header", "direction": "below"},
+                "required": True,
+                "risk_level": "medium",
+                "validation_rule_ids": [],
+                "output_key": "batch.disposition",
+            },
+        ]
+        template["output_mapping"] = {
+            "format": "json",
+            "root_key": "template_result",
+            "field_map": [
+                {"field_id": "batch_number", "output_key": "batch.number"},
+                {"field_id": "actual_yield", "output_key": "batch.actual_yield"},
+                {"field_id": "missing_required", "output_key": "batch.disposition"},
+            ],
+            "table_map": [],
+        }
+        document = self.document_with_blocks(
+            paragraph_text="Batch No. BN-001\nManufacturing Date 2026-01-01",
+            table_text=(
+                "Yield Summary\tstep\texpected_yield\tactual_yield\n"
+                "blend\t95\t94"
+            ),
+        )
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertEqual("BN-001", mapped["batch_number"].value)
+        self.assertEqual("94", mapped["actual_yield"].value)
+        self.assertIsNone(mapped["missing_required"].value)
+        self.assertTrue(mapped["missing_required"].requires_review)
+        self.assertIn("template field 'missing_required' missing; requires review", result.warnings)
+        self.assertEqual(
+            {"template_result": {"batch": {"number": "BN-001", "actual_yield": "94"}}},
+            result.output,
+        )
+        self.assertEqual("paragraph-120", mapped["batch_number"].evidence["block_id"])
+        self.assertEqual("table-180", mapped["actual_yield"].evidence["block_id"])
+        self.assertGreaterEqual(mapped["batch_number"].confidence, 0.90)
 
     def template_definition(self) -> dict[str, Any]:
         return {

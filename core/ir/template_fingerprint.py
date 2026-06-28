@@ -33,9 +33,38 @@ class TemplateFingerprintMatch:
 
 
 @dataclass(frozen=True)
+class TemplateMappedField:
+    field_id: str
+    label: str
+    output_key: str
+    value: str | None
+    confidence: float
+    evidence: Mapping[str, Any]
+    requires_review: bool
+    warnings: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class TemplateFieldMappingResult:
+    root_key: str
+    fields: tuple[TemplateMappedField, ...]
+    output: Mapping[str, Any]
+    requires_review: bool
+    warnings: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class _ParsedTableRows:
     rows: list[list[str]]
     allow_merged_column_candidates: bool
+
+
+@dataclass(frozen=True)
+class _ExtractedTemplateFieldValue:
+    value: str
+    block: DocumentBlock
+    confidence: float
+    evidence_detail: Mapping[str, Any]
 
 
 def classify_template_match(score: float) -> TemplateMatchClassification:
@@ -150,6 +179,93 @@ def match_template_fingerprint(
         warnings=tuple(dict.fromkeys(warnings)),
         matched_anchor_ids=tuple(anchor_id for anchor_id in matched_anchor_ids if anchor_id),
         missing_anchor_ids=tuple(anchor_id for anchor_id in missing_anchor_ids if anchor_id),
+    )
+
+
+def apply_template_field_mapping(
+    document_ir: DocumentIRV1, template_definition: Mapping[str, Any]
+) -> TemplateFieldMappingResult:
+    """Apply deterministic field mapping rules for a known template match.
+
+    Missing values are represented as review-required mapped fields rather than
+    confirmed empty strings.
+    """
+
+    template_match = match_template_fingerprint(document_ir, template_definition)
+    output_mapping = _mapping(template_definition.get("output_mapping"))
+    root_key = str(output_mapping.get("root_key") or "template_result")
+    warnings: list[str] = []
+    if template_match.classification is not TemplateMatchClassification.KNOWN:
+        warnings.append("template field mapping requires known template classification")
+
+    anchors = [_mapping(anchor) for anchor in _list_value(template_definition.get("anchors"))]
+    output_keys_by_field_id = {
+        str(mapping.get("field_id")): str(mapping.get("output_key"))
+        for mapping in (_mapping(value) for value in _list_value(output_mapping.get("field_map")))
+        if isinstance(mapping.get("field_id"), str) and isinstance(mapping.get("output_key"), str)
+    }
+    mapped_fields: list[TemplateMappedField] = []
+    output: dict[str, Any] = {}
+    for field in (_mapping(value) for value in _list_value(template_definition.get("fields"))):
+        field_id = str(field.get("field_id") or "")
+        label = str(field.get("label") or field_id)
+        output_key = output_keys_by_field_id.get(field_id) or str(field.get("output_key") or field_id)
+        required = field.get("required") is True
+        extracted = (
+            _extract_template_field_value(document_ir, field, anchors)
+            if template_match.classification is TemplateMatchClassification.KNOWN
+            else None
+        )
+        if extracted is None:
+            field_warnings = (
+                (f"template field '{field_id or '<unknown>'}' missing; requires review",)
+                if required
+                else ()
+            )
+            warnings.extend(field_warnings)
+            mapped_fields.append(
+                TemplateMappedField(
+                    field_id=field_id,
+                    label=label,
+                    output_key=output_key,
+                    value=None,
+                    confidence=0.0,
+                    evidence={},
+                    requires_review=required,
+                    warnings=field_warnings,
+                )
+            )
+            continue
+
+        block_warnings = tuple(extracted.block.review.warnings)
+        requires_review = extracted.block.review.requires_review or bool(block_warnings)
+        mapped_fields.append(
+            TemplateMappedField(
+                field_id=field_id,
+                label=label,
+                output_key=output_key,
+                value=extracted.value,
+                confidence=extracted.confidence,
+                evidence={
+                    "source_page": extracted.block.source_page,
+                    "block_id": extracted.block.id,
+                    "bbox": _bbox_evidence(extracted.block),
+                    **extracted.evidence_detail,
+                },
+                requires_review=requires_review,
+                warnings=block_warnings,
+            )
+        )
+        _set_output_value(output, output_key, extracted.value)
+
+    result_warnings = tuple(dict.fromkeys([*template_match.warnings, *warnings]))
+    return TemplateFieldMappingResult(
+        root_key=root_key,
+        fields=tuple(mapped_fields),
+        output={root_key: output},
+        requires_review=bool(result_warnings)
+        or any(field.requires_review for field in mapped_fields),
+        warnings=result_warnings,
     )
 
 
@@ -387,6 +503,239 @@ def _document_ir_review_warnings(document_ir: DocumentIRV1) -> list[str]:
         elif block.review.requires_review:
             warnings.append(f"document block '{block.id}' requires review")
     return warnings
+
+
+def _extract_template_field_value(
+    document_ir: DocumentIRV1,
+    field: Mapping[str, Any],
+    anchors: Sequence[Mapping[str, Any]],
+) -> _ExtractedTemplateFieldValue | None:
+    source = _mapping(field.get("source"))
+    anchor_id = str(source.get("anchor_id") or "")
+    direction = str(source.get("direction") or "")
+    anchor = next((anchor for anchor in anchors if str(anchor.get("anchor_id") or "") == anchor_id), None)
+    if anchor is None:
+        return None
+
+    anchor_blocks = _blocks_matching_anchor(
+        anchor,
+        document_ir.blocks,
+        parse_xlsx_cell_refs=document_ir.document.source_type == "xlsx",
+    )
+    if not anchor_blocks:
+        return None
+    if direction == "table_cell":
+        return _extract_template_table_cell(document_ir, field, anchor, anchor_blocks)
+    return _extract_template_nearby_field(document_ir, field, anchor, anchor_blocks, direction)
+
+
+def _extract_template_nearby_field(
+    document_ir: DocumentIRV1,
+    field: Mapping[str, Any],
+    anchor: Mapping[str, Any],
+    anchor_blocks: Sequence[DocumentBlock],
+    direction: str,
+) -> _ExtractedTemplateFieldValue | None:
+    label = str(field.get("label") or field.get("field_id") or "")
+    anchor_text = str(anchor.get("text") or "")
+    if direction in {"same_block", "right"}:
+        for block in anchor_blocks:
+            value = _field_value_from_text(block.text, label, anchor_text)
+            if value:
+                return _template_value(block, value, 0.98, direction=direction)
+        return None
+
+    if direction != "below":
+        return None
+
+    ordered_blocks = sorted(
+        document_ir.blocks,
+        key=lambda block: (block.source_page, block.bbox.y, block.bbox.x, block.id),
+    )
+    for anchor_block in anchor_blocks:
+        for block in ordered_blocks:
+            if block.id == anchor_block.id:
+                continue
+            if block.source_page != anchor_block.source_page:
+                continue
+            if block.bbox.y < anchor_block.bbox.y:
+                continue
+            value = _field_value_from_text(block.text, label, anchor_text)
+            if value:
+                return _template_value(block, value, 0.95, direction=direction)
+    return None
+
+
+def _extract_template_table_cell(
+    document_ir: DocumentIRV1,
+    field: Mapping[str, Any],
+    anchor: Mapping[str, Any],
+    anchor_blocks: Sequence[DocumentBlock],
+) -> _ExtractedTemplateFieldValue | None:
+    label = str(field.get("label") or field.get("field_id") or "")
+    normalized_label = _normalized_column_name(label)
+    if not normalized_label:
+        return None
+    for block in anchor_blocks:
+        parsed_rows = _parsed_table_rows(
+            block.text,
+            parse_xlsx_cell_refs=document_ir.document.source_type == "xlsx",
+        )
+        header_index = _table_header_row_index(
+            parsed_rows.rows,
+            anchor,
+            normalized_label,
+            allow_merged_column_candidates=(
+                parsed_rows.allow_merged_column_candidates
+                and _block_allows_merged_column_candidates(block, document_ir.document.source_type)
+            ),
+        )
+        if header_index is None:
+            continue
+        header = _table_header_candidate_row(parsed_rows.rows, header_index, anchor)
+        column_index = _row_column_index(
+            header,
+            normalized_label,
+            allow_merged_column_candidates=(
+                parsed_rows.allow_merged_column_candidates
+                and _block_allows_merged_column_candidates(block, document_ir.document.source_type)
+            ),
+        )
+        if column_index is None:
+            continue
+        for row in parsed_rows.rows[header_index + 1 :]:
+            if column_index >= len(row):
+                continue
+            value = str(row[column_index]).strip()
+            if value:
+                return _template_value(
+                    block,
+                    value,
+                    0.90,
+                    direction="table_cell",
+                    row_index=header_index + 1,
+                    column_index=column_index,
+                    column_label=label,
+                )
+    return None
+
+
+def _field_value_from_text(text: str, label: str, anchor_text: str) -> str | None:
+    label_value = _value_after_marker(text, label)
+    if label_value:
+        return label_value
+    return _value_after_marker(text, anchor_text)
+
+
+def _value_after_marker(text: str, marker: str) -> str | None:
+    normalized_marker = marker.casefold().strip()
+    if not normalized_marker:
+        return None
+    for line in text.splitlines() or [text]:
+        marker_index = line.casefold().find(normalized_marker)
+        if marker_index < 0:
+            continue
+        value = line[marker_index + len(marker) :].strip()
+        value = re.sub(r"^[\s:：=-]+", "", value).strip()
+        if value:
+            return value
+    return None
+
+
+def _template_value(
+    block: DocumentBlock,
+    value: str,
+    rule_confidence: float,
+    **evidence_detail: Any,
+) -> _ExtractedTemplateFieldValue:
+    return _ExtractedTemplateFieldValue(
+        value=value,
+        block=block,
+        confidence=_bounded_score(block.confidence * rule_confidence),
+        evidence_detail=evidence_detail,
+    )
+
+
+def _bbox_evidence(block: DocumentBlock) -> dict[str, Any]:
+    return {
+        "x": block.bbox.x,
+        "y": block.bbox.y,
+        "width": block.bbox.width,
+        "height": block.bbox.height,
+        "unit": block.bbox.unit,
+        "origin": block.bbox.origin,
+    }
+
+
+def _set_output_value(output: dict[str, Any], output_key: str, value: str) -> None:
+    path = [part for part in output_key.split(".") if part]
+    if not path:
+        return
+    cursor = output
+    for part in path[:-1]:
+        next_value = cursor.get(part)
+        if not isinstance(next_value, dict):
+            next_value = {}
+            cursor[part] = next_value
+        cursor = next_value
+    cursor[path[-1]] = value
+
+
+def _table_header_row_index(
+    rows: Sequence[Sequence[str]],
+    anchor: Mapping[str, Any],
+    normalized_label: str,
+    *,
+    allow_merged_column_candidates: bool,
+) -> int | None:
+    anchor_index = _first_table_anchor_row_index(rows, anchor)
+    for index, row in enumerate(rows[anchor_index:], start=anchor_index):
+        candidate_row = _row_columns_excluding_anchor(row, anchor) if index == anchor_index else row
+        if _row_column_index(
+            candidate_row,
+            normalized_label,
+            allow_merged_column_candidates=allow_merged_column_candidates,
+        ) is not None:
+            return index
+    return None
+
+
+def _table_header_candidate_row(
+    rows: Sequence[Sequence[str]], header_index: int, anchor: Mapping[str, Any]
+) -> Sequence[str]:
+    row = rows[header_index]
+    if header_index == _first_table_anchor_row_index(rows, anchor):
+        anchor_columns = _row_columns_excluding_anchor(row, anchor)
+        if anchor_columns:
+            return anchor_columns
+    return row
+
+
+def _row_column_index(
+    row: Sequence[str],
+    normalized_label: str,
+    *,
+    allow_merged_column_candidates: bool,
+) -> int | None:
+    for index, cell in enumerate(row):
+        if _normalized_column_name(cell) == normalized_label:
+            return index
+    if not allow_merged_column_candidates:
+        return None
+    merged = ""
+    start_index = 0
+    for index, cell in enumerate(row):
+        if not merged:
+            start_index = index
+            merged = str(cell)
+        else:
+            merged = f"{merged} {cell}"
+        if _normalized_column_name(merged) == normalized_label:
+            return start_index
+        if _normalized_column_name(merged) not in normalized_label:
+            merged = str(cell)
+            start_index = index
+    return None
 
 
 def _block_allows_merged_column_candidates(block: DocumentBlock, source_type: str) -> bool:
