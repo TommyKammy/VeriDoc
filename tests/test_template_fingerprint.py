@@ -1162,6 +1162,55 @@ class TemplateFingerprintTest(unittest.TestCase):
         self.assertTrue(mapped["batch_number"].requires_review)
         self.assertEqual({"template_result": {}}, result.output)
 
+    def test_right_side_fallback_rejects_label_like_neighbor_without_separator_space(self) -> None:
+        template = self.template_definition()
+        template["anchors"].append(
+            {
+                "anchor_id": "batch-number-label",
+                "kind": "label",
+                "text": "Batch No.",
+                "match": "normalized",
+                "scope": {"page": 1, "block_types": ["paragraph"]},
+            }
+        )
+        template["fields"] = [
+            {
+                "field_id": "batch_number",
+                "label": "Batch No.",
+                "value_type": "string",
+                "source": {"anchor_id": "batch-number-label", "direction": "right"},
+                "required": True,
+                "risk_level": "high",
+                "validation_rule_ids": [],
+                "output_key": "batch.number",
+            }
+        ]
+        document = DocumentIRV1(
+            schema_version="document-ir/v1",
+            document=DocumentInfo(id="fixture", title="Fixture", source_type="pdf"),
+            pages=[DocumentPage(page_number=1, width=612.0, height=792.0)],
+            blocks=[
+                self.block("heading", "Batch Production Record"),
+                self.block("paragraph", "Batch No.", y=120.0, block_id="batch-label"),
+                self.block(
+                    "paragraph",
+                    "Manufacturing Date:2026-01-01",
+                    x=280.0,
+                    y=120.0,
+                    block_id="manufacturing-date",
+                ),
+                self.block("table", "Yield Summary\nstep\texpected_yield\tactual_yield", y=180.0),
+            ],
+            warnings=[],
+        )
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertIsNone(mapped["batch_number"].value)
+        self.assertTrue(mapped["batch_number"].requires_review)
+        self.assertEqual({"template_result": {}}, result.output)
+
     def test_field_mapping_matches_short_markers_on_boundaries(self) -> None:
         template = self.template_definition()
         template["fields"] = [
@@ -1201,6 +1250,31 @@ class TemplateFingerprintTest(unittest.TestCase):
         ]
         document = self.document_with_blocks(
             heading_text="Batch Production Record\nBatch No.\nManufacturing Date: 2026-01-01"
+        )
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertIsNone(mapped["batch_number"].value)
+        self.assertTrue(mapped["batch_number"].requires_review)
+        self.assertEqual({"template_result": {}}, result.output)
+
+    def test_same_block_next_line_fallback_rejects_label_only_values(self) -> None:
+        template = self.template_definition()
+        template["fields"] = [
+            {
+                "field_id": "batch_number",
+                "label": "Batch No.",
+                "value_type": "string",
+                "source": {"anchor_id": "batch-header", "direction": "same_block"},
+                "required": True,
+                "risk_level": "medium",
+                "validation_rule_ids": [],
+                "output_key": "batch.number",
+            },
+        ]
+        document = self.document_with_blocks(
+            heading_text="Batch Production Record\nBatch No.\nManufacturing Date"
         )
 
         result = apply_template_field_mapping(document, template)
@@ -2145,6 +2219,52 @@ class TemplateFingerprintTest(unittest.TestCase):
         self.assertEqual("BN-001", mapped["batch_number"].value)
         self.assertEqual("batch-value", mapped["batch_number"].evidence["block_id"])
 
+    def test_below_field_mapping_reads_field_block_value_below_label_anchor(self) -> None:
+        template = self.template_definition()
+        template["anchors"].append(
+            {
+                "anchor_id": "batch-number-label",
+                "kind": "label",
+                "text": "Batch No.",
+                "match": "normalized",
+                "scope": {"page": 1, "block_types": ["paragraph"]},
+            }
+        )
+        template["fields"] = [
+            {
+                "field_id": "batch_number",
+                "label": "Batch No.",
+                "value_type": "string",
+                "source": {"anchor_id": "batch-number-label", "direction": "below"},
+                "required": True,
+                "risk_level": "high",
+                "validation_rule_ids": [],
+                "output_key": "batch.number",
+            }
+        ]
+        document = DocumentIRV1(
+            schema_version="document-ir/v1",
+            document=DocumentInfo(id="fixture", title="Fixture", source_type="pdf"),
+            pages=[DocumentPage(page_number=1, width=612.0, height=792.0)],
+            blocks=[
+                self.block("heading", "Batch Production Record"),
+                self.block("paragraph", "Batch No.", y=120.0, block_id="batch-label"),
+                self.block("field", "BN-001", y=144.0, block_id="batch-value"),
+                self.block(
+                    "table",
+                    "Yield Summary\nstep\texpected_yield\tactual_yield",
+                    y=180.0,
+                ),
+            ],
+            warnings=[],
+        )
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertEqual("BN-001", mapped["batch_number"].value)
+        self.assertEqual("batch-value", mapped["batch_number"].evidence["block_id"])
+
     def test_non_label_below_anchor_stops_at_section_boundary(self) -> None:
         template = self.template_definition()
         template["fields"] = [
@@ -2423,6 +2543,29 @@ class TemplateFingerprintTest(unittest.TestCase):
         self.assertEqual("- 1.5", mapped["variance"].value)
         self.assertFalse(mapped["variance"].requires_review)
         self.assertEqual({"template_result": {"batch": {"variance": "- 1.5"}}}, result.output)
+
+    def test_field_mapping_preserves_grouped_negative_value_sign_after_label(self) -> None:
+        template = self.template_definition()
+        template["fields"] = [
+            {
+                "field_id": "actual_yield",
+                "label": "Actual Yield",
+                "value_type": "number",
+                "source": {"anchor_id": "batch-header", "direction": "below"},
+                "required": True,
+                "risk_level": "medium",
+                "validation_rule_ids": [],
+                "output_key": "batch.actual_yield",
+            }
+        ]
+        document = self.document_with_blocks(paragraph_text="Actual Yield: -1,234")
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertEqual("-1,234", mapped["actual_yield"].value)
+        self.assertFalse(mapped["actual_yield"].requires_review)
+        self.assertEqual({"template_result": {"batch": {"actual_yield": "-1,234"}}}, result.output)
 
     def test_field_mapping_invalid_value_type_is_not_confirmed_in_output(self) -> None:
         template = self.template_definition()

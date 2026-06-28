@@ -1473,7 +1473,7 @@ def _confirmed_unlabeled_below_value(
 def _unlabeled_below_value_can_be_confirmed(
     block: DocumentBlock, value: str, field_label: str
 ) -> bool:
-    if block.type != "paragraph":
+    if block.type not in {"paragraph", "field"}:
         return False
     if not _looks_like_unlabeled_below_value_block(value):
         return False
@@ -1547,7 +1547,7 @@ def _first_next_line_value(lines: Sequence[str], stop_markers: Sequence[str]) ->
 
 
 def _next_line_fallback_rejects_value(value: str) -> bool:
-    return _looks_like_label_or_note_line(value)
+    return _looks_like_label_or_note_line(value) or _looks_like_standalone_label_line(value)
 
 
 def _value_before_next_marker(value: str, stop_markers: Sequence[str]) -> str:
@@ -1588,13 +1588,61 @@ def _looks_like_unlabeled_below_value_block(value: str) -> bool:
 
 
 def _looks_like_label_or_note_line(value: str) -> bool:
-    return bool(
-        re.match(
-            r"^[A-Za-z][A-Za-z0-9 /_.()'-]*(?:\s+[A-Za-z][A-Za-z0-9 /_.()'-]*){0,5}"
-            r"\s*[:：=]\s+\S",
-            value.strip(),
-        )
+    match = re.match(
+        r"^([A-Za-z][A-Za-z0-9 /_.()'-]*(?:\s+[A-Za-z][A-Za-z0-9 /_.()'-]*){0,5})"
+        r"\s*[:：=]\s*\S",
+        value.strip(),
     )
+    return bool(match and _looks_like_label_text(match.group(1)))
+
+
+def _looks_like_standalone_label_line(value: str) -> bool:
+    stripped = value.strip()
+    if not stripped or re.search(r"[\d:：=|,\t]", stripped):
+        return False
+    words = [word.strip("._()'-/") for word in stripped.split() if word.strip("._()'-/")]
+    if not 1 <= len(words) <= 5:
+        return False
+    if not all(re.fullmatch(r"[A-Za-z]+", word) for word in words):
+        return False
+    return _label_text_contains_label_token(stripped)
+
+
+def _looks_like_label_text(value: str) -> bool:
+    words = [word.casefold() for word in re.findall(r"[A-Za-z]+", value)]
+    if not words:
+        return False
+    if len(words) > 1 and value.strip()[:1].isupper():
+        return True
+    return _label_text_contains_label_token(value)
+
+
+def _label_text_contains_label_token(value: str) -> bool:
+    words = [word.casefold() for word in re.findall(r"[A-Za-z]+", value)]
+    label_tokens = {
+        "approved",
+        "authorized",
+        "batch",
+        "comment",
+        "comments",
+        "date",
+        "disposition",
+        "expiry",
+        "lot",
+        "manufacturing",
+        "name",
+        "no",
+        "note",
+        "notes",
+        "number",
+        "prepared",
+        "review",
+        "reviewed",
+        "reviewer",
+        "status",
+        "yield",
+    }
+    return any(word in label_tokens for word in words)
 
 
 def _field_label_accepts_title_cased_value(field_label: str) -> bool:
@@ -1629,7 +1677,12 @@ def _looks_like_unlabeled_section_heading(value: str) -> bool:
 
 
 def _looks_like_negative_number(value: str) -> bool:
-    return bool(re.fullmatch(r"-\s*(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?", value.strip()))
+    return bool(
+        re.fullmatch(
+            r"-\s*(?:(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?",
+            value.strip(),
+        )
+    )
 
 
 def _marker_match_is_label_like_stop(
