@@ -786,7 +786,7 @@ def _number_value(value: str) -> float | None:
         return None
     stripped = stripped.replace(",", "")
     if not _plain_number_format_is_valid(stripped):
-        return None
+        return _invalid_template_number_value()
     try:
         number = float(re.sub(r"^([+-])\s+", r"\1", stripped))
     except ValueError:
@@ -807,6 +807,10 @@ def _comma_grouping_is_valid_for_number(value: str) -> bool:
 
 def _plain_number_format_is_valid(value: str) -> bool:
     return bool(re.fullmatch(r"[+-]?\s*(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?", value))
+
+
+def _invalid_template_number_value() -> None:
+    return None
 
 
 def _date_value(value: str) -> date | None:
@@ -1468,11 +1472,7 @@ def _below_scan_candidate_blocks(
     anchor_block: DocumentBlock,
     anchor: Mapping[str, Any],
 ) -> Sequence[DocumentBlock]:
-    candidates = [
-        block
-        for block in ordered_blocks
-        if _below_scan_candidate_is_after_anchor(block, anchor_block)
-    ]
+    candidates = _below_scan_candidates_after_anchor(ordered_blocks, anchor_block)
     if str(anchor.get("kind") or "") != "label":
         scoped_candidates: list[DocumentBlock] = []
         for block in candidates:
@@ -1483,6 +1483,16 @@ def _below_scan_candidate_blocks(
     if not candidates:
         return []
     return _below_label_scan_candidates(candidates, anchor_block)
+
+
+def _below_scan_candidates_after_anchor(
+    ordered_blocks: Sequence[DocumentBlock], anchor_block: DocumentBlock
+) -> list[DocumentBlock]:
+    return [
+        block
+        for block in ordered_blocks
+        if _below_scan_candidate_is_after_anchor(block, anchor_block)
+    ]
 
 
 def _below_scan_candidate_is_after_anchor(
