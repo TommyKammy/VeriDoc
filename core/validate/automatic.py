@@ -179,14 +179,29 @@ def validate_table_consistency(
         expected_table.get("fixture_table_id"), expected_table.get("id")
     ):
         failed_rules.append("table_consistency")
+    if _has_malformed_review_flag(expected_table) or _has_malformed_review_flag(
+        actual_table
+    ):
+        failed_rules.append("risk_gate")
+    if _has_malformed_risk_level(expected_table) or _has_malformed_risk_level(
+        actual_table
+    ):
+        failed_rules.append("risk_gate")
     table_explicit_review_required = _requires_review(expected_table) or _requires_review(
         actual_table
     )
     table_high_risk = _is_high_risk(expected_table) or _is_high_risk(actual_table)
+    table_category_requires_review = _table_gmp_category_requires_review(
+        expected_table
+    ) or _table_gmp_category_requires_review(actual_table)
 
     expected_cells = _cells_by_id(expected_table.get("cells"))
     actual_cells = _cells_by_id(actual_table.get("cells"))
-    table_requires_review = table_explicit_review_required or table_high_risk
+    table_requires_review = (
+        table_explicit_review_required
+        or table_high_risk
+        or table_category_requires_review
+    )
     if expected_cells is None or actual_cells is None:
         failed_rules.append("table_consistency")
     else:
@@ -228,17 +243,21 @@ def validate_table_consistency(
             )
             if confidence_requires_review:
                 warnings.append("table cell confidence requires human review")
-            explicit_review_required = _requires_review(expected_cell) or _requires_review(
-                actual_cell
+            explicit_review_required = (
+                table_explicit_review_required
+                or _requires_review(expected_cell)
+                or _requires_review(actual_cell)
             )
             high_risk = (
                 table_high_risk
                 or _is_high_risk(expected_cell)
                 or _is_high_risk(actual_cell)
             )
-            category_requires_review = _gmp_category_requires_review(
-                expected_cell
-            ) or _gmp_category_requires_review(actual_cell)
+            category_requires_review = (
+                table_category_requires_review
+                or _gmp_category_requires_review(expected_cell)
+                or _gmp_category_requires_review(actual_cell)
+            )
             condition_warnings = _gmp_condition_review_warnings(
                 expected_cell,
                 actual_cell,
@@ -431,6 +450,18 @@ def _gmp_category_requires_review(record: Mapping[str, Any]) -> bool:
     return any(category in GMP_REVIEW_REQUIRED_CATEGORIES for category in categories)
 
 
+def _table_gmp_category_requires_review(table: Mapping[str, Any]) -> bool:
+    if _gmp_category_requires_review(table):
+        return True
+    required_columns = table.get("required_columns")
+    if not isinstance(required_columns, list):
+        return False
+    return any(
+        _normalized_category(column) in GMP_REVIEW_REQUIRED_CATEGORIES
+        for column in required_columns
+    )
+
+
 def _normalized_category(value: object) -> str:
     if not isinstance(value, str):
         return ""
@@ -449,6 +480,8 @@ def _category_from_value_type(value: object) -> str:
     normalized = value.strip().casefold().replace("-", "_").replace(" ", "_")
     if normalized in {"number", "numeric", "integer", "int", "float", "decimal"}:
         return "numeric_value"
+    if normalized in {"date", "datetime", "time", "timestamp"}:
+        return "date_time"
     return ""
 
 

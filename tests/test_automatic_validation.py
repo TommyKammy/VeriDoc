@@ -458,6 +458,29 @@ def test_numeric_value_type_requires_review() -> None:
     assert "risk_gate" in decision.failed_rules
 
 
+def test_date_value_type_requires_review() -> None:
+    decision = validate_extracted_item(
+        expected=_expected_item(
+            label_id="effective_value",
+            expected_value="2026-01-01",
+            risk_level="medium",
+            requires_review=False,
+            value_type="date",
+        ),
+        actual=_actual_item(
+            label_id="effective_value",
+            value="2026-01-01",
+            auto_confirmed=True,
+            value_type="date",
+        ),
+    )
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert decision.requires_review is True
+    assert "risk_gate" in decision.failed_rules
+
+
 def test_status_label_id_alias_requires_review_as_judgment() -> None:
     decision = validate_extracted_item(
         expected=_expected_item(
@@ -940,6 +963,115 @@ def test_table_level_risk_requires_review_for_matching_cells() -> None:
             {
                 "id": "table-001-r1-c1",
                 "text": "SAMPLE-LOT-001",
+                "source": source,
+                "auto_confirmed": True,
+            },
+        ],
+    }
+
+    decision = validate_table_consistency(expected_table, actual_table)
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert decision.requires_review is True
+    assert "risk_gate" in decision.failed_rules
+
+
+def test_table_level_requires_review_blocks_auto_confirmed_cells() -> None:
+    source = _evidence()
+    expected_table = {
+        "id": "table-001",
+        "fixture_table_id": "table-001",
+        "requires_review": True,
+        "cells": [
+            {
+                "id": "table-001-r1-c1",
+                "text": "Reviewed note",
+                "source": source,
+                "requires_review": False,
+                "risk_level": "low",
+            },
+        ],
+    }
+    actual_table = {
+        "id": "table-001",
+        "cells": [
+            {
+                "id": "table-001-r1-c1",
+                "text": "Reviewed note",
+                "source": source,
+                "auto_confirmed": True,
+            },
+        ],
+    }
+
+    decision = validate_table_consistency(expected_table, actual_table)
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert decision.requires_review is True
+    assert "risk_gate" in decision.failed_rules
+
+
+def test_malformed_table_risk_level_blocks_auto_confirm() -> None:
+    source = _evidence()
+    expected_table = {
+        "id": "table-001",
+        "fixture_table_id": "table-001",
+        "risk_level": "urgent",
+        "cells": [
+            {
+                "id": "table-001-r1-c1",
+                "text": "Reviewed note",
+                "source": source,
+                "requires_review": False,
+                "risk_level": "low",
+            },
+        ],
+    }
+    actual_table = {
+        "id": "table-001",
+        "cells": [
+            {
+                "id": "table-001-r1-c1",
+                "text": "Reviewed note",
+                "source": source,
+                "auto_confirmed": False,
+            },
+        ],
+    }
+
+    decision = validate_table_consistency(expected_table, actual_table)
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert decision.requires_review is True
+    assert "risk_gate" in decision.failed_rules
+
+
+def test_table_required_columns_require_cell_review() -> None:
+    source = _evidence()
+    expected_table = {
+        "id": "table-001",
+        "fixture_table_id": "table-001",
+        "risk_level": "medium",
+        "required_columns": ["check", "result", "reviewer"],
+        "cells": [
+            {
+                "id": "table-001-r1-c1",
+                "text": "Identity",
+                "source": source,
+                "requires_review": False,
+                "risk_level": "low",
+            },
+        ],
+    }
+    actual_table = {
+        "id": "table-001",
+        "cells": [
+            {
+                "id": "table-001-r1-c1",
+                "text": "Identity",
                 "source": source,
                 "auto_confirmed": True,
             },
