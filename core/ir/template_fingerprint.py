@@ -257,11 +257,22 @@ def apply_template_field_mapping(
             if _field_requires_template_risk_review(field, review_required_levels)
             else ()
         )
-        field_warnings = (*block_warnings, *risk_warnings, *output_conflict_warnings)
+        validation_warnings = _template_field_value_validation_warnings(
+            field,
+            extracted.value,
+            template_definition,
+        )
+        field_warnings = (
+            *block_warnings,
+            *risk_warnings,
+            *validation_warnings,
+            *output_conflict_warnings,
+        )
         requires_review = _template_field_requires_review(
             extracted.block.review.requires_review,
             block_warnings,
             risk_warnings,
+            validation_warnings,
             output_conflict_warnings,
         )
         mapped_fields.append(
@@ -557,6 +568,94 @@ def _template_field_requires_review(
     return block_requires_review or any(bool(warnings) for warnings in warning_groups)
 
 
+def _template_field_value_validation_warnings(
+    field: Mapping[str, Any], value: str, template_definition: Mapping[str, Any]
+) -> tuple[str, ...]:
+    field_id = str(field.get("field_id") or "<unknown>")
+    value_type = str(field.get("value_type") or "").strip()
+    warnings: list[str] = []
+    if value_type and not _value_matches_template_type(value, value_type):
+        warnings.append(
+            f"template field '{field_id}' value {value!r} does not match "
+            f"value_type '{value_type}'; requires review"
+        )
+        return tuple(warnings)
+
+    rules_by_id = {
+        str(rule.get("rule_id") or ""): rule
+        for rule in (_mapping(rule) for rule in _list_value(template_definition.get("validation_rules")))
+    }
+    for rule_id_value in _list_value(field.get("validation_rule_ids")):
+        rule_id = str(rule_id_value or "")
+        if not rule_id:
+            continue
+        rule = rules_by_id.get(rule_id)
+        if rule is None:
+            warnings.append(
+                f"template field '{field_id}' references missing validation rule "
+                f"'{rule_id}'; requires review"
+            )
+            continue
+        if not _value_satisfies_template_validation_rule(value, rule):
+            warnings.append(
+                f"template field '{field_id}' failed validation rule '{rule_id}'; "
+                "requires review"
+            )
+    return tuple(dict.fromkeys(warnings))
+
+
+def _value_matches_template_type(value: str, value_type: str) -> bool:
+    normalized_type = value_type.strip().casefold()
+    if normalized_type in {"", "string", "enum"}:
+        return True
+    if normalized_type == "number":
+        return _number_value(value) is not None
+    if normalized_type == "date":
+        return bool(
+            re.fullmatch(r"\d{4}-\d{2}-\d{2}(?:[T ][0-9:.+-]+Z?)?", value.strip())
+        )
+    if normalized_type == "boolean":
+        return value.strip().casefold() in {"true", "false", "yes", "no", "1", "0"}
+    return False
+
+
+def _number_value(value: str) -> float | None:
+    stripped = value.strip().replace(",", "")
+    if not re.fullmatch(r"[+-]?\s*(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?", stripped):
+        return None
+    try:
+        number = float(re.sub(r"^([+-])\s+", r"\1", stripped))
+    except ValueError:
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _value_satisfies_template_validation_rule(value: str, rule: Mapping[str, Any]) -> bool:
+    rule_type = str(rule.get("rule_type") or "").strip().casefold()
+    if rule_type == "required":
+        return bool(value.strip())
+    if rule_type == "type":
+        return _value_matches_template_type(value, str(rule.get("expected_type") or ""))
+    if rule_type == "range":
+        number = _number_value(value)
+        if number is None:
+            return False
+        minimum = rule.get("minimum")
+        maximum = rule.get("maximum")
+        if isinstance(minimum, (int, float)) and number < float(minimum):
+            return False
+        if isinstance(maximum, (int, float)) and number > float(maximum):
+            return False
+        return isinstance(minimum, (int, float)) or isinstance(maximum, (int, float))
+    if rule_type == "allowed_values":
+        allowed_values = _list_value(rule.get("allowed_values"))
+        normalized_value = value.strip().casefold()
+        return any(str(allowed).strip().casefold() == normalized_value for allowed in allowed_values)
+    if rule_type == "cross_field":
+        return False
+    return False
+
+
 def _extract_template_field_value(
     document_ir: DocumentIRV1,
     field: Mapping[str, Any],
@@ -753,11 +852,19 @@ def _table_cell_value_at_physical_column(row: Sequence[str], column_index: int) 
 def _table_body_values_at_physical_column(
     rows: Sequence[Sequence[str]], header_index: int, column_index: int
 ) -> list[tuple[int, str | None]]:
+    header_row = rows[header_index] if header_index < len(rows) else ()
     return [
         (row_index, _table_cell_value_at_physical_column(row, column_index))
         for row_index, row in enumerate(rows[header_index + 1 :], start=header_index + 1)
         if not _is_markdown_alignment_row(row)
+        and not _table_row_repeats_header(row, header_row)
     ]
+
+
+def _table_row_repeats_header(row: Sequence[str], header_row: Sequence[str]) -> bool:
+    normalized_row = tuple(_normalized_column_name(cell) for cell in row)
+    normalized_header = tuple(_normalized_column_name(cell) for cell in header_row)
+    return bool(normalized_row) and normalized_row == normalized_header
 
 
 def _first_table_body_value_at_physical_column(
@@ -857,6 +964,8 @@ def _field_value_from_label_anchor_below(
     if _normalized_text(field_label) != _normalized_text(anchor_text):
         return None
     value = _value_before_next_marker(text.strip(), stop_markers).strip()
+    if not _looks_like_unlabeled_below_value_block(value):
+        return None
     if not value or _normalized_text(value) == _normalized_text(field_label):
         return None
     return value
@@ -872,6 +981,8 @@ def _value_after_marker(
     for line_index, line in enumerate(lines):
         for match in re.finditer(re.escape(marker.strip()), line, flags=re.IGNORECASE):
             if not _marker_match_has_boundaries(line, match.start(), match.end()):
+                continue
+            if not _marker_match_is_label_like_stop(line, match.start(), match.end()):
                 continue
             value = _value_after_marker_match_or_next_line(
                 lines,
@@ -890,7 +1001,7 @@ def _candidate_value_after_marker_match(
 ) -> str:
     value = line[marker_end:].strip()
     value = re.sub(r"^[\s:：=]+", "", value).strip()
-    if value.startswith("-") and (len(value) == 1 or value[1].isspace()):
+    if value.startswith("-") and not _looks_like_negative_number(value):
         value = value[1:].strip()
     return _value_before_next_marker(value, stop_markers)
 
@@ -927,11 +1038,39 @@ def _value_before_next_marker(value: str, stop_markers: Sequence[str]) -> str:
         for match in re.finditer(re.escape(marker_text), value, flags=re.IGNORECASE):
             if not _marker_match_has_boundaries(value, match.start(), match.end()):
                 continue
+            if not _marker_match_is_label_like_stop(value, match.start(), match.end()):
+                continue
             earliest_stop = match.start() if earliest_stop is None else min(earliest_stop, match.start())
             break
     if earliest_stop is None:
         return value
     return re.sub(r"[\s:：=-]+$", "", value[:earliest_stop]).strip()
+
+
+def _looks_like_unlabeled_below_value_block(value: str) -> bool:
+    nonempty_lines = [line.strip() for line in value.splitlines() if line.strip()]
+    if len(nonempty_lines) != 1:
+        return False
+    line = nonempty_lines[0]
+    return "\t" not in line and "|" not in line
+
+
+def _looks_like_negative_number(value: str) -> bool:
+    return bool(re.fullmatch(r"-\s*(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?", value.strip()))
+
+
+def _marker_match_is_label_like_stop(value: str, start: int, end: int) -> bool:
+    after = value[end:]
+    if re.match(r"\s*[:：=]", after):
+        return True
+    before = value[:start].rstrip()
+    if not before:
+        return True
+    if before[-1:] in {"\n", "\r", "|", ":", "：", "="}:
+        return True
+    marker_text = value[start:end]
+    previous_token = before.split()[-1] if before.split() else ""
+    return bool(re.search(r"[\d_-]", previous_token)) or bool(re.search(r"\s", marker_text))
 
 
 def _marker_match_has_boundaries(text: str, start: int, end: int) -> bool:

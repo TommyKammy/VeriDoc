@@ -1258,6 +1258,36 @@ class TemplateFingerprintTest(unittest.TestCase):
         self.assertEqual("94", mapped["actual_yield"].value)
         self.assertEqual(2, mapped["actual_yield"].evidence["column_index"])
 
+    def test_table_cell_mapping_skips_repeated_header_rows(self) -> None:
+        template = self.template_definition()
+        template["fields"] = [
+            {
+                "field_id": "actual_yield",
+                "label": "actual_yield",
+                "value_type": "number",
+                "source": {"anchor_id": "yield-table", "direction": "table_cell"},
+                "required": True,
+                "risk_level": "medium",
+                "validation_rule_ids": [],
+                "output_key": "batch.actual_yield",
+            }
+        ]
+        document = self.document_with_blocks(
+            table_text=(
+                "Yield Summary\n"
+                "step\texpected_yield\tactual_yield\n"
+                "step\texpected_yield\tactual_yield\n"
+                "blend\t95\t94"
+            )
+        )
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertEqual("94", mapped["actual_yield"].value)
+        self.assertFalse(mapped["actual_yield"].requires_review)
+        self.assertEqual({"template_result": {"batch": {"actual_yield": "94"}}}, result.output)
+
     def test_review_required_extracted_value_is_not_confirmed_in_output(self) -> None:
         template = self.template_definition()
         template["fields"] = [
@@ -1311,6 +1341,53 @@ class TemplateFingerprintTest(unittest.TestCase):
         self.assertIsNone(mapped["disposition"].value)
         self.assertTrue(mapped["disposition"].requires_review)
         self.assertIn("template field 'disposition' missing; requires review", result.warnings)
+
+    def test_below_label_anchor_does_not_extract_unlabeled_table_block(self) -> None:
+        template = self.template_definition()
+        template["anchors"].append(
+            {
+                "anchor_id": "batch-number-label",
+                "kind": "label",
+                "text": "Batch No.",
+                "match": "normalized",
+                "scope": {"page": 1, "block_types": ["paragraph"]},
+            }
+        )
+        template["fields"] = [
+            {
+                "field_id": "batch_number",
+                "label": "Batch No.",
+                "value_type": "string",
+                "source": {"anchor_id": "batch-number-label", "direction": "below"},
+                "required": True,
+                "risk_level": "medium",
+                "validation_rule_ids": [],
+                "output_key": "batch.number",
+            }
+        ]
+        document = DocumentIRV1(
+            schema_version="document-ir/v1",
+            document=DocumentInfo(id="fixture", title="Fixture", source_type="pdf"),
+            pages=[DocumentPage(page_number=1, width=612.0, height=792.0)],
+            blocks=[
+                self.block("heading", "Batch Production Record"),
+                self.block("paragraph", "Batch No.", y=120.0, block_id="batch-label"),
+                self.block(
+                    "table",
+                    "Yield Summary\nstep\texpected_yield\tactual_yield\nblend\t95\t94",
+                    y=180.0,
+                    block_id="yield-table-block",
+                ),
+            ],
+            warnings=[],
+        )
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertIsNone(mapped["batch_number"].value)
+        self.assertTrue(mapped["batch_number"].requires_review)
+        self.assertEqual({"template_result": {}}, result.output)
 
     def test_below_field_mapping_reads_value_below_label_anchor(self) -> None:
         template = self.template_definition()
@@ -1426,6 +1503,39 @@ class TemplateFingerprintTest(unittest.TestCase):
         self.assertEqual("BN-001", mapped["batch_number"].value)
         self.assertEqual("2026-01-01", mapped["manufacturing_date"].value)
 
+    def test_field_mapping_does_not_stop_at_label_words_inside_value_text(self) -> None:
+        template = self.template_definition()
+        template["fields"] = [
+            {
+                "field_id": "comments",
+                "label": "Comments",
+                "value_type": "string",
+                "source": {"anchor_id": "batch-header", "direction": "below"},
+                "required": True,
+                "risk_level": "medium",
+                "validation_rule_ids": [],
+                "output_key": "batch.comments",
+            },
+            {
+                "field_id": "date",
+                "label": "Date",
+                "value_type": "string",
+                "source": {"anchor_id": "batch-header", "direction": "below"},
+                "required": False,
+                "risk_level": "medium",
+                "validation_rule_ids": [],
+                "output_key": "batch.date",
+            },
+        ]
+        document = self.document_with_blocks(paragraph_text="Comments: Expiry Date TBD")
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertEqual("Expiry Date TBD", mapped["comments"].value)
+        self.assertIsNone(mapped["date"].value)
+        self.assertEqual({"template_result": {"batch": {"comments": "Expiry Date TBD"}}}, result.output)
+
     def test_field_mapping_preserves_negative_value_sign_after_label(self) -> None:
         template = self.template_definition()
         template["fields"] = [
@@ -1447,6 +1557,107 @@ class TemplateFingerprintTest(unittest.TestCase):
 
         self.assertEqual("-1.5", mapped["variance"].value)
         self.assertEqual({"template_result": {"batch": {"variance": "-1.5"}}}, result.output)
+
+    def test_field_mapping_preserves_spaced_negative_value_sign_after_label(self) -> None:
+        template = self.template_definition()
+        template["fields"] = [
+            {
+                "field_id": "variance",
+                "label": "Variance",
+                "value_type": "number",
+                "source": {"anchor_id": "batch-header", "direction": "below"},
+                "required": True,
+                "risk_level": "medium",
+                "validation_rule_ids": [],
+                "output_key": "batch.variance",
+            }
+        ]
+        document = self.document_with_blocks(paragraph_text="Variance: - 1.5")
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertEqual("- 1.5", mapped["variance"].value)
+        self.assertFalse(mapped["variance"].requires_review)
+        self.assertEqual({"template_result": {"batch": {"variance": "- 1.5"}}}, result.output)
+
+    def test_field_mapping_invalid_value_type_is_not_confirmed_in_output(self) -> None:
+        template = self.template_definition()
+        template["fields"] = [
+            {
+                "field_id": "actual_yield",
+                "label": "actual_yield",
+                "value_type": "number",
+                "source": {"anchor_id": "yield-table", "direction": "table_cell"},
+                "required": True,
+                "risk_level": "medium",
+                "validation_rule_ids": [],
+                "output_key": "batch.actual_yield",
+            }
+        ]
+        document = self.document_with_blocks(
+            table_text=(
+                "Yield Summary\n"
+                "step\texpected_yield\tactual_yield\n"
+                "blend\t95\tN/A"
+            )
+        )
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertEqual("N/A", mapped["actual_yield"].value)
+        self.assertTrue(mapped["actual_yield"].requires_review)
+        self.assertEqual({"template_result": {}}, result.output)
+        self.assertIn(
+            "template field 'actual_yield' value 'N/A' does not match value_type 'number'; requires review",
+            result.warnings,
+        )
+
+    def test_field_mapping_validation_rule_failure_is_not_confirmed_in_output(self) -> None:
+        template = self.template_definition()
+        template["fields"] = [
+            {
+                "field_id": "actual_yield",
+                "label": "actual_yield",
+                "value_type": "number",
+                "source": {"anchor_id": "yield-table", "direction": "table_cell"},
+                "required": True,
+                "risk_level": "medium",
+                "validation_rule_ids": ["actual-yield-range"],
+                "output_key": "batch.actual_yield",
+            }
+        ]
+        template["validation_rules"] = [
+            {
+                "rule_id": "actual-yield-range",
+                "target": "actual_yield",
+                "rule_type": "range",
+                "severity": "error",
+                "message": "Actual yield must stay within expected bounds.",
+                "minimum": 0,
+                "maximum": 100,
+            }
+        ]
+        document = self.document_with_blocks(
+            table_text=(
+                "Yield Summary\n"
+                "step\texpected_yield\tactual_yield\n"
+                "blend\t95\t101"
+            )
+        )
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertEqual("101", mapped["actual_yield"].value)
+        self.assertTrue(mapped["actual_yield"].requires_review)
+        self.assertEqual({"template_result": {}}, result.output)
+        self.assertIn(
+            "template field 'actual_yield' failed validation rule 'actual-yield-range'; "
+            "requires review",
+            result.warnings,
+        )
 
     def test_right_side_fallback_stops_value_at_adjacent_label(self) -> None:
         template = self.template_definition()
