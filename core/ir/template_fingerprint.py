@@ -683,7 +683,15 @@ def _extract_template_field_value(
         return None
     if direction == "table_cell":
         return _extract_template_table_cell(document_ir, field, anchor, anchor_blocks, template_definition)
-    return _extract_template_nearby_field(document_ir, field, anchor, anchor_blocks, fields, direction)
+    return _extract_template_nearby_field(
+        document_ir,
+        field,
+        anchor,
+        anchor_blocks,
+        fields,
+        anchors,
+        direction,
+    )
 
 
 def _extract_template_nearby_field(
@@ -692,11 +700,12 @@ def _extract_template_nearby_field(
     anchor: Mapping[str, Any],
     anchor_blocks: Sequence[DocumentBlock],
     fields: Sequence[Mapping[str, Any]],
+    anchors: Sequence[Mapping[str, Any]],
     direction: str,
 ) -> _ExtractedTemplateFieldValue | None:
     label = str(field.get("label") or field.get("field_id") or "")
     anchor_text = str(anchor.get("text") or "")
-    stop_markers = _field_stop_markers(field, fields)
+    stop_markers = (*_field_stop_markers(field, fields), *_anchor_stop_markers(anchor, anchors))
     if direction in {"same_block", "right"}:
         for block in anchor_blocks:
             value = _field_value_from_text(block.text, label, anchor_text, stop_markers=stop_markers)
@@ -920,6 +929,20 @@ def _field_stop_markers(
             marker_text = str(marker or "").strip()
             if marker_text:
                 markers.append(marker_text)
+    return tuple(dict.fromkeys(markers))
+
+
+def _anchor_stop_markers(
+    anchor: Mapping[str, Any], anchors: Sequence[Mapping[str, Any]]
+) -> tuple[str, ...]:
+    anchor_id = str(anchor.get("anchor_id") or "")
+    markers: list[str] = []
+    for candidate in anchors:
+        if str(candidate.get("anchor_id") or "") == anchor_id:
+            continue
+        marker_text = str(candidate.get("text") or "").strip()
+        if marker_text:
+            markers.append(marker_text)
     return tuple(dict.fromkeys(markers))
 
 
