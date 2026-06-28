@@ -2387,6 +2387,54 @@ class TemplateFingerprintTest(unittest.TestCase):
             result.output,
         )
 
+    def test_field_mapping_cross_field_number_not_equal_uses_declared_type(self) -> None:
+        template = self.template_definition()
+        template["fields"] = [
+            {
+                "field_id": "actual_yield",
+                "label": "Actual Yield",
+                "value_type": "number",
+                "source": {"anchor_id": "batch-header", "direction": "below"},
+                "required": True,
+                "risk_level": "medium",
+                "validation_rule_ids": ["yield-not-equals-target"],
+                "output_key": "batch.actual_yield",
+            },
+            {
+                "field_id": "target_yield",
+                "label": "Target Yield",
+                "value_type": "number",
+                "source": {"anchor_id": "batch-header", "direction": "below"},
+                "required": True,
+                "risk_level": "medium",
+                "validation_rule_ids": [],
+                "output_key": "batch.target_yield",
+            },
+        ]
+        template["validation_rules"] = [
+            {
+                "rule_id": "yield-not-equals-target",
+                "target": "actual_yield",
+                "rule_type": "cross_field",
+                "related_target": "target_yield",
+                "operator": "not_equals",
+            }
+        ]
+        document = self.document_with_blocks(paragraph_text="Actual Yield 1.0 Target Yield 1")
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertEqual("1.0", mapped["actual_yield"].value)
+        self.assertEqual("1", mapped["target_yield"].value)
+        self.assertTrue(mapped["actual_yield"].requires_review)
+        self.assertEqual({"template_result": {"batch": {"target_yield": "1"}}}, result.output)
+        self.assertIn(
+            "template field 'actual_yield' failed validation rule "
+            "'yield-not-equals-target'; requires review",
+            result.warnings,
+        )
+
     def test_right_side_fallback_stops_value_at_adjacent_label(self) -> None:
         template = self.template_definition()
         template["anchors"].append(

@@ -717,15 +717,11 @@ def _value_satisfies_template_validation_rule(
             return False
         return isinstance(minimum, (int, float)) or isinstance(maximum, (int, float))
     if rule_type == "allowed_values":
-        allowed_values = _list_value(rule.get("allowed_values"))
-        typed_value = _coerced_template_validation_value(value, value_type)
-        if typed_value is not None:
-            return any(
-                typed_value == _coerced_template_validation_value(allowed, value_type)
-                for allowed in allowed_values
-            )
-        normalized_value = value.strip().casefold()
-        return any(str(allowed).strip().casefold() == normalized_value for allowed in allowed_values)
+        return _value_matches_allowed_template_values(
+            value,
+            _list_value(rule.get("allowed_values")),
+            value_type,
+        )
     if rule_type == "cross_field":
         return _value_satisfies_cross_field_rule(
             value,
@@ -744,7 +740,7 @@ def _value_satisfies_cross_field_rule(
     value_type: str,
 ) -> bool:
     related_target = str(rule.get("related_target") or "")
-    operator = str(rule.get("operator") or "").strip()
+    operator = str(rule.get("operator") or "").strip().casefold()
     related_value = field_values_by_id.get(related_target)
     if related_value is None:
         return False
@@ -761,22 +757,47 @@ def _value_satisfies_cross_field_rule(
             return False
         return _compare_template_values(left_number, right_number, operator)
     if operator == "equals":
-        left = _coerced_template_validation_value(value, value_type)
-        right = _coerced_template_validation_value(related_value, value_type)
-        if left is not None or right is not None:
-            return left is not None and right is not None and left == right
-        left = value.strip()
-        right = related_value.strip()
-        return left == right
+        return _template_values_satisfy_typed_equality(
+            value,
+            related_value,
+            value_type=value_type,
+            expected_equal=True,
+        )
     if operator == "not_equals":
-        left = _coerced_template_validation_value(value, value_type)
-        right = _coerced_template_validation_value(related_value, value_type)
-        if left is not None or right is not None:
-            return left is not None and right is not None and left != right
-        left = value.strip()
-        right = related_value.strip()
-        return left != right
+        return _template_values_satisfy_typed_equality(
+            value,
+            related_value,
+            value_type=value_type,
+            expected_equal=False,
+        )
     return False
+
+
+def _value_matches_allowed_template_values(
+    value: str, allowed_values: Sequence[Any], value_type: str
+) -> bool:
+    typed_value = _coerced_template_validation_value(value, value_type)
+    if typed_value is not None:
+        return any(
+            typed_value == _coerced_template_validation_value(allowed, value_type)
+            for allowed in allowed_values
+        )
+    normalized_value = value.strip().casefold()
+    return any(str(allowed).strip().casefold() == normalized_value for allowed in allowed_values)
+
+
+def _template_values_satisfy_typed_equality(
+    value: str, related_value: str, *, value_type: str, expected_equal: bool
+) -> bool:
+    left = _coerced_template_validation_value(value, value_type)
+    right = _coerced_template_validation_value(related_value, value_type)
+    if left is not None or right is not None:
+        if left is None or right is None:
+            return False
+        return (left == right) if expected_equal else (left != right)
+    left_text = value.strip()
+    right_text = related_value.strip()
+    return (left_text == right_text) if expected_equal else (left_text != right_text)
 
 
 def _compare_template_values(left: Any, right: Any, operator: str) -> bool:
