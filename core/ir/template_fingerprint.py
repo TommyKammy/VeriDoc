@@ -986,7 +986,7 @@ def _below_field_value_from_block(
 
 
 def _below_scan_block_is_not_field_value(block: DocumentBlock) -> bool:
-    return block.type == "table"
+    return block.type in {"heading", "table"}
 
 
 def _below_scan_candidate_blocks(
