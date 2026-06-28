@@ -15,6 +15,7 @@ from core.ir.document_ir_v1 import (
 )
 from core.ir.template_fingerprint import (
     TemplateMatchClassification,
+    _table_row_repeats_header,
     apply_template_field_mapping,
     classify_template_match,
     match_template_fingerprint,
@@ -1468,6 +1469,14 @@ class TemplateFingerprintTest(unittest.TestCase):
         self.assertEqual("released", mapped["status"].value)
         self.assertEqual(2, mapped["status"].evidence["row_index"])
         self.assertEqual(1, mapped["status"].evidence["column_index"])
+
+    def test_repeated_table_header_can_include_same_row_anchor_prefix(self) -> None:
+        self.assertTrue(
+            _table_row_repeats_header(
+                ["Yield Summary", "step", "status"],
+                ["step", "status"],
+            )
+        )
 
     def test_review_required_extracted_value_is_not_confirmed_in_output(self) -> None:
         template = self.template_definition()

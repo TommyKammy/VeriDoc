@@ -207,7 +207,7 @@ def apply_template_field_mapping(
     warnings: list[str] = []
     if template_match.classification is not TemplateMatchClassification.KNOWN:
         warnings.append("template field mapping requires known template classification")
-    mapping_requires_review = template_match.requires_review
+    match_requires_review = template_match.requires_review
 
     anchors = [_mapping(anchor) for anchor in _list_value(template_definition.get("anchors"))]
     output_keys_by_field_id = {
@@ -319,7 +319,9 @@ def apply_template_field_mapping(
                 warnings=field_warnings,
             )
         )
-        if not mapping_requires_review and _mapped_field_output_is_confirmed(requires_review):
+        if _template_match_allows_confirmed_output(
+            match_requires_review
+        ) and _mapped_field_output_is_confirmed(requires_review):
             _set_output_value(output, output_key, extracted.value)
         else:
             warnings.extend(field_warnings)
@@ -593,6 +595,10 @@ def _template_field_requires_review(
     block_requires_review: bool, *warning_groups: Sequence[str]
 ) -> bool:
     return block_requires_review or any(bool(warnings) for warnings in warning_groups)
+
+
+def _template_match_allows_confirmed_output(match_requires_review: bool) -> bool:
+    return not match_requires_review
 
 
 def _mapped_field_output_is_confirmed(requires_review: bool) -> bool:
@@ -976,11 +982,13 @@ def _extract_template_nearby_field(
                         stop_markers=stop_markers,
                     )
                     if value is None:
-                        if _text_starts_with_label_like_marker(block.text, (label,)):
+                        if _right_side_block_starts_with_current_label(
+                            block,
+                            label=label,
+                            anchor_text=anchor_text,
+                        ):
                             continue
-                        if _text_starts_with_label_like_marker(block.text, (anchor_text,)):
-                            continue
-                        if _text_starts_with_label_like_marker(block.text, stop_markers):
+                        if _right_side_block_starts_with_stop_marker(block, stop_markers):
                             break
                         value = _right_side_unlabeled_value_from_block(
                             block,
@@ -1145,7 +1153,13 @@ def _table_body_row_is_value_candidate(
 def _table_row_repeats_header(row: Sequence[str], header_row: Sequence[str]) -> bool:
     normalized_row = tuple(_normalized_column_name(cell) for cell in row)
     normalized_header = tuple(_normalized_column_name(cell) for cell in header_row)
-    return bool(normalized_row) and normalized_row == normalized_header
+    if not normalized_row or not normalized_header:
+        return False
+    if normalized_row == normalized_header:
+        return True
+    if len(normalized_row) > len(normalized_header):
+        return normalized_row[-len(normalized_header) :] == normalized_header
+    return False
 
 
 def _first_table_body_value_at_physical_column(
@@ -1224,6 +1238,27 @@ def _field_value_from_text(
 
 def _right_side_block_can_supply_unlabeled_value(block: DocumentBlock) -> bool:
     return block.type not in {"heading", "table"}
+
+
+def _right_side_block_starts_with_current_label(
+    block: DocumentBlock,
+    *,
+    label: str,
+    anchor_text: str,
+) -> bool:
+    return _text_starts_with_label_like_marker(
+        block.text,
+        (label,),
+    ) or _text_starts_with_label_like_marker(
+        block.text,
+        (anchor_text,),
+    )
+
+
+def _right_side_block_starts_with_stop_marker(
+    block: DocumentBlock, stop_markers: Sequence[str]
+) -> bool:
+    return _text_starts_with_label_like_marker(block.text, stop_markers)
 
 
 def _right_side_unlabeled_value_from_block(
@@ -1383,10 +1418,14 @@ def _first_next_line_value(lines: Sequence[str], stop_markers: Sequence[str]) ->
         if not stripped:
             continue
         value = _value_before_next_marker(stripped, stop_markers).strip()
-        if _looks_like_label_or_note_line(value):
+        if _next_line_fallback_rejects_value(value):
             return None
         return value or None
     return None
+
+
+def _next_line_fallback_rejects_value(value: str) -> bool:
+    return _looks_like_label_or_note_line(value)
 
 
 def _value_before_next_marker(value: str, stop_markers: Sequence[str]) -> str:
@@ -1617,13 +1656,10 @@ def _table_header_candidate(
                 < 1.0
             ):
                 continue
-            if (
-                _row_column_index(
-                    candidate_row,
-                    normalized_label,
-                    allow_merged_column_candidates=allow_merged_column_candidates,
-                )
-                is not None
+            if _table_header_candidate_contains_label(
+                candidate_row,
+                normalized_label,
+                allow_merged_column_candidates=allow_merged_column_candidates,
             ):
                 return candidate
             return None
@@ -1643,6 +1679,22 @@ def _table_header_candidate(
             )
             return _TableHeaderCandidate(index, header, column_offset, comparison_headers)
     return None
+
+
+def _table_header_candidate_contains_label(
+    candidate_row: Sequence[str],
+    normalized_label: str,
+    *,
+    allow_merged_column_candidates: bool,
+) -> bool:
+    return (
+        _row_column_index(
+            candidate_row,
+            normalized_label,
+            allow_merged_column_candidates=allow_merged_column_candidates,
+        )
+        is not None
+    )
 
 
 def _table_header_candidates_with_required_columns(
