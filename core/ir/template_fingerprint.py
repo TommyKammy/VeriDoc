@@ -57,6 +57,7 @@ class TemplateFieldMappingResult:
 class _ParsedTableRows:
     rows: list[list[str]]
     allow_merged_column_candidates: bool
+    preserve_column_positions: bool = False
 
 
 @dataclass(frozen=True)
@@ -223,7 +224,7 @@ def apply_template_field_mapping(
         required = field.get("required") is True
         output_conflict_warnings = tuple(output_conflicts.get(output_key, ()))
         extracted = (
-            _extract_template_field_value(document_ir, field, anchors)
+            _extract_template_field_value(document_ir, field, anchors, fields, template_definition)
             if template_match.classification is TemplateMatchClassification.KNOWN
             else None
         )
@@ -527,6 +528,8 @@ def _extract_template_field_value(
     document_ir: DocumentIRV1,
     field: Mapping[str, Any],
     anchors: Sequence[Mapping[str, Any]],
+    fields: Sequence[Mapping[str, Any]],
+    template_definition: Mapping[str, Any],
 ) -> _ExtractedTemplateFieldValue | None:
     source = _mapping(field.get("source"))
     anchor_id = str(source.get("anchor_id") or "")
@@ -543,8 +546,8 @@ def _extract_template_field_value(
     if not anchor_blocks:
         return None
     if direction == "table_cell":
-        return _extract_template_table_cell(document_ir, field, anchor, anchor_blocks)
-    return _extract_template_nearby_field(document_ir, field, anchor, anchor_blocks, direction)
+        return _extract_template_table_cell(document_ir, field, anchor, anchor_blocks, template_definition)
+    return _extract_template_nearby_field(document_ir, field, anchor, anchor_blocks, fields, direction)
 
 
 def _extract_template_nearby_field(
@@ -552,19 +555,21 @@ def _extract_template_nearby_field(
     field: Mapping[str, Any],
     anchor: Mapping[str, Any],
     anchor_blocks: Sequence[DocumentBlock],
+    fields: Sequence[Mapping[str, Any]],
     direction: str,
 ) -> _ExtractedTemplateFieldValue | None:
     label = str(field.get("label") or field.get("field_id") or "")
     anchor_text = str(anchor.get("text") or "")
+    stop_markers = _field_stop_markers(field, fields)
     if direction in {"same_block", "right"}:
         for block in anchor_blocks:
-            value = _field_value_from_text(block.text, label, anchor_text)
+            value = _field_value_from_text(block.text, label, anchor_text, stop_markers=stop_markers)
             if value:
                 return _template_value(block, value, 0.98, direction=direction)
         if direction == "right":
             for anchor_block in anchor_blocks:
                 for block in _right_side_blocks(document_ir.blocks, anchor_block):
-                    value = _field_value_from_text(block.text, label, anchor_text)
+                    value = _field_value_from_text(block.text, label, anchor_text, stop_markers=stop_markers)
                     if value is None:
                         value = block.text.strip() or None
                     if value:
@@ -586,7 +591,13 @@ def _extract_template_nearby_field(
                 continue
             if block.bbox.y < anchor_block.bbox.y:
                 continue
-            value = _field_value_from_text(block.text, label, anchor_text)
+            value = _field_value_from_text(
+                block.text,
+                label,
+                anchor_text,
+                stop_markers=stop_markers,
+                allow_anchor_fallback=False,
+            )
             if value:
                 return _template_value(block, value, 0.95, direction=direction)
     return None
@@ -597,12 +608,14 @@ def _extract_template_table_cell(
     field: Mapping[str, Any],
     anchor: Mapping[str, Any],
     anchor_blocks: Sequence[DocumentBlock],
+    template_definition: Mapping[str, Any],
 ) -> _ExtractedTemplateFieldValue | None:
     label = str(field.get("label") or field.get("field_id") or "")
     normalized_label = _normalized_column_name(label)
     if not normalized_label:
         return None
-    for block in anchor_blocks:
+    matching_blocks = _field_mapping_table_blocks(document_ir, anchor, anchor_blocks, template_definition)
+    for block in matching_blocks:
         parsed_rows = _parsed_table_rows(
             block.text,
             parse_xlsx_cell_refs=document_ir.document.source_type == "xlsx",
@@ -619,7 +632,10 @@ def _extract_template_table_cell(
         if header_index is None:
             continue
         header, column_offset = _table_header_candidate_row(
-            parsed_rows.rows, header_index, anchor
+            parsed_rows.rows,
+            header_index,
+            anchor,
+            preserve_column_positions=parsed_rows.preserve_column_positions,
         )
         column_index = _row_column_index(
             header,
@@ -649,14 +665,76 @@ def _extract_template_table_cell(
     return None
 
 
-def _field_value_from_text(text: str, label: str, anchor_text: str) -> str | None:
-    label_value = _value_after_marker(text, label)
+def _field_mapping_table_blocks(
+    document_ir: DocumentIRV1,
+    anchor: Mapping[str, Any],
+    anchor_blocks: Sequence[DocumentBlock],
+    template_definition: Mapping[str, Any],
+) -> Sequence[DocumentBlock]:
+    anchor_id = str(anchor.get("anchor_id") or "")
+    table_definition = next(
+        (
+            _mapping(table)
+            for table in _list_value(template_definition.get("tables"))
+            if str(_mapping(table).get("anchor_id") or "") == anchor_id
+        ),
+        {},
+    )
+    required_columns = [str(column) for column in _list_value(table_definition.get("required_columns"))]
+    if not required_columns:
+        return anchor_blocks
+    matching_blocks = [
+        block
+        for block in anchor_blocks
+        if _table_required_column_score(
+            block.text,
+            anchor,
+            required_columns,
+            parse_xlsx_cell_refs=document_ir.document.source_type == "xlsx",
+            allow_merged_column_candidates=_block_allows_merged_column_candidates(
+                block, document_ir.document.source_type
+            ),
+        )
+        >= 1.0
+    ]
+    return matching_blocks
+
+
+def _field_stop_markers(
+    field: Mapping[str, Any], fields: Sequence[Mapping[str, Any]]
+) -> tuple[str, ...]:
+    field_id = str(field.get("field_id") or "")
+    markers: list[str] = []
+    for candidate in fields:
+        candidate_id = str(candidate.get("field_id") or "")
+        if candidate_id == field_id:
+            continue
+        for marker in (candidate.get("label"), candidate_id):
+            marker_text = str(marker or "").strip()
+            if marker_text:
+                markers.append(marker_text)
+    return tuple(dict.fromkeys(markers))
+
+
+def _field_value_from_text(
+    text: str,
+    label: str,
+    anchor_text: str,
+    *,
+    stop_markers: Sequence[str] = (),
+    allow_anchor_fallback: bool = True,
+) -> str | None:
+    label_value = _value_after_marker(text, label, stop_markers=stop_markers)
     if label_value:
         return label_value
-    return _value_after_marker(text, anchor_text)
+    if not allow_anchor_fallback:
+        return None
+    return _value_after_marker(text, anchor_text, stop_markers=stop_markers)
 
 
-def _value_after_marker(text: str, marker: str) -> str | None:
+def _value_after_marker(
+    text: str, marker: str, *, stop_markers: Sequence[str] = ()
+) -> str | None:
     normalized_marker = marker.casefold().strip()
     if not normalized_marker:
         return None
@@ -666,9 +744,26 @@ def _value_after_marker(text: str, marker: str) -> str | None:
                 continue
             value = line[match.end() :].strip()
             value = re.sub(r"^[\s:：=-]+", "", value).strip()
+            value = _value_before_next_marker(value, stop_markers)
             if value:
                 return value
     return None
+
+
+def _value_before_next_marker(value: str, stop_markers: Sequence[str]) -> str:
+    earliest_stop: int | None = None
+    for marker in stop_markers:
+        marker_text = marker.strip()
+        if not marker_text:
+            continue
+        for match in re.finditer(re.escape(marker_text), value, flags=re.IGNORECASE):
+            if not _marker_match_has_boundaries(value, match.start(), match.end()):
+                continue
+            earliest_stop = match.start() if earliest_stop is None else min(earliest_stop, match.start())
+            break
+    if earliest_stop is None:
+        return value
+    return re.sub(r"[\s:：=-]+$", "", value[:earliest_stop]).strip()
 
 
 def _marker_match_has_boundaries(text: str, start: int, end: int) -> bool:
@@ -778,11 +873,17 @@ def _table_header_row_index(
 
 
 def _table_header_candidate_row(
-    rows: Sequence[Sequence[str]], header_index: int, anchor: Mapping[str, Any]
+    rows: Sequence[Sequence[str]],
+    header_index: int,
+    anchor: Mapping[str, Any],
+    *,
+    preserve_column_positions: bool,
 ) -> tuple[Sequence[str], int]:
     row = rows[header_index]
     if header_index == _first_table_anchor_row_index(rows, anchor):
-        anchor_columns, column_offset = _row_columns_excluding_anchor_with_offset(row, anchor)
+        anchor_columns, column_offset = _row_columns_excluding_anchor_with_offset(
+            row, anchor, preserve_column_positions=preserve_column_positions
+        )
         if anchor_columns:
             return anchor_columns, column_offset
     return row, 0
@@ -1008,12 +1109,16 @@ def _first_table_anchor_row_index(rows: Sequence[Sequence[str]], anchor: Mapping
 
 
 def _row_columns_excluding_anchor(row: Sequence[str], anchor: Mapping[str, Any]) -> Sequence[str]:
-    columns, _offset = _row_columns_excluding_anchor_with_offset(row, anchor)
+    columns, _offset = _row_columns_excluding_anchor_with_offset(
+        row, anchor, preserve_column_positions=False
+    )
+    if not any(_normalized_column_name(cell) for cell in columns):
+        return []
     return columns
 
 
 def _row_columns_excluding_anchor_with_offset(
-    row: Sequence[str], anchor: Mapping[str, Any]
+    row: Sequence[str], anchor: Mapping[str, Any], *, preserve_column_positions: bool
 ) -> tuple[Sequence[str], int]:
     expected_text = str(anchor.get("text") or "")
     if not expected_text:
@@ -1021,10 +1126,10 @@ def _row_columns_excluding_anchor_with_offset(
     match_mode = str(anchor.get("match") or "normalized")
     for index, cell in enumerate(row):
         if _text_match_score(expected_text, cell, match_mode) > 0.0:
-            return row[index + 1 :], index + 1 if index > 0 else 0
+            return row[index + 1 :], index + 1 if preserve_column_positions or index > 0 else 0
     anchor_end = _anchor_cell_span_end_index(row, expected_text, match_mode)
     if anchor_end is not None:
-        return row[anchor_end:], anchor_end if anchor_end > 1 else 0
+        return row[anchor_end:], anchor_end if preserve_column_positions or anchor_end > 1 else 0
     return [], 0
 
 
@@ -1071,7 +1176,11 @@ def _parsed_table_rows(value: str, *, parse_xlsx_cell_refs: bool) -> _ParsedTabl
     if parse_xlsx_cell_refs:
         xlsx_rows = _xlsx_cell_rows(value)
         if xlsx_rows:
-            return _ParsedTableRows(rows=xlsx_rows, allow_merged_column_candidates=False)
+            return _ParsedTableRows(
+                rows=xlsx_rows,
+                allow_merged_column_candidates=False,
+                preserve_column_positions=True,
+            )
     return _ParsedTableRows(
         rows=[
             cells
@@ -1124,10 +1233,11 @@ def _xlsx_cell_rows(value: str) -> list[list[str]]:
         last_cell_ref = (row_index, column_index)
     if not saw_cell_ref:
         return []
+    max_column = max((max(columns) for columns in row_cells.values() if columns), default=0)
     return [
-        [cell for _column, cell in sorted(columns.items())]
+        [columns.get(column, "") for column in range(1, max_column + 1)]
         for _row, columns in sorted(row_cells.items())
-        if columns
+        if any(_normalized_column_name(cell) for cell in columns.values())
     ]
 
 
