@@ -977,6 +977,10 @@ def _field_value_from_label_anchor_below(
     if _normalized_text(field_label) != _normalized_text(anchor_text):
         return None
     value = _value_before_next_marker(text.strip(), stop_markers).strip()
+    return _confirmed_unlabeled_below_value(value, field_label)
+
+
+def _confirmed_unlabeled_below_value(value: str, field_label: str) -> str | None:
     if not _looks_like_unlabeled_below_value_block(value):
         return None
     if not value or _normalized_text(value) == _normalized_text(field_label):
