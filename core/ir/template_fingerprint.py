@@ -62,6 +62,11 @@ def match_template_fingerprint(
     table_definitions = [_mapping(table) for table in _list_value(template_definition.get("tables"))]
     required_anchor_ids = _required_anchor_ids(template_definition, table_definitions)
     optional_anchor_ids = _optional_anchor_ids(template_definition, required_anchor_ids)
+    defined_anchor_ids = {
+        anchor_id
+        for anchor in anchors
+        if (anchor_id := str(anchor.get("anchor_id") or ""))
+    }
     page_numbers = {page.page_number for page in document_ir.pages}
     warnings: list[str] = []
     fail_closed = False
@@ -76,9 +81,17 @@ def match_template_fingerprint(
     matched_anchor_ids: list[str] = []
     missing_anchor_ids: list[str] = []
     anchor_scores: list[float] = []
+    for anchor_id in sorted(required_anchor_ids - defined_anchor_ids):
+        missing_anchor_ids.append(anchor_id)
+        warnings.append(f"template required anchor '{anchor_id}' is not defined")
+        fail_closed = True
     for anchor in anchors:
         anchor_id = str(anchor.get("anchor_id") or "")
-        match_score = _best_anchor_match_score(anchor, document_ir.blocks)
+        match_score = _best_anchor_match_score(
+            anchor,
+            document_ir.blocks,
+            parse_xlsx_cell_refs=document_ir.document.source_type == "xlsx",
+        )
         is_required = _anchor_is_required(anchor, required_anchor_ids, optional_anchor_ids)
         if is_required or match_score > 0.0:
             anchor_scores.append(match_score)
@@ -140,15 +153,30 @@ def match_template_fingerprint(
     )
 
 
-def _best_anchor_match_score(anchor: Mapping[str, Any], blocks: Sequence[DocumentBlock]) -> float:
-    matching_blocks = _blocks_matching_anchor(anchor, blocks)
+def _best_anchor_match_score(
+    anchor: Mapping[str, Any], blocks: Sequence[DocumentBlock], *, parse_xlsx_cell_refs: bool
+) -> float:
+    matching_blocks = _blocks_matching_anchor(
+        anchor,
+        blocks,
+        parse_xlsx_cell_refs=parse_xlsx_cell_refs,
+    )
     if not matching_blocks:
         return 0.0
-    scores = [_anchor_block_match_score(anchor, block) for block in matching_blocks]
+    scores = [
+        _anchor_block_match_score(
+            anchor,
+            block,
+            parse_xlsx_cell_refs=parse_xlsx_cell_refs,
+        )
+        for block in matching_blocks
+    ]
     return max(scores, default=0.0)
 
 
-def _blocks_matching_anchor(anchor: Mapping[str, Any], blocks: Sequence[DocumentBlock]) -> list[DocumentBlock]:
+def _blocks_matching_anchor(
+    anchor: Mapping[str, Any], blocks: Sequence[DocumentBlock], *, parse_xlsx_cell_refs: bool
+) -> list[DocumentBlock]:
     scope = _mapping(anchor.get("scope"))
     expected_text = str(anchor.get("text") or "")
     match_mode = str(anchor.get("match") or "normalized")
@@ -156,7 +184,14 @@ def _blocks_matching_anchor(anchor: Mapping[str, Any], blocks: Sequence[Document
         block
         for block in blocks
         if _block_matches_anchor_scope(anchor, block, scope)
-        and _anchor_block_match_score(anchor, block, expected_text, match_mode) > 0.0
+        and _anchor_block_match_score(
+            anchor,
+            block,
+            expected_text,
+            match_mode,
+            parse_xlsx_cell_refs=parse_xlsx_cell_refs,
+        )
+        > 0.0
     ]
 
 
@@ -165,13 +200,20 @@ def _anchor_block_match_score(
     block: DocumentBlock,
     expected_text: str | None = None,
     match_mode: str | None = None,
+    *,
+    parse_xlsx_cell_refs: bool,
 ) -> float:
     expected = str(anchor.get("text") or "") if expected_text is None else expected_text
     mode = str(anchor.get("match") or "normalized") if match_mode is None else match_mode
     if str(anchor.get("kind") or "") == "table_header":
         if block.type != "table":
             return 0.0
-        return _table_anchor_match_score(block.text, expected, mode)
+        return _table_anchor_match_score(
+            block.text,
+            expected,
+            mode,
+            parse_xlsx_cell_refs=parse_xlsx_cell_refs,
+        )
     return _text_match_score(expected, block.text, mode)
 
 
@@ -205,7 +247,15 @@ def _table_score(
         table_id = str(table.get("table_id") or "<unknown>")
         anchor_id = str(table.get("anchor_id") or "")
         anchor = anchors_by_id.get(anchor_id, {})
-        table_blocks = _blocks_matching_anchor(anchor, blocks) if anchor else []
+        table_blocks = (
+            _blocks_matching_anchor(
+                anchor,
+                blocks,
+                parse_xlsx_cell_refs=source_type == "xlsx",
+            )
+            if anchor
+            else []
+        )
         if not table_blocks:
             warnings.append(f"template table '{table_id}' missing from document")
             scores.append(0.0)
@@ -340,12 +390,17 @@ def _document_ir_review_warnings(document_ir: DocumentIRV1) -> list[str]:
 
 
 def _block_allows_merged_column_candidates(block: DocumentBlock, source_type: str) -> bool:
-    return not (source_type == "pdf" and ":" in block.extractor.name)
+    return source_type != "pdf"
 
 
-def _table_anchor_match_score(value: str, expected_text: str, match_mode: str) -> float:
+def _table_anchor_match_score(
+    value: str, expected_text: str, match_mode: str, *, parse_xlsx_cell_refs: bool
+) -> float:
     return max(
-        (_row_anchor_match_score(row, expected_text, match_mode) for row in _table_rows(value)),
+        (
+            _row_anchor_match_score(row, expected_text, match_mode)
+            for row in _table_rows(value, parse_xlsx_cell_refs=parse_xlsx_cell_refs)
+        ),
         default=0.0,
     )
 
@@ -510,7 +565,22 @@ def _row_columns_excluding_anchor(row: Sequence[str], anchor: Mapping[str, Any])
     for index, cell in enumerate(row):
         if _text_match_score(expected_text, cell, match_mode) > 0.0:
             return row[index + 1 :]
+    anchor_end = _anchor_cell_span_end_index(row, expected_text, match_mode)
+    if anchor_end is not None:
+        return row[anchor_end:]
     return []
+
+
+def _anchor_cell_span_end_index(
+    row: Sequence[str], expected_text: str, match_mode: str
+) -> int | None:
+    for start in range(len(row)):
+        merged = ""
+        for end in range(start, len(row)):
+            merged = f"{merged}\t{row[end]}" if merged else str(row[end])
+            if _text_match_score(expected_text, merged, match_mode) > 0.0:
+                return end + 1
+    return None
 
 
 def _row_anchor_match_score(row: Sequence[str], expected_text: str, match_mode: str) -> float:
@@ -530,8 +600,8 @@ def _row_matches_anchor(row: Sequence[str], anchor: Mapping[str, Any]) -> bool:
     return _row_anchor_match_score(row, expected_text, match_mode) > 0.0
 
 
-def _table_rows(value: str) -> list[list[str]]:
-    return _parsed_table_rows(value, parse_xlsx_cell_refs=True).rows
+def _table_rows(value: str, *, parse_xlsx_cell_refs: bool) -> list[list[str]]:
+    return _parsed_table_rows(value, parse_xlsx_cell_refs=parse_xlsx_cell_refs).rows
 
 
 def _parsed_table_rows(value: str, *, parse_xlsx_cell_refs: bool) -> _ParsedTableRows:

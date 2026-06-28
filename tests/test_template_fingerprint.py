@@ -99,6 +99,47 @@ class TemplateFingerprintTest(unittest.TestCase):
         self.assertTrue(result.requires_review)
         self.assertIn("batch-number-label", result.missing_anchor_ids)
 
+    def test_undefined_required_anchor_fails_closed_to_low_confidence(self) -> None:
+        template = self.template_definition()
+        template["fields"] = [
+            {
+                "field_id": "batch_number",
+                "label": "Batch No.",
+                "value_type": "string",
+                "source": {"anchor_id": "undefined-batch-label", "direction": "same_block"},
+                "required": True,
+                "risk_level": "high",
+                "validation_rule_ids": ["batch-number-required"],
+                "output_key": "batch.number",
+            }
+        ]
+
+        result = match_template_fingerprint(self.document_with_blocks(), template)
+
+        self.assertEqual(TemplateMatchClassification.UNKNOWN, result.classification)
+        self.assertLess(result.score, 0.80)
+        self.assertTrue(result.requires_review)
+        self.assertIn("undefined-batch-label", result.missing_anchor_ids)
+        self.assertIn(
+            "template required anchor 'undefined-batch-label' is not defined",
+            result.warnings,
+        )
+
+    def test_undefined_table_anchor_fails_closed_to_low_confidence(self) -> None:
+        template = self.template_definition()
+        template["tables"][0]["anchor_id"] = "undefined-yield-table"
+
+        result = match_template_fingerprint(self.document_with_blocks(), template)
+
+        self.assertEqual(TemplateMatchClassification.UNKNOWN, result.classification)
+        self.assertLess(result.score, 0.80)
+        self.assertTrue(result.requires_review)
+        self.assertIn("undefined-yield-table", result.missing_anchor_ids)
+        self.assertIn(
+            "template required anchor 'undefined-yield-table' is not defined",
+            result.warnings,
+        )
+
     def test_table_columns_are_scored_on_the_matched_anchor_block_only(self) -> None:
         template = self.template_definition()
         document = self.document_with_blocks(table_text="Yield Summary")
@@ -477,6 +518,20 @@ class TemplateFingerprintTest(unittest.TestCase):
         self.assertEqual(TemplateMatchClassification.KNOWN, result.classification)
         self.assertNotIn("template table 'yield_summary' required columns incomplete", result.warnings)
 
+    def test_split_cell_table_anchor_can_share_header_row(self) -> None:
+        template = self.template_definition()
+
+        result = match_template_fingerprint(
+            self.document_with_blocks(
+                table_text="Yield\tSummary\tstep\texpected_yield\tactual_yield\nblend\t95\t94"
+            ),
+            template,
+        )
+
+        self.assertEqual(TemplateMatchClassification.KNOWN, result.classification)
+        self.assertNotIn("yield-table", result.missing_anchor_ids)
+        self.assertNotIn("template table 'yield_summary' required columns incomplete", result.warnings)
+
     def test_tab_delimited_required_column_preserves_commas_inside_cells(self) -> None:
         template = self.template_definition()
         template["anchors"][1]["text"] = "Lot History"
@@ -530,7 +585,10 @@ class TemplateFingerprintTest(unittest.TestCase):
         template["tables"][0]["required_columns"] = ["step", "expected yield", "actual yield"]
 
         result = match_template_fingerprint(
-            self.document_with_blocks(table_text="Yield Summary\nstep\tExpected\nYield\tActual Yield"),
+            self.document_with_blocks(
+                table_text="Yield Summary\nstep\tExpected\nYield\tActual Yield",
+                source_type="docx",
+            ),
             template,
         )
 
@@ -544,7 +602,10 @@ class TemplateFingerprintTest(unittest.TestCase):
         template["tables"][0]["required_columns"] = ["Lot ID", "Value"]
 
         result = match_template_fingerprint(
-            self.document_with_blocks(table_text="Lot History\nLot\tID\tValue\nBN-001\t123"),
+            self.document_with_blocks(
+                table_text="Lot History\nLot\tID\tValue\nBN-001\t123",
+                source_type="docx",
+            ),
             template,
         )
 
@@ -565,6 +626,20 @@ class TemplateFingerprintTest(unittest.TestCase):
         self.assertEqual(TemplateMatchClassification.KNOWN, result.classification)
         self.assertNotIn("yield-table", result.missing_anchor_ids)
         self.assertNotIn("template table 'yield_summary' required columns incomplete", result.warnings)
+
+    def test_exact_non_xlsx_coordinate_like_table_anchor_is_not_parsed_as_xlsx(self) -> None:
+        template = self.template_definition()
+        template["anchors"][1]["text"] = "A1: Yield Summary"
+        template["anchors"][1]["match"] = "exact"
+
+        result = match_template_fingerprint(
+            self.document_with_blocks(table_text="A1: Yield Summary\nstep\texpected_yield\tactual_yield"),
+            template,
+        )
+
+        self.assertEqual(TemplateMatchClassification.KNOWN, result.classification)
+        self.assertNotIn("yield-table", result.missing_anchor_ids)
+        self.assertNotIn("template table 'yield_summary' missing from document", result.warnings)
 
     def test_xlsx_cell_rows_are_reconstructed_for_required_columns(self) -> None:
         template = self.template_definition()
@@ -813,6 +888,19 @@ class TemplateFingerprintTest(unittest.TestCase):
         self.assertTrue(result.requires_review)
         self.assertIn("template table 'yield_summary' required columns incomplete", result.warnings)
 
+    def test_pdf_table_cells_are_not_merged_when_extractor_has_no_flavor(self) -> None:
+        template = self.template_definition()
+        template["tables"][0]["required_columns"] = ["Lot ID", "Value"]
+
+        result = match_template_fingerprint(
+            self.document_with_blocks(table_text="Yield Summary\nLot\tID\tValue\nL-001\tA\t94"),
+            template,
+        )
+
+        self.assertNotEqual(TemplateMatchClassification.KNOWN, result.classification)
+        self.assertTrue(result.requires_review)
+        self.assertIn("template table 'yield_summary' required columns incomplete", result.warnings)
+
     def template_definition(self) -> dict[str, Any]:
         return {
             "template_id": "synthetic-batch-record-v1",
@@ -851,6 +939,7 @@ class TemplateFingerprintTest(unittest.TestCase):
         table_text: str | None = "Yield Summary\nstep\texpected_yield\tactual_yield",
         *,
         pages: list[DocumentPage] | None = None,
+        source_type: str = "pdf",
         table_review_warnings: list[str] | None = None,
         table_review_requires_review: bool | None = None,
     ) -> DocumentIRV1:
@@ -871,7 +960,7 @@ class TemplateFingerprintTest(unittest.TestCase):
             )
         return DocumentIRV1(
             schema_version="document-ir/v1",
-            document=DocumentInfo(id="fixture", title="Fixture", source_type="pdf"),
+            document=DocumentInfo(id="fixture", title="Fixture", source_type=source_type),
             pages=[DocumentPage(page_number=1, width=612.0, height=792.0)] if pages is None else pages,
             blocks=blocks,
             warnings=[],
