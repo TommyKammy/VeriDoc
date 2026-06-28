@@ -55,6 +55,31 @@ def test_review_item_can_jump_to_preview_bbox() -> None:
     assert "state.previewPage = item.source_page" in html
 
 
+def test_template_state_clear_resets_credential_bound_form_fields() -> None:
+    html = _web_html()
+
+    clear_template_state = re.search(
+        r"function clearTemplateState\(\) \{(?P<body>.*?)\n      \}",
+        html,
+        flags=re.S,
+    )
+    assert clear_template_state is not None
+    body = clear_template_state.group("body")
+    for field_name in [
+        "templateId",
+        "templateName",
+        "templateCategory",
+        "templateDocumentType",
+        "templateAnchors",
+        "templateFields",
+        "templateTables",
+        "templateRiskRank",
+        "templateValidationRules",
+        "templateOutputMapping",
+    ]:
+        assert f"{field_name}.value = \"\";" in body
+
+
 def test_review_item_exposes_edit_and_approve_audit_events() -> None:
     html = _web_html()
 

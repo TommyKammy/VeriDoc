@@ -180,14 +180,47 @@ class TemplateStore:
         name = _validate_template_text_field(request.get("name"), "name")
         category = _validate_template_text_field(request.get("category"), "category")
         fields = _validate_template_fields(request.get("fields"))
-        content = _validate_template_text_field(request.get("content"), "content")
         with self._lock:
             existing = self._templates.get(template_id)
             versions = [] if existing is None else existing["versions"]
+            latest_version = None if not versions else versions[-1]
+            document_type = _validate_template_text_field(
+                _template_version_value(request, latest_version, "document_type", category),
+                "document_type",
+            )
+            anchors = _validate_template_json_list(
+                _template_version_value(request, latest_version, "anchors", []), "anchors"
+            )
+            tables = _validate_template_json_list(
+                _template_version_value(request, latest_version, "tables", []), "tables"
+            )
+            risk_rank = _validate_template_json_object(
+                _template_version_value(request, latest_version, "risk_rank", {}), "risk_rank"
+            )
+            validation_rules = _validate_template_json_list(
+                _template_version_value(request, latest_version, "validation_rules", []),
+                "validation_rules",
+            )
+            output_mapping = _validate_template_json_object(
+                _template_version_value(request, latest_version, "output_mapping", {}),
+                "output_mapping",
+            )
+            if "content" in request:
+                content = _validate_template_text_field(request.get("content"), "content")
+            elif latest_version is not None:
+                content = latest_version.get("content", "")
+            else:
+                content = ""
             version_number = len(versions) + 1
             version = {
                 "version": version_number,
+                "document_type": document_type,
+                "anchors": deepcopy(anchors),
                 "fields": deepcopy(fields),
+                "tables": deepcopy(tables),
+                "risk_rank": deepcopy(risk_rank),
+                "validation_rules": deepcopy(validation_rules),
+                "output_mapping": deepcopy(output_mapping),
                 "content": content,
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
@@ -196,6 +229,7 @@ class TemplateStore:
                     "template_id": template_id,
                     "name": name,
                     "category": category,
+                    "document_type": document_type,
                     "current_version": version_number,
                     "versions": [version],
                     "updated_at": version["created_at"],
@@ -204,6 +238,7 @@ class TemplateStore:
             else:
                 existing["name"] = name
                 existing["category"] = category
+                existing["document_type"] = document_type
                 existing["current_version"] = version_number
                 existing["versions"].append(version)
                 existing["updated_at"] = version["created_at"]
@@ -234,6 +269,19 @@ class TemplateStore:
             "template_version": record["current_version"],
             "name": record["name"],
         }
+
+
+def _template_version_value(
+    request: dict[str, Any],
+    latest_version: dict[str, Any] | None,
+    field_name: str,
+    default: Any,
+) -> Any:
+    if field_name in request:
+        return request[field_name]
+    if latest_version is not None:
+        return latest_version.get(field_name, default)
+    return default
 
 
 def _review_workflow_event_view(audit_event: dict[str, Any]) -> dict[str, Any]:
@@ -844,21 +892,41 @@ def _validate_template_fields(value: Any) -> list[dict[str, Any]]:
     for index, item in enumerate(value):
         if not isinstance(item, dict):
             raise ValueError(f"fields[{index}] must be an object")
-        name = item.get("name")
+        name = item.get("field_id", item.get("name"))
         if not isinstance(name, str):
-            raise ValueError(f"fields[{index}].name is required")
+            raise ValueError(f"fields[{index}].field_id is required")
         field_name = name.strip()
         if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", field_name):
-            raise ValueError(f"fields[{index}].name is invalid")
+            raise ValueError(f"fields[{index}].field_id is invalid")
         if field_name in seen_names:
-            raise ValueError(f"fields[{index}].name duplicates an earlier field")
+            raise ValueError(f"fields[{index}].field_id duplicates an earlier field")
         seen_names.add(field_name)
         label = _validate_template_text_field(item.get("label"), f"fields[{index}].label")
         required = item.get("required", False)
         if not isinstance(required, bool):
             raise ValueError(f"fields[{index}].required must be boolean")
-        fields.append({"name": field_name, "label": label, "required": required})
+        field = deepcopy(item)
+        field["field_id"] = field_name
+        if "field_id" in item:
+            field.pop("name", None)
+        else:
+            field["name"] = field_name
+        field["label"] = label
+        field["required"] = required
+        fields.append(field)
     return fields
+
+
+def _validate_template_json_list(value: Any, field_name: str) -> list[Any]:
+    if not isinstance(value, list):
+        raise ValueError(f"{field_name} must be a list")
+    return deepcopy(value)
+
+
+def _validate_template_json_object(value: Any, field_name: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError(f"{field_name} must be an object")
+    return deepcopy(value)
 
 
 def _template_summary(record: dict[str, Any]) -> dict[str, Any]:
@@ -867,8 +935,10 @@ def _template_summary(record: dict[str, Any]) -> dict[str, Any]:
         "template_id": record["template_id"],
         "name": record["name"],
         "category": record["category"],
+        "document_type": record["document_type"],
         "current_version": record["current_version"],
         "field_count": len(latest_version["fields"]),
+        "version_count": len(record["versions"]),
         "updated_at": record["updated_at"],
     }
 
