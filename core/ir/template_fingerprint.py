@@ -1090,14 +1090,14 @@ def _extract_template_table_cell(
             header_candidate.comparison_headers,
         )
         if table_value is not None:
-            row_index, value = table_value
+            row_index, value, value_column_index = table_value
             return _template_value(
                 block,
                 value,
                 0.90,
                 direction="table_cell",
                 row_index=row_index,
-                column_index=actual_column_index,
+                column_index=value_column_index,
                 column_label=label,
             )
     return None
@@ -1171,9 +1171,16 @@ def _table_body_values_at_physical_column(
     header_index: int,
     column_index: int,
     comparison_headers: Sequence[Sequence[str]],
-) -> list[tuple[int, str | None]]:
+) -> list[tuple[int, str | None, int]]:
     return [
-        (row_index, _table_cell_value_at_physical_column(row, column_index))
+        (
+            row_index,
+            _table_cell_value_at_physical_column(
+                row,
+                _table_body_physical_column_index(row, column_index, comparison_headers),
+            ),
+            _table_body_physical_column_index(row, column_index, comparison_headers),
+        )
         for row_index, row in enumerate(rows[header_index + 1 :], start=header_index + 1)
         if _table_body_row_is_value_candidate(row, comparison_headers)
     ]
@@ -1185,12 +1192,48 @@ def _table_body_values_at_physical_column_span(
     column_index: int,
     column_count: int,
     comparison_headers: Sequence[Sequence[str]],
-) -> list[tuple[int, str | None]]:
+) -> list[tuple[int, str | None, int]]:
     return [
-        (row_index, _table_cell_value_at_physical_column_span(row, column_index, column_count))
+        (
+            row_index,
+            _table_cell_value_at_physical_column_span(
+                row,
+                _table_body_physical_column_index(row, column_index, comparison_headers),
+                column_count,
+            ),
+            _table_body_physical_column_index(row, column_index, comparison_headers),
+        )
         for row_index, row in enumerate(rows[header_index + 1 :], start=header_index + 1)
         if _table_body_row_is_value_candidate(row, comparison_headers)
     ]
+
+
+def _table_body_physical_column_index(
+    row: Sequence[str], column_index: int, comparison_headers: Sequence[Sequence[str]]
+) -> int:
+    leading_columns = _same_row_anchor_leading_column_count(comparison_headers)
+    if leading_columns <= 0:
+        return column_index
+    if len(row) <= column_index + leading_columns:
+        return column_index
+    if any(str(cell).strip() for cell in row[:leading_columns]):
+        return column_index
+    return column_index + leading_columns
+
+
+def _same_row_anchor_leading_column_count(
+    comparison_headers: Sequence[Sequence[str]],
+) -> int:
+    if len(comparison_headers) < 2:
+        return 0
+    header = tuple(_normalized_column_name(cell) for cell in comparison_headers[0])
+    full_row = tuple(_normalized_column_name(cell) for cell in comparison_headers[1])
+    if not header or len(full_row) <= len(header):
+        return 0
+    leading_count = len(full_row) - len(header)
+    if tuple(full_row[leading_count:]) != header:
+        return 0
+    return leading_count
 
 
 def _table_body_row_is_value_candidate(
@@ -1218,15 +1261,15 @@ def _first_table_body_value_at_physical_column(
     header_index: int,
     column_index: int,
     comparison_headers: Sequence[Sequence[str]],
-) -> tuple[int, str] | None:
-    for row_index, value in _table_body_values_at_physical_column(
+) -> tuple[int, str, int] | None:
+    for row_index, value, value_column_index in _table_body_values_at_physical_column(
         rows,
         header_index,
         column_index,
         comparison_headers,
     ):
         if value:
-            return row_index, value
+            return row_index, value, value_column_index
     return None
 
 
@@ -1236,8 +1279,8 @@ def _first_table_body_value_at_physical_column_span(
     column_index: int,
     column_count: int,
     comparison_headers: Sequence[Sequence[str]],
-) -> tuple[int, str] | None:
-    for row_index, value in _table_body_values_at_physical_column_span(
+) -> tuple[int, str, int] | None:
+    for row_index, value, value_column_index in _table_body_values_at_physical_column_span(
         rows,
         header_index,
         column_index,
@@ -1245,7 +1288,7 @@ def _first_table_body_value_at_physical_column_span(
         comparison_headers,
     ):
         if value:
-            return row_index, value
+            return row_index, value, value_column_index
     return None
 
 
@@ -1392,7 +1435,12 @@ def _below_scan_candidate_blocks(
         return scoped_candidates
     if not candidates:
         return []
-    first_below_block = candidates[0]
+    aligned_candidates = [
+        block for block in candidates if _blocks_horizontally_overlap(block, anchor_block)
+    ]
+    if not aligned_candidates:
+        return []
+    first_below_block = aligned_candidates[0]
     if _below_scan_block_is_not_field_value(first_below_block):
         return []
     return [first_below_block]
@@ -1963,10 +2011,17 @@ def _right_side_blocks(
             if block.id != anchor_block.id
             and block.source_page == anchor_block.source_page
             and block.bbox.x >= anchor_block.bbox.x + anchor_block.bbox.width
-            and _blocks_vertically_overlap(block, anchor_block)
+            and _blocks_share_text_row(block, anchor_block)
         ],
         key=lambda block: (block.bbox.x, block.bbox.y, block.id),
     )
+
+
+def _blocks_share_text_row(left: DocumentBlock, right: DocumentBlock) -> bool:
+    if not _blocks_vertically_overlap(left, right):
+        return False
+    tolerance = max(4.0, min(left.bbox.height, right.bbox.height) * 0.5)
+    return abs(left.bbox.y - right.bbox.y) <= tolerance
 
 
 def _blocks_vertically_overlap(left: DocumentBlock, right: DocumentBlock) -> bool:
@@ -1975,6 +2030,14 @@ def _blocks_vertically_overlap(left: DocumentBlock, right: DocumentBlock) -> boo
     right_top = right.bbox.y
     right_bottom = right.bbox.y + right.bbox.height
     return min(left_bottom, right_bottom) > max(left_top, right_top)
+
+
+def _blocks_horizontally_overlap(left: DocumentBlock, right: DocumentBlock) -> bool:
+    left_start = left.bbox.x
+    left_end = left.bbox.x + left.bbox.width
+    right_start = right.bbox.x
+    right_end = right.bbox.x + right.bbox.width
+    return min(left_end, right_end) > max(left_start, right_start)
 
 
 def _table_anchor_match_score(

@@ -1018,6 +1018,49 @@ class TemplateFingerprintTest(unittest.TestCase):
         self.assertEqual("batch-value", mapped["batch_number"].evidence["block_id"])
         self.assertEqual("right", mapped["batch_number"].evidence["direction"])
 
+    def test_right_side_mapping_requires_same_row_alignment(self) -> None:
+        template = self.template_definition()
+        template["anchors"].append(
+            {
+                "anchor_id": "batch-number-label",
+                "kind": "label",
+                "text": "Batch No.",
+                "match": "normalized",
+                "scope": {"page": 1, "block_types": ["paragraph"]},
+            }
+        )
+        template["fields"] = [
+            {
+                "field_id": "batch_number",
+                "label": "Batch No.",
+                "value_type": "string",
+                "source": {"anchor_id": "batch-number-label", "direction": "right"},
+                "required": True,
+                "risk_level": "high",
+                "validation_rule_ids": [],
+                "output_key": "batch.number",
+            }
+        ]
+        document = DocumentIRV1(
+            schema_version="document-ir/v1",
+            document=DocumentInfo(id="fixture", title="Fixture", source_type="pdf"),
+            pages=[DocumentPage(page_number=1, width=612.0, height=792.0)],
+            blocks=[
+                self.block("heading", "Batch Production Record"),
+                self.block("paragraph", "Batch No.", y=120.0, block_id="batch-label"),
+                self.block("paragraph", "QA reviewed", x=260.0, y=138.0, block_id="qa-note"),
+                self.block("paragraph", "BN-001", x=400.0, y=120.0, block_id="batch-value"),
+                self.block("table", "Yield Summary\nstep\texpected_yield\tactual_yield", y=180.0),
+            ],
+            warnings=[],
+        )
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertEqual("BN-001", mapped["batch_number"].value)
+        self.assertEqual("batch-value", mapped["batch_number"].evidence["block_id"])
+
     def test_right_side_fallback_skips_table_blocks(self) -> None:
         template = self.template_definition()
         template["anchors"].append(
@@ -1194,6 +1237,33 @@ class TemplateFingerprintTest(unittest.TestCase):
         self.assertEqual("94", mapped["actual_yield"].value)
         self.assertEqual(1, mapped["actual_yield"].evidence["row_index"])
         self.assertEqual(4, mapped["actual_yield"].evidence["column_index"])
+
+    def test_table_cell_mapping_preserves_blank_title_column_after_same_row_anchor(self) -> None:
+        template = self.template_definition()
+        template["tables"][0]["required_columns"] = ["step", "status"]
+        template["fields"] = [
+            {
+                "field_id": "status",
+                "label": "status",
+                "value_type": "string",
+                "source": {"anchor_id": "yield-table", "direction": "table_cell"},
+                "required": True,
+                "risk_level": "medium",
+                "validation_rule_ids": [],
+                "output_key": "batch.status",
+            }
+        ]
+        document = self.document_with_blocks(
+            table_text="Yield Summary\tstep\tstatus\n\tblend\treleased"
+        )
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertEqual("released", mapped["status"].value)
+        self.assertEqual(1, mapped["status"].evidence["row_index"])
+        self.assertEqual(2, mapped["status"].evidence["column_index"])
+        self.assertEqual({"template_result": {"batch": {"status": "released"}}}, result.output)
 
     def test_table_cell_mapping_preserves_split_anchor_column_alignment(self) -> None:
         template = self.template_definition()
@@ -3498,6 +3568,50 @@ class TemplateFingerprintTest(unittest.TestCase):
         mapped = {field.field_id: field for field in result.fields}
 
         self.assertEqual("Jane Smith", mapped["prepared_by"].value)
+        self.assertEqual({"template_result": {"batch": {"prepared_by": "Jane Smith"}}}, result.output)
+
+    def test_below_label_mapping_requires_anchor_column_alignment(self) -> None:
+        template = self.template_definition()
+        template["anchors"].append(
+            {
+                "anchor_id": "prepared-by-label",
+                "kind": "label",
+                "text": "Prepared By",
+                "match": "normalized",
+                "scope": {"page": 1, "block_types": ["paragraph"]},
+            }
+        )
+        template["fields"] = [
+            {
+                "field_id": "prepared_by",
+                "label": "Prepared By",
+                "value_type": "string",
+                "source": {"anchor_id": "prepared-by-label", "direction": "below"},
+                "required": True,
+                "risk_level": "medium",
+                "validation_rule_ids": [],
+                "output_key": "batch.prepared_by",
+            }
+        ]
+        document = DocumentIRV1(
+            schema_version="document-ir/v1",
+            document=DocumentInfo(id="fixture", title="Fixture", source_type="pdf"),
+            pages=[DocumentPage(page_number=1, width=612.0, height=792.0)],
+            blocks=[
+                self.block("heading", "Batch Production Record"),
+                self.block("paragraph", "Prepared By", x=400.0, y=120.0, block_id="prepared-label"),
+                self.block("paragraph", "Unrelated text", x=72.0, y=130.0, block_id="left-column"),
+                self.block("paragraph", "Jane Smith", x=400.0, y=144.0, block_id="prepared-value"),
+                self.block("table", "Yield Summary\nstep\texpected_yield\tactual_yield", y=180.0),
+            ],
+            warnings=[],
+        )
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertEqual("Jane Smith", mapped["prepared_by"].value)
+        self.assertEqual("prepared-value", mapped["prepared_by"].evidence["block_id"])
         self.assertEqual({"template_result": {"batch": {"prepared_by": "Jane Smith"}}}, result.output)
 
     def test_table_cell_mapping_preserves_values_under_merged_header_label(self) -> None:
