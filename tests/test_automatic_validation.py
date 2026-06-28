@@ -1759,6 +1759,120 @@ def test_current_head_review_examples_fail_closed() -> None:
             ),
             "scope_binding",
         ),
+        (
+            "current_thread_release_status_field_id",
+            validate_extracted_item(
+                expected=_expected_item(
+                    label_id="release-template-field",
+                    field_id="release_status",
+                    label="Status",
+                    expected_value="Approved",
+                    risk_level="medium",
+                    requires_review=False,
+                    fixture_id="fixture-001",
+                    document_id="doc-001",
+                    block_id="block-001",
+                ),
+                actual=_actual_item(
+                    label_id="release-template-field",
+                    field_id="release_status",
+                    label="Status",
+                    value="Approved",
+                    auto_confirmed=True,
+                    fixture_id="fixture-001",
+                    document_id="doc-001",
+                    block_id="block-001",
+                ),
+            ),
+            "risk_gate",
+        ),
+        (
+            "current_thread_date_value_type",
+            validate_extracted_item(
+                expected=_expected_item(
+                    label_id="generic-field",
+                    expected_value="2026-01-01",
+                    risk_level="medium",
+                    requires_review=False,
+                    value_type="date",
+                    fixture_id="fixture-001",
+                    document_id="doc-001",
+                    block_id="block-001",
+                ),
+                actual=_actual_item(
+                    label_id="generic-field",
+                    value="2026-01-01",
+                    auto_confirmed=True,
+                    value_type="date",
+                    fixture_id="fixture-001",
+                    document_id="doc-001",
+                    block_id="block-001",
+                ),
+            ),
+            "risk_gate",
+        ),
+        (
+            "current_thread_table_requires_review",
+            validate_table_consistency(
+                {
+                    "id": "table-001",
+                    "fixture_table_id": "table-001",
+                    "requires_review": True,
+                    "cells": [
+                        {
+                            "id": "table-001-r1-c1",
+                            "text": "Reviewed note",
+                            "source": source,
+                            "requires_review": False,
+                            "risk_level": "low",
+                        },
+                    ],
+                },
+                {
+                    "id": "table-001",
+                    "cells": [
+                        {
+                            "id": "table-001-r1-c1",
+                            "text": "Reviewed note",
+                            "source": source,
+                            "auto_confirmed": True,
+                        },
+                    ],
+                },
+            ),
+            "risk_gate",
+        ),
+        (
+            "current_thread_malformed_table_risk_level",
+            validate_table_consistency(
+                {
+                    "id": "table-001",
+                    "fixture_table_id": "table-001",
+                    "risk_level": True,
+                    "cells": [
+                        {
+                            "id": "table-001-r1-c1",
+                            "text": "Reviewed note",
+                            "source": source,
+                            "requires_review": False,
+                            "risk_level": "low",
+                        },
+                    ],
+                },
+                {
+                    "id": "table-001",
+                    "cells": [
+                        {
+                            "id": "table-001-r1-c1",
+                            "text": "Reviewed note",
+                            "source": source,
+                            "auto_confirmed": False,
+                        },
+                    ],
+                },
+            ),
+            "risk_gate",
+        ),
     ]
 
     for case_name, decision, failed_rule in cases:
