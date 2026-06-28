@@ -2432,6 +2432,41 @@ def test_template_store_records_version_change_history_and_rejects_missing_conte
 
     assert store.get_template("audit-template")["current_version"] == 2
 
+    disabled = store.register_template(
+        {
+            **base_request,
+            "status": "inactive",
+            "fields": [{"field_id": "lot_number", "label": "Lot number", "required": True}],
+            "change_reason": "Disable superseded controlled template",
+            "actor": {"principal_id": "qa-maintainer", "role": "admin"},
+        }
+    )
+    preserved = store.register_template(
+        {
+            **base_request,
+            "fields": [{"field_id": "lot_number", "label": "Lot number", "required": False}],
+            "change_reason": "Update inactive template metadata",
+            "actor": {"principal_id": "qa-maintainer", "role": "admin"},
+        }
+    )
+    enabled = store.register_template(
+        {
+            **base_request,
+            "status": "active",
+            "fields": [{"field_id": "lot_number", "label": "Lot number", "required": False}],
+            "change_reason": "Return template to active use",
+            "actor": {"principal_id": "qa-maintainer", "role": "admin"},
+        }
+    )
+
+    assert disabled["status"] == "inactive"
+    assert disabled["change_history"][2]["action"] == "disabled"
+    assert preserved["status"] == "inactive"
+    assert preserved["versions"][3]["status"] == "inactive"
+    assert preserved["change_history"][3]["action"] == "versioned"
+    assert enabled["status"] == "active"
+    assert enabled["change_history"][4]["action"] == "enabled"
+
 
 def test_poc_http_api_registers_template_versions_and_jobs_keep_version_snapshot() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
@@ -2595,17 +2630,25 @@ def test_poc_http_api_registers_template_versions_and_jobs_keep_version_snapshot
         refreshed_job_response = connection.getresponse()
         refreshed_job = json.loads(refreshed_job_response.read().decode("utf-8"))
 
+        rejected_job_payload = json.dumps(
+            {
+                "idempotency_key": "new-upload-with-inactive-template",
+                "filename": "batch-record.pdf",
+                "mode": "standard",
+                "template_id": "batch-record",
+            }
+        ).encode("utf-8")
         connection.request(
             "POST",
             "/api/jobs",
-            body=create_job_payload,
+            body=rejected_job_payload,
             headers={
                 "Content-Type": "application/json",
-                "Content-Length": str(len(create_job_payload)),
+                "Content-Length": str(len(rejected_job_payload)),
             },
         )
-        retried_job_response = connection.getresponse()
-        retried_job = json.loads(retried_job_response.read().decode("utf-8"))
+        rejected_job_response = connection.getresponse()
+        rejected_job = json.loads(rejected_job_response.read().decode("utf-8"))
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -2646,9 +2689,55 @@ def test_poc_http_api_registers_template_versions_and_jobs_keep_version_snapshot
     assert second_version["fields"][0]["name"] == "lot_number"
     assert refreshed_job_response.status == 200
     assert refreshed_job["job"]["template"]["template_version"] == 2
-    assert retried_job_response.status == 202
-    assert retried_job["job"]["job_id"] == job["job"]["job_id"]
-    assert retried_job["job"]["template"]["template_version"] == 2
+    assert rejected_job_response.status == 400
+    assert rejected_job == {
+        "error": "invalid_job_request",
+        "message": "template_id is inactive",
+    }
+
+
+def test_poc_http_api_derives_template_audit_actor_from_local_auth() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.local_auth_tokens = _local_auth_tokens()
+    server.template_store = poc_web.TemplateStore()
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = json.dumps(
+            {
+                "template_id": "trusted-actor-template",
+                "name": "Trusted Actor Template",
+                "category": "manufacturing",
+                "fields": [{"field_id": "lot_number", "label": "Lot number", "required": True}],
+                "change_reason": "Register through authenticated API",
+                "actor": {"principal_id": "spoofed-author", "role": "viewer"},
+                "approved_by": {"principal_id": "spoofed-approver", "role": "approver"},
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/templates",
+            body=payload,
+            headers={
+                "Authorization": "Bearer admin-token",
+                "Content-Type": "application/json",
+                "Content-Length": str(len(payload)),
+            },
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 201
+    change = body["template"]["change_history"][0]
+    assert change["actor"] == {"principal_id": "local-principal:admin", "role": "admin"}
+    assert change["approval"] == {
+        "status": "approved",
+        "approved_by": {"principal_id": "local-principal:admin", "role": "admin"},
+    }
 
 
 def test_poc_http_api_lists_representative_seed_templates() -> None:
@@ -3025,6 +3114,9 @@ def test_bundled_web_ui_exposes_template_management_and_job_binding() -> None:
     assert 'id="template-id"' in html
     assert 'id="template-fields"' in html
     assert 'id="template-document-type"' in html
+    assert 'id="template-status"' in html
+    assert 'id="template-change-reason"' in html
+    assert 'id="template-actor"' in html
     assert 'id="template-anchors"' in html
     assert 'id="template-tables"' in html
     assert 'id="template-risk-rank"' in html
@@ -3040,6 +3132,9 @@ def test_bundled_web_ui_exposes_template_management_and_job_binding() -> None:
     assert 'apiFetch("/api/templates")' in html
     assert 'apiFetch("/api/templates", {' in html
     assert "document_type: templateDocumentType.value" in html
+    assert "status: templateStatus.value" in html
+    assert "change_reason: templateChangeReason.value" in html
+    assert 'actor: { principal_id: templateActor.value, role: "admin" }' in html
     assert "anchors: parseTemplateJson(templateAnchors, \"anchors\")" in html
     assert "risk_rank: parseTemplateJson(templateRiskRank, \"risk_rank\")" in html
     assert "validation_rules: parseTemplateJson(templateValidationRules, \"validation_rules\")" in html

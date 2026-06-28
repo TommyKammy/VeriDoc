@@ -636,6 +636,21 @@
             <input id="template-document-type" value="batch_record" />
           </div>
           <div class="field">
+            <label for="template-status">Status</label>
+            <select id="template-status">
+              <option value="active">active</option>
+              <option value="inactive">inactive</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="template-change-reason">Change reason</label>
+            <input id="template-change-reason" value="Controlled template update" />
+          </div>
+          <div class="field">
+            <label for="template-actor">Actor principal</label>
+            <input id="template-actor" value="local-ui-operator" />
+          </div>
+          <div class="field">
             <label for="template-fields">Fields JSON</label>
             <textarea id="template-fields">[{"field_id":"lot_number","label":"Lot number","required":true,"risk_level":"high","output_key":"batch.lot_number"}]</textarea>
           </div>
@@ -802,6 +817,9 @@
       const templateName = document.querySelector("#template-name");
       const templateCategory = document.querySelector("#template-category");
       const templateDocumentType = document.querySelector("#template-document-type");
+      const templateStatus = document.querySelector("#template-status");
+      const templateChangeReason = document.querySelector("#template-change-reason");
+      const templateActor = document.querySelector("#template-actor");
       const templateFields = document.querySelector("#template-fields");
       const templateAnchors = document.querySelector("#template-anchors");
       const templateTables = document.querySelector("#template-tables");
@@ -1037,6 +1055,9 @@
               name: templateName.value,
               category: templateCategory.value,
               document_type: templateDocumentType.value,
+              status: templateStatus.value,
+              change_reason: templateChangeReason.value,
+              actor: { principal_id: templateActor.value, role: "admin" },
               anchors: parseTemplateJson(templateAnchors, "anchors"),
               fields: parseTemplateJson(templateFields, "fields"),
               tables: parseTemplateJson(templateTables, "tables"),
@@ -1382,6 +1403,7 @@
           template.versions.find((item) => item.version === versionNumber) ||
           template.versions[template.versions.length - 1];
         templateDocumentType.value = version.document_type || template.document_type || template.category;
+        templateStatus.value = version.status || template.status || "active";
         templateAnchors.value = jsonText(version.anchors || []);
         templateFields.value = jsonText(version.fields || []);
         templateTables.value = jsonText(version.tables || []);

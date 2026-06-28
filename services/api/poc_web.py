@@ -184,11 +184,13 @@ class TemplateStore:
         actor = _validate_template_actor(request.get("actor"), "actor")
         approved_by = request.get("approved_by")
         approval = _template_change_approval(approved_by)
-        status = _validate_template_status(request.get("status", "active"))
         with self._lock:
             existing = self._templates.get(template_id)
             versions = [] if existing is None else existing["versions"]
             latest_version = None if not versions else versions[-1]
+            status = _validate_template_status(
+                _template_version_value(request, latest_version, "status", "active")
+            )
             document_type = _validate_template_text_field(
                 _template_version_value(request, latest_version, "document_type", category),
                 "document_type",
@@ -287,6 +289,8 @@ class TemplateStore:
 
     def latest_job_snapshot(self, template_id: str) -> dict[str, Any]:
         record = self.get_template(template_id)
+        if record.get("status", "active") != "active":
+            raise ValueError("template_id is inactive")
         return {
             "template_id": record["template_id"],
             "template_version": record["current_version"],
@@ -463,9 +467,13 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             self._handle_review_event()
             return
         if path == "/api/templates":
-            if not self._require_permission("templates:manage"):
+            authenticated, auth_context = self._authenticated_context()
+            if not authenticated:
                 return
-            self._handle_register_template()
+            role = auth_context["role"] if auth_context is not None else None
+            if not self._role_has_permission(role, "templates:manage"):
+                return
+            self._handle_register_template(auth_context=auth_context)
             return
         if path != "/api/convert":
             self._send_json({"error": "not_found"}, status=404)
@@ -530,9 +538,14 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             return
         self._send_json({"job": _job_response(job, self._job_queue(), role=role)}, status=202)
 
-    def _handle_register_template(self) -> None:
+    def _handle_register_template(
+        self,
+        *,
+        auth_context: dict[str, str | None] | None = None,
+    ) -> None:
         try:
             request = self._read_json_request()
+            request = _template_request_with_auth_context(request, auth_context)
             template = self._template_store().register_template(request)
         except ValueError as exc:
             if str(exc) == "content_length_required":
@@ -985,7 +998,37 @@ def _template_change_action(existing: dict[str, Any] | None, status: str) -> str
         return "created"
     if status == "inactive" and existing.get("status", "active") != "inactive":
         return "disabled"
+    if status == "active" and existing.get("status", "active") == "inactive":
+        return "enabled"
     return "versioned"
+
+
+def _template_request_with_auth_context(
+    request: dict[str, Any],
+    auth_context: dict[str, str | None] | None,
+) -> dict[str, Any]:
+    trusted_actor = _template_actor_from_auth_context(auth_context)
+    if trusted_actor is None:
+        return request
+    trusted_request = deepcopy(request)
+    trusted_request["actor"] = trusted_actor
+    if "approved_by" in trusted_request:
+        trusted_request["approved_by"] = trusted_actor
+    return trusted_request
+
+
+def _template_actor_from_auth_context(
+    auth_context: dict[str, str | None] | None,
+) -> dict[str, str] | None:
+    if auth_context is None:
+        return None
+    actor_id = auth_context.get("actor_id")
+    role = auth_context.get("role")
+    if actor_id is None and role is None:
+        return None
+    if not actor_id or not role:
+        raise ValueError("authenticated template actor context is incomplete")
+    return {"principal_id": actor_id, "role": role}
 
 
 def _template_summary(record: dict[str, Any]) -> dict[str, Any]:

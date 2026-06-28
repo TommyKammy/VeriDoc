@@ -11,6 +11,9 @@ The mutation boundary fails closed:
 
 - `change_reason` is required and must be non-empty.
 - `actor.principal_id` and `actor.role` are required and must be non-empty.
+- When local auth is enabled, HTTP template mutations derive the recorded actor
+  from the authenticated token context instead of trusting request-supplied
+  identity fields.
 - Missing `approved_by` is not inferred as approval; it is recorded explicitly
   as `{"status": "unapproved", "approved_by": None}`.
 - Provided approvals require `approved_by.principal_id` and `approved_by.role`.
@@ -22,6 +25,8 @@ Version events use an explicit action:
 - `created` for the first version of a template.
 - `versioned` for ordinary updates and version increments.
 - `disabled` when an update changes the authoritative status to `inactive`.
+- `enabled` when an update explicitly changes an inactive template back to
+  `active`.
 
 For the MVP in-memory store, this preserves traceability at the same boundary
 that creates template versions. A future persistent store should keep the same
