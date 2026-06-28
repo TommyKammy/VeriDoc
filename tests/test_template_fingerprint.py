@@ -1855,6 +1855,44 @@ class TemplateFingerprintTest(unittest.TestCase):
         self.assertEqual("BN-001", mapped["batch_number"].value)
         self.assertEqual("Released", mapped["disposition"].value)
 
+    def test_field_mapping_stops_after_text_value_at_adjacent_label(self) -> None:
+        template = self.template_definition()
+        template["fields"] = [
+            {
+                "field_id": "status",
+                "label": "Status",
+                "value_type": "string",
+                "source": {"anchor_id": "batch-header", "direction": "below"},
+                "required": True,
+                "risk_level": "medium",
+                "validation_rule_ids": [],
+                "output_key": "batch.status",
+            },
+            {
+                "field_id": "disposition",
+                "label": "Disposition",
+                "value_type": "string",
+                "source": {"anchor_id": "batch-header", "direction": "below"},
+                "required": True,
+                "risk_level": "medium",
+                "validation_rule_ids": [],
+                "output_key": "batch.disposition",
+            },
+        ]
+        document = self.document_with_blocks(
+            paragraph_text="Status Released Disposition Approved"
+        )
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertEqual("Released", mapped["status"].value)
+        self.assertEqual("Approved", mapped["disposition"].value)
+        self.assertEqual(
+            {"template_result": {"batch": {"status": "Released", "disposition": "Approved"}}},
+            result.output,
+        )
+
     def test_field_mapping_stops_value_at_adjacent_same_line_label(self) -> None:
         template = self.template_definition()
         template["fields"] = [
@@ -2133,6 +2171,73 @@ class TemplateFingerprintTest(unittest.TestCase):
             result.warnings,
         )
 
+    def test_field_mapping_allowed_values_compare_numbers_by_type(self) -> None:
+        template = self.template_definition()
+        template["fields"] = [
+            {
+                "field_id": "actual_yield",
+                "label": "actual_yield",
+                "value_type": "number",
+                "source": {"anchor_id": "yield-table", "direction": "table_cell"},
+                "required": True,
+                "risk_level": "medium",
+                "validation_rule_ids": ["allowed-yield"],
+                "output_key": "batch.actual_yield",
+            }
+        ]
+        template["validation_rules"] = [
+            {
+                "rule_id": "allowed-yield",
+                "target": "actual_yield",
+                "rule_type": "allowed_values",
+                "allowed_values": [1],
+            }
+        ]
+        document = self.document_with_blocks(
+            table_text=(
+                "Yield Summary\n"
+                "step\texpected_yield\tactual_yield\n"
+                "blend\t95\t1.0"
+            )
+        )
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertFalse(mapped["actual_yield"].requires_review)
+        self.assertEqual({"template_result": {"batch": {"actual_yield": "1.0"}}}, result.output)
+
+    def test_field_mapping_allowed_values_compare_booleans_by_type(self) -> None:
+        template = self.template_definition()
+        template["fields"] = [
+            {
+                "field_id": "released",
+                "label": "Released",
+                "value_type": "boolean",
+                "source": {"anchor_id": "batch-header", "direction": "below"},
+                "required": True,
+                "risk_level": "medium",
+                "validation_rule_ids": ["released-allowed"],
+                "output_key": "batch.released",
+            }
+        ]
+        template["validation_rules"] = [
+            {
+                "rule_id": "released-allowed",
+                "target": "released",
+                "rule_type": "allowed_values",
+                "allowed_values": [True],
+            }
+        ]
+        document = self.document_with_blocks(paragraph_text="Released yes")
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertEqual("yes", mapped["released"].value)
+        self.assertFalse(mapped["released"].requires_review)
+        self.assertEqual({"template_result": {"batch": {"released": "yes"}}}, result.output)
+
     def test_field_mapping_cross_field_date_rule_is_evaluated(self) -> None:
         template = self.template_definition()
         template["fields"] = [
@@ -2234,6 +2339,52 @@ class TemplateFingerprintTest(unittest.TestCase):
             "template field 'manufacturing_date' failed validation rule "
             "'manufactured-before-expiry'; requires review",
             result.warnings,
+        )
+
+    def test_field_mapping_cross_field_number_equality_uses_declared_type(self) -> None:
+        template = self.template_definition()
+        template["fields"] = [
+            {
+                "field_id": "actual_yield",
+                "label": "Actual Yield",
+                "value_type": "number",
+                "source": {"anchor_id": "batch-header", "direction": "below"},
+                "required": True,
+                "risk_level": "medium",
+                "validation_rule_ids": ["yield-equals-target"],
+                "output_key": "batch.actual_yield",
+            },
+            {
+                "field_id": "target_yield",
+                "label": "Target Yield",
+                "value_type": "number",
+                "source": {"anchor_id": "batch-header", "direction": "below"},
+                "required": True,
+                "risk_level": "medium",
+                "validation_rule_ids": [],
+                "output_key": "batch.target_yield",
+            },
+        ]
+        template["validation_rules"] = [
+            {
+                "rule_id": "yield-equals-target",
+                "target": "actual_yield",
+                "rule_type": "cross_field",
+                "related_target": "target_yield",
+                "operator": "equals",
+            }
+        ]
+        document = self.document_with_blocks(paragraph_text="Actual Yield 1.0 Target Yield 1")
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertEqual("1.0", mapped["actual_yield"].value)
+        self.assertEqual("1", mapped["target_yield"].value)
+        self.assertFalse(mapped["actual_yield"].requires_review)
+        self.assertEqual(
+            {"template_result": {"batch": {"actual_yield": "1.0", "target_yield": "1"}}},
+            result.output,
         )
 
     def test_right_side_fallback_stops_value_at_adjacent_label(self) -> None:

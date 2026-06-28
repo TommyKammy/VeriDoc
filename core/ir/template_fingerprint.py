@@ -621,6 +621,7 @@ def _template_field_value_validation_warnings(
         if not _value_satisfies_template_validation_rule(
             value,
             rule,
+            value_type=value_type,
             field_values_by_id=field_values_by_id,
         ):
             warnings.append(
@@ -641,6 +642,29 @@ def _value_matches_template_type(value: str, value_type: str) -> bool:
     if normalized_type == "boolean":
         return value.strip().casefold() in {"true", "false", "yes", "no", "1", "0"}
     return False
+
+
+def _coerced_template_validation_value(value: Any, value_type: str) -> Any | None:
+    normalized_type = value_type.strip().casefold()
+    if normalized_type == "number":
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, (int, float)) and math.isfinite(float(value)):
+            return float(value)
+        return _number_value(str(value))
+    if normalized_type == "date":
+        if isinstance(value, datetime):
+            return value
+        return _date_value(str(value))
+    if normalized_type == "boolean":
+        if isinstance(value, bool):
+            return value
+        normalized_value = str(value).strip().casefold()
+        if normalized_value in {"true", "yes", "1"}:
+            return True
+        if normalized_value in {"false", "no", "0"}:
+            return False
+    return None
 
 
 def _number_value(value: str) -> float | None:
@@ -673,6 +697,7 @@ def _value_satisfies_template_validation_rule(
     value: str,
     rule: Mapping[str, Any],
     *,
+    value_type: str,
     field_values_by_id: Mapping[str, str],
 ) -> bool:
     rule_type = str(rule.get("rule_type") or "").strip().casefold()
@@ -693,10 +718,21 @@ def _value_satisfies_template_validation_rule(
         return isinstance(minimum, (int, float)) or isinstance(maximum, (int, float))
     if rule_type == "allowed_values":
         allowed_values = _list_value(rule.get("allowed_values"))
+        typed_value = _coerced_template_validation_value(value, value_type)
+        if typed_value is not None:
+            return any(
+                typed_value == _coerced_template_validation_value(allowed, value_type)
+                for allowed in allowed_values
+            )
         normalized_value = value.strip().casefold()
         return any(str(allowed).strip().casefold() == normalized_value for allowed in allowed_values)
     if rule_type == "cross_field":
-        return _value_satisfies_cross_field_rule(value, rule, field_values_by_id)
+        return _value_satisfies_cross_field_rule(
+            value,
+            rule,
+            field_values_by_id,
+            value_type=value_type,
+        )
     return False
 
 
@@ -704,6 +740,8 @@ def _value_satisfies_cross_field_rule(
     value: str,
     rule: Mapping[str, Any],
     field_values_by_id: Mapping[str, str],
+    *,
+    value_type: str,
 ) -> bool:
     related_target = str(rule.get("related_target") or "")
     operator = str(rule.get("operator") or "").strip()
@@ -722,11 +760,21 @@ def _value_satisfies_cross_field_rule(
         if left_number is None or right_number is None:
             return False
         return _compare_template_values(left_number, right_number, operator)
-    left = value.strip()
-    right = related_value.strip()
     if operator == "equals":
+        left = _coerced_template_validation_value(value, value_type)
+        right = _coerced_template_validation_value(related_value, value_type)
+        if left is not None or right is not None:
+            return left is not None and right is not None and left == right
+        left = value.strip()
+        right = related_value.strip()
         return left == right
     if operator == "not_equals":
+        left = _coerced_template_validation_value(value, value_type)
+        right = _coerced_template_validation_value(related_value, value_type)
+        if left is not None or right is not None:
+            return left is not None and right is not None and left != right
+        left = value.strip()
+        right = related_value.strip()
         return left != right
     return False
 
@@ -1121,7 +1169,10 @@ def _field_value_from_label_anchor_below(
 ) -> str | None:
     if _normalized_text(field_label) != _normalized_text(anchor_text):
         return None
-    value = _value_before_next_marker(block.text.strip(), stop_markers).strip()
+    raw_value = block.text.strip()
+    if _text_starts_with_label_like_marker(raw_value, stop_markers):
+        return None
+    value = _value_before_next_marker(raw_value, stop_markers).strip()
     return _confirmed_unlabeled_below_value(block, value, field_label)
 
 
@@ -1148,7 +1199,7 @@ def _value_after_marker(
         for match in re.finditer(_marker_match_pattern(marker), line, flags=re.IGNORECASE):
             if not _marker_match_has_boundaries(line, match.start(), match.end()):
                 continue
-            if not _marker_match_is_label_like_stop(line, match.start(), match.end()):
+            if not _marker_match_is_label_like_stop(line, match.start(), match.end(), marker):
                 continue
             value = _value_after_marker_match_or_next_line(
                 lines,
@@ -1204,7 +1255,7 @@ def _value_before_next_marker(value: str, stop_markers: Sequence[str]) -> str:
         for match in re.finditer(_marker_match_pattern(marker_text), value, flags=re.IGNORECASE):
             if not _marker_match_has_boundaries(value, match.start(), match.end()):
                 continue
-            if not _marker_match_is_label_like_stop(value, match.start(), match.end()):
+            if not _marker_match_is_label_like_stop(value, match.start(), match.end(), marker_text):
                 continue
             earliest_stop = _earlier_marker_stop_index(earliest_stop, match.start())
             break
@@ -1253,7 +1304,9 @@ def _looks_like_negative_number(value: str) -> bool:
     return bool(re.fullmatch(r"-\s*(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?", value.strip()))
 
 
-def _marker_match_is_label_like_stop(value: str, start: int, end: int) -> bool:
+def _marker_match_is_label_like_stop(
+    value: str, start: int, end: int, marker_text: str = ""
+) -> bool:
     after = value[end:]
     if re.match(r"\s*[:：=]", after):
         return True
@@ -1263,7 +1316,25 @@ def _marker_match_is_label_like_stop(value: str, start: int, end: int) -> bool:
     if before[-1:] in {"\n", "\r", "|", ":", "：", "="}:
         return True
     previous_token = before.split()[-1] if before.split() else ""
-    return bool(re.search(r"[\d_-]", previous_token))
+    if re.search(r"[\d_-]", previous_token):
+        return True
+    return _marker_match_looks_like_adjacent_label(value, start, end, marker_text)
+
+
+def _marker_match_looks_like_adjacent_label(
+    value: str, start: int, end: int, marker_text: str
+) -> bool:
+    normalized_marker = " ".join(marker_text.strip().split())
+    if len(re.sub(r"[^A-Za-z0-9]", "", normalized_marker)) < 5:
+        return False
+    if not normalized_marker[:1].isupper():
+        return False
+    before = value[:start].strip()
+    after = value[end:].strip()
+    if not before or not after:
+        return False
+    after_token = after.split()[0]
+    return bool(after_token[:1].isupper() or re.search(r"\d", after_token))
 
 
 def _text_starts_with_label_like_marker(text: str, stop_markers: Sequence[str]) -> bool:
@@ -1279,7 +1350,7 @@ def _text_starts_with_label_like_marker(text: str, stop_markers: Sequence[str]) 
             continue
         if not _marker_match_has_boundaries(stripped, match.start(), match.end()):
             continue
-        if _marker_match_is_label_like_stop(stripped, match.start(), match.end()):
+        if _marker_match_is_label_like_stop(stripped, match.start(), match.end(), marker_text):
             return True
     return False
 
