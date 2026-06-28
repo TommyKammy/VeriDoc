@@ -817,7 +817,11 @@ def _compare_template_values(left: Any, right: Any, operator: str) -> bool:
     try:
         return bool(comparison())
     except TypeError:
-        return False
+        return _invalid_ordered_template_comparison()
+
+
+def _invalid_ordered_template_comparison() -> bool:
+    return False
 
 
 def _extract_template_field_value(
@@ -1200,13 +1204,21 @@ def _field_value_from_label_anchor_below(
 def _confirmed_unlabeled_below_value(
     block: DocumentBlock, value: str, field_label: str
 ) -> str | None:
-    if block.type != "paragraph":
-        return None
-    if not _looks_like_unlabeled_below_value_block(value):
-        return None
-    if not value or _normalized_text(value) == _normalized_text(field_label):
+    if not _unlabeled_below_value_can_be_confirmed(block, value, field_label):
         return None
     return value
+
+
+def _unlabeled_below_value_can_be_confirmed(
+    block: DocumentBlock, value: str, field_label: str
+) -> bool:
+    if block.type != "paragraph":
+        return False
+    if not _looks_like_unlabeled_below_value_block(value):
+        return False
+    if not value or _normalized_text(value) == _normalized_text(field_label):
+        return False
+    return True
 
 
 def _value_after_marker(
