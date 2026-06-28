@@ -38,6 +38,21 @@ GMP_REVIEW_CATEGORY_ALIASES = {
     "material": "item",
     "component": "item",
     "date": "date_time",
+    "approval_date": "date_time",
+    "approved_at": "date_time",
+    "collection_date": "date_time",
+    "effective_date": "date_time",
+    "expiration_date": "date_time",
+    "expiry_date": "date_time",
+    "manufacture_date": "date_time",
+    "manufactured_at": "date_time",
+    "manufacturing_date": "date_time",
+    "mfg_date": "date_time",
+    "production_date": "date_time",
+    "review_date": "date_time",
+    "reviewed_at": "date_time",
+    "sample_date": "date_time",
+    "test_date": "date_time",
     "time": "date_time",
     "timestamp": "date_time",
     "datetime": "date_time",
@@ -60,6 +75,7 @@ GMP_REVIEW_CATEGORY_ALIASES = {
     "oos": "deviation",
 }
 OCR_SOURCE_MARKERS = {"ocr", "optical_character_recognition"}
+OCR_EXTRACTOR_NAME_MARKERS = ("ocr", "tesseract")
 
 
 @dataclass(frozen=True)
@@ -92,7 +108,7 @@ def validate_extracted_item(
     if not _values_match(expected.get("expected_value"), actual.get("value")):
         failed_rules.append("value_non_modification")
 
-    if not _evidence_matches(expected.get("evidence"), actual.get("evidence")):
+    if not _evidence_matches(_record_source_anchor(expected), _record_source_anchor(actual)):
         failed_rules.append("provenance")
 
     if _number_expected(expected.get("expected_value")) and not _same_finite_number(
@@ -182,8 +198,8 @@ def validate_table_consistency(
         for cell_id in matching_cell_ids:
             expected_cell = expected_cells[cell_id]
             actual_cell = actual_cells[cell_id]
-            expected_source = expected_cell.get("source")
-            actual_source = actual_cell.get("source")
+            expected_source = _record_source_anchor(expected_cell)
+            actual_source = _record_source_anchor(actual_cell)
             if not _evidence_matches(expected_source, actual_source):
                 failed_rules.append("provenance")
 
@@ -201,7 +217,34 @@ def validate_table_consistency(
                 failed_rules.append("risk_gate")
             if not isinstance(expected_cell.get("requires_review"), bool):
                 failed_rules.append("risk_gate")
-            if _cell_requires_review(expected_cell) or _cell_requires_review(actual_cell):
+            confidence_requires_review = _confidence_requires_review(
+                actual_cell.get("confidence")
+            )
+            if confidence_requires_review:
+                warnings.append("table cell confidence requires human review")
+            explicit_review_required = _requires_review(expected_cell) or _requires_review(
+                actual_cell
+            )
+            high_risk = _is_high_risk(expected_cell) or _is_high_risk(actual_cell)
+            category_requires_review = _gmp_category_requires_review(
+                expected_cell
+            ) or _gmp_category_requires_review(actual_cell)
+            condition_warnings = _gmp_condition_review_warnings(
+                expected_cell,
+                actual_cell,
+                important_item=high_risk
+                or category_requires_review
+                or explicit_review_required,
+            )
+            warnings.extend(f"table cell {warning}" for warning in condition_warnings)
+            cell_requires_review = (
+                explicit_review_required
+                or high_risk
+                or category_requires_review
+                or confidence_requires_review
+                or bool(condition_warnings)
+            )
+            if cell_requires_review:
                 table_requires_review = True
                 warnings.append("table cell requires human review")
                 if auto_confirmed:
@@ -284,6 +327,19 @@ def _evidence_matches(expected: object, actual: object) -> bool:
     return _is_source_anchor(expected) and _is_source_anchor(actual) and expected == actual
 
 
+def _record_source_anchor(record: Mapping[str, Any]) -> object:
+    if "evidence" in record:
+        return record.get("evidence")
+    if "source" in record:
+        return record.get("source")
+    value_metadata = record.get("value_metadata")
+    if isinstance(value_metadata, Mapping) and (
+        "source_page" in value_metadata or "bbox" in value_metadata
+    ):
+        return value_metadata
+    return None
+
+
 def _is_source_anchor(value: object) -> bool:
     if not isinstance(value, Mapping):
         return False
@@ -325,10 +381,6 @@ def _confidence_requires_review(value: object) -> bool:
     return float(value) < MIN_IMPORTANT_VALUE_CONFIDENCE or float(value) > 1
 
 
-def _cell_requires_review(cell: Mapping[str, Any]) -> bool:
-    return _requires_review(cell) or _is_high_risk(cell) or _gmp_category_requires_review(cell)
-
-
 def _is_high_risk(record: Mapping[str, Any]) -> bool:
     return record.get("risk_level") in REVIEW_REQUIRED_RISK_LEVELS
 
@@ -367,7 +419,12 @@ def _normalized_category(value: object) -> str:
     if not isinstance(value, str):
         return ""
     normalized = value.strip().casefold().replace("-", "_").replace(" ", "_")
-    return GMP_REVIEW_CATEGORY_ALIASES.get(normalized, normalized)
+    alias = GMP_REVIEW_CATEGORY_ALIASES.get(normalized)
+    if alias:
+        return alias
+    if normalized.endswith(("_date", "_time", "_timestamp", "_datetime")):
+        return "date_time"
+    return normalized
 
 
 def _gmp_condition_review_warnings(
@@ -381,7 +438,7 @@ def _gmp_condition_review_warnings(
         warnings.append("ocr-derived item requires human review")
     if _extraction_engine_mismatch(expected, actual):
         warnings.append("extraction engine mismatch requires human review")
-    if not _evidence_matches(expected.get("evidence"), actual.get("evidence")):
+    if not _evidence_matches(_record_source_anchor(expected), _record_source_anchor(actual)):
         warnings.append("item source requires human review")
     if important_item and (_llm_involved(expected) or _llm_involved(actual)):
         warnings.append("llm-involved important item requires human review")
@@ -393,17 +450,48 @@ def _ocr_derived(record: Mapping[str, Any]) -> bool:
         value = record.get(key)
         if isinstance(value, str) and value.strip().casefold() in OCR_SOURCE_MARKERS:
             return True
+    engine = record.get("engine")
+    if isinstance(engine, str) and engine.strip():
+        return True
+    extractor_name = _extractor_name(record)
+    if extractor_name:
+        normalized = extractor_name.strip().casefold()
+        return any(marker in normalized for marker in OCR_EXTRACTOR_NAME_MARKERS)
     return False
 
 
 def _extraction_engine_mismatch(
     expected: Mapping[str, Any], actual: Mapping[str, Any]
 ) -> bool:
-    expected_engine = expected.get("extraction_engine")
-    actual_engine = actual.get("extraction_engine")
+    expected_engine = _extraction_engine(expected)
+    actual_engine = _extraction_engine(actual)
     if expected_engine is None and actual_engine is None:
         return False
     return not _same_non_empty_string(expected_engine, actual_engine)
+
+
+def _extraction_engine(record: Mapping[str, Any]) -> object:
+    for key in ("extraction_engine", "extractor_engine", "engine"):
+        value = record.get(key)
+        if isinstance(value, str):
+            return value
+    return _extractor_name(record)
+
+
+def _extractor_name(record: Mapping[str, Any]) -> str | None:
+    extractor = record.get("extractor")
+    if isinstance(extractor, Mapping):
+        name = extractor.get("name")
+        if isinstance(name, str):
+            return name
+    value_metadata = record.get("value_metadata")
+    if isinstance(value_metadata, Mapping):
+        extractor = value_metadata.get("extractor")
+        if isinstance(extractor, Mapping):
+            name = extractor.get("name")
+            if isinstance(name, str):
+                return name
+    return None
 
 
 def _llm_involved(record: Mapping[str, Any]) -> bool:

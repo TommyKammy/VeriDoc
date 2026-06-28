@@ -352,6 +352,89 @@ def test_gmp_review_required_conditions_are_not_auto_confirmed() -> None:
         assert "risk_gate" in decision.failed_rules, name
 
 
+def test_ocr_region_engine_marks_item_as_ocr_derived() -> None:
+    decision = validate_extracted_item(
+        expected=_expected_item(
+            label_id="summary_note",
+            expected_value="Reviewed note",
+            risk_level="medium",
+            requires_review=False,
+            fixture_id="fixture-001",
+            document_id="doc-001",
+            block_id="block-001",
+        ),
+        actual=_actual_item(
+            label_id="summary_note",
+            value="Reviewed note",
+            auto_confirmed=True,
+            engine="fake-tesseract",
+            fixture_id="fixture-001",
+            document_id="doc-001",
+            block_id="block-001",
+        ),
+    )
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert decision.requires_review is True
+    assert "risk_gate" in decision.failed_rules
+    assert "ocr-derived item requires human review" in decision.warnings
+
+
+def test_nested_extractor_metadata_mismatch_blocks_item_auto_confirm() -> None:
+    source = _evidence()
+    decision = validate_extracted_item(
+        expected=_expected_item(
+            label_id="summary_note",
+            expected_value="Reviewed note",
+            risk_level="medium",
+            requires_review=False,
+            fixture_id="fixture-001",
+            document_id="doc-001",
+            block_id="block-001",
+            evidence=source,
+            value_metadata={"extractor": {"name": "pymupdf-text"}},
+        ),
+        actual=_actual_item(
+            label_id="summary_note",
+            value="Reviewed note",
+            auto_confirmed=True,
+            fixture_id="fixture-001",
+            document_id="doc-001",
+            block_id="block-001",
+            evidence=source,
+            value_metadata={"extractor": {"name": "pymupdf-text-table-heuristic"}},
+        ),
+    )
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert decision.requires_review is True
+    assert "risk_gate" in decision.failed_rules
+    assert "extraction engine mismatch requires human review" in decision.warnings
+
+
+def test_common_date_label_id_aliases_require_review() -> None:
+    decision = validate_extracted_item(
+        expected=_expected_item(
+            label_id="manufacturing_date",
+            expected_value="2026-01-01",
+            risk_level="medium",
+            requires_review=False,
+        ),
+        actual=_actual_item(
+            label_id="manufacturing_date",
+            value="2026-01-01",
+            auto_confirmed=True,
+        ),
+    )
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert decision.requires_review is True
+    assert "risk_gate" in decision.failed_rules
+
+
 def test_malformed_item_risk_level_blocks_auto_confirm() -> None:
     decision = validate_extracted_item(
         expected=_expected_item(risk_level="todo", requires_review=False),
@@ -638,6 +721,48 @@ def test_table_cells_enforce_provenance_and_review_gates() -> None:
     assert decision.requires_review is True
     assert "provenance" in decision.failed_rules
     assert "risk_gate" in decision.failed_rules
+
+
+def test_table_cells_apply_gmp_condition_gates() -> None:
+    source = _evidence()
+    expected_table = {
+        "id": "table-001",
+        "fixture_table_id": "table-001",
+        "cells": [
+            {
+                "id": "table-001-r1-c1",
+                "text": "Reviewed note",
+                "source": source,
+                "requires_review": False,
+                "risk_level": "medium",
+                "extraction_engine": "template-v1",
+            },
+        ],
+    }
+    actual_table = {
+        "id": "table-001",
+        "cells": [
+            {
+                "id": "table-001-r1-c1",
+                "text": "Reviewed note",
+                "source": source,
+                "auto_confirmed": True,
+                "engine": "fake-tesseract",
+            },
+        ],
+    }
+
+    decision = validate_table_consistency(expected_table, actual_table)
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert decision.requires_review is True
+    assert "risk_gate" in decision.failed_rules
+    assert "table cell ocr-derived item requires human review" in decision.warnings
+    assert (
+        "table cell extraction engine mismatch requires human review"
+        in decision.warnings
+    )
 
 
 def test_table_cell_missing_expected_source_blocks_auto_confirm() -> None:
