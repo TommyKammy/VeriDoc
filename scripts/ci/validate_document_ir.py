@@ -10,8 +10,10 @@ the schema evolves.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import json
 import math
+import re
 import sys
 from pathlib import Path
 from typing import Any, NoReturn
@@ -28,6 +30,7 @@ SUPPORTED_KEYS = {
     "maximum",
     "minimum",
     "minItems",
+    "pattern",
     "properties",
     "required",
     "type",
@@ -82,6 +85,10 @@ def validate(schema: dict[str, Any], value: Any, path: tuple[str, ...] = ()) -> 
         allowed = ", ".join(repr(item) for item in schema["enum"])
         raise ValidationError(f"{format_path(path)}: expected one of {allowed}")
 
+    if "pattern" in schema and isinstance(value, str):
+        if re.search(schema["pattern"], value) is None:
+            raise ValidationError(f"{format_path(path)}: expected to match pattern {schema['pattern']!r}")
+
     if "type" in schema:
         expected_types = schema["type"]
         if isinstance(expected_types, str):
@@ -133,6 +140,8 @@ def validate_document_ir_consistency(document: dict[str, Any]) -> None:
 
 
 def validate_template_definition_consistency(template: dict[str, Any]) -> None:
+    _validate_template_effective_metadata(template)
+
     anchors_by_id = _unique_template_items(template.get("anchors", []), "anchor_id", "$.anchors")
     anchor_ids = set(anchors_by_id)
     fields_by_id = _unique_template_items(template.get("fields", []), "field_id", "$.fields")
@@ -268,6 +277,35 @@ def validate_template_definition_consistency(template: dict[str, Any]) -> None:
         "table_id",
         "$.output_mapping.table_map",
     )
+
+
+def _validate_template_effective_metadata(template: dict[str, Any]) -> None:
+    effective = template.get("effective", {})
+    effective_from = effective.get("from")
+    if not isinstance(effective_from, str) or not effective_from:
+        raise ValidationError("$.effective.from: must be a non-empty string")
+    parsed_from = _parse_template_timestamp(effective_from, "$.effective.from")
+
+    effective_until = effective.get("until")
+    if effective_until is not None and (not isinstance(effective_until, str) or not effective_until):
+        raise ValidationError("$.effective.until: must be a non-empty string")
+    parsed_until = (
+        _parse_template_timestamp(effective_until, "$.effective.until")
+        if isinstance(effective_until, str)
+        else None
+    )
+    if parsed_until is not None and parsed_until <= parsed_from:
+        raise ValidationError("$.effective.until: must be after $.effective.from")
+
+
+def _parse_template_timestamp(value: str, path: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValidationError(f"{path}: must be an ISO-8601 timestamp with timezone") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValidationError(f"{path}: must include a timezone offset")
+    return parsed
 
 
 def _unique_template_items(items: list[dict[str, Any]], key: str, path: str) -> dict[str, dict[str, Any]]:

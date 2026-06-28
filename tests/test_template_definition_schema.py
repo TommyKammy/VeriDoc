@@ -15,6 +15,7 @@ from scripts.ci.validate_document_ir import ValidationError, validate, validate_
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = REPO_ROOT / "core" / "ir" / "template-definition.schema.json"
 SAMPLE_PATH = REPO_ROOT / "core" / "ir" / "examples" / "sample-template-definition.json"
+TEMPLATE_FIXTURE_DIR = REPO_ROOT / "datasets" / "fixtures" / "templates"
 
 
 class TemplateDefinitionSchemaTest(unittest.TestCase):
@@ -28,6 +29,12 @@ class TemplateDefinitionSchemaTest(unittest.TestCase):
 
     def test_sample_template_definition_validates_against_schema(self) -> None:
         self.validate_template(self.load_sample())
+
+    def test_bundled_template_regression_fixtures_validate_against_schema(self) -> None:
+        for fixture_path in sorted(TEMPLATE_FIXTURE_DIR.glob("*.json")):
+            fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+            with self.subTest(fixture=fixture_path.relative_to(REPO_ROOT)):
+                self.validate_template(fixture["template_definition"])
 
     def test_cli_applies_template_consistency_checks(self) -> None:
         sample = self.load_sample()
@@ -203,6 +210,8 @@ class TemplateDefinitionSchemaTest(unittest.TestCase):
         for key in (
             "template_id",
             "version",
+            "status",
+            "effective",
             "document_type",
             "anchors",
             "fields",
@@ -224,6 +233,8 @@ class TemplateDefinitionSchemaTest(unittest.TestCase):
         invalid_values = {
             "template_id": 102,
             "version": 1,
+            "status": "retired",
+            "effective": [],
             "document_type": ["batch_record"],
             "anchors": {},
             "fields": {},
@@ -238,6 +249,30 @@ class TemplateDefinitionSchemaTest(unittest.TestCase):
             with self.subTest(key=key):
                 with self.assertRaises(ValidationError):
                     validate(schema, invalid)
+
+    def test_template_effective_metadata_must_be_well_ordered(self) -> None:
+        sample = self.load_sample()
+        sample["effective"]["from"] = "2026-01-01T00:00:00+09:00"
+        sample["effective"]["until"] = "2025-12-31T14:30:00Z"
+
+        with self.assertRaisesRegex(ValidationError, "effective.until"):
+            self.validate_template(sample)
+
+    def test_version_metadata_must_match_registry_semver(self) -> None:
+        sample = self.load_sample()
+        sample["version"] = "v1"
+
+        with self.assertRaisesRegex(ValidationError, "pattern"):
+            self.validate_template(sample)
+
+    def test_effective_metadata_requires_timezone_aware_timestamps(self) -> None:
+        for timestamp in ("2026-01-01T00:00:00", "not-a-timestamp"):
+            sample = self.load_sample()
+            sample["effective"]["from"] = timestamp
+
+            with self.subTest(timestamp=timestamp):
+                with self.assertRaises(ValidationError):
+                    self.validate_template(sample)
 
     def test_scope_block_types_follow_document_ir_v1_block_types(self) -> None:
         schema = self.load_schema()
