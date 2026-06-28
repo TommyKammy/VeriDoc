@@ -1103,7 +1103,20 @@ def _looks_like_unlabeled_below_value_block(value: str) -> bool:
     if len(nonempty_lines) != 1:
         return False
     line = nonempty_lines[0]
+    if _looks_like_unlabeled_section_heading(line):
+        return False
     return "\t" not in line and "|" not in line
+
+
+def _looks_like_unlabeled_section_heading(value: str) -> bool:
+    if any(char.isdigit() for char in value):
+        return False
+    if re.search(r"[^A-Za-z\s]", value):
+        return False
+    words = [word for word in value.split() if word]
+    if len(words) < 2:
+        return False
+    return all(word[:1].isupper() for word in words)
 
 
 def _looks_like_negative_number(value: str) -> bool:
