@@ -206,14 +206,8 @@ def apply_template_field_mapping(
         if isinstance(mapping.get("field_id"), str) and isinstance(mapping.get("output_key"), str)
     }
     fields = [_mapping(value) for value in _list_value(template_definition.get("fields"))]
-    output_keys_by_field_id_for_conflicts = {
-        str(field.get("field_id") or ""): output_keys_by_field_id.get(str(field.get("field_id") or ""))
-        or str(field.get("output_key") or field.get("field_id") or "")
-        for field in fields
-    }
-    table_output_keys_by_id_for_conflicts = _table_output_keys_for_conflicts(output_mapping)
     output_conflicts = _output_key_conflicts(
-        {**output_keys_by_field_id_for_conflicts, **table_output_keys_by_id_for_conflicts}
+        _field_and_table_output_keys_for_conflicts(fields, output_mapping, output_keys_by_field_id)
     )
     for conflict_warnings in output_conflicts.values():
         warnings.extend(conflict_warnings)
@@ -594,17 +588,12 @@ def _extract_template_nearby_field(
                 continue
             if block.bbox.y < anchor_block.bbox.y:
                 continue
-            value = _field_value_from_text(
+            value = _below_field_value_from_block(
                 block.text,
-                label,
-                anchor_text,
+                field_label=label,
+                anchor_text=anchor_text,
                 stop_markers=stop_markers,
-                allow_anchor_fallback=False,
             )
-            if value is None:
-                value = _field_value_from_label_anchor_below(
-                    block.text, field_label=label, anchor_text=anchor_text, stop_markers=stop_markers
-                )
             if value:
                 return _template_value(block, value, 0.95, direction=direction)
     return None
@@ -658,8 +647,11 @@ def _extract_template_table_cell(
         if column_index is None:
             continue
         actual_column_index = column_offset + column_index
-        for row_index, row in enumerate(parsed_rows.rows[header_index + 1 :], start=header_index + 1):
-            value = _table_cell_value_at_physical_column(row, actual_column_index)
+        for row_index, value in _table_body_values_at_physical_column(
+            parsed_rows.rows,
+            header_index,
+            actual_column_index,
+        ):
             if value:
                 return _template_value(
                     block,
@@ -721,12 +713,31 @@ def _table_cell_value_at_physical_column(row: Sequence[str], column_index: int) 
     return value or None
 
 
-def _table_output_keys_for_conflicts(output_mapping: Mapping[str, Any]) -> dict[str, str]:
-    return {
+def _table_body_values_at_physical_column(
+    rows: Sequence[Sequence[str]], header_index: int, column_index: int
+) -> list[tuple[int, str | None]]:
+    return [
+        (row_index, _table_cell_value_at_physical_column(row, column_index))
+        for row_index, row in enumerate(rows[header_index + 1 :], start=header_index + 1)
+    ]
+
+
+def _field_and_table_output_keys_for_conflicts(
+    fields: Sequence[Mapping[str, Any]],
+    output_mapping: Mapping[str, Any],
+    output_keys_by_field_id: Mapping[str, str],
+) -> dict[str, str]:
+    field_output_keys = {
+        str(field.get("field_id") or ""): output_keys_by_field_id.get(str(field.get("field_id") or ""))
+        or str(field.get("output_key") or field.get("field_id") or "")
+        for field in fields
+    }
+    table_output_keys = {
         f"table:{mapping.get('table_id')}": str(mapping.get("output_key") or "")
         for mapping in (_mapping(value) for value in _list_value(output_mapping.get("table_map")))
         if isinstance(mapping.get("table_id"), str) and isinstance(mapping.get("output_key"), str)
     }
+    return {**field_output_keys, **table_output_keys}
 
 
 def _field_stop_markers(
@@ -759,6 +770,30 @@ def _field_value_from_text(
     if not allow_anchor_fallback:
         return None
     return _value_after_marker(text, anchor_text, stop_markers=stop_markers)
+
+
+def _below_field_value_from_block(
+    text: str,
+    *,
+    field_label: str,
+    anchor_text: str,
+    stop_markers: Sequence[str] = (),
+) -> str | None:
+    value = _field_value_from_text(
+        text,
+        field_label,
+        anchor_text,
+        stop_markers=stop_markers,
+        allow_anchor_fallback=False,
+    )
+    if value is not None:
+        return value
+    return _field_value_from_label_anchor_below(
+        text,
+        field_label=field_label,
+        anchor_text=anchor_text,
+        stop_markers=stop_markers,
+    )
 
 
 def _field_value_from_label_anchor_below(
