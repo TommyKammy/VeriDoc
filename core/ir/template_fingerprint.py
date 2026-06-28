@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime, timezone
 import math
 import re
 from collections.abc import Mapping, Sequence
@@ -760,7 +760,13 @@ def _coerced_template_validation_value(value: Any, value_type: str) -> Any | Non
 
 
 def _number_value(value: str) -> float | None:
-    stripped = value.strip().replace(",", "")
+    stripped = re.sub(r"^([+-])\s+", r"\1", value.strip())
+    if "," in stripped and not re.fullmatch(
+        r"[+-]?\d{1,3}(?:,\d{3})+(?:\.\d*)?(?:[eE][+-]?\d+)?",
+        stripped,
+    ):
+        return None
+    stripped = stripped.replace(",", "")
     if not re.fullmatch(r"[+-]?\s*(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?", stripped):
         return None
     try:
@@ -770,7 +776,7 @@ def _number_value(value: str) -> float | None:
     return number if math.isfinite(number) else None
 
 
-def _date_value(value: str) -> datetime | None:
+def _date_value(value: str) -> date | None:
     stripped = value.strip()
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}(?:[T ][0-9:.+-]+Z?)?", stripped):
         return None
@@ -780,9 +786,12 @@ def _date_value(value: str) -> datetime | None:
     elif " " in normalized and "T" not in normalized:
         normalized = normalized.replace(" ", "T", 1)
     try:
-        return datetime.fromisoformat(normalized)
+        parsed = datetime.fromisoformat(normalized)
     except ValueError:
         return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed.date()
 
 
 def _value_satisfies_template_validation_rule(
@@ -1050,7 +1059,7 @@ def _extract_template_table_cell(
         )
         if header_candidate is None:
             continue
-        column_index = _row_column_index(
+        column_span = _row_column_span(
             header_candidate.header,
             normalized_label,
             allow_merged_column_candidates=(
@@ -1058,13 +1067,15 @@ def _extract_template_table_cell(
                 and _block_allows_merged_column_candidates(block, document_ir.document.source_type)
             ),
         )
-        if column_index is None:
+        if column_span is None:
             continue
+        column_index, column_count = column_span
         actual_column_index = header_candidate.column_offset + column_index
-        table_value = _first_table_body_value_at_physical_column(
+        table_value = _first_table_body_value_at_physical_column_span(
             parsed_rows.rows,
             header_candidate.row_index,
             actual_column_index,
+            column_count,
             header_candidate.comparison_headers,
         )
         if table_value is not None:
@@ -1129,6 +1140,21 @@ def _table_cell_value_at_physical_column(row: Sequence[str], column_index: int) 
     return value or None
 
 
+def _table_cell_value_at_physical_column_span(
+    row: Sequence[str], column_index: int, column_count: int
+) -> str | None:
+    if column_count <= 1:
+        return _table_cell_value_at_physical_column(row, column_index)
+    if column_index >= len(row):
+        return None
+    values = [
+        str(cell).strip()
+        for cell in row[column_index : column_index + column_count]
+        if str(cell).strip()
+    ]
+    return " ".join(values) or None
+
+
 def _table_body_values_at_physical_column(
     rows: Sequence[Sequence[str]],
     header_index: int,
@@ -1137,6 +1163,20 @@ def _table_body_values_at_physical_column(
 ) -> list[tuple[int, str | None]]:
     return [
         (row_index, _table_cell_value_at_physical_column(row, column_index))
+        for row_index, row in enumerate(rows[header_index + 1 :], start=header_index + 1)
+        if _table_body_row_is_value_candidate(row, comparison_headers)
+    ]
+
+
+def _table_body_values_at_physical_column_span(
+    rows: Sequence[Sequence[str]],
+    header_index: int,
+    column_index: int,
+    column_count: int,
+    comparison_headers: Sequence[Sequence[str]],
+) -> list[tuple[int, str | None]]:
+    return [
+        (row_index, _table_cell_value_at_physical_column_span(row, column_index, column_count))
         for row_index, row in enumerate(rows[header_index + 1 :], start=header_index + 1)
         if _table_body_row_is_value_candidate(row, comparison_headers)
     ]
@@ -1172,6 +1212,25 @@ def _first_table_body_value_at_physical_column(
         rows,
         header_index,
         column_index,
+        comparison_headers,
+    ):
+        if value:
+            return row_index, value
+    return None
+
+
+def _first_table_body_value_at_physical_column_span(
+    rows: Sequence[Sequence[str]],
+    header_index: int,
+    column_index: int,
+    column_count: int,
+    comparison_headers: Sequence[Sequence[str]],
+) -> tuple[int, str] | None:
+    for row_index, value in _table_body_values_at_physical_column_span(
+        rows,
+        header_index,
+        column_index,
+        column_count,
         comparison_headers,
     ):
         if value:
@@ -1361,6 +1420,10 @@ def _unlabeled_below_value_can_be_confirmed(
         return False
     if not value or _normalized_text(value) == _normalized_text(field_label):
         return False
+    if _looks_like_unlabeled_section_heading(value) and not _field_label_accepts_title_cased_value(
+        field_label
+    ):
+        return False
     return True
 
 
@@ -1462,13 +1525,37 @@ def _looks_like_unlabeled_below_value_block(value: str) -> bool:
     line = nonempty_lines[0]
     if _looks_like_label_or_note_line(line):
         return False
-    if _looks_like_unlabeled_section_heading(line):
-        return False
     return "\t" not in line and "|" not in line
 
 
 def _looks_like_label_or_note_line(value: str) -> bool:
-    return bool(re.search(r"\S\s*[:：=]\s*\S", value))
+    return bool(
+        re.match(
+            r"^[A-Za-z][A-Za-z0-9 /_.()'-]*(?:\s+[A-Za-z][A-Za-z0-9 /_.()'-]*){0,5}"
+            r"\s*[:：=]\s+\S",
+            value.strip(),
+        )
+    )
+
+
+def _field_label_accepts_title_cased_value(field_label: str) -> bool:
+    normalized_label = _normalized_text(field_label)
+    return any(
+        token in normalized_label
+        for token in (
+            "prepared by",
+            "reviewed by",
+            "approved by",
+            "authorized by",
+            "name",
+            "person",
+            "organization",
+            "organisation",
+            "company",
+            "supplier",
+            "manufacturer",
+        )
+    )
 
 
 def _looks_like_unlabeled_section_heading(value: str) -> bool:
@@ -1816,9 +1903,23 @@ def _row_column_index(
     *,
     allow_merged_column_candidates: bool,
 ) -> int | None:
+    span = _row_column_span(
+        row,
+        normalized_label,
+        allow_merged_column_candidates=allow_merged_column_candidates,
+    )
+    return None if span is None else span[0]
+
+
+def _row_column_span(
+    row: Sequence[str],
+    normalized_label: str,
+    *,
+    allow_merged_column_candidates: bool,
+) -> tuple[int, int] | None:
     for index, cell in enumerate(row):
         if _normalized_column_name(cell) == normalized_label:
-            return index
+            return index, 1
     if not allow_merged_column_candidates:
         return None
     merged = ""
@@ -1830,7 +1931,7 @@ def _row_column_index(
         else:
             merged = f"{merged} {cell}"
         if _normalized_column_name(merged) == normalized_label:
-            return start_index
+            return start_index, index - start_index + 1
         if _normalized_column_name(merged) not in normalized_label:
             merged = str(cell)
             start_index = index
