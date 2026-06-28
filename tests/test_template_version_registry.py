@@ -63,6 +63,28 @@ class TemplateVersionRegistryTest(unittest.TestCase):
         with self.assertRaisesRegex(TemplateVersionError, "active"):
             registry.select_active("synthetic-batch-record")
 
+    def test_rejects_versions_with_trailing_newlines(self) -> None:
+        with self.assertRaisesRegex(TemplateVersionError, "major.minor.patch"):
+            TemplateVersionRegistry(
+                [
+                    self.template_version(
+                        "1.0.0\n",
+                        effective_from="2026-01-01T00:00:00Z",
+                    )
+                ]
+            )
+
+    def test_rejects_non_ascii_semver_digits(self) -> None:
+        with self.assertRaisesRegex(TemplateVersionError, "major.minor.patch"):
+            TemplateVersionRegistry(
+                [
+                    self.template_version(
+                        "\u0661.0.0",
+                        effective_from="2026-01-01T00:00:00Z",
+                    )
+                ]
+            )
+
     def test_default_active_selection_honors_effective_windows(self) -> None:
         registry = TemplateVersionRegistry(
             [
@@ -108,6 +130,35 @@ class TemplateVersionRegistryTest(unittest.TestCase):
                     TemplateVersionRegistry(
                         [self.template_version("1.0.0", effective_from=timestamp)]
                     )
+
+    def test_effective_metadata_rejects_fractional_seconds_beyond_microseconds(self) -> None:
+        with self.assertRaisesRegex(TemplateVersionError, "at most 6 fractional digits"):
+            TemplateVersionRegistry(
+                [
+                    self.template_version(
+                        "1.0.0",
+                        effective_from="2026-01-01T00:00:00.1234567Z",
+                    )
+                ]
+            )
+
+    def test_effective_metadata_accepts_microsecond_precision(self) -> None:
+        registry = TemplateVersionRegistry(
+            [
+                self.template_version(
+                    "1.0.0",
+                    effective_from="2026-01-01T00:00:00.123456Z",
+                )
+            ]
+        )
+
+        self.assertEqual(
+            registry.select_active(
+                "synthetic-batch-record",
+                as_of="2026-01-01T00:00:00.123456Z",
+            )["version"],
+            "1.0.0",
+        )
 
 
 if __name__ == "__main__":
