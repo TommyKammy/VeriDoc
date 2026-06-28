@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 import math
 import re
 from collections.abc import Mapping, Sequence
@@ -215,17 +216,30 @@ def apply_template_field_mapping(
 
     mapped_fields: list[TemplateMappedField] = []
     output: dict[str, Any] = {}
+    extracted_by_field_id: dict[str, _ExtractedTemplateFieldValue | None] = {}
+    if template_match.classification is TemplateMatchClassification.KNOWN:
+        extracted_by_field_id = {
+            str(field.get("field_id") or ""): _extract_template_field_value(
+                document_ir,
+                field,
+                anchors,
+                fields,
+                template_definition,
+            )
+            for field in fields
+        }
+    field_values_by_id = {
+        field_id: extracted.value
+        for field_id, extracted in extracted_by_field_id.items()
+        if field_id and extracted is not None
+    }
     for field in fields:
         field_id = str(field.get("field_id") or "")
         label = str(field.get("label") or field_id)
         output_key = output_keys_by_field_id.get(field_id) or str(field.get("output_key") or field_id)
         required = field.get("required") is True
         output_conflict_warnings = tuple(output_conflicts.get(output_key, ()))
-        extracted = (
-            _extract_template_field_value(document_ir, field, anchors, fields, template_definition)
-            if template_match.classification is TemplateMatchClassification.KNOWN
-            else None
-        )
+        extracted = extracted_by_field_id.get(field_id)
         if extracted is None:
             missing_warnings = (
                 (f"template field '{field_id or '<unknown>'}' missing; requires review",)
@@ -261,6 +275,7 @@ def apply_template_field_mapping(
             field,
             extracted.value,
             template_definition,
+            field_values_by_id,
         )
         field_warnings = (
             *block_warnings,
@@ -573,7 +588,10 @@ def _mapped_field_output_is_confirmed(requires_review: bool) -> bool:
 
 
 def _template_field_value_validation_warnings(
-    field: Mapping[str, Any], value: str, template_definition: Mapping[str, Any]
+    field: Mapping[str, Any],
+    value: str,
+    template_definition: Mapping[str, Any],
+    field_values_by_id: Mapping[str, str],
 ) -> tuple[str, ...]:
     field_id = str(field.get("field_id") or "<unknown>")
     value_type = str(field.get("value_type") or "").strip()
@@ -600,7 +618,11 @@ def _template_field_value_validation_warnings(
                 f"'{rule_id}'; requires review"
             )
             continue
-        if not _value_satisfies_template_validation_rule(value, rule):
+        if not _value_satisfies_template_validation_rule(
+            value,
+            rule,
+            field_values_by_id=field_values_by_id,
+        ):
             warnings.append(
                 f"template field '{field_id}' failed validation rule '{rule_id}'; "
                 "requires review"
@@ -615,9 +637,7 @@ def _value_matches_template_type(value: str, value_type: str) -> bool:
     if normalized_type == "number":
         return _number_value(value) is not None
     if normalized_type == "date":
-        return bool(
-            re.fullmatch(r"\d{4}-\d{2}-\d{2}(?:[T ][0-9:.+-]+Z?)?", value.strip())
-        )
+        return _date_value(value) is not None
     if normalized_type == "boolean":
         return value.strip().casefold() in {"true", "false", "yes", "no", "1", "0"}
     return False
@@ -634,7 +654,27 @@ def _number_value(value: str) -> float | None:
     return number if math.isfinite(number) else None
 
 
-def _value_satisfies_template_validation_rule(value: str, rule: Mapping[str, Any]) -> bool:
+def _date_value(value: str) -> datetime | None:
+    stripped = value.strip()
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}(?:[T ][0-9:.+-]+Z?)?", stripped):
+        return None
+    normalized = stripped.replace("Z", "+00:00")
+    if len(normalized) == 10:
+        normalized = f"{normalized}T00:00:00"
+    elif " " in normalized and "T" not in normalized:
+        normalized = normalized.replace(" ", "T", 1)
+    try:
+        return datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+
+
+def _value_satisfies_template_validation_rule(
+    value: str,
+    rule: Mapping[str, Any],
+    *,
+    field_values_by_id: Mapping[str, str],
+) -> bool:
     rule_type = str(rule.get("rule_type") or "").strip().casefold()
     if rule_type == "required":
         return bool(value.strip())
@@ -656,6 +696,52 @@ def _value_satisfies_template_validation_rule(value: str, rule: Mapping[str, Any
         normalized_value = value.strip().casefold()
         return any(str(allowed).strip().casefold() == normalized_value for allowed in allowed_values)
     if rule_type == "cross_field":
+        return _value_satisfies_cross_field_rule(value, rule, field_values_by_id)
+    return False
+
+
+def _value_satisfies_cross_field_rule(
+    value: str,
+    rule: Mapping[str, Any],
+    field_values_by_id: Mapping[str, str],
+) -> bool:
+    related_target = str(rule.get("related_target") or "")
+    operator = str(rule.get("operator") or "").strip()
+    related_value = field_values_by_id.get(related_target)
+    if related_value is None:
+        return False
+    if operator in {"before", "before_or_equal", "after", "after_or_equal"}:
+        left_date = _date_value(value)
+        right_date = _date_value(related_value)
+        if left_date is None or right_date is None:
+            return False
+        return _compare_template_values(left_date, right_date, operator)
+    if operator in {"less_than", "less_than_or_equal", "greater_than", "greater_than_or_equal"}:
+        left_number = _number_value(value)
+        right_number = _number_value(related_value)
+        if left_number is None or right_number is None:
+            return False
+        return _compare_template_values(left_number, right_number, operator)
+    left = value.strip()
+    right = related_value.strip()
+    if operator == "equals":
+        return left == right
+    if operator == "not_equals":
+        return left != right
+    return False
+
+
+def _compare_template_values(left: Any, right: Any, operator: str) -> bool:
+    try:
+        if operator in {"before", "less_than"}:
+            return left < right
+        if operator in {"before_or_equal", "less_than_or_equal"}:
+            return left <= right
+        if operator in {"after", "greater_than"}:
+            return left > right
+        if operator in {"after_or_equal", "greater_than_or_equal"}:
+            return left >= right
+    except TypeError:
         return False
     return False
 
@@ -717,6 +803,8 @@ def _extract_template_nearby_field(
                     value = _field_value_from_text(block.text, label, anchor_text, stop_markers=stop_markers)
                     if value is None:
                         value = _value_before_next_marker(block.text.strip(), stop_markers).strip() or None
+                        if value is None and _text_starts_with_label_like_marker(block.text, stop_markers):
+                            break
                     if value:
                         return _template_value(block, value, 0.94, direction=direction)
         return None
@@ -999,14 +1087,15 @@ def _below_scan_candidate_blocks(
         for block in ordered_blocks
         if block.id != anchor_block.id
         and block.source_page == anchor_block.source_page
-        and block.bbox.y >= anchor_block.bbox.y
+        and block.bbox.y > anchor_block.bbox.y
     ]
     if str(anchor.get("kind") or "") != "label":
-        return [
-            block
-            for block in candidates
-            if not _below_scan_block_is_not_field_value(block)
-        ]
+        scoped_candidates: list[DocumentBlock] = []
+        for block in candidates:
+            if _below_scan_block_is_not_field_value(block):
+                break
+            scoped_candidates.append(block)
+        return scoped_candidates
     if not candidates:
         return []
     first_below_block = candidates[0]
@@ -1044,7 +1133,7 @@ def _value_after_marker(
         return None
     lines = text.splitlines() or [text]
     for line_index, line in enumerate(lines):
-        for match in re.finditer(re.escape(marker.strip()), line, flags=re.IGNORECASE):
+        for match in re.finditer(_marker_match_pattern(marker), line, flags=re.IGNORECASE):
             if not _marker_match_has_boundaries(line, match.start(), match.end()):
                 continue
             if not _marker_match_is_label_like_stop(line, match.start(), match.end()):
@@ -1100,7 +1189,7 @@ def _value_before_next_marker(value: str, stop_markers: Sequence[str]) -> str:
         marker_text = marker.strip()
         if not marker_text:
             continue
-        for match in re.finditer(re.escape(marker_text), value, flags=re.IGNORECASE):
+        for match in re.finditer(_marker_match_pattern(marker_text), value, flags=re.IGNORECASE):
             if not _marker_match_has_boundaries(value, match.start(), match.end()):
                 continue
             if not _marker_match_is_label_like_stop(value, match.start(), match.end()):
@@ -1110,6 +1199,11 @@ def _value_before_next_marker(value: str, stop_markers: Sequence[str]) -> str:
     if earliest_stop is None:
         return value
     return re.sub(r"[\s:：=-]+$", "", value[:earliest_stop]).strip()
+
+
+def _marker_match_pattern(marker: str) -> str:
+    parts = [part for part in re.split(r"\s+", marker.strip()) if part]
+    return r"\s+".join(re.escape(part) for part in parts)
 
 
 def _earlier_marker_stop_index(current: int | None, candidate: int) -> int:
@@ -1156,9 +1250,26 @@ def _marker_match_is_label_like_stop(value: str, start: int, end: int) -> bool:
         return True
     if before[-1:] in {"\n", "\r", "|", ":", "：", "="}:
         return True
-    marker_text = value[start:end]
     previous_token = before.split()[-1] if before.split() else ""
-    return bool(re.search(r"[\d_-]", previous_token)) or bool(re.search(r"\s", marker_text))
+    return bool(re.search(r"[\d_-]", previous_token))
+
+
+def _text_starts_with_label_like_marker(text: str, stop_markers: Sequence[str]) -> bool:
+    stripped = text.strip()
+    if not stripped:
+        return False
+    for marker in stop_markers:
+        marker_text = marker.strip()
+        if not marker_text:
+            continue
+        match = re.match(_marker_match_pattern(marker_text), stripped, flags=re.IGNORECASE)
+        if match is None:
+            continue
+        if not _marker_match_has_boundaries(stripped, match.start(), match.end()):
+            continue
+        if _marker_match_is_label_like_stop(stripped, match.start(), match.end()):
+            return True
+    return False
 
 
 def _marker_match_has_boundaries(text: str, start: int, end: int) -> bool:

@@ -1654,6 +1654,49 @@ class TemplateFingerprintTest(unittest.TestCase):
         self.assertTrue(mapped["batch_number"].requires_review)
         self.assertEqual({"template_result": {}}, result.output)
 
+    def test_below_label_anchor_ignores_same_line_blocks(self) -> None:
+        template = self.template_definition()
+        template["anchors"].append(
+            {
+                "anchor_id": "batch-number-label",
+                "kind": "label",
+                "text": "Batch No.",
+                "match": "normalized",
+                "scope": {"page": 1, "block_types": ["paragraph"]},
+            }
+        )
+        template["fields"] = [
+            {
+                "field_id": "batch_number",
+                "label": "Batch No.",
+                "value_type": "string",
+                "source": {"anchor_id": "batch-number-label", "direction": "below"},
+                "required": True,
+                "risk_level": "medium",
+                "validation_rule_ids": [],
+                "output_key": "batch.number",
+            }
+        ]
+        document = DocumentIRV1(
+            schema_version="document-ir/v1",
+            document=DocumentInfo(id="fixture", title="Fixture", source_type="pdf"),
+            pages=[DocumentPage(page_number=1, width=612.0, height=792.0)],
+            blocks=[
+                self.block("heading", "Batch Production Record"),
+                self.block("paragraph", "BN-000", x=36.0, y=120.0, block_id="same-line-left"),
+                self.block("paragraph", "Batch No.", y=120.0, block_id="batch-label"),
+                self.block("paragraph", "BN-001", y=144.0, block_id="below-value"),
+                self.block("table", "Yield Summary\nstep\texpected_yield\tactual_yield", y=180.0),
+            ],
+            warnings=[],
+        )
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertEqual("BN-001", mapped["batch_number"].value)
+        self.assertEqual("below-value", mapped["batch_number"].evidence["block_id"])
+
     def test_below_field_mapping_reads_value_below_label_anchor(self) -> None:
         template = self.template_definition()
         template["anchors"].append(
@@ -1699,6 +1742,41 @@ class TemplateFingerprintTest(unittest.TestCase):
 
         self.assertEqual("BN-001", mapped["batch_number"].value)
         self.assertEqual("batch-value", mapped["batch_number"].evidence["block_id"])
+
+    def test_non_label_below_anchor_stops_at_section_boundary(self) -> None:
+        template = self.template_definition()
+        template["fields"] = [
+            {
+                "field_id": "batch_number",
+                "label": "Batch No.",
+                "value_type": "string",
+                "source": {"anchor_id": "batch-header", "direction": "below"},
+                "required": True,
+                "risk_level": "medium",
+                "validation_rule_ids": [],
+                "output_key": "batch.number",
+            }
+        ]
+        document = DocumentIRV1(
+            schema_version="document-ir/v1",
+            document=DocumentInfo(id="fixture", title="Fixture", source_type="pdf"),
+            pages=[DocumentPage(page_number=1, width=612.0, height=792.0)],
+            blocks=[
+                self.block("heading", "Batch Production Record"),
+                self.block("paragraph", "Prepared by QA", y=120.0, block_id="intro"),
+                self.block("heading", "Packaging Summary", y=144.0, block_id="next-section"),
+                self.block("paragraph", "Batch No. BN-001", y=168.0, block_id="later-field"),
+                self.block("table", "Yield Summary\nstep\texpected_yield\tactual_yield", y=220.0),
+            ],
+            warnings=[],
+        )
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertIsNone(mapped["batch_number"].value)
+        self.assertTrue(mapped["batch_number"].requires_review)
+        self.assertEqual({"template_result": {}}, result.output)
 
     def test_field_mapping_stops_value_at_next_mapped_label(self) -> None:
         template = self.template_definition()
@@ -1801,6 +1879,66 @@ class TemplateFingerprintTest(unittest.TestCase):
         self.assertIsNone(mapped["date"].value)
         self.assertEqual({"template_result": {"batch": {"comments": "Expiry Date TBD"}}}, result.output)
 
+    def test_field_mapping_does_not_stop_at_multi_word_label_inside_value_text(self) -> None:
+        template = self.template_definition()
+        template["fields"] = [
+            {
+                "field_id": "comments",
+                "label": "Comments",
+                "value_type": "string",
+                "source": {"anchor_id": "batch-header", "direction": "below"},
+                "required": True,
+                "risk_level": "medium",
+                "validation_rule_ids": [],
+                "output_key": "batch.comments",
+            },
+            {
+                "field_id": "manufacturing_date",
+                "label": "Manufacturing Date",
+                "value_type": "date",
+                "source": {"anchor_id": "batch-header", "direction": "below"},
+                "required": False,
+                "risk_level": "medium",
+                "validation_rule_ids": [],
+                "output_key": "batch.manufacturing_date",
+            },
+        ]
+        document = self.document_with_blocks(
+            paragraph_text="Comments: Requires Manufacturing Date follow-up"
+        )
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertEqual("Requires Manufacturing Date follow-up", mapped["comments"].value)
+        self.assertIsNone(mapped["manufacturing_date"].value)
+        self.assertEqual(
+            {"template_result": {"batch": {"comments": "Requires Manufacturing Date follow-up"}}},
+            result.output,
+        )
+
+    def test_field_mapping_matches_labels_with_flexible_whitespace(self) -> None:
+        template = self.template_definition()
+        template["fields"] = [
+            {
+                "field_id": "manufacturing_date",
+                "label": "Manufacturing Date",
+                "value_type": "date",
+                "source": {"anchor_id": "batch-header", "direction": "below"},
+                "required": True,
+                "risk_level": "medium",
+                "validation_rule_ids": [],
+                "output_key": "batch.manufacturing_date",
+            }
+        ]
+        document = self.document_with_blocks(paragraph_text="Manufacturing\tDate: 2026-01-01")
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertEqual("2026-01-01", mapped["manufacturing_date"].value)
+        self.assertFalse(mapped["manufacturing_date"].requires_review)
+
     def test_field_mapping_preserves_negative_value_sign_after_label(self) -> None:
         template = self.template_definition()
         template["fields"] = [
@@ -1879,6 +2017,34 @@ class TemplateFingerprintTest(unittest.TestCase):
             result.warnings,
         )
 
+    def test_field_mapping_invalid_calendar_date_is_not_confirmed_in_output(self) -> None:
+        template = self.template_definition()
+        template["fields"] = [
+            {
+                "field_id": "manufacturing_date",
+                "label": "Manufacturing Date",
+                "value_type": "date",
+                "source": {"anchor_id": "batch-header", "direction": "below"},
+                "required": True,
+                "risk_level": "medium",
+                "validation_rule_ids": [],
+                "output_key": "batch.manufacturing_date",
+            }
+        ]
+        document = self.document_with_blocks(paragraph_text="Manufacturing Date 2026-02-31")
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertEqual("2026-02-31", mapped["manufacturing_date"].value)
+        self.assertTrue(mapped["manufacturing_date"].requires_review)
+        self.assertEqual({"template_result": {}}, result.output)
+        self.assertIn(
+            "template field 'manufacturing_date' value '2026-02-31' does not match "
+            "value_type 'date'; requires review",
+            result.warnings,
+        )
+
     def test_field_mapping_validation_rule_failure_is_not_confirmed_in_output(self) -> None:
         template = self.template_definition()
         template["fields"] = [
@@ -1921,6 +2087,109 @@ class TemplateFingerprintTest(unittest.TestCase):
         self.assertIn(
             "template field 'actual_yield' failed validation rule 'actual-yield-range'; "
             "requires review",
+            result.warnings,
+        )
+
+    def test_field_mapping_cross_field_date_rule_is_evaluated(self) -> None:
+        template = self.template_definition()
+        template["fields"] = [
+            {
+                "field_id": "manufacturing_date",
+                "label": "Manufacturing Date",
+                "value_type": "date",
+                "source": {"anchor_id": "batch-header", "direction": "below"},
+                "required": True,
+                "risk_level": "medium",
+                "validation_rule_ids": ["manufactured-before-expiry"],
+                "output_key": "batch.manufacturing_date",
+            },
+            {
+                "field_id": "expiry_date",
+                "label": "Expiry Date",
+                "value_type": "date",
+                "source": {"anchor_id": "batch-header", "direction": "below"},
+                "required": True,
+                "risk_level": "medium",
+                "validation_rule_ids": [],
+                "output_key": "batch.expiry_date",
+            },
+        ]
+        template["validation_rules"] = [
+            {
+                "rule_id": "manufactured-before-expiry",
+                "target": "manufacturing_date",
+                "rule_type": "cross_field",
+                "related_target": "expiry_date",
+                "operator": "before_or_equal",
+            }
+        ]
+        document = self.document_with_blocks(
+            paragraph_text="Manufacturing Date 2026-01-01 Expiry Date 2026-06-01"
+        )
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertEqual("2026-01-01", mapped["manufacturing_date"].value)
+        self.assertEqual("2026-06-01", mapped["expiry_date"].value)
+        self.assertFalse(mapped["manufacturing_date"].requires_review)
+        self.assertEqual(
+            {
+                "template_result": {
+                    "batch": {
+                        "manufacturing_date": "2026-01-01",
+                        "expiry_date": "2026-06-01",
+                    }
+                }
+            },
+            result.output,
+        )
+
+    def test_field_mapping_cross_field_date_rule_failure_requires_review(self) -> None:
+        template = self.template_definition()
+        template["fields"] = [
+            {
+                "field_id": "manufacturing_date",
+                "label": "Manufacturing Date",
+                "value_type": "date",
+                "source": {"anchor_id": "batch-header", "direction": "below"},
+                "required": True,
+                "risk_level": "medium",
+                "validation_rule_ids": ["manufactured-before-expiry"],
+                "output_key": "batch.manufacturing_date",
+            },
+            {
+                "field_id": "expiry_date",
+                "label": "Expiry Date",
+                "value_type": "date",
+                "source": {"anchor_id": "batch-header", "direction": "below"},
+                "required": True,
+                "risk_level": "medium",
+                "validation_rule_ids": [],
+                "output_key": "batch.expiry_date",
+            },
+        ]
+        template["validation_rules"] = [
+            {
+                "rule_id": "manufactured-before-expiry",
+                "target": "manufacturing_date",
+                "rule_type": "cross_field",
+                "related_target": "expiry_date",
+                "operator": "before_or_equal",
+            }
+        ]
+        document = self.document_with_blocks(
+            paragraph_text="Manufacturing Date 2026-07-01 Expiry Date 2026-06-01"
+        )
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertTrue(mapped["manufacturing_date"].requires_review)
+        self.assertEqual({"template_result": {"batch": {"expiry_date": "2026-06-01"}}}, result.output)
+        self.assertIn(
+            "template field 'manufacturing_date' failed validation rule "
+            "'manufactured-before-expiry'; requires review",
             result.warnings,
         )
 
@@ -1984,6 +2253,60 @@ class TemplateFingerprintTest(unittest.TestCase):
         mapped = {field.field_id: field for field in result.fields}
 
         self.assertEqual("BN-001", mapped["batch_number"].value)
+
+    def test_right_side_fallback_does_not_reuse_later_label_value_for_missing_field(self) -> None:
+        template = self.template_definition()
+        template["anchors"].append(
+            {
+                "anchor_id": "batch-number-label",
+                "kind": "label",
+                "text": "Batch No.",
+                "match": "normalized",
+                "scope": {"page": 1, "block_types": ["paragraph"]},
+            }
+        )
+        template["fields"] = [
+            {
+                "field_id": "batch_number",
+                "label": "Batch No.",
+                "value_type": "string",
+                "source": {"anchor_id": "batch-number-label", "direction": "right"},
+                "required": True,
+                "risk_level": "high",
+                "validation_rule_ids": [],
+                "output_key": "batch.number",
+            },
+            {
+                "field_id": "manufacturing_date",
+                "label": "Manufacturing Date",
+                "value_type": "date",
+                "source": {"anchor_id": "batch-number-label", "direction": "right"},
+                "required": True,
+                "risk_level": "medium",
+                "validation_rule_ids": [],
+                "output_key": "batch.manufacturing_date",
+            },
+        ]
+        document = DocumentIRV1(
+            schema_version="document-ir/v1",
+            document=DocumentInfo(id="fixture", title="Fixture", source_type="pdf"),
+            pages=[DocumentPage(page_number=1, width=612.0, height=792.0)],
+            blocks=[
+                self.block("heading", "Batch Production Record"),
+                self.block("paragraph", "Batch No.", y=120.0, block_id="batch-label"),
+                self.block("paragraph", "Manufacturing Date", x=280.0, y=120.0, block_id="date-label"),
+                self.block("paragraph", "2026-01-01", x=430.0, y=120.0, block_id="date-value"),
+                self.block("table", "Yield Summary\nstep\texpected_yield\tactual_yield", y=180.0),
+            ],
+            warnings=[],
+        )
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertIsNone(mapped["batch_number"].value)
+        self.assertTrue(mapped["batch_number"].requires_review)
+        self.assertNotEqual("2026-01-01", mapped["batch_number"].value)
 
     def test_same_block_field_mapping_reads_value_on_next_line(self) -> None:
         template = self.template_definition()
