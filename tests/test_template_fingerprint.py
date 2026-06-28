@@ -1533,9 +1533,13 @@ class TemplateFingerprintTest(unittest.TestCase):
         mapped = {field.field_id: field for field in result.fields}
 
         self.assertEqual("94", mapped["actual_yield"].value)
-        self.assertFalse(mapped["actual_yield"].requires_review)
+        self.assertTrue(mapped["actual_yield"].requires_review)
         self.assertTrue(result.requires_review)
         self.assertEqual({"template_result": {}}, result.output)
+        self.assertIn(
+            "template match requires review; field output requires review",
+            mapped["actual_yield"].warnings,
+        )
 
     def test_docx_wrapped_header_candidate_is_used_for_field_mapping(self) -> None:
         template = self.template_definition()
@@ -1568,6 +1572,39 @@ class TemplateFingerprintTest(unittest.TestCase):
         self.assertEqual("94", mapped["actual_yield"].value)
         self.assertEqual(3, mapped["actual_yield"].evidence["row_index"])
         self.assertEqual(2, mapped["actual_yield"].evidence["column_index"])
+
+    def test_docx_wrapped_header_candidate_maps_value_under_wrapped_column(self) -> None:
+        template = self.template_definition()
+        template["tables"][0]["required_columns"] = ["step", "Expected Yield", "actual_yield"]
+        template["fields"] = [
+            {
+                "field_id": "expected_yield",
+                "label": "Expected Yield",
+                "value_type": "number",
+                "source": {"anchor_id": "yield-table", "direction": "table_cell"},
+                "required": True,
+                "risk_level": "medium",
+                "validation_rule_ids": [],
+                "output_key": "batch.expected_yield",
+            }
+        ]
+        document = self.document_with_blocks(
+            table_text=(
+                "Yield Summary\n"
+                "step\tExpected\n"
+                "Yield\tactual_yield\n"
+                "blend\t95\t94"
+            ),
+            source_type="docx",
+        )
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertEqual("95", mapped["expected_yield"].value)
+        self.assertFalse(mapped["expected_yield"].requires_review)
+        self.assertEqual(3, mapped["expected_yield"].evidence["row_index"])
+        self.assertEqual(1, mapped["expected_yield"].evidence["column_index"])
 
     def test_below_field_mapping_does_not_extract_anchor_text_fallback(self) -> None:
         template = self.template_definition()
@@ -2545,6 +2582,64 @@ class TemplateFingerprintTest(unittest.TestCase):
             result.output,
         )
 
+    def test_field_mapping_cross_field_date_rule_normalizes_offset_values(self) -> None:
+        template = self.template_definition()
+        template["fields"] = [
+            {
+                "field_id": "manufacturing_date",
+                "label": "Manufacturing Date",
+                "value_type": "date",
+                "source": {"anchor_id": "batch-header", "direction": "below"},
+                "required": True,
+                "risk_level": "medium",
+                "validation_rule_ids": ["manufactured-before-expiry"],
+                "output_key": "batch.manufacturing_date",
+            },
+            {
+                "field_id": "expiry_date",
+                "label": "Expiry Date",
+                "value_type": "date",
+                "source": {"anchor_id": "batch-header", "direction": "below"},
+                "required": True,
+                "risk_level": "medium",
+                "validation_rule_ids": [],
+                "output_key": "batch.expiry_date",
+            },
+        ]
+        template["validation_rules"] = [
+            {
+                "rule_id": "manufactured-before-expiry",
+                "target": "manufacturing_date",
+                "rule_type": "cross_field",
+                "related_target": "expiry_date",
+                "operator": "before_or_equal",
+            }
+        ]
+        document = self.document_with_blocks(
+            paragraph_text=(
+                "Manufacturing Date 2026-01-01 "
+                "Expiry Date 2026-01-01T00:00:00Z"
+            )
+        )
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertEqual("2026-01-01", mapped["manufacturing_date"].value)
+        self.assertEqual("2026-01-01T00:00:00Z", mapped["expiry_date"].value)
+        self.assertFalse(mapped["manufacturing_date"].requires_review)
+        self.assertEqual(
+            {
+                "template_result": {
+                    "batch": {
+                        "manufacturing_date": "2026-01-01",
+                        "expiry_date": "2026-01-01T00:00:00Z",
+                    }
+                }
+            },
+            result.output,
+        )
+
     def test_field_mapping_cross_field_date_rule_failure_requires_review(self) -> None:
         template = self.template_definition()
         template["fields"] = [
@@ -3245,6 +3340,48 @@ class TemplateFingerprintTest(unittest.TestCase):
         self.assertEqual("1,2,3", mapped["actual_yield"].value)
         self.assertTrue(mapped["actual_yield"].requires_review)
         self.assertEqual({"template_result": {}}, result.output)
+
+    def test_number_range_rule_rejects_malformed_comma_grouping(self) -> None:
+        template = self.template_definition()
+        template["fields"] = [
+            {
+                "field_id": "actual_yield",
+                "label": "actual_yield",
+                "value_type": "string",
+                "source": {"anchor_id": "yield-table", "direction": "table_cell"},
+                "required": True,
+                "risk_level": "medium",
+                "validation_rule_ids": ["actual-yield-range"],
+                "output_key": "batch.actual_yield",
+            }
+        ]
+        template["validation_rules"] = [
+            {
+                "rule_id": "actual-yield-range",
+                "target": "actual_yield",
+                "rule_type": "range",
+                "minimum": 0,
+                "maximum": 200,
+            }
+        ]
+        document = self.document_with_blocks(
+            table_text=(
+                "Yield Summary\tstep\texpected_yield\tactual_yield\n"
+                "blend\t95\t1,2,3"
+            )
+        )
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertEqual("1,2,3", mapped["actual_yield"].value)
+        self.assertTrue(mapped["actual_yield"].requires_review)
+        self.assertEqual({"template_result": {}}, result.output)
+        self.assertIn(
+            "template field 'actual_yield' failed validation rule "
+            "'actual-yield-range'; requires review",
+            result.warnings,
+        )
 
     def test_date_allowed_values_normalize_datetime_offsets(self) -> None:
         template = self.template_definition()

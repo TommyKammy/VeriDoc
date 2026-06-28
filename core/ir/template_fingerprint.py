@@ -244,6 +244,7 @@ def apply_template_field_mapping(
         output_conflicts,
         output_keys_by_field_id,
         review_required_levels,
+        match_requires_review,
     )
     for field in fields:
         field_id = str(field.get("field_id") or "")
@@ -289,14 +290,17 @@ def apply_template_field_mapping(
             template_definition,
             reviewed_field_values_by_id,
         )
+        match_warnings = _template_match_review_warnings(match_requires_review)
         field_warnings = (
+            *match_warnings,
             *block_warnings,
             *risk_warnings,
             *validation_warnings,
             *output_conflict_warnings,
         )
         requires_review = _template_field_requires_review(
-            extracted.block.review.requires_review,
+            match_requires_review or extracted.block.review.requires_review,
+            match_warnings,
             block_warnings,
             risk_warnings,
             validation_warnings,
@@ -601,6 +605,12 @@ def _template_match_allows_confirmed_output(match_requires_review: bool) -> bool
     return not match_requires_review
 
 
+def _template_match_review_warnings(match_requires_review: bool) -> tuple[str, ...]:
+    if not match_requires_review:
+        return ()
+    return ("template match requires review; field output requires review",)
+
+
 def _mapped_field_output_is_confirmed(requires_review: bool) -> bool:
     return not requires_review
 
@@ -664,7 +674,10 @@ def _reviewed_template_field_values_by_id(
     output_conflicts: Mapping[str, Sequence[str]],
     output_keys_by_field_id: Mapping[str, str],
     review_required_levels: set[str],
+    match_requires_review: bool,
 ) -> dict[str, str]:
+    if match_requires_review:
+        return {}
     reviewed_field_ids: set[str] = set()
     for field in fields:
         field_id = str(field.get("field_id") or "")
