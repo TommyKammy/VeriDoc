@@ -220,6 +220,8 @@ def apply_template_field_mapping(
         _field_and_table_output_keys_for_conflicts(fields, output_mapping, output_keys_by_field_id)
     )
     review_required_levels = _template_review_required_levels(template_definition)
+    defined_risk_levels = _template_defined_risk_levels(template_definition)
+    risk_rank_declared = "risk_rank" in template_definition
     for conflict_warnings in output_conflicts.values():
         warnings.extend(conflict_warnings)
 
@@ -243,6 +245,8 @@ def apply_template_field_mapping(
         template_definition,
         output_conflicts,
         output_keys_by_field_id,
+        risk_rank_declared,
+        defined_risk_levels,
         review_required_levels,
         match_requires_review,
     )
@@ -252,6 +256,12 @@ def apply_template_field_mapping(
         output_key = output_keys_by_field_id.get(field_id) or str(field.get("output_key") or field_id)
         required = field.get("required") is True
         output_conflict_warnings = tuple(output_conflicts.get(output_key, ()))
+        risk_warnings = _template_field_risk_warnings(
+            field,
+            risk_rank_declared=risk_rank_declared,
+            defined_levels=defined_risk_levels,
+            review_required_levels=review_required_levels,
+        )
         extracted = extracted_by_field_id.get(field_id)
         if extracted is None:
             missing_warnings = (
@@ -259,7 +269,14 @@ def apply_template_field_mapping(
                 if required
                 else ()
             )
-            field_warnings = (*missing_warnings, *output_conflict_warnings)
+            absent_risk_warnings = _template_absent_field_risk_warnings(
+                field,
+                risk_warnings,
+                required=required,
+                risk_rank_declared=risk_rank_declared,
+                defined_levels=defined_risk_levels,
+            )
+            field_warnings = (*missing_warnings, *absent_risk_warnings, *output_conflict_warnings)
             warnings.extend(field_warnings)
             mapped_fields.append(
                 TemplateMappedField(
@@ -269,21 +286,15 @@ def apply_template_field_mapping(
                     value=None,
                     confidence=0.0,
                     evidence={},
-                    requires_review=required or bool(output_conflict_warnings),
+                    requires_review=required
+                    or bool(absent_risk_warnings)
+                    or bool(output_conflict_warnings),
                     warnings=field_warnings,
                 )
             )
             continue
 
         block_warnings = tuple(extracted.block.review.warnings)
-        risk_warnings = (
-            (
-                f"template field '{field_id or '<unknown>'}' risk_level "
-                f"'{field.get('risk_level')}' requires review",
-            )
-            if _field_requires_template_risk_review(field, review_required_levels)
-            else ()
-        )
         validation_warnings = _template_field_value_validation_warnings(
             field,
             extracted.value,
@@ -577,22 +588,80 @@ def _document_ir_review_warnings(document_ir: DocumentIRV1) -> list[str]:
     return warnings
 
 
+def _normalized_risk_level(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value.strip().casefold()
+
+
 def _template_review_required_levels(template_definition: Mapping[str, Any]) -> set[str]:
     risk_rank = _mapping(template_definition.get("risk_rank"))
     return {
-        str(level).strip().casefold()
+        normalized
         for level in _list_value(risk_rank.get("review_required_levels"))
-        if str(level).strip()
+        if (normalized := _normalized_risk_level(level))
     }
 
 
-def _field_requires_template_risk_review(
-    field: Mapping[str, Any], review_required_levels: set[str]
-) -> bool:
-    if not review_required_levels:
-        return False
-    risk_level = str(field.get("risk_level") or "").strip().casefold()
-    return bool(risk_level) and risk_level in review_required_levels
+def _template_defined_risk_levels(template_definition: Mapping[str, Any]) -> set[str]:
+    risk_rank = _mapping(template_definition.get("risk_rank"))
+    return {
+        normalized
+        for level in (_mapping(level) for level in _list_value(risk_rank.get("levels")))
+        if (normalized := _normalized_risk_level(level.get("level")))
+    }
+
+
+def _template_field_risk_warnings(
+    field: Mapping[str, Any],
+    *,
+    risk_rank_declared: bool,
+    defined_levels: set[str],
+    review_required_levels: set[str],
+) -> tuple[str, ...]:
+    # GMP/data-integrity guard: once a template declares a risk matrix, missing
+    # or non-matrix field risk cannot be treated as confirmed extraction output.
+    if not risk_rank_declared:
+        return ()
+    field_id = str(field.get("field_id") or "<unknown>")
+    raw_risk_level = field.get("risk_level")
+    if raw_risk_level is not None and not isinstance(raw_risk_level, str):
+        return (
+            f"template field '{field_id}' risk_level '{raw_risk_level}' is not defined "
+            "by template risk_rank; requires review",
+        )
+    risk_level = _normalized_risk_level(raw_risk_level)
+    if not risk_level:
+        return (f"template field '{field_id}' missing risk_level; requires review",)
+    if risk_level not in defined_levels:
+        return (
+            f"template field '{field_id}' risk_level '{raw_risk_level}' is not defined "
+            "by template risk_rank; requires review",
+        )
+    if risk_level in review_required_levels:
+        return (
+            f"template field '{field_id}' risk_level '{raw_risk_level}' requires review",
+        )
+    return ()
+
+
+def _template_absent_field_risk_warnings(
+    field: Mapping[str, Any],
+    risk_warnings: Sequence[str],
+    *,
+    required: bool,
+    risk_rank_declared: bool,
+    defined_levels: set[str],
+) -> tuple[str, ...]:
+    if required:
+        return tuple(risk_warnings)
+    if not risk_rank_declared:
+        return ()
+    raw_risk_level = field.get("risk_level")
+    risk_level = _normalized_risk_level(raw_risk_level)
+    if not risk_level or risk_level not in defined_levels:
+        return tuple(risk_warnings)
+    return ()
 
 
 def _template_field_requires_review(
@@ -681,6 +750,8 @@ def _reviewed_template_field_values_by_id(
     template_definition: Mapping[str, Any],
     output_conflicts: Mapping[str, Sequence[str]],
     output_keys_by_field_id: Mapping[str, str],
+    risk_rank_declared: bool,
+    defined_levels: set[str],
     review_required_levels: set[str],
     match_requires_review: bool,
 ) -> dict[str, str]:
@@ -703,13 +774,11 @@ def _reviewed_template_field_values_by_id(
         if _template_field_requires_review(
             extracted.block.review.requires_review,
             tuple(extracted.block.review.warnings),
-            (
-                (
-                    f"template field '{field_id}' risk_level "
-                    f"'{field.get('risk_level')}' requires review",
-                )
-                if _field_requires_template_risk_review(field, review_required_levels)
-                else ()
+            _template_field_risk_warnings(
+                field,
+                risk_rank_declared=risk_rank_declared,
+                defined_levels=defined_levels,
+                review_required_levels=review_required_levels,
             ),
             base_validation_warnings,
             tuple(output_conflicts.get(output_key, ())),
