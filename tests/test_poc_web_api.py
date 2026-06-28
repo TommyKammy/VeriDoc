@@ -2449,6 +2449,15 @@ def test_template_store_records_version_change_history_and_rejects_missing_conte
             "actor": {"principal_id": "qa-maintainer", "role": "admin"},
         }
     )
+    null_status_preserved = store.register_template(
+        {
+            **base_request,
+            "status": None,
+            "fields": [{"field_id": "lot_number", "label": "Lot number", "required": True}],
+            "change_reason": "Update inactive template with null status",
+            "actor": {"principal_id": "qa-maintainer", "role": "admin"},
+        }
+    )
     enabled = store.register_template(
         {
             **base_request,
@@ -2464,8 +2473,11 @@ def test_template_store_records_version_change_history_and_rejects_missing_conte
     assert preserved["status"] == "inactive"
     assert preserved["versions"][3]["status"] == "inactive"
     assert preserved["change_history"][3]["action"] == "versioned"
+    assert null_status_preserved["status"] == "inactive"
+    assert null_status_preserved["versions"][4]["status"] == "inactive"
+    assert null_status_preserved["change_history"][4]["action"] == "versioned"
     assert enabled["status"] == "active"
-    assert enabled["change_history"][4]["action"] == "enabled"
+    assert enabled["change_history"][5]["action"] == "enabled"
 
 
 def test_poc_http_api_registers_template_versions_and_jobs_keep_version_snapshot() -> None:
@@ -2765,6 +2777,46 @@ def test_poc_http_api_derives_template_audit_actor_from_local_auth() -> None:
         )
         null_approval_response = connection.getresponse()
         null_approval_body = json.loads(null_approval_response.read().decode("utf-8"))
+        malformed_approval_responses = []
+        for template_id, approved_by in (
+            ("malformed-empty-approval-template", {}),
+            ("malformed-bool-approval-template", True),
+        ):
+            malformed_approval_payload = json.dumps(
+                {
+                    "template_id": template_id,
+                    "name": "Malformed Approval Template",
+                    "category": "manufacturing",
+                    "fields": [
+                        {"field_id": "lot_number", "label": "Lot number", "required": True}
+                    ],
+                    "change_reason": "Reject malformed local approval payload",
+                    "actor": {"principal_id": "spoofed-author", "role": "viewer"},
+                    "approved_by": approved_by,
+                }
+            ).encode("utf-8")
+            connection.request(
+                "POST",
+                "/api/templates",
+                body=malformed_approval_payload,
+                headers={
+                    "Authorization": "Bearer admin-token",
+                    "Content-Type": "application/json",
+                    "Content-Length": str(len(malformed_approval_payload)),
+                },
+            )
+            malformed_response = connection.getresponse()
+            malformed_body = json.loads(malformed_response.read().decode("utf-8"))
+            connection.request(
+                "GET",
+                f"/api/templates/{template_id}",
+                headers={"Authorization": "Bearer admin-token"},
+            )
+            lookup_response = connection.getresponse()
+            lookup_body = json.loads(lookup_response.read().decode("utf-8"))
+            malformed_approval_responses.append(
+                (malformed_response, malformed_body, lookup_response, lookup_body)
+            )
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -2783,6 +2835,12 @@ def test_poc_http_api_derives_template_audit_actor_from_local_auth() -> None:
         "role": "admin",
     }
     assert null_approval_change["approval"] == {"status": "unapproved", "approved_by": None}
+    for malformed_response, malformed_body, lookup_response, lookup_body in malformed_approval_responses:
+        assert malformed_response.status == 400
+        assert malformed_body["error"] == "invalid_template_request"
+        assert malformed_body["message"].startswith("approved_by")
+        assert lookup_response.status == 404
+        assert lookup_body == {"error": "template_not_found"}
 
 
 def test_poc_http_api_lists_representative_seed_templates() -> None:
