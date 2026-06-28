@@ -952,23 +952,19 @@ def _extract_template_nearby_field(
             value = _field_value_from_text(
                 block.text,
                 label,
-                anchor_text,
                 stop_markers=stop_markers,
-                allow_anchor_fallback=False,
             )
             if value:
                 return _template_value(block, value, 0.98, direction=direction)
         if direction == "right":
             for anchor_block in anchor_blocks:
                 for block in _right_side_blocks(document_ir.blocks, anchor_block):
-                    if block.type == "table":
+                    if not _right_side_block_can_supply_unlabeled_value(block):
                         continue
                     value = _field_value_from_text(
                         block.text,
                         label,
-                        anchor_text,
                         stop_markers=stop_markers,
-                        allow_anchor_fallback=False,
                     )
                     if value is None:
                         if _text_starts_with_label_like_marker(block.text, (label,)):
@@ -977,7 +973,10 @@ def _extract_template_nearby_field(
                             continue
                         if _text_starts_with_label_like_marker(block.text, stop_markers):
                             break
-                        value = _value_before_next_marker(block.text.strip(), stop_markers).strip() or None
+                        value = _right_side_unlabeled_value_from_block(
+                            block,
+                            stop_markers=stop_markers,
+                        )
                     if value:
                         return _template_value(block, value, 0.94, direction=direction)
         return None
@@ -1209,17 +1208,24 @@ def _anchor_stop_markers(
 def _field_value_from_text(
     text: str,
     label: str,
-    anchor_text: str,
     *,
     stop_markers: Sequence[str] = (),
-    allow_anchor_fallback: bool = True,
 ) -> str | None:
-    label_value = _value_after_marker(text, label, stop_markers=stop_markers)
-    if label_value:
-        return label_value
-    if not allow_anchor_fallback:
+    return _value_after_marker(text, label, stop_markers=stop_markers)
+
+
+def _right_side_block_can_supply_unlabeled_value(block: DocumentBlock) -> bool:
+    return block.type not in {"heading", "table"}
+
+
+def _right_side_unlabeled_value_from_block(
+    block: DocumentBlock,
+    *,
+    stop_markers: Sequence[str] = (),
+) -> str | None:
+    if not _right_side_block_can_supply_unlabeled_value(block):
         return None
-    return _value_after_marker(text, anchor_text, stop_markers=stop_markers)
+    return _value_before_next_marker(block.text.strip(), stop_markers).strip() or None
 
 
 def _below_field_value_from_block(
@@ -1233,9 +1239,7 @@ def _below_field_value_from_block(
     value = _field_value_from_text(
         text,
         field_label,
-        anchor_text,
         stop_markers=stop_markers,
-        allow_anchor_fallback=False,
     )
     if value is not None:
         return value
