@@ -588,23 +588,28 @@ def _document_ir_review_warnings(document_ir: DocumentIRV1) -> list[str]:
     return warnings
 
 
+def _normalized_risk_level(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value.strip().casefold()
+
+
 def _template_review_required_levels(template_definition: Mapping[str, Any]) -> set[str]:
     risk_rank = _mapping(template_definition.get("risk_rank"))
     return {
-        str(level).strip().casefold()
+        normalized
         for level in _list_value(risk_rank.get("review_required_levels"))
-        if str(level).strip()
+        if (normalized := _normalized_risk_level(level))
     }
 
 
 def _template_defined_risk_levels(template_definition: Mapping[str, Any]) -> set[str]:
     risk_rank = _mapping(template_definition.get("risk_rank"))
-    levels = {
-        str(level.get("level") or "").strip().casefold()
+    return {
+        normalized
         for level in (_mapping(level) for level in _list_value(risk_rank.get("levels")))
-        if str(level.get("level") or "").strip()
+        if (normalized := _normalized_risk_level(level.get("level")))
     }
-    return levels | _template_review_required_levels(template_definition)
 
 
 def _template_field_risk_warnings(
@@ -620,7 +625,12 @@ def _template_field_risk_warnings(
         return ()
     field_id = str(field.get("field_id") or "<unknown>")
     raw_risk_level = field.get("risk_level")
-    risk_level = str(raw_risk_level or "").strip().casefold()
+    if raw_risk_level is not None and not isinstance(raw_risk_level, str):
+        return (
+            f"template field '{field_id}' risk_level '{raw_risk_level}' is not defined "
+            "by template risk_rank; requires review",
+        )
+    risk_level = _normalized_risk_level(raw_risk_level)
     if not risk_level:
         return (f"template field '{field_id}' missing risk_level; requires review",)
     if risk_level not in defined_levels:
@@ -648,7 +658,7 @@ def _template_absent_field_risk_warnings(
     if not risk_rank_declared:
         return ()
     raw_risk_level = field.get("risk_level")
-    risk_level = str(raw_risk_level or "").strip().casefold()
+    risk_level = _normalized_risk_level(raw_risk_level)
     if not risk_level or risk_level not in defined_levels:
         return tuple(risk_warnings)
     return ()
