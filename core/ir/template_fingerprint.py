@@ -256,6 +256,12 @@ def apply_template_field_mapping(
         output_key = output_keys_by_field_id.get(field_id) or str(field.get("output_key") or field_id)
         required = field.get("required") is True
         output_conflict_warnings = tuple(output_conflicts.get(output_key, ()))
+        risk_warnings = _template_field_risk_warnings(
+            field,
+            risk_rank_declared=risk_rank_declared,
+            defined_levels=defined_risk_levels,
+            review_required_levels=review_required_levels,
+        )
         extracted = extracted_by_field_id.get(field_id)
         if extracted is None:
             missing_warnings = (
@@ -263,7 +269,7 @@ def apply_template_field_mapping(
                 if required
                 else ()
             )
-            field_warnings = (*missing_warnings, *output_conflict_warnings)
+            field_warnings = (*missing_warnings, *risk_warnings, *output_conflict_warnings)
             warnings.extend(field_warnings)
             mapped_fields.append(
                 TemplateMappedField(
@@ -273,19 +279,15 @@ def apply_template_field_mapping(
                     value=None,
                     confidence=0.0,
                     evidence={},
-                    requires_review=required or bool(output_conflict_warnings),
+                    requires_review=required
+                    or bool(risk_warnings)
+                    or bool(output_conflict_warnings),
                     warnings=field_warnings,
                 )
             )
             continue
 
         block_warnings = tuple(extracted.block.review.warnings)
-        risk_warnings = _template_field_risk_warnings(
-            field,
-            risk_rank_declared=risk_rank_declared,
-            defined_levels=defined_risk_levels,
-            review_required_levels=review_required_levels,
-        )
         validation_warnings = _template_field_value_validation_warnings(
             field,
             extracted.value,
@@ -614,7 +616,7 @@ def _template_field_risk_warnings(
     risk_level = str(raw_risk_level or "").strip().casefold()
     if not risk_level:
         return (f"template field '{field_id}' missing risk_level; requires review",)
-    if defined_levels and risk_level not in defined_levels:
+    if risk_level not in defined_levels:
         return (
             f"template field '{field_id}' risk_level '{raw_risk_level}' is not defined "
             "by template risk_rank; requires review",

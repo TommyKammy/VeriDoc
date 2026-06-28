@@ -3396,6 +3396,90 @@ class TemplateFingerprintTest(unittest.TestCase):
             result.warnings,
         )
 
+    def test_optional_missing_field_unknown_risk_level_fails_closed(self) -> None:
+        template = self.template_definition()
+        template["risk_rank"] = {
+            "levels": [
+                {"level": "low", "rank": 1},
+                {"level": "high", "rank": 2},
+            ],
+            "review_required_levels": ["high"],
+        }
+        template["anchors"] = [
+            *template["anchors"],
+            {
+                "anchor_id": "optional-review-note",
+                "kind": "label",
+                "text": "Review Note",
+                "match": "contains",
+                "scope": {"page": 2, "block_types": ["paragraph"]},
+            },
+        ]
+        template["fields"] = [
+            {
+                "field_id": "batch_number",
+                "label": "Batch No.",
+                "value_type": "string",
+                "source": {"anchor_id": "batch-header", "direction": "below"},
+                "required": True,
+                "risk_level": "low",
+                "validation_rule_ids": [],
+                "output_key": "batch.number",
+            },
+            {
+                "field_id": "review_note",
+                "label": "Review Note",
+                "value_type": "string",
+                "source": {"anchor_id": "optional-review-note", "direction": "same_block"},
+                "required": False,
+                "risk_level": "experimental",
+                "validation_rule_ids": [],
+                "output_key": "batch.review_note",
+            },
+        ]
+        document = self.document_with_blocks()
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertEqual("BN-001", mapped["batch_number"].value)
+        self.assertTrue(mapped["review_note"].requires_review)
+        self.assertIsNone(mapped["review_note"].value)
+        self.assertIn(
+            "template field 'review_note' risk_level 'experimental' is not defined "
+            "by template risk_rank; requires review",
+            result.warnings,
+        )
+
+    def test_template_empty_risk_matrix_fails_closed(self) -> None:
+        template = self.template_definition()
+        template["risk_rank"] = {}
+        template["fields"] = [
+            {
+                "field_id": "batch_number",
+                "label": "Batch No.",
+                "value_type": "string",
+                "source": {"anchor_id": "batch-header", "direction": "below"},
+                "required": True,
+                "risk_level": "experimental",
+                "validation_rule_ids": [],
+                "output_key": "batch.number",
+            }
+        ]
+        document = self.document_with_blocks()
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertEqual("BN-001", mapped["batch_number"].value)
+        self.assertTrue(mapped["batch_number"].requires_review)
+        self.assertEqual({"template_result": {}}, result.output)
+        self.assertIn(
+            "template field 'batch_number' risk_level 'experimental' is not defined "
+            "by template risk_rank; requires review",
+            result.warnings,
+        )
+
     def test_table_cell_mapping_does_not_search_data_rows_for_optional_header(self) -> None:
         template = self.template_definition()
         template["tables"][0]["required_columns"] = ["step"]
