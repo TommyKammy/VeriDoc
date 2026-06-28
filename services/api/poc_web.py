@@ -179,25 +179,38 @@ class TemplateStore:
         template_id = _validate_template_id(request.get("template_id"))
         name = _validate_template_text_field(request.get("name"), "name")
         category = _validate_template_text_field(request.get("category"), "category")
-        document_type = _validate_template_text_field(
-            request.get("document_type", category), "document_type"
-        )
-        anchors = _validate_template_json_list(request.get("anchors", []), "anchors")
         fields = _validate_template_fields(request.get("fields"))
-        tables = _validate_template_json_list(request.get("tables", []), "tables")
-        risk_rank = _validate_template_json_object(request.get("risk_rank", {}), "risk_rank")
-        validation_rules = _validate_template_json_list(
-            request.get("validation_rules", []), "validation_rules"
-        )
-        output_mapping = _validate_template_json_object(
-            request.get("output_mapping", {}), "output_mapping"
-        )
-        content = _validate_template_text_field(
-            request.get("content", json.dumps(output_mapping, sort_keys=True)), "content"
-        )
         with self._lock:
             existing = self._templates.get(template_id)
             versions = [] if existing is None else existing["versions"]
+            latest_version = None if not versions else versions[-1]
+            document_type = _validate_template_text_field(
+                _template_version_value(request, latest_version, "document_type", category),
+                "document_type",
+            )
+            anchors = _validate_template_json_list(
+                _template_version_value(request, latest_version, "anchors", []), "anchors"
+            )
+            tables = _validate_template_json_list(
+                _template_version_value(request, latest_version, "tables", []), "tables"
+            )
+            risk_rank = _validate_template_json_object(
+                _template_version_value(request, latest_version, "risk_rank", {}), "risk_rank"
+            )
+            validation_rules = _validate_template_json_list(
+                _template_version_value(request, latest_version, "validation_rules", []),
+                "validation_rules",
+            )
+            output_mapping = _validate_template_json_object(
+                _template_version_value(request, latest_version, "output_mapping", {}),
+                "output_mapping",
+            )
+            if "content" in request:
+                content = _validate_template_text_field(request.get("content"), "content")
+            elif latest_version is not None:
+                content = latest_version.get("content", "")
+            else:
+                content = ""
             version_number = len(versions) + 1
             version = {
                 "version": version_number,
@@ -256,6 +269,19 @@ class TemplateStore:
             "template_version": record["current_version"],
             "name": record["name"],
         }
+
+
+def _template_version_value(
+    request: dict[str, Any],
+    latest_version: dict[str, Any] | None,
+    field_name: str,
+    default: Any,
+) -> Any:
+    if field_name in request:
+        return request[field_name]
+    if latest_version is not None:
+        return latest_version.get(field_name, default)
+    return default
 
 
 def _review_workflow_event_view(audit_event: dict[str, Any]) -> dict[str, Any]:
@@ -881,7 +907,10 @@ def _validate_template_fields(value: Any) -> list[dict[str, Any]]:
             raise ValueError(f"fields[{index}].required must be boolean")
         field = deepcopy(item)
         field["field_id"] = field_name
-        field["name"] = field_name
+        if "field_id" in item:
+            field.pop("name", None)
+        else:
+            field["name"] = field_name
         field["label"] = label
         field["required"] = required
         fields.append(field)

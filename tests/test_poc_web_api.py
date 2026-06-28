@@ -2335,6 +2335,39 @@ def test_poc_http_api_creates_idempotent_conversion_job() -> None:
     assert status["job"]["mode"] == "standard"
 
 
+def test_template_store_accepts_schema_only_mapping_without_legacy_content() -> None:
+    store = poc_web.TemplateStore()
+    mapping = {
+        "format": "json",
+        "root_key": "template_result",
+        "field_map": [
+            {"field_id": f"field_{index}", "output_key": f"result.field_{index}"}
+            for index in range(300)
+        ],
+    }
+
+    created = store.register_template(
+        {
+            "template_id": "schema-only",
+            "name": "Schema Only",
+            "category": "manufacturing",
+            "document_type": "batch_record",
+            "fields": [
+                {"field_id": "lot_number", "label": "Lot number", "required": True},
+            ],
+            "output_mapping": mapping,
+        }
+    )
+
+    version = created["versions"][0]
+    assert created["current_version"] == 1
+    assert version["output_mapping"] == mapping
+    assert version["content"] == ""
+    assert version["fields"] == [
+        {"field_id": "lot_number", "label": "Lot number", "required": True}
+    ]
+
+
 def test_poc_http_api_registers_template_versions_and_jobs_keep_version_snapshot() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     server.job_queue = JobQueue()
@@ -2519,14 +2552,23 @@ def test_poc_http_api_registers_template_versions_and_jobs_keep_version_snapshot
     assert detail_response.status == 200
     assert [version["version"] for version in detail["template"]["versions"]] == [1, 2, 3]
     first_version = detail["template"]["versions"][0]
+    second_version = detail["template"]["versions"][1]
     assert first_version["document_type"] == "batch_record"
     assert first_version["anchors"][0]["anchor_id"] == "batch-header"
     assert first_version["fields"][0]["field_id"] == "lot_number"
+    assert "name" not in first_version["fields"][0]
     assert first_version["fields"][0]["risk_level"] == "high"
     assert first_version["tables"][0]["table_id"] == "yield_summary"
     assert first_version["risk_rank"]["review_required_levels"] == ["high"]
     assert first_version["validation_rules"][0]["rule_id"] == "lot-required"
     assert first_version["output_mapping"]["field_map"][0]["output_key"] == "batch.lot_number"
+    assert second_version["document_type"] == "batch_record"
+    assert second_version["anchors"] == first_version["anchors"]
+    assert second_version["tables"] == first_version["tables"]
+    assert second_version["risk_rank"] == first_version["risk_rank"]
+    assert second_version["validation_rules"] == first_version["validation_rules"]
+    assert second_version["output_mapping"] == first_version["output_mapping"]
+    assert second_version["fields"][0]["name"] == "lot_number"
     assert refreshed_job_response.status == 200
     assert refreshed_job["job"]["template"]["template_version"] == 2
     assert retried_job_response.status == 202

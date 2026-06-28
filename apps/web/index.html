@@ -1479,6 +1479,16 @@
       function clearTemplateState() {
         state.templates = [];
         state.selectedTemplate = null;
+        templateId.value = "";
+        templateName.value = "";
+        templateCategory.value = "";
+        templateDocumentType.value = "";
+        templateAnchors.value = "";
+        templateFields.value = "";
+        templateTables.value = "";
+        templateRiskRank.value = "";
+        templateValidationRules.value = "";
+        templateOutputMapping.value = "";
         templateDetail.hidden = true;
         templateVersionSelect.replaceChildren();
         templateDetailRaw.textContent = "";
