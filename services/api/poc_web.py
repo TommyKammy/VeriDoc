@@ -180,10 +180,17 @@ class TemplateStore:
         name = _validate_template_text_field(request.get("name"), "name")
         category = _validate_template_text_field(request.get("category"), "category")
         fields = _validate_template_fields(request.get("fields"))
+        change_reason = _validate_template_text_field(request.get("change_reason"), "change_reason")
+        actor = _validate_template_actor(request.get("actor"), "actor")
+        approved_by = request.get("approved_by")
+        approval = _template_change_approval(approved_by)
         with self._lock:
             existing = self._templates.get(template_id)
             versions = [] if existing is None else existing["versions"]
             latest_version = None if not versions else versions[-1]
+            status_default = "active" if existing is None else existing.get("status", "active")
+            status_value = request["status"] if "status" in request else status_default
+            status = _validate_template_status(status_value)
             document_type = _validate_template_text_field(
                 _template_version_value(request, latest_version, "document_type", category),
                 "document_type",
@@ -212,8 +219,21 @@ class TemplateStore:
             else:
                 content = ""
             version_number = len(versions) + 1
+            created_at = datetime.now(timezone.utc).isoformat()
+            action = _template_change_action(existing, status)
+            change_event = {
+                "event_type": "template.change_recorded",
+                "action": action,
+                "template_id": template_id,
+                "version": version_number,
+                "change_reason": change_reason,
+                "actor": deepcopy(actor),
+                "approval": deepcopy(approval),
+                "recorded_at": created_at,
+            }
             version = {
                 "version": version_number,
+                "status": status,
                 "document_type": document_type,
                 "anchors": deepcopy(anchors),
                 "fields": deepcopy(fields),
@@ -222,7 +242,8 @@ class TemplateStore:
                 "validation_rules": deepcopy(validation_rules),
                 "output_mapping": deepcopy(output_mapping),
                 "content": content,
-                "created_at": datetime.now(timezone.utc).isoformat(),
+                "created_at": created_at,
+                "change_history": [deepcopy(change_event)],
             }
             if existing is None:
                 record = {
@@ -230,18 +251,22 @@ class TemplateStore:
                     "name": name,
                     "category": category,
                     "document_type": document_type,
+                    "status": status,
                     "current_version": version_number,
                     "versions": [version],
-                    "updated_at": version["created_at"],
+                    "change_history": [deepcopy(change_event)],
+                    "updated_at": created_at,
                 }
                 self._templates[template_id] = record
             else:
                 existing["name"] = name
                 existing["category"] = category
                 existing["document_type"] = document_type
+                existing["status"] = status
                 existing["current_version"] = version_number
                 existing["versions"].append(version)
-                existing["updated_at"] = version["created_at"]
+                existing.setdefault("change_history", []).append(deepcopy(change_event))
+                existing["updated_at"] = created_at
                 record = existing
             return deepcopy(record)
 
@@ -264,6 +289,8 @@ class TemplateStore:
 
     def latest_job_snapshot(self, template_id: str) -> dict[str, Any]:
         record = self.get_template(template_id)
+        if record.get("status", "active") != "active":
+            raise ValueError("template_id is inactive")
         return {
             "template_id": record["template_id"],
             "template_version": record["current_version"],
@@ -440,9 +467,13 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             self._handle_review_event()
             return
         if path == "/api/templates":
-            if not self._require_permission("templates:manage"):
+            authenticated, auth_context = self._authenticated_context()
+            if not authenticated:
                 return
-            self._handle_register_template()
+            role = auth_context["role"] if auth_context is not None else None
+            if not self._role_has_permission(role, "templates:manage"):
+                return
+            self._handle_register_template(auth_context=auth_context)
             return
         if path != "/api/convert":
             self._send_json({"error": "not_found"}, status=404)
@@ -483,16 +514,25 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             request = self._read_json_request()
             filename = str(request.get("filename") or "").strip()
             mode = str(request.get("mode") or "standard")
-            template = self._job_template_snapshot(request.get("template_id"))
             idempotency_key = str(
                 request.get("idempotency_key") or self.headers.get("Idempotency-Key") or ""
             )
-            job = self._job_queue().create_job(
+            requested_template = self._job_template_binding(request.get("template_id"))
+            job_queue = self._job_queue()
+            job = job_queue.get_idempotent_job(
                 idempotency_key=idempotency_key,
                 filename=filename,
                 mode=mode,
-                template=template,
+                template=requested_template,
             )
+            if job is None:
+                template = self._job_template_snapshot(request.get("template_id"))
+                job = job_queue.create_job(
+                    idempotency_key=idempotency_key,
+                    filename=filename,
+                    mode=mode,
+                    template=template,
+                )
         except RuntimeError as exc:
             self._send_json({"error": "job_conflict", "message": str(exc)}, status=409)
             return
@@ -507,9 +547,14 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             return
         self._send_json({"job": _job_response(job, self._job_queue(), role=role)}, status=202)
 
-    def _handle_register_template(self) -> None:
+    def _handle_register_template(
+        self,
+        *,
+        auth_context: dict[str, str | None] | None = None,
+    ) -> None:
         try:
             request = self._read_json_request()
+            request = _template_request_with_auth_context(request, auth_context)
             template = self._template_store().register_template(request)
         except ValueError as exc:
             if str(exc) == "content_length_required":
@@ -733,6 +778,11 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
         except KeyError as exc:
             raise ValueError("template_id is unknown") from exc
 
+    def _job_template_binding(self, raw_template_id: Any) -> dict[str, str] | None:
+        if raw_template_id is None:
+            return None
+        return {"template_id": _validate_template_id(raw_template_id)}
+
     def _require_permission(self, permission: str) -> bool:
         authorized, _role = self._authorized_role_for_permission(permission)
         return authorized
@@ -929,6 +979,72 @@ def _validate_template_json_object(value: Any, field_name: str) -> dict[str, Any
     return deepcopy(value)
 
 
+def _validate_template_actor(value: Any, field_name: str) -> dict[str, str]:
+    if not isinstance(value, dict):
+        raise ValueError(f"{field_name} is required")
+    principal_id = _validate_template_text_field(value.get("principal_id"), f"{field_name}.principal_id")
+    role = _validate_template_text_field(value.get("role"), f"{field_name}.role")
+    return {"principal_id": principal_id, "role": role}
+
+
+def _template_change_approval(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {"status": "unapproved", "approved_by": None}
+    return {
+        "status": "approved",
+        "approved_by": _validate_template_actor(value, "approved_by"),
+    }
+
+
+def _validate_template_status(value: Any) -> str:
+    if value is None:
+        return "active"
+    if not isinstance(value, str):
+        raise ValueError("status must be active or inactive")
+    status = value.strip()
+    if status not in {"active", "inactive"}:
+        raise ValueError("status must be active or inactive")
+    return status
+
+
+def _template_change_action(existing: dict[str, Any] | None, status: str) -> str:
+    if existing is None:
+        return "created"
+    if status == "inactive" and existing.get("status", "active") != "inactive":
+        return "disabled"
+    if status == "active" and existing.get("status", "active") == "inactive":
+        return "enabled"
+    return "versioned"
+
+
+def _template_request_with_auth_context(
+    request: dict[str, Any],
+    auth_context: dict[str, str | None] | None,
+) -> dict[str, Any]:
+    trusted_actor = _template_actor_from_auth_context(auth_context)
+    if trusted_actor is None:
+        return request
+    trusted_request = deepcopy(request)
+    trusted_request["actor"] = trusted_actor
+    if trusted_request.get("approved_by") is not None:
+        trusted_request["approved_by"] = trusted_actor
+    return trusted_request
+
+
+def _template_actor_from_auth_context(
+    auth_context: dict[str, str | None] | None,
+) -> dict[str, str] | None:
+    if auth_context is None:
+        return None
+    actor_id = auth_context.get("actor_id")
+    role = auth_context.get("role")
+    if actor_id is None and role is None:
+        return None
+    if not actor_id or not role:
+        raise ValueError("authenticated template actor context is incomplete")
+    return {"principal_id": actor_id, "role": role}
+
+
 def _template_summary(record: dict[str, Any]) -> dict[str, Any]:
     latest_version = record["versions"][-1]
     return {
@@ -936,6 +1052,7 @@ def _template_summary(record: dict[str, Any]) -> dict[str, Any]:
         "name": record["name"],
         "category": record["category"],
         "document_type": record["document_type"],
+        "status": record.get("status", latest_version.get("status", "active")),
         "current_version": record["current_version"],
         "field_count": len(latest_version["fields"]),
         "version_count": len(record["versions"]),
@@ -954,6 +1071,8 @@ def _representative_templates() -> list[dict[str, Any]]:
                 {"name": "operator", "label": "Operator", "required": True},
             ],
             "content": "Lot {{lot_number}} reviewed by {{operator}}",
+            "change_reason": "Seed representative batch record template",
+            "actor": {"principal_id": "system-seed", "role": "admin"},
         },
         {
             "template_id": "deviation-report",
@@ -964,6 +1083,8 @@ def _representative_templates() -> list[dict[str, Any]]:
                 {"name": "impact", "label": "Impact summary", "required": True},
             ],
             "content": "Deviation {{deviation_id}}: {{impact}}",
+            "change_reason": "Seed representative deviation report template",
+            "actor": {"principal_id": "system-seed", "role": "admin"},
         },
         {
             "template_id": "coa-summary",
@@ -974,6 +1095,8 @@ def _representative_templates() -> list[dict[str, Any]]:
                 {"name": "specification", "label": "Specification", "required": True},
             ],
             "content": "{{product_name}} conforms to {{specification}}",
+            "change_reason": "Seed representative CoA summary template",
+            "actor": {"principal_id": "system-seed", "role": "admin"},
         },
         {
             "template_id": "validation-checklist",
@@ -984,6 +1107,8 @@ def _representative_templates() -> list[dict[str, Any]]:
                 {"name": "reviewer", "label": "Reviewer", "required": True},
             ],
             "content": "Protocol {{protocol_id}} reviewed by {{reviewer}}",
+            "change_reason": "Seed representative validation checklist template",
+            "actor": {"principal_id": "system-seed", "role": "admin"},
         },
     ]
 
