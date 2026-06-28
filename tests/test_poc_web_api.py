@@ -2356,6 +2356,8 @@ def test_template_store_accepts_schema_only_mapping_without_legacy_content() -> 
                 {"field_id": "lot_number", "label": "Lot number", "required": True},
             ],
             "output_mapping": mapping,
+            "change_reason": "Initial schema-only template registration",
+            "actor": {"principal_id": "qa-author", "role": "admin"},
         }
     )
 
@@ -2366,6 +2368,69 @@ def test_template_store_accepts_schema_only_mapping_without_legacy_content() -> 
     assert version["fields"] == [
         {"field_id": "lot_number", "label": "Lot number", "required": True}
     ]
+
+
+def test_template_store_records_version_change_history_and_rejects_missing_context() -> None:
+    store = poc_web.TemplateStore()
+    base_request = {
+        "template_id": "audit-template",
+        "name": "Audit Template",
+        "category": "manufacturing",
+        "fields": [{"field_id": "lot_number", "label": "Lot number", "required": True}],
+        "change_reason": "Initial controlled template release",
+        "actor": {"principal_id": "qa-author", "role": "admin"},
+    }
+
+    created = store.register_template(base_request)
+    updated = store.register_template(
+        {
+            **base_request,
+            "fields": [
+                {"field_id": "lot_number", "label": "Lot number", "required": True},
+                {"field_id": "reviewer", "label": "Reviewer", "required": False},
+            ],
+            "change_reason": "Add optional QA reviewer capture",
+            "actor": {"principal_id": "qa-maintainer", "role": "admin"},
+            "approved_by": {"principal_id": "qa-approver", "role": "approver"},
+        }
+    )
+
+    assert created["change_history"] == [
+        {
+            "event_type": "template.change_recorded",
+            "action": "created",
+            "template_id": "audit-template",
+            "version": 1,
+            "change_reason": "Initial controlled template release",
+            "actor": {"principal_id": "qa-author", "role": "admin"},
+            "approval": {"status": "unapproved", "approved_by": None},
+            "recorded_at": created["versions"][0]["created_at"],
+        }
+    ]
+    assert updated["current_version"] == 2
+    assert updated["versions"][1]["change_history"][0] == updated["change_history"][1]
+    assert updated["change_history"][1]["action"] == "versioned"
+    assert updated["change_history"][1]["version"] == 2
+    assert updated["change_history"][1]["change_reason"] == "Add optional QA reviewer capture"
+    assert updated["change_history"][1]["actor"] == {"principal_id": "qa-maintainer", "role": "admin"}
+    assert updated["change_history"][1]["approval"] == {
+        "status": "approved",
+        "approved_by": {"principal_id": "qa-approver", "role": "approver"},
+    }
+
+    for missing_field in ("change_reason", "actor"):
+        invalid_request = {
+            **base_request,
+            "name": "Rejected Update",
+            "fields": [{"field_id": "lot_number", "label": "Lot number", "required": False}],
+            missing_field: "",
+        }
+        if missing_field == "actor":
+            invalid_request["actor"] = None
+        with pytest.raises(ValueError, match=missing_field):
+            store.register_template(invalid_request)
+
+    assert store.get_template("audit-template")["current_version"] == 2
 
 
 def test_poc_http_api_registers_template_versions_and_jobs_keep_version_snapshot() -> None:
@@ -2430,6 +2495,8 @@ def test_poc_http_api_registers_template_versions_and_jobs_keep_version_snapshot
                         {"table_id": "yield_summary", "output_key": "batch.yield_summary"}
                     ],
                 },
+                "change_reason": "Initial controlled template release",
+                "actor": {"principal_id": "qa-author", "role": "admin"},
             }
         ).encode("utf-8")
         connection.request(
@@ -2455,6 +2522,8 @@ def test_poc_http_api_registers_template_versions_and_jobs_keep_version_snapshot
                     {"name": "approver", "label": "Approver", "required": False},
                 ],
                 "content": "Lot {{lot_number}} reviewed by {{operator}} and {{approver}}",
+                "change_reason": "Add optional approver capture",
+                "actor": {"principal_id": "qa-maintainer", "role": "admin"},
             }
         ).encode("utf-8")
         connection.request(
@@ -2500,6 +2569,10 @@ def test_poc_http_api_registers_template_versions_and_jobs_keep_version_snapshot
                     {"name": "approver", "label": "Approver", "required": True},
                 ],
                 "content": "Final {{lot_number}} / {{operator}} / {{approver}}",
+                "status": "inactive",
+                "change_reason": "Disable superseded template draft",
+                "actor": {"principal_id": "qa-maintainer", "role": "admin"},
+                "approved_by": {"principal_id": "qa-approver", "role": "approver"},
             }
         ).encode("utf-8")
         connection.request(
@@ -2549,6 +2622,8 @@ def test_poc_http_api_registers_template_versions_and_jobs_keep_version_snapshot
     }
     assert third_response.status == 201
     assert third["template"]["current_version"] == 3
+    assert third["template"]["change_history"][2]["action"] == "disabled"
+    assert third["template"]["change_history"][2]["approval"]["status"] == "approved"
     assert detail_response.status == 200
     assert [version["version"] for version in detail["template"]["versions"]] == [1, 2, 3]
     first_version = detail["template"]["versions"][0]

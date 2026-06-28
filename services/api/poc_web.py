@@ -180,6 +180,11 @@ class TemplateStore:
         name = _validate_template_text_field(request.get("name"), "name")
         category = _validate_template_text_field(request.get("category"), "category")
         fields = _validate_template_fields(request.get("fields"))
+        change_reason = _validate_template_text_field(request.get("change_reason"), "change_reason")
+        actor = _validate_template_actor(request.get("actor"), "actor")
+        approved_by = request.get("approved_by")
+        approval = _template_change_approval(approved_by)
+        status = _validate_template_status(request.get("status", "active"))
         with self._lock:
             existing = self._templates.get(template_id)
             versions = [] if existing is None else existing["versions"]
@@ -212,8 +217,21 @@ class TemplateStore:
             else:
                 content = ""
             version_number = len(versions) + 1
+            created_at = datetime.now(timezone.utc).isoformat()
+            action = _template_change_action(existing, status)
+            change_event = {
+                "event_type": "template.change_recorded",
+                "action": action,
+                "template_id": template_id,
+                "version": version_number,
+                "change_reason": change_reason,
+                "actor": deepcopy(actor),
+                "approval": deepcopy(approval),
+                "recorded_at": created_at,
+            }
             version = {
                 "version": version_number,
+                "status": status,
                 "document_type": document_type,
                 "anchors": deepcopy(anchors),
                 "fields": deepcopy(fields),
@@ -222,7 +240,8 @@ class TemplateStore:
                 "validation_rules": deepcopy(validation_rules),
                 "output_mapping": deepcopy(output_mapping),
                 "content": content,
-                "created_at": datetime.now(timezone.utc).isoformat(),
+                "created_at": created_at,
+                "change_history": [deepcopy(change_event)],
             }
             if existing is None:
                 record = {
@@ -230,18 +249,22 @@ class TemplateStore:
                     "name": name,
                     "category": category,
                     "document_type": document_type,
+                    "status": status,
                     "current_version": version_number,
                     "versions": [version],
-                    "updated_at": version["created_at"],
+                    "change_history": [deepcopy(change_event)],
+                    "updated_at": created_at,
                 }
                 self._templates[template_id] = record
             else:
                 existing["name"] = name
                 existing["category"] = category
                 existing["document_type"] = document_type
+                existing["status"] = status
                 existing["current_version"] = version_number
                 existing["versions"].append(version)
-                existing["updated_at"] = version["created_at"]
+                existing.setdefault("change_history", []).append(deepcopy(change_event))
+                existing["updated_at"] = created_at
                 record = existing
             return deepcopy(record)
 
@@ -929,6 +952,42 @@ def _validate_template_json_object(value: Any, field_name: str) -> dict[str, Any
     return deepcopy(value)
 
 
+def _validate_template_actor(value: Any, field_name: str) -> dict[str, str]:
+    if not isinstance(value, dict):
+        raise ValueError(f"{field_name} is required")
+    principal_id = _validate_template_text_field(value.get("principal_id"), f"{field_name}.principal_id")
+    role = _validate_template_text_field(value.get("role"), f"{field_name}.role")
+    return {"principal_id": principal_id, "role": role}
+
+
+def _template_change_approval(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {"status": "unapproved", "approved_by": None}
+    return {
+        "status": "approved",
+        "approved_by": _validate_template_actor(value, "approved_by"),
+    }
+
+
+def _validate_template_status(value: Any) -> str:
+    if value is None:
+        return "active"
+    if not isinstance(value, str):
+        raise ValueError("status must be active or inactive")
+    status = value.strip()
+    if status not in {"active", "inactive"}:
+        raise ValueError("status must be active or inactive")
+    return status
+
+
+def _template_change_action(existing: dict[str, Any] | None, status: str) -> str:
+    if existing is None:
+        return "created"
+    if status == "inactive" and existing.get("status", "active") != "inactive":
+        return "disabled"
+    return "versioned"
+
+
 def _template_summary(record: dict[str, Any]) -> dict[str, Any]:
     latest_version = record["versions"][-1]
     return {
@@ -936,6 +995,7 @@ def _template_summary(record: dict[str, Any]) -> dict[str, Any]:
         "name": record["name"],
         "category": record["category"],
         "document_type": record["document_type"],
+        "status": record.get("status", latest_version.get("status", "active")),
         "current_version": record["current_version"],
         "field_count": len(latest_version["fields"]),
         "version_count": len(record["versions"]),
@@ -954,6 +1014,8 @@ def _representative_templates() -> list[dict[str, Any]]:
                 {"name": "operator", "label": "Operator", "required": True},
             ],
             "content": "Lot {{lot_number}} reviewed by {{operator}}",
+            "change_reason": "Seed representative batch record template",
+            "actor": {"principal_id": "system-seed", "role": "admin"},
         },
         {
             "template_id": "deviation-report",
@@ -964,6 +1026,8 @@ def _representative_templates() -> list[dict[str, Any]]:
                 {"name": "impact", "label": "Impact summary", "required": True},
             ],
             "content": "Deviation {{deviation_id}}: {{impact}}",
+            "change_reason": "Seed representative deviation report template",
+            "actor": {"principal_id": "system-seed", "role": "admin"},
         },
         {
             "template_id": "coa-summary",
@@ -974,6 +1038,8 @@ def _representative_templates() -> list[dict[str, Any]]:
                 {"name": "specification", "label": "Specification", "required": True},
             ],
             "content": "{{product_name}} conforms to {{specification}}",
+            "change_reason": "Seed representative CoA summary template",
+            "actor": {"principal_id": "system-seed", "role": "admin"},
         },
         {
             "template_id": "validation-checklist",
@@ -984,6 +1050,8 @@ def _representative_templates() -> list[dict[str, Any]]:
                 {"name": "reviewer", "label": "Reviewer", "required": True},
             ],
             "content": "Protocol {{protocol_id}} reviewed by {{reviewer}}",
+            "change_reason": "Seed representative validation checklist template",
+            "actor": {"principal_id": "system-seed", "role": "admin"},
         },
     ]
 
