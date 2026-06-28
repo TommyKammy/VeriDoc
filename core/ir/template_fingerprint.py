@@ -649,9 +649,7 @@ def _extract_template_table_cell(
             continue
         actual_column_index = column_offset + column_index
         for row_index, row in enumerate(parsed_rows.rows[header_index + 1 :], start=header_index + 1):
-            if actual_column_index >= len(row):
-                continue
-            value = str(row[actual_column_index]).strip()
+            value = _table_cell_value_at_physical_column(row, actual_column_index)
             if value:
                 return _template_value(
                     block,
@@ -700,6 +698,13 @@ def _field_mapping_table_blocks(
     return matching_blocks
 
 
+def _table_cell_value_at_physical_column(row: Sequence[str], column_index: int) -> str | None:
+    if column_index >= len(row):
+        return None
+    value = str(row[column_index]).strip()
+    return value or None
+
+
 def _field_stop_markers(
     field: Mapping[str, Any], fields: Sequence[Mapping[str, Any]]
 ) -> tuple[str, ...]:
@@ -742,12 +747,18 @@ def _value_after_marker(
         for match in re.finditer(re.escape(marker.strip()), line, flags=re.IGNORECASE):
             if not _marker_match_has_boundaries(line, match.start(), match.end()):
                 continue
-            value = line[match.end() :].strip()
-            value = re.sub(r"^[\s:：=-]+", "", value).strip()
-            value = _value_before_next_marker(value, stop_markers)
+            value = _candidate_value_after_marker_match(line, match.end(), stop_markers)
             if value:
                 return value
     return None
+
+
+def _candidate_value_after_marker_match(
+    line: str, marker_end: int, stop_markers: Sequence[str]
+) -> str:
+    value = line[marker_end:].strip()
+    value = re.sub(r"^[\s:：=-]+", "", value).strip()
+    return _value_before_next_marker(value, stop_markers)
 
 
 def _value_before_next_marker(value: str, stop_markers: Sequence[str]) -> str:
