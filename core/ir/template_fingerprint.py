@@ -729,15 +729,7 @@ def _extract_template_nearby_field(
         key=lambda block: (block.source_page, block.bbox.y, block.bbox.x, block.id),
     )
     for anchor_block in anchor_blocks:
-        for block in ordered_blocks:
-            if block.id == anchor_block.id:
-                continue
-            if block.source_page != anchor_block.source_page:
-                continue
-            if block.bbox.y < anchor_block.bbox.y:
-                continue
-            if _below_scan_block_is_not_field_value(block):
-                continue
+        for block in _below_scan_candidate_blocks(ordered_blocks, anchor_block, anchor):
             value = _below_field_value_from_block(
                 block.text,
                 field_label=label,
@@ -995,6 +987,32 @@ def _below_field_value_from_block(
 
 def _below_scan_block_is_not_field_value(block: DocumentBlock) -> bool:
     return block.type == "table"
+
+
+def _below_scan_candidate_blocks(
+    ordered_blocks: Sequence[DocumentBlock],
+    anchor_block: DocumentBlock,
+    anchor: Mapping[str, Any],
+) -> Sequence[DocumentBlock]:
+    candidates = [
+        block
+        for block in ordered_blocks
+        if block.id != anchor_block.id
+        and block.source_page == anchor_block.source_page
+        and block.bbox.y >= anchor_block.bbox.y
+    ]
+    if str(anchor.get("kind") or "") != "label":
+        return [
+            block
+            for block in candidates
+            if not _below_scan_block_is_not_field_value(block)
+        ]
+    if not candidates:
+        return []
+    first_below_block = candidates[0]
+    if _below_scan_block_is_not_field_value(first_below_block):
+        return []
+    return [first_below_block]
 
 
 def _field_value_from_label_anchor_below(
