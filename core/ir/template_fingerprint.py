@@ -206,7 +206,7 @@ def apply_template_field_mapping(
     root_key = str(output_mapping.get("root_key") or "template_result")
     warnings: list[str] = []
     if template_match.classification is not TemplateMatchClassification.KNOWN:
-        warnings.append("template field mapping requires known template classification")
+        warnings.append(_known_template_mapping_required_warning())
     match_requires_review = _template_match_requires_field_review(template_match)
 
     anchors = [_mapping(anchor) for anchor in _list_value(template_definition.get("anchors"))]
@@ -609,6 +609,10 @@ def _template_match_requires_field_review(template_match: TemplateFingerprintMat
     return template_match.requires_review
 
 
+def _known_template_mapping_required_warning() -> str:
+    return "template field mapping requires known template classification"
+
+
 def _template_match_review_warnings(match_requires_review: bool) -> tuple[str, ...]:
     if not match_requires_review:
         return ()
@@ -781,7 +785,7 @@ def _number_value(value: str) -> float | None:
     if not _comma_grouping_is_valid_for_number(stripped):
         return None
     stripped = stripped.replace(",", "")
-    if not re.fullmatch(r"[+-]?\s*(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?", stripped):
+    if not _plain_number_format_is_valid(stripped):
         return None
     try:
         number = float(re.sub(r"^([+-])\s+", r"\1", stripped))
@@ -799,6 +803,10 @@ def _comma_grouping_is_valid_for_number(value: str) -> bool:
             value,
         )
     )
+
+
+def _plain_number_format_is_valid(value: str) -> bool:
+    return bool(re.fullmatch(r"[+-]?\s*(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?", value))
 
 
 def _date_value(value: str) -> date | None:
@@ -1463,9 +1471,7 @@ def _below_scan_candidate_blocks(
     candidates = [
         block
         for block in ordered_blocks
-        if block.id != anchor_block.id
-        and block.source_page == anchor_block.source_page
-        and block.bbox.y > anchor_block.bbox.y
+        if _below_scan_candidate_is_after_anchor(block, anchor_block)
     ]
     if str(anchor.get("kind") or "") != "label":
         scoped_candidates: list[DocumentBlock] = []
@@ -1477,6 +1483,16 @@ def _below_scan_candidate_blocks(
     if not candidates:
         return []
     return _below_label_scan_candidates(candidates, anchor_block)
+
+
+def _below_scan_candidate_is_after_anchor(
+    block: DocumentBlock, anchor_block: DocumentBlock
+) -> bool:
+    return (
+        block.id != anchor_block.id
+        and block.source_page == anchor_block.source_page
+        and block.bbox.y > anchor_block.bbox.y
+    )
 
 
 def _below_label_scan_candidates(
@@ -1728,7 +1744,11 @@ def _looks_like_unlabeled_section_heading(value: str) -> bool:
 
 
 def _all_words_are_title_cased(words: Sequence[str]) -> bool:
-    return all(word[:1].isupper() for word in words)
+    return all(_word_is_title_cased(word) for word in words)
+
+
+def _word_is_title_cased(word: str) -> bool:
+    return word[:1].isupper()
 
 
 def _looks_like_negative_number(value: str) -> bool:
