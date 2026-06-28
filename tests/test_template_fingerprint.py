@@ -1065,6 +1065,59 @@ class TemplateFingerprintTest(unittest.TestCase):
         self.assertTrue(mapped["batch_number"].requires_review)
         self.assertEqual({"template_result": {}}, result.output)
 
+    def test_right_side_fallback_rejects_label_like_neighbor_blocks(self) -> None:
+        template = self.template_definition()
+        template["anchors"].append(
+            {
+                "anchor_id": "batch-number-label",
+                "kind": "label",
+                "text": "Batch No.",
+                "match": "normalized",
+                "scope": {"page": 1, "block_types": ["paragraph"]},
+            }
+        )
+        template["fields"] = [
+            {
+                "field_id": "batch_number",
+                "label": "Batch No.",
+                "value_type": "string",
+                "source": {"anchor_id": "batch-number-label", "direction": "right"},
+                "required": True,
+                "risk_level": "high",
+                "validation_rule_ids": [],
+                "output_key": "batch.number",
+            }
+        ]
+        document = DocumentIRV1(
+            schema_version="document-ir/v1",
+            document=DocumentInfo(id="fixture", title="Fixture", source_type="pdf"),
+            pages=[DocumentPage(page_number=1, width=612.0, height=792.0)],
+            blocks=[
+                self.block("heading", "Batch Production Record"),
+                self.block("paragraph", "Batch No.", y=120.0, block_id="batch-label"),
+                self.block(
+                    "paragraph",
+                    "Manufacturing Date: 2026-01-01",
+                    x=280.0,
+                    y=120.0,
+                    block_id="manufacturing-date",
+                ),
+                self.block(
+                    "table",
+                    "Yield Summary\nstep\texpected_yield\tactual_yield",
+                    y=180.0,
+                ),
+            ],
+            warnings=[],
+        )
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertIsNone(mapped["batch_number"].value)
+        self.assertTrue(mapped["batch_number"].requires_review)
+        self.assertEqual({"template_result": {}}, result.output)
+
     def test_field_mapping_matches_short_markers_on_boundaries(self) -> None:
         template = self.template_definition()
         template["fields"] = [
@@ -1087,6 +1140,31 @@ class TemplateFingerprintTest(unittest.TestCase):
         mapped = {field.field_id: field for field in result.fields}
 
         self.assertEqual("BN-001", mapped["number"].value)
+
+    def test_same_block_next_line_fallback_rejects_label_like_values(self) -> None:
+        template = self.template_definition()
+        template["fields"] = [
+            {
+                "field_id": "batch_number",
+                "label": "Batch No.",
+                "value_type": "string",
+                "source": {"anchor_id": "batch-header", "direction": "same_block"},
+                "required": True,
+                "risk_level": "medium",
+                "validation_rule_ids": [],
+                "output_key": "batch.number",
+            }
+        ]
+        document = self.document_with_blocks(
+            heading_text="Batch Production Record\nBatch No.\nManufacturing Date: 2026-01-01"
+        )
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertIsNone(mapped["batch_number"].value)
+        self.assertTrue(mapped["batch_number"].requires_review)
+        self.assertEqual({"template_result": {}}, result.output)
 
     def test_table_cell_mapping_offsets_columns_after_same_row_anchor(self) -> None:
         template = self.template_definition()
@@ -1115,6 +1193,31 @@ class TemplateFingerprintTest(unittest.TestCase):
         self.assertEqual("94", mapped["actual_yield"].value)
         self.assertEqual(1, mapped["actual_yield"].evidence["row_index"])
         self.assertEqual(4, mapped["actual_yield"].evidence["column_index"])
+
+    def test_table_cell_mapping_preserves_split_anchor_column_alignment(self) -> None:
+        template = self.template_definition()
+        template["fields"] = [
+            {
+                "field_id": "actual_yield",
+                "label": "actual_yield",
+                "value_type": "number",
+                "source": {"anchor_id": "yield-table", "direction": "table_cell"},
+                "required": True,
+                "risk_level": "high",
+                "validation_rule_ids": [],
+                "output_key": "batch.actual_yield",
+            }
+        ]
+        document = self.document_with_blocks(
+            table_text="Yield\tSummary\tstep\texpected_yield\tactual_yield\nblend\t95\t94"
+        )
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertEqual("94", mapped["actual_yield"].value)
+        self.assertEqual(1, mapped["actual_yield"].evidence["row_index"])
+        self.assertEqual(2, mapped["actual_yield"].evidence["column_index"])
 
     def test_table_cell_mapping_reports_actual_row_after_skipped_rows(self) -> None:
         template = self.template_definition()
@@ -1336,6 +1439,36 @@ class TemplateFingerprintTest(unittest.TestCase):
         self.assertFalse(mapped["actual_yield"].requires_review)
         self.assertEqual({"template_result": {"batch": {"actual_yield": "94"}}}, result.output)
 
+    def test_table_cell_mapping_skips_full_repeated_header_after_same_row_anchor(self) -> None:
+        template = self.template_definition()
+        template["tables"][0]["required_columns"] = ["step", "status"]
+        template["fields"] = [
+            {
+                "field_id": "status",
+                "label": "status",
+                "value_type": "string",
+                "source": {"anchor_id": "yield-table", "direction": "table_cell"},
+                "required": True,
+                "risk_level": "medium",
+                "validation_rule_ids": [],
+                "output_key": "batch.status",
+            }
+        ]
+        document = self.document_with_blocks(
+            table_text=(
+                "Yield Summary\tstep\tstatus\n"
+                "Yield Summary\tstep\tstatus\n"
+                "blend\treleased"
+            )
+        )
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertEqual("released", mapped["status"].value)
+        self.assertEqual(2, mapped["status"].evidence["row_index"])
+        self.assertEqual(1, mapped["status"].evidence["column_index"])
+
     def test_review_required_extracted_value_is_not_confirmed_in_output(self) -> None:
         template = self.template_definition()
         template["fields"] = [
@@ -1364,6 +1497,68 @@ class TemplateFingerprintTest(unittest.TestCase):
         self.assertEqual("94", mapped["actual_yield"].value)
         self.assertTrue(mapped["actual_yield"].requires_review)
         self.assertEqual({"template_result": {}}, result.output)
+
+    def test_document_level_review_match_is_not_confirmed_in_output(self) -> None:
+        template = self.template_definition()
+        template["fields"] = [
+            {
+                "field_id": "actual_yield",
+                "label": "actual_yield",
+                "value_type": "number",
+                "source": {"anchor_id": "yield-table", "direction": "table_cell"},
+                "required": True,
+                "risk_level": "high",
+                "validation_rule_ids": [],
+                "output_key": "batch.actual_yield",
+            }
+        ]
+        document = self.document_with_blocks(
+            table_text=(
+                "Yield Summary\tstep\texpected_yield\tactual_yield\n"
+                "blend\t95\t94"
+            )
+        )
+        document.warnings.append("document parser warning")
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertEqual("94", mapped["actual_yield"].value)
+        self.assertFalse(mapped["actual_yield"].requires_review)
+        self.assertTrue(result.requires_review)
+        self.assertEqual({"template_result": {}}, result.output)
+
+    def test_docx_wrapped_header_candidate_is_used_for_field_mapping(self) -> None:
+        template = self.template_definition()
+        template["tables"][0]["required_columns"] = ["step", "expected yield", "actual yield"]
+        template["fields"] = [
+            {
+                "field_id": "actual_yield",
+                "label": "actual yield",
+                "value_type": "number",
+                "source": {"anchor_id": "yield-table", "direction": "table_cell"},
+                "required": True,
+                "risk_level": "high",
+                "validation_rule_ids": [],
+                "output_key": "batch.actual_yield",
+            }
+        ]
+        document = self.document_with_blocks(
+            table_text=(
+                "Yield Summary\n"
+                "step\tExpected\n"
+                "Yield\tActual Yield\n"
+                "blend\t95\t94"
+            ),
+            source_type="docx",
+        )
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertEqual("94", mapped["actual_yield"].value)
+        self.assertEqual(3, mapped["actual_yield"].evidence["row_index"])
+        self.assertEqual(2, mapped["actual_yield"].evidence["column_index"])
 
     def test_below_field_mapping_does_not_extract_anchor_text_fallback(self) -> None:
         template = self.template_definition()

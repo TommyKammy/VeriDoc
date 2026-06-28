@@ -62,6 +62,14 @@ class _ParsedTableRows:
 
 
 @dataclass(frozen=True)
+class _TableHeaderCandidate:
+    row_index: int
+    header: Sequence[str]
+    column_offset: int
+    comparison_headers: tuple[Sequence[str], ...]
+
+
+@dataclass(frozen=True)
 class _ExtractedTemplateFieldValue:
     value: str
     block: DocumentBlock
@@ -199,6 +207,7 @@ def apply_template_field_mapping(
     warnings: list[str] = []
     if template_match.classification is not TemplateMatchClassification.KNOWN:
         warnings.append("template field mapping requires known template classification")
+    mapping_requires_review = template_match.requires_review
 
     anchors = [_mapping(anchor) for anchor in _list_value(template_definition.get("anchors"))]
     output_keys_by_field_id = {
@@ -310,7 +319,7 @@ def apply_template_field_mapping(
                 warnings=field_warnings,
             )
         )
-        if _mapped_field_output_is_confirmed(requires_review):
+        if not mapping_requires_review and _mapped_field_output_is_confirmed(requires_review):
             _set_output_value(output, output_key, extracted.value)
         else:
             warnings.extend(field_warnings)
@@ -1020,7 +1029,7 @@ def _extract_template_table_cell(
             block.text,
             parse_xlsx_cell_refs=document_ir.document.source_type == "xlsx",
         )
-        header_index = _table_header_row_index(
+        header_candidate = _table_header_candidate(
             parsed_rows.rows,
             anchor,
             normalized_label,
@@ -1029,17 +1038,12 @@ def _extract_template_table_cell(
                 parsed_rows.allow_merged_column_candidates
                 and _block_allows_merged_column_candidates(block, document_ir.document.source_type)
             ),
-        )
-        if header_index is None:
-            continue
-        header, column_offset = _table_header_candidate_row(
-            parsed_rows.rows,
-            header_index,
-            anchor,
             preserve_column_positions=parsed_rows.preserve_column_positions,
         )
+        if header_candidate is None:
+            continue
         column_index = _row_column_index(
-            header,
+            header_candidate.header,
             normalized_label,
             allow_merged_column_candidates=(
                 parsed_rows.allow_merged_column_candidates
@@ -1048,12 +1052,12 @@ def _extract_template_table_cell(
         )
         if column_index is None:
             continue
-        actual_column_index = column_offset + column_index
+        actual_column_index = header_candidate.column_offset + column_index
         table_value = _first_table_body_value_at_physical_column(
             parsed_rows.rows,
-            header_index,
+            header_candidate.row_index,
             actual_column_index,
-            header,
+            header_candidate.comparison_headers,
         )
         if table_value is not None:
             row_index, value = table_value
@@ -1121,17 +1125,21 @@ def _table_body_values_at_physical_column(
     rows: Sequence[Sequence[str]],
     header_index: int,
     column_index: int,
-    comparison_header: Sequence[str],
+    comparison_headers: Sequence[Sequence[str]],
 ) -> list[tuple[int, str | None]]:
     return [
         (row_index, _table_cell_value_at_physical_column(row, column_index))
         for row_index, row in enumerate(rows[header_index + 1 :], start=header_index + 1)
-        if _table_body_row_is_value_candidate(row, comparison_header)
+        if _table_body_row_is_value_candidate(row, comparison_headers)
     ]
 
 
-def _table_body_row_is_value_candidate(row: Sequence[str], header_row: Sequence[str]) -> bool:
-    return not _is_markdown_alignment_row(row) and not _table_row_repeats_header(row, header_row)
+def _table_body_row_is_value_candidate(
+    row: Sequence[str], comparison_headers: Sequence[Sequence[str]]
+) -> bool:
+    return not _is_markdown_alignment_row(row) and not any(
+        _table_row_repeats_header(row, header_row) for header_row in comparison_headers
+    )
 
 
 def _table_row_repeats_header(row: Sequence[str], header_row: Sequence[str]) -> bool:
@@ -1144,13 +1152,13 @@ def _first_table_body_value_at_physical_column(
     rows: Sequence[Sequence[str]],
     header_index: int,
     column_index: int,
-    comparison_header: Sequence[str],
+    comparison_headers: Sequence[Sequence[str]],
 ) -> tuple[int, str] | None:
     for row_index, value in _table_body_values_at_physical_column(
         rows,
         header_index,
         column_index,
-        comparison_header,
+        comparison_headers,
     ):
         if value:
             return row_index, value
@@ -1225,7 +1233,10 @@ def _right_side_unlabeled_value_from_block(
 ) -> str | None:
     if not _right_side_block_can_supply_unlabeled_value(block):
         return None
-    return _value_before_next_marker(block.text.strip(), stop_markers).strip() or None
+    value = _value_before_next_marker(block.text.strip(), stop_markers).strip()
+    if _looks_like_label_or_note_line(value):
+        return None
+    return value or None
 
 
 def _below_field_value_from_block(
@@ -1372,6 +1383,8 @@ def _first_next_line_value(lines: Sequence[str], stop_markers: Sequence[str]) ->
         if not stripped:
             continue
         value = _value_before_next_marker(stripped, stop_markers).strip()
+        if _looks_like_label_or_note_line(value):
+            return None
         return value or None
     return None
 
@@ -1570,21 +1583,29 @@ def _is_output_path_prefix(left: Sequence[str], right: Sequence[str]) -> bool:
     return len(left) < len(right) and tuple(right[: len(left)]) == tuple(left)
 
 
-def _table_header_row_index(
+def _table_header_candidate(
     rows: Sequence[Sequence[str]],
     anchor: Mapping[str, Any],
     normalized_label: str,
     *,
     required_columns: Sequence[str] = (),
     allow_merged_column_candidates: bool,
-) -> int | None:
+    preserve_column_positions: bool,
+) -> _TableHeaderCandidate | None:
     anchor_index = _first_table_anchor_row_index(rows, anchor)
     normalized_required_columns = {
         column for column in (_normalized_column_name(column) for column in required_columns) if column
     }
     if normalized_required_columns:
-        for index, row in enumerate(rows[anchor_index:], start=anchor_index):
-            candidate_row = _row_columns_excluding_anchor(row, anchor) if index == anchor_index else row
+        for candidate in _table_header_candidates_with_required_columns(
+            rows,
+            anchor,
+            anchor_index,
+            preserve_column_positions=preserve_column_positions,
+            allow_merged_column_candidates=allow_merged_column_candidates,
+        ):
+            candidate_row = candidate.header
+            index = candidate.row_index
             if index != anchor_index and _looks_like_wrapped_header_fragment(candidate_row, rows, index):
                 continue
             if (
@@ -1604,7 +1625,7 @@ def _table_header_row_index(
                 )
                 is not None
             ):
-                return index
+                return candidate
             return None
         return None
 
@@ -1614,25 +1635,108 @@ def _table_header_row_index(
             normalized_label,
             allow_merged_column_candidates=allow_merged_column_candidates,
         ) is not None:
-            return index
+            header, column_offset, comparison_headers = _table_header_candidate_details(
+                rows,
+                index,
+                anchor,
+                preserve_column_positions=preserve_column_positions,
+            )
+            return _TableHeaderCandidate(index, header, column_offset, comparison_headers)
     return None
 
 
-def _table_header_candidate_row(
+def _table_header_candidates_with_required_columns(
+    rows: Sequence[Sequence[str]],
+    anchor: Mapping[str, Any],
+    anchor_index: int,
+    *,
+    preserve_column_positions: bool,
+    allow_merged_column_candidates: bool,
+) -> list[_TableHeaderCandidate]:
+    candidates: list[_TableHeaderCandidate] = []
+    if anchor_index < len(rows):
+        header, column_offset, comparison_headers = _table_header_candidate_details(
+            rows,
+            anchor_index,
+            anchor,
+            preserve_column_positions=preserve_column_positions,
+        )
+        if header:
+            candidates.append(
+                _TableHeaderCandidate(anchor_index, header, column_offset, comparison_headers)
+            )
+    if allow_merged_column_candidates:
+        candidates.extend(
+            _wrapped_cell_header_candidates(
+                rows,
+                anchor,
+                preserve_column_positions=preserve_column_positions,
+            )
+        )
+    for index, row in enumerate(rows[anchor_index + 1 :], start=anchor_index + 1):
+        if _looks_like_wrapped_header_fragment(row, rows, index):
+            continue
+        candidates.append(_TableHeaderCandidate(index, row, 0, (row,)))
+    return candidates
+
+
+def _table_header_candidate_details(
     rows: Sequence[Sequence[str]],
     header_index: int,
     anchor: Mapping[str, Any],
     *,
     preserve_column_positions: bool,
-) -> tuple[Sequence[str], int]:
+) -> tuple[Sequence[str], int, tuple[Sequence[str], ...]]:
     row = rows[header_index]
     if header_index == _first_table_anchor_row_index(rows, anchor):
         anchor_columns, column_offset = _row_columns_excluding_anchor_with_offset(
             row, anchor, preserve_column_positions=preserve_column_positions
         )
         if anchor_columns:
-            return anchor_columns, column_offset
-    return row, 0
+            return anchor_columns, column_offset, (anchor_columns, row)
+    return row, 0, (row,)
+
+
+def _wrapped_cell_header_candidates(
+    rows: Sequence[Sequence[str]],
+    anchor: Mapping[str, Any],
+    *,
+    preserve_column_positions: bool,
+) -> list[_TableHeaderCandidate]:
+    anchor_index = _first_table_anchor_row_index(rows, anchor)
+    candidates: list[_TableHeaderCandidate] = []
+    for index in range(anchor_index, len(rows) - 1):
+        row = rows[index]
+        next_row = rows[index + 1]
+        if len(row) < 2 or len(next_row) < 2:
+            continue
+        joined_cell = f"{row[-1]}\n{next_row[0]}"
+        combined_row = [*row[:-1], joined_cell, *next_row[1:]]
+        if _row_matches_anchor(combined_row, anchor):
+            header, column_offset = _row_columns_excluding_anchor_with_offset(
+                combined_row,
+                anchor,
+                preserve_column_positions=preserve_column_positions,
+            )
+            if header:
+                candidates.append(
+                    _TableHeaderCandidate(
+                        index + 1,
+                        header,
+                        column_offset,
+                        (header, combined_row, row, next_row),
+                    )
+                )
+        else:
+            candidates.append(
+                _TableHeaderCandidate(
+                    index + 1,
+                    combined_row,
+                    0,
+                    (combined_row, row, next_row),
+                )
+            )
+    return candidates
 
 
 def _table_header_candidates_without_required_columns(
@@ -1895,9 +1999,11 @@ def _row_columns_excluding_anchor_with_offset(
                 index,
                 preserve_column_positions=preserve_column_positions,
             )
-    anchor_end = _anchor_cell_span_end_index(row, expected_text, match_mode)
-    if anchor_end is not None:
+    anchor_span = _anchor_cell_span(row, expected_text, match_mode)
+    if anchor_span is not None:
+        anchor_start, anchor_end = anchor_span
         return row[anchor_end:], _column_offset_after_anchor_span(
+            anchor_start,
             anchor_end,
             preserve_column_positions=preserve_column_positions,
         )
@@ -1915,13 +2021,11 @@ def _column_offset_after_anchor_cell(
 
 
 def _column_offset_after_anchor_span(
-    anchor_end_index: int, *, preserve_column_positions: bool
+    anchor_start_index: int, anchor_end_index: int, *, preserve_column_positions: bool
 ) -> int:
-    return (
-        anchor_end_index
-        if preserve_column_positions or anchor_end_index > 1
-        else 0
-    )
+    if preserve_column_positions:
+        return anchor_end_index
+    return anchor_end_index if anchor_start_index > 0 else 0
 
 
 def _looks_like_wrapped_header_fragment(
@@ -1930,15 +2034,15 @@ def _looks_like_wrapped_header_fragment(
     return len(row) == 1 and index + 1 < len(rows) and len(rows[index + 1]) > 1
 
 
-def _anchor_cell_span_end_index(
+def _anchor_cell_span(
     row: Sequence[str], expected_text: str, match_mode: str
-) -> int | None:
+) -> tuple[int, int] | None:
     for start in range(len(row)):
         merged = ""
         for end in range(start, len(row)):
             merged = f"{merged}\t{row[end]}" if merged else str(row[end])
             if _text_match_score(expected_text, merged, match_mode) > 0.0:
-                return end + 1
+                return start, end + 1
     return None
 
 
