@@ -131,6 +131,14 @@ class DatasetFixturesTest(unittest.TestCase):
         blocks = []
         for block in data["blocks"]:
             bbox = block["bbox"]
+            extractor = block.get("extractor", {"name": "fixture", "version": "unknown"})
+            if isinstance(extractor, dict):
+                extractor_ref = ExtractorRef(
+                    name=str(extractor.get("name", "fixture")),
+                    version=str(extractor.get("version", "unknown")),
+                )
+            else:
+                extractor_ref = ExtractorRef(name=str(extractor))
             review = block.get("review", {})
             blocks.append(
                 DocumentBlock(
@@ -144,8 +152,9 @@ class DatasetFixturesTest(unittest.TestCase):
                         width=bbox["width"],
                         height=bbox["height"],
                         unit=bbox.get("unit", "pt"),
+                        origin=bbox.get("origin", "top-left"),
                     ),
-                    extractor=ExtractorRef(name=block.get("extractor", "fixture")),
+                    extractor=extractor_ref,
                     confidence=block.get("confidence", 0.99),
                     review=ReviewState(
                         requires_review=review.get("requires_review", False),

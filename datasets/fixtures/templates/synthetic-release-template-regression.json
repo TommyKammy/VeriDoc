@@ -8,7 +8,7 @@
   "template_definition": {
     "template_id": "synthetic-release-certificate-v1",
     "version": "1.0.0",
-    "document_type": "release_certificate",
+    "document_type": "certificate_of_analysis",
     "anchors": [
       {
         "anchor_id": "certificate-header",
@@ -169,9 +169,13 @@
           "y": 72.0,
           "width": 220.0,
           "height": 24.0,
-          "unit": "pt"
+          "unit": "pt",
+          "origin": "top-left"
         },
-        "extractor": "fixture",
+        "extractor": {
+          "name": "fixture",
+          "version": "1.0.0"
+        },
         "confidence": 0.99,
         "review": {
           "requires_review": false,
@@ -188,9 +192,13 @@
           "y": 120.0,
           "width": 320.0,
           "height": 48.0,
-          "unit": "pt"
+          "unit": "pt",
+          "origin": "top-left"
         },
-        "extractor": "fixture",
+        "extractor": {
+          "name": "fixture",
+          "version": "1.0.0"
+        },
         "confidence": 0.99,
         "review": {
           "requires_review": false,
@@ -207,9 +215,13 @@
           "y": 180.0,
           "width": 420.0,
           "height": 96.0,
-          "unit": "pt"
+          "unit": "pt",
+          "origin": "top-left"
         },
-        "extractor": "fixture",
+        "extractor": {
+          "name": "fixture",
+          "version": "1.0.0"
+        },
         "confidence": 0.99,
         "review": {
           "requires_review": false,
