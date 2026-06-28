@@ -183,7 +183,7 @@ def validate_table_consistency(
         actual_table
     ):
         failed_rules.append("risk_gate")
-    if _has_malformed_risk_level(expected_table) or _has_malformed_risk_level(
+    if _has_missing_or_malformed_risk_level(expected_table) or _has_malformed_risk_level(
         actual_table
     ):
         failed_rules.append("risk_gate")
@@ -278,8 +278,6 @@ def validate_table_consistency(
                 warnings.append("table cell requires human review")
                 if auto_confirmed:
                     failed_rules.append("risk_gate")
-            if "risk_level" not in expected_table and auto_confirmed:
-                failed_rules.append("risk_gate")
 
     if failed_rules:
         warnings.append("table content requires human review")

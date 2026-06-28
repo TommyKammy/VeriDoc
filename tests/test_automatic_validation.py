@@ -869,6 +869,7 @@ def test_table_cells_enforce_provenance_and_review_gates() -> None:
     expected_table = {
         "id": "table-001",
         "fixture_table_id": "table-001",
+        "risk_level": "medium",
         "cells": [
             {
                 "id": "table-001-r1-c1",
@@ -1121,6 +1122,7 @@ def test_table_cell_requires_review_blocks_auto_confirm_even_without_failures() 
     expected_table = {
         "id": "table-001",
         "fixture_table_id": "table-001",
+        "risk_level": "medium",
         "cells": [
             {
                 "id": "table-001-r1-c1",
@@ -1155,6 +1157,7 @@ def test_actual_table_cell_requires_review_blocks_auto_confirm() -> None:
     expected_table = {
         "id": "table-001",
         "fixture_table_id": "table-001",
+        "risk_level": "medium",
         "cells": [
             {
                 "id": "table-001-r1-c1",
