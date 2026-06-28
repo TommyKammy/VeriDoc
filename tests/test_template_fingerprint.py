@@ -1017,6 +1017,54 @@ class TemplateFingerprintTest(unittest.TestCase):
         self.assertEqual("batch-value", mapped["batch_number"].evidence["block_id"])
         self.assertEqual("right", mapped["batch_number"].evidence["direction"])
 
+    def test_right_side_fallback_skips_table_blocks(self) -> None:
+        template = self.template_definition()
+        template["anchors"].append(
+            {
+                "anchor_id": "batch-number-label",
+                "kind": "label",
+                "text": "Batch No.",
+                "match": "normalized",
+                "scope": {"page": 1, "block_types": ["paragraph"]},
+            }
+        )
+        template["fields"] = [
+            {
+                "field_id": "batch_number",
+                "label": "Batch No.",
+                "value_type": "string",
+                "source": {"anchor_id": "batch-number-label", "direction": "right"},
+                "required": True,
+                "risk_level": "high",
+                "validation_rule_ids": [],
+                "output_key": "batch.number",
+            }
+        ]
+        document = DocumentIRV1(
+            schema_version="document-ir/v1",
+            document=DocumentInfo(id="fixture", title="Fixture", source_type="pdf"),
+            pages=[DocumentPage(page_number=1, width=612.0, height=792.0)],
+            blocks=[
+                self.block("heading", "Batch Production Record"),
+                self.block("paragraph", "Batch No.", y=120.0, block_id="batch-label"),
+                self.block(
+                    "table",
+                    "Yield Summary\nstep\texpected_yield\tactual_yield\nblend\t95\t94",
+                    x=280.0,
+                    y=120.0,
+                    block_id="right-side-table",
+                ),
+            ],
+            warnings=[],
+        )
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertIsNone(mapped["batch_number"].value)
+        self.assertTrue(mapped["batch_number"].requires_review)
+        self.assertEqual({"template_result": {}}, result.output)
+
     def test_field_mapping_matches_short_markers_on_boundaries(self) -> None:
         template = self.template_definition()
         template["fields"] = [
@@ -2341,6 +2389,75 @@ class TemplateFingerprintTest(unittest.TestCase):
             result.warnings,
         )
 
+    def test_field_mapping_cross_field_rule_rejects_unreviewed_related_field(self) -> None:
+        template = self.template_definition()
+        template["fields"] = [
+            {
+                "field_id": "manufacturing_date",
+                "label": "Manufacturing Date",
+                "value_type": "date",
+                "source": {"anchor_id": "batch-header", "direction": "below"},
+                "required": True,
+                "risk_level": "medium",
+                "validation_rule_ids": ["manufactured-before-expiry"],
+                "output_key": "batch.manufacturing_date",
+            },
+            {
+                "field_id": "expiry_date",
+                "label": "Expiry Date",
+                "value_type": "date",
+                "source": {"anchor_id": "batch-header", "direction": "below"},
+                "required": True,
+                "risk_level": "medium",
+                "validation_rule_ids": [],
+                "output_key": "batch.expiry_date",
+            },
+        ]
+        template["validation_rules"] = [
+            {
+                "rule_id": "manufactured-before-expiry",
+                "target": "manufacturing_date",
+                "rule_type": "cross_field",
+                "related_target": "expiry_date",
+                "operator": "before_or_equal",
+            }
+        ]
+        document = DocumentIRV1(
+            schema_version="document-ir/v1",
+            document=DocumentInfo(id="fixture", title="Fixture", source_type="pdf"),
+            pages=[DocumentPage(page_number=1, width=612.0, height=792.0)],
+            blocks=[
+                self.block("heading", "Batch Production Record"),
+                self.block("paragraph", "Manufacturing Date 2026-01-01", y=120.0),
+                self.block(
+                    "paragraph",
+                    "Expiry Date 2026-06-01",
+                    y=150.0,
+                    review_warnings=["expiry requires manual review"],
+                ),
+                self.block(
+                    "table",
+                    "Yield Summary\nstep\texpected_yield\tactual_yield",
+                    y=180.0,
+                ),
+            ],
+            warnings=[],
+        )
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertEqual("2026-01-01", mapped["manufacturing_date"].value)
+        self.assertEqual("2026-06-01", mapped["expiry_date"].value)
+        self.assertTrue(mapped["manufacturing_date"].requires_review)
+        self.assertTrue(mapped["expiry_date"].requires_review)
+        self.assertEqual({"template_result": {}}, result.output)
+        self.assertIn(
+            "template field 'manufacturing_date' failed validation rule "
+            "'manufactured-before-expiry'; requires review",
+            result.warnings,
+        )
+
     def test_field_mapping_cross_field_number_equality_uses_declared_type(self) -> None:
         template = self.template_definition()
         template["fields"] = [
@@ -2580,6 +2697,38 @@ class TemplateFingerprintTest(unittest.TestCase):
         mapped = {field.field_id: field for field in result.fields}
 
         self.assertEqual("BN-001", mapped["batch_number"].value)
+
+    def test_same_block_field_mapping_does_not_use_anchor_fallback_for_missing_label(self) -> None:
+        template = self.template_definition()
+        template["anchors"].append(
+            {
+                "anchor_id": "batch-number-label",
+                "kind": "label",
+                "text": "Batch No.",
+                "match": "contains",
+                "scope": {"page": 1, "block_types": ["paragraph"]},
+            }
+        )
+        template["fields"] = [
+            {
+                "field_id": "reviewer",
+                "label": "Reviewer",
+                "value_type": "string",
+                "source": {"anchor_id": "batch-number-label", "direction": "same_block"},
+                "required": True,
+                "risk_level": "medium",
+                "validation_rule_ids": [],
+                "output_key": "batch.reviewer",
+            }
+        ]
+        document = self.document_with_blocks(paragraph_text="Batch No. BN-001")
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertIsNone(mapped["reviewer"].value)
+        self.assertTrue(mapped["reviewer"].requires_review)
+        self.assertEqual({"template_result": {}}, result.output)
 
     def test_field_mapping_rejects_conflicting_nested_output_paths(self) -> None:
         template = self.template_definition()

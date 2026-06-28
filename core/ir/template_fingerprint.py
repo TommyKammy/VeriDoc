@@ -228,11 +228,14 @@ def apply_template_field_mapping(
             )
             for field in fields
         }
-    field_values_by_id = {
-        field_id: extracted.value
-        for field_id, extracted in extracted_by_field_id.items()
-        if field_id and extracted is not None
-    }
+    reviewed_field_values_by_id = _reviewed_template_field_values_by_id(
+        fields,
+        extracted_by_field_id,
+        template_definition,
+        output_conflicts,
+        output_keys_by_field_id,
+        review_required_levels,
+    )
     for field in fields:
         field_id = str(field.get("field_id") or "")
         label = str(field.get("label") or field_id)
@@ -275,7 +278,7 @@ def apply_template_field_mapping(
             field,
             extracted.value,
             template_definition,
-            field_values_by_id,
+            reviewed_field_values_by_id,
         )
         field_warnings = (
             *block_warnings,
@@ -592,11 +595,14 @@ def _template_field_value_validation_warnings(
     value: str,
     template_definition: Mapping[str, Any],
     field_values_by_id: Mapping[str, str],
+    *,
+    non_cross_field_rules: bool = True,
+    cross_field_rules: bool = True,
 ) -> tuple[str, ...]:
     field_id = str(field.get("field_id") or "<unknown>")
     value_type = str(field.get("value_type") or "").strip()
     warnings: list[str] = []
-    if value_type and not _value_matches_template_type(value, value_type):
+    if non_cross_field_rules and value_type and not _value_matches_template_type(value, value_type):
         warnings.append(
             f"template field '{field_id}' value {value!r} does not match "
             f"value_type '{value_type}'; requires review"
@@ -618,6 +624,11 @@ def _template_field_value_validation_warnings(
                 f"'{rule_id}'; requires review"
             )
             continue
+        rule_type = str(rule.get("rule_type") or "").strip().casefold()
+        if rule_type == "cross_field" and not cross_field_rules:
+            continue
+        if rule_type != "cross_field" and not non_cross_field_rules:
+            continue
         if not _value_satisfies_template_validation_rule(
             value,
             rule,
@@ -629,6 +640,72 @@ def _template_field_value_validation_warnings(
                 "requires review"
             )
     return tuple(dict.fromkeys(warnings))
+
+
+def _reviewed_template_field_values_by_id(
+    fields: Sequence[Mapping[str, Any]],
+    extracted_by_field_id: Mapping[str, _ExtractedTemplateFieldValue | None],
+    template_definition: Mapping[str, Any],
+    output_conflicts: Mapping[str, Sequence[str]],
+    output_keys_by_field_id: Mapping[str, str],
+    review_required_levels: set[str],
+) -> dict[str, str]:
+    reviewed_field_ids: set[str] = set()
+    for field in fields:
+        field_id = str(field.get("field_id") or "")
+        extracted = extracted_by_field_id.get(field_id)
+        if not field_id or extracted is None:
+            continue
+        output_key = output_keys_by_field_id.get(field_id) or str(field.get("output_key") or field_id)
+        base_validation_warnings = _template_field_value_validation_warnings(
+            field,
+            extracted.value,
+            template_definition,
+            {},
+            cross_field_rules=False,
+        )
+        if _template_field_requires_review(
+            extracted.block.review.requires_review,
+            tuple(extracted.block.review.warnings),
+            (
+                (
+                    f"template field '{field_id}' risk_level "
+                    f"'{field.get('risk_level')}' requires review",
+                )
+                if _field_requires_template_risk_review(field, review_required_levels)
+                else ()
+            ),
+            base_validation_warnings,
+            tuple(output_conflicts.get(output_key, ())),
+        ):
+            continue
+        reviewed_field_ids.add(field_id)
+
+    reviewed_values = {
+        field_id: extracted_by_field_id[field_id].value
+        for field_id in reviewed_field_ids
+        if extracted_by_field_id[field_id] is not None
+    }
+    while True:
+        failed_field_ids = set()
+        for field in fields:
+            field_id = str(field.get("field_id") or "")
+            extracted = extracted_by_field_id.get(field_id)
+            if field_id not in reviewed_values or extracted is None:
+                continue
+            cross_field_warnings = _template_field_value_validation_warnings(
+                field,
+                extracted.value,
+                template_definition,
+                reviewed_values,
+                non_cross_field_rules=False,
+            )
+            if cross_field_warnings:
+                failed_field_ids.add(field_id)
+        if not failed_field_ids:
+            return reviewed_values
+        for field_id in failed_field_ids:
+            reviewed_values.pop(field_id, None)
 
 
 def _value_matches_template_type(value: str, value_type: str) -> bool:
@@ -872,15 +949,31 @@ def _extract_template_nearby_field(
     stop_markers = (*_field_stop_markers(field, fields), *_anchor_stop_markers(anchor, anchors))
     if direction in {"same_block", "right"}:
         for block in anchor_blocks:
-            value = _field_value_from_text(block.text, label, anchor_text, stop_markers=stop_markers)
+            value = _field_value_from_text(
+                block.text,
+                label,
+                anchor_text,
+                stop_markers=stop_markers,
+                allow_anchor_fallback=False,
+            )
             if value:
                 return _template_value(block, value, 0.98, direction=direction)
         if direction == "right":
             for anchor_block in anchor_blocks:
                 for block in _right_side_blocks(document_ir.blocks, anchor_block):
-                    value = _field_value_from_text(block.text, label, anchor_text, stop_markers=stop_markers)
+                    if block.type == "table":
+                        continue
+                    value = _field_value_from_text(
+                        block.text,
+                        label,
+                        anchor_text,
+                        stop_markers=stop_markers,
+                        allow_anchor_fallback=False,
+                    )
                     if value is None:
                         if _text_starts_with_label_like_marker(block.text, (label,)):
+                            continue
+                        if _text_starts_with_label_like_marker(block.text, (anchor_text,)):
                             continue
                         if _text_starts_with_label_like_marker(block.text, stop_markers):
                             break
