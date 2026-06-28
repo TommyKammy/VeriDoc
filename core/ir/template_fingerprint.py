@@ -207,7 +207,7 @@ def apply_template_field_mapping(
     warnings: list[str] = []
     if template_match.classification is not TemplateMatchClassification.KNOWN:
         warnings.append("template field mapping requires known template classification")
-    match_requires_review = template_match.requires_review
+    match_requires_review = _template_match_requires_field_review(template_match)
 
     anchors = [_mapping(anchor) for anchor in _list_value(template_definition.get("anchors"))]
     output_keys_by_field_id = {
@@ -605,6 +605,10 @@ def _template_match_allows_confirmed_output(match_requires_review: bool) -> bool
     return not match_requires_review
 
 
+def _template_match_requires_field_review(template_match: TemplateFingerprintMatch) -> bool:
+    return template_match.requires_review
+
+
 def _template_match_review_warnings(match_requires_review: bool) -> tuple[str, ...]:
     if not match_requires_review:
         return ()
@@ -774,10 +778,7 @@ def _coerced_template_validation_value(value: Any, value_type: str) -> Any | Non
 
 def _number_value(value: str) -> float | None:
     stripped = re.sub(r"^([+-])\s+", r"\1", value.strip())
-    if "," in stripped and not re.fullmatch(
-        r"[+-]?\d{1,3}(?:,\d{3})+(?:\.\d*)?(?:[eE][+-]?\d+)?",
-        stripped,
-    ):
+    if not _comma_grouping_is_valid_for_number(stripped):
         return None
     stripped = stripped.replace(",", "")
     if not re.fullmatch(r"[+-]?\s*(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?", stripped):
@@ -789,20 +790,38 @@ def _number_value(value: str) -> float | None:
     return number if math.isfinite(number) else None
 
 
+def _comma_grouping_is_valid_for_number(value: str) -> bool:
+    if "," not in value:
+        return True
+    return bool(
+        re.fullmatch(
+            r"[+-]?\d{1,3}(?:,\d{3})+(?:\.\d*)?(?:[eE][+-]?\d+)?",
+            value,
+        )
+    )
+
+
 def _date_value(value: str) -> date | None:
     stripped = value.strip()
-    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}(?:[T ][0-9:.+-]+Z?)?", stripped):
+    normalized = _normalized_template_date_text(stripped)
+    if normalized is None:
         return None
-    normalized = stripped.replace("Z", "+00:00")
-    if len(normalized) == 10:
-        normalized = f"{normalized}T00:00:00"
-    elif " " in normalized and "T" not in normalized:
-        normalized = normalized.replace(" ", "T", 1)
     try:
         parsed = datetime.fromisoformat(normalized)
     except ValueError:
         return None
     return parsed.date()
+
+
+def _normalized_template_date_text(value: str) -> str | None:
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}(?:[T ][0-9:.+-]+Z?)?", value):
+        return None
+    normalized = value.replace("Z", "+00:00")
+    if len(normalized) == 10:
+        return f"{normalized}T00:00:00"
+    if " " in normalized and "T" not in normalized:
+        return normalized.replace(" ", "T", 1)
+    return normalized
 
 
 def _value_satisfies_template_validation_rule(
@@ -1002,20 +1021,21 @@ def _extract_template_nearby_field(
                         stop_markers=stop_markers,
                     )
                     if value is None:
-                        if _right_side_block_starts_with_current_label(
+                        value = _right_side_fallback_value_from_block(
                             block,
                             label=label,
                             anchor_text=anchor_text,
-                        ):
-                            continue
-                        if _right_side_block_starts_with_stop_marker(block, stop_markers):
-                            break
-                        value = _right_side_unlabeled_value_from_block(
-                            block,
                             stop_markers=stop_markers,
                         )
+                        if value is _RIGHT_SIDE_STOP_SCAN:
+                            break
                     if value:
-                        return _template_value(block, value, 0.94, direction=direction)
+                        return _template_value(
+                            block,
+                            value,
+                            0.94,
+                            direction=direction,
+                        )
         return None
 
     if direction != "below":
@@ -1374,6 +1394,27 @@ def _right_side_block_starts_with_stop_marker(
     return _text_starts_with_label_like_marker(block.text, stop_markers)
 
 
+_RIGHT_SIDE_STOP_SCAN = object()
+
+
+def _right_side_fallback_value_from_block(
+    block: DocumentBlock,
+    *,
+    label: str,
+    anchor_text: str,
+    stop_markers: Sequence[str] = (),
+) -> str | object | None:
+    if _right_side_block_starts_with_current_label(
+        block,
+        label=label,
+        anchor_text=anchor_text,
+    ):
+        return None
+    if _right_side_block_starts_with_stop_marker(block, stop_markers):
+        return _RIGHT_SIDE_STOP_SCAN
+    return _right_side_unlabeled_value_from_block(block, stop_markers=stop_markers)
+
+
 def _right_side_unlabeled_value_from_block(
     block: DocumentBlock,
     *,
@@ -1435,6 +1476,12 @@ def _below_scan_candidate_blocks(
         return scoped_candidates
     if not candidates:
         return []
+    return _below_label_scan_candidates(candidates, anchor_block)
+
+
+def _below_label_scan_candidates(
+    candidates: Sequence[DocumentBlock], anchor_block: DocumentBlock
+) -> Sequence[DocumentBlock]:
     aligned_candidates = [
         block for block in candidates if _blocks_horizontally_overlap(block, anchor_block)
     ]
@@ -1539,11 +1586,15 @@ def _first_next_line_value(lines: Sequence[str], stop_markers: Sequence[str]) ->
         stripped = line.strip()
         if not stripped:
             continue
-        value = _value_before_next_marker(stripped, stop_markers).strip()
-        if _next_line_fallback_rejects_value(value):
-            return None
-        return value or None
+        return _next_line_fallback_value(stripped, stop_markers)
     return None
+
+
+def _next_line_fallback_value(line: str, stop_markers: Sequence[str]) -> str | None:
+    value = _value_before_next_marker(line, stop_markers).strip()
+    if _next_line_fallback_rejects_value(value):
+        return None
+    return value or None
 
 
 def _next_line_fallback_rejects_value(value: str) -> bool:
@@ -1673,6 +1724,10 @@ def _looks_like_unlabeled_section_heading(value: str) -> bool:
     words = [word for word in value.split() if word]
     if len(words) < 2:
         return False
+    return _all_words_are_title_cased(words)
+
+
+def _all_words_are_title_cased(words: Sequence[str]) -> bool:
     return all(word[:1].isupper() for word in words)
 
 
@@ -1846,13 +1901,10 @@ def _table_header_candidate(
             index = candidate.row_index
             if index != anchor_index and _looks_like_wrapped_header_fragment(candidate_row, rows, index):
                 continue
-            if (
-                _row_required_column_score(
-                    candidate_row,
-                    normalized_required_columns,
-                    allow_merged_column_candidates=allow_merged_column_candidates,
-                )
-                < 1.0
+            if not _table_header_candidate_satisfies_required_columns(
+                candidate_row,
+                normalized_required_columns,
+                allow_merged_column_candidates=allow_merged_column_candidates,
             ):
                 continue
             if _table_header_candidate_contains_label(
@@ -1893,6 +1945,22 @@ def _table_header_candidate_contains_label(
             allow_merged_column_candidates=allow_merged_column_candidates,
         )
         is not None
+    )
+
+
+def _table_header_candidate_satisfies_required_columns(
+    candidate_row: Sequence[str],
+    normalized_required_columns: set[str],
+    *,
+    allow_merged_column_candidates: bool,
+) -> bool:
+    return (
+        _row_required_column_score(
+            candidate_row,
+            normalized_required_columns,
+            allow_merged_column_candidates=allow_merged_column_candidates,
+        )
+        >= 1.0
     )
 
 
@@ -2293,10 +2361,20 @@ def _row_columns_excluding_anchor_with_offset(
 def _column_offset_after_anchor_cell(
     anchor_cell_index: int, *, preserve_column_positions: bool
 ) -> int:
+    if _same_row_anchor_offset_should_preserve_blank_columns(
+        anchor_cell_index,
+        preserve_column_positions=preserve_column_positions,
+    ):
+        return anchor_cell_index + 1
+    return 0
+
+
+def _same_row_anchor_offset_should_preserve_blank_columns(
+    anchor_cell_index: int, *, preserve_column_positions: bool
+) -> bool:
     return (
-        anchor_cell_index + 1
-        if preserve_column_positions or anchor_cell_index > 0
-        else 0
+        preserve_column_positions
+        or anchor_cell_index > 0
     )
 
 
