@@ -1169,6 +1169,38 @@ class TemplateFingerprintTest(unittest.TestCase):
         self.assertEqual("94", mapped["actual_yield"].value)
         self.assertEqual(2, mapped["actual_yield"].evidence["column_index"])
 
+    def test_xlsx_table_cell_mapping_uses_physical_columns_for_value_rows(self) -> None:
+        template = self.template_definition()
+        template["tables"][0]["required_columns"] = ["actual_yield"]
+        template["fields"] = [
+            {
+                "field_id": "actual_yield",
+                "label": "actual_yield",
+                "value_type": "number",
+                "source": {"anchor_id": "yield-table", "direction": "table_cell"},
+                "required": True,
+                "risk_level": "high",
+                "validation_rule_ids": [],
+                "output_key": "batch.actual_yield",
+            }
+        ]
+        document = self.document_with_blocks(
+            source_type="xlsx",
+            table_text=(
+                "A1: Yield Summary\n"
+                "A2: step\n"
+                "C2: actual_yield\n"
+                "B3: SPACER\n"
+                "C3: 94"
+            ),
+        )
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertEqual("94", mapped["actual_yield"].value)
+        self.assertEqual(2, mapped["actual_yield"].evidence["column_index"])
+
     def test_below_field_mapping_does_not_extract_anchor_text_fallback(self) -> None:
         template = self.template_definition()
         template["fields"] = [
@@ -1227,6 +1259,40 @@ class TemplateFingerprintTest(unittest.TestCase):
 
         self.assertEqual("BN-001", mapped["batch_number"].value)
         self.assertEqual("Released", mapped["disposition"].value)
+
+    def test_field_mapping_stops_value_at_adjacent_same_line_label(self) -> None:
+        template = self.template_definition()
+        template["fields"] = [
+            {
+                "field_id": "batch_number",
+                "label": "Batch No.",
+                "value_type": "string",
+                "source": {"anchor_id": "batch-header", "direction": "below"},
+                "required": True,
+                "risk_level": "high",
+                "validation_rule_ids": [],
+                "output_key": "batch.number",
+            },
+            {
+                "field_id": "manufacturing_date",
+                "label": "Manufacturing Date",
+                "value_type": "date",
+                "source": {"anchor_id": "batch-header", "direction": "below"},
+                "required": True,
+                "risk_level": "medium",
+                "validation_rule_ids": [],
+                "output_key": "batch.manufacturing_date",
+            },
+        ]
+        document = self.document_with_blocks(
+            paragraph_text="Batch No. BN-001 Manufacturing Date 2026-01-01"
+        )
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertEqual("BN-001", mapped["batch_number"].value)
+        self.assertEqual("2026-01-01", mapped["manufacturing_date"].value)
 
     def test_field_mapping_rejects_conflicting_nested_output_paths(self) -> None:
         template = self.template_definition()
