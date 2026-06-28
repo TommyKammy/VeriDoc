@@ -801,6 +801,7 @@ def _extract_template_table_cell(
             parsed_rows.rows,
             header_index,
             actual_column_index,
+            header,
         )
         if table_value is not None:
             row_index, value = table_value
@@ -865,13 +866,15 @@ def _table_cell_value_at_physical_column(row: Sequence[str], column_index: int) 
 
 
 def _table_body_values_at_physical_column(
-    rows: Sequence[Sequence[str]], header_index: int, column_index: int
+    rows: Sequence[Sequence[str]],
+    header_index: int,
+    column_index: int,
+    comparison_header: Sequence[str],
 ) -> list[tuple[int, str | None]]:
-    header_row = rows[header_index] if header_index < len(rows) else ()
     return [
         (row_index, _table_cell_value_at_physical_column(row, column_index))
         for row_index, row in enumerate(rows[header_index + 1 :], start=header_index + 1)
-        if _table_body_row_is_value_candidate(row, header_row)
+        if _table_body_row_is_value_candidate(row, comparison_header)
     ]
 
 
@@ -886,12 +889,16 @@ def _table_row_repeats_header(row: Sequence[str], header_row: Sequence[str]) -> 
 
 
 def _first_table_body_value_at_physical_column(
-    rows: Sequence[Sequence[str]], header_index: int, column_index: int
+    rows: Sequence[Sequence[str]],
+    header_index: int,
+    column_index: int,
+    comparison_header: Sequence[str],
 ) -> tuple[int, str] | None:
     for row_index, value in _table_body_values_at_physical_column(
         rows,
         header_index,
         column_index,
+        comparison_header,
     ):
         if value:
             return row_index, value

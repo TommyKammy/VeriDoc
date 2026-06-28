@@ -2025,6 +2025,36 @@ class TemplateFingerprintTest(unittest.TestCase):
         self.assertEqual("94", mapped["actual_yield"].value)
         self.assertEqual(2, mapped["actual_yield"].evidence["column_index"])
 
+    def test_table_cell_mapping_skips_trimmed_repeated_headers_after_same_row_anchor(self) -> None:
+        template = self.template_definition()
+        template["tables"][0]["required_columns"] = ["step", "status"]
+        template["fields"] = [
+            {
+                "field_id": "status",
+                "label": "status",
+                "value_type": "string",
+                "source": {"anchor_id": "yield-table", "direction": "table_cell"},
+                "required": True,
+                "risk_level": "medium",
+                "validation_rule_ids": [],
+                "output_key": "batch.status",
+            }
+        ]
+        document = self.document_with_blocks(
+            table_text=(
+                "Yield Summary\tstep\tstatus\n"
+                "step\tstatus\n"
+                "blend\treleased"
+            )
+        )
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertEqual("released", mapped["status"].value)
+        self.assertEqual(2, mapped["status"].evidence["row_index"])
+        self.assertEqual(1, mapped["status"].evidence["column_index"])
+
     def test_table_cell_mapping_without_required_columns_does_not_promote_data_row_label(self) -> None:
         template = self.template_definition()
         template["tables"][0]["required_columns"] = []
