@@ -1873,6 +1873,109 @@ def test_current_head_review_examples_fail_closed() -> None:
             ),
             "risk_gate",
         ),
+        (
+            "current_thread_numeric_typed_value",
+            validate_extracted_item(
+                expected=_expected_item(
+                    label_id="generic-field",
+                    expected_value=98.5,
+                    risk_level="medium",
+                    requires_review=False,
+                    fixture_id="fixture-001",
+                    document_id="doc-001",
+                    block_id="block-001",
+                ),
+                actual=_actual_item(
+                    label_id="generic-field",
+                    value=98.5,
+                    auto_confirmed=True,
+                    fixture_id="fixture-001",
+                    document_id="doc-001",
+                    block_id="block-001",
+                ),
+            ),
+            "risk_gate",
+        ),
+        (
+            "current_thread_string_extractor_mismatch",
+            validate_extracted_item(
+                expected=_expected_item(
+                    label_id="summary_note",
+                    expected_value="Reviewed note",
+                    risk_level="medium",
+                    requires_review=False,
+                    fixture_id="fixture-001",
+                    document_id="doc-001",
+                    block_id="block-001",
+                    extractor="pymupdf",
+                ),
+                actual=_actual_item(
+                    label_id="summary_note",
+                    value="Reviewed note",
+                    auto_confirmed=True,
+                    fixture_id="fixture-001",
+                    document_id="doc-001",
+                    block_id="block-001",
+                    extractor="llm-repair-v1",
+                ),
+            ),
+            "risk_gate",
+        ),
+        (
+            "current_thread_missing_table_risk_level",
+            validate_table_consistency(
+                {
+                    "id": "table-001",
+                    "fixture_table_id": "table-001",
+                    "cells": [
+                        {
+                            "id": "table-001-r1-c1",
+                            "text": "Reviewed note",
+                            "source": source,
+                            "requires_review": False,
+                            "risk_level": "low",
+                        },
+                    ],
+                },
+                {
+                    "id": "table-001",
+                    "cells": [
+                        {
+                            "id": "table-001-r1-c1",
+                            "text": "Reviewed note",
+                            "source": source,
+                            "confidence": 0.95,
+                            "auto_confirmed": True,
+                        },
+                    ],
+                },
+            ),
+            "risk_gate",
+        ),
+        (
+            "current_thread_slash_separated_category",
+            validate_extracted_item(
+                expected=_expected_item(
+                    label_id="generic-field",
+                    expected_value="2026-01-01",
+                    risk_level="medium",
+                    requires_review=False,
+                    gmp_review_category="date/time",
+                    fixture_id="fixture-001",
+                    document_id="doc-001",
+                    block_id="block-001",
+                ),
+                actual=_actual_item(
+                    label_id="generic-field",
+                    value="2026-01-01",
+                    auto_confirmed=True,
+                    fixture_id="fixture-001",
+                    document_id="doc-001",
+                    block_id="block-001",
+                ),
+            ),
+            "risk_gate",
+        ),
     ]
 
     for case_name, decision, failed_rule in cases:

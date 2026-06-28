@@ -278,6 +278,8 @@ def validate_table_consistency(
                 warnings.append("table cell requires human review")
                 if auto_confirmed:
                     failed_rules.append("risk_gate")
+            if "risk_level" not in expected_table and auto_confirmed:
+                failed_rules.append("risk_gate")
 
     if failed_rules:
         warnings.append("table content requires human review")
@@ -446,6 +448,7 @@ def _gmp_category_requires_review(record: Mapping[str, Any]) -> bool:
         _normalized_category(record.get("label_id")),
         _normalized_category(record.get("label")),
         _category_from_value_type(record.get("value_type")),
+        _category_from_record_value(record),
     )
     return any(category in GMP_REVIEW_REQUIRED_CATEGORIES for category in categories)
 
@@ -465,7 +468,11 @@ def _table_gmp_category_requires_review(table: Mapping[str, Any]) -> bool:
 def _normalized_category(value: object) -> str:
     if not isinstance(value, str):
         return ""
-    normalized = value.strip().casefold().replace("-", "_").replace(" ", "_")
+    normalized = (
+        value.strip().casefold().replace("-", "_").replace("/", "_").replace(" ", "_")
+    )
+    while "__" in normalized:
+        normalized = normalized.replace("__", "_")
     alias = GMP_REVIEW_CATEGORY_ALIASES.get(normalized)
     if alias:
         return alias
@@ -482,6 +489,14 @@ def _category_from_value_type(value: object) -> str:
         return "numeric_value"
     if normalized in {"date", "datetime", "time", "timestamp"}:
         return "date_time"
+    return ""
+
+
+def _category_from_record_value(record: Mapping[str, Any]) -> str:
+    if _number_expected(record.get("expected_value")) or _number_expected(
+        record.get("value")
+    ):
+        return "numeric_value"
     return ""
 
 
@@ -538,6 +553,8 @@ def _extraction_engine(record: Mapping[str, Any]) -> object:
 
 def _extractor_name(record: Mapping[str, Any]) -> str | None:
     extractor = record.get("extractor")
+    if isinstance(extractor, str):
+        return extractor
     if isinstance(extractor, Mapping):
         name = extractor.get("name")
         if isinstance(name, str):
@@ -545,6 +562,8 @@ def _extractor_name(record: Mapping[str, Any]) -> str | None:
     value_metadata = record.get("value_metadata")
     if isinstance(value_metadata, Mapping):
         extractor = value_metadata.get("extractor")
+        if isinstance(extractor, str):
+            return extractor
         if isinstance(extractor, Mapping):
             name = extractor.get("name")
             if isinstance(name, str):
