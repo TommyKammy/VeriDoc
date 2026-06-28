@@ -204,24 +204,36 @@ def apply_template_field_mapping(
         for mapping in (_mapping(value) for value in _list_value(output_mapping.get("field_map")))
         if isinstance(mapping.get("field_id"), str) and isinstance(mapping.get("output_key"), str)
     }
+    fields = [_mapping(value) for value in _list_value(template_definition.get("fields"))]
+    output_keys_by_field_id_for_conflicts = {
+        str(field.get("field_id") or ""): output_keys_by_field_id.get(str(field.get("field_id") or ""))
+        or str(field.get("output_key") or field.get("field_id") or "")
+        for field in fields
+    }
+    output_conflicts = _output_key_conflicts(output_keys_by_field_id_for_conflicts)
+    for conflict_warnings in output_conflicts.values():
+        warnings.extend(conflict_warnings)
+
     mapped_fields: list[TemplateMappedField] = []
     output: dict[str, Any] = {}
-    for field in (_mapping(value) for value in _list_value(template_definition.get("fields"))):
+    for field in fields:
         field_id = str(field.get("field_id") or "")
         label = str(field.get("label") or field_id)
         output_key = output_keys_by_field_id.get(field_id) or str(field.get("output_key") or field_id)
         required = field.get("required") is True
+        output_conflict_warnings = tuple(output_conflicts.get(output_key, ()))
         extracted = (
             _extract_template_field_value(document_ir, field, anchors)
             if template_match.classification is TemplateMatchClassification.KNOWN
             else None
         )
         if extracted is None:
-            field_warnings = (
+            missing_warnings = (
                 (f"template field '{field_id or '<unknown>'}' missing; requires review",)
                 if required
                 else ()
             )
+            field_warnings = (*missing_warnings, *output_conflict_warnings)
             warnings.extend(field_warnings)
             mapped_fields.append(
                 TemplateMappedField(
@@ -231,14 +243,19 @@ def apply_template_field_mapping(
                     value=None,
                     confidence=0.0,
                     evidence={},
-                    requires_review=required,
+                    requires_review=required or bool(output_conflict_warnings),
                     warnings=field_warnings,
                 )
             )
             continue
 
         block_warnings = tuple(extracted.block.review.warnings)
-        requires_review = extracted.block.review.requires_review or bool(block_warnings)
+        field_warnings = (*block_warnings, *output_conflict_warnings)
+        requires_review = (
+            extracted.block.review.requires_review
+            or bool(block_warnings)
+            or bool(output_conflict_warnings)
+        )
         mapped_fields.append(
             TemplateMappedField(
                 field_id=field_id,
@@ -253,10 +270,11 @@ def apply_template_field_mapping(
                     **extracted.evidence_detail,
                 },
                 requires_review=requires_review,
-                warnings=block_warnings,
+                warnings=field_warnings,
             )
         )
-        _set_output_value(output, output_key, extracted.value)
+        if not output_conflict_warnings:
+            _set_output_value(output, output_key, extracted.value)
 
     result_warnings = tuple(dict.fromkeys([*template_match.warnings, *warnings]))
     return TemplateFieldMappingResult(
@@ -543,6 +561,14 @@ def _extract_template_nearby_field(
             value = _field_value_from_text(block.text, label, anchor_text)
             if value:
                 return _template_value(block, value, 0.98, direction=direction)
+        if direction == "right":
+            for anchor_block in anchor_blocks:
+                for block in _right_side_blocks(document_ir.blocks, anchor_block):
+                    value = _field_value_from_text(block.text, label, anchor_text)
+                    if value is None:
+                        value = block.text.strip() or None
+                    if value:
+                        return _template_value(block, value, 0.94, direction=direction)
         return None
 
     if direction != "below":
@@ -592,7 +618,9 @@ def _extract_template_table_cell(
         )
         if header_index is None:
             continue
-        header = _table_header_candidate_row(parsed_rows.rows, header_index, anchor)
+        header, column_offset = _table_header_candidate_row(
+            parsed_rows.rows, header_index, anchor
+        )
         column_index = _row_column_index(
             header,
             normalized_label,
@@ -603,18 +631,19 @@ def _extract_template_table_cell(
         )
         if column_index is None:
             continue
-        for row in parsed_rows.rows[header_index + 1 :]:
-            if column_index >= len(row):
+        actual_column_index = column_offset + column_index
+        for row_index, row in enumerate(parsed_rows.rows[header_index + 1 :], start=header_index + 1):
+            if actual_column_index >= len(row):
                 continue
-            value = str(row[column_index]).strip()
+            value = str(row[actual_column_index]).strip()
             if value:
                 return _template_value(
                     block,
                     value,
                     0.90,
                     direction="table_cell",
-                    row_index=header_index + 1,
-                    column_index=column_index,
+                    row_index=row_index,
+                    column_index=actual_column_index,
                     column_label=label,
                 )
     return None
@@ -632,14 +661,24 @@ def _value_after_marker(text: str, marker: str) -> str | None:
     if not normalized_marker:
         return None
     for line in text.splitlines() or [text]:
-        marker_index = line.casefold().find(normalized_marker)
-        if marker_index < 0:
-            continue
-        value = line[marker_index + len(marker) :].strip()
-        value = re.sub(r"^[\s:：=-]+", "", value).strip()
-        if value:
-            return value
+        for match in re.finditer(re.escape(marker.strip()), line, flags=re.IGNORECASE):
+            if not _marker_match_has_boundaries(line, match.start(), match.end()):
+                continue
+            value = line[match.end() :].strip()
+            value = re.sub(r"^[\s:：=-]+", "", value).strip()
+            if value:
+                return value
     return None
+
+
+def _marker_match_has_boundaries(text: str, start: int, end: int) -> bool:
+    before = text[start - 1] if start > 0 else ""
+    after = text[end] if end < len(text) else ""
+    return _is_marker_boundary(before) and _is_marker_boundary(after)
+
+
+def _is_marker_boundary(value: str) -> bool:
+    return not value or value.isspace() or (not value.isalnum() and value != "_")
 
 
 def _template_value(
@@ -681,6 +720,42 @@ def _set_output_value(output: dict[str, Any], output_key: str, value: str) -> No
     cursor[path[-1]] = value
 
 
+def _output_key_conflicts(output_keys_by_field_id: Mapping[str, str]) -> dict[str, tuple[str, ...]]:
+    path_entries = [
+        (field_id or "<unknown>", output_key, tuple(part for part in output_key.split(".") if part))
+        for field_id, output_key in output_keys_by_field_id.items()
+        if output_key
+    ]
+    conflicts: dict[str, list[str]] = {}
+    for index, (left_field_id, left_key, left_path) in enumerate(path_entries):
+        if not left_path:
+            continue
+        for right_field_id, right_key, right_path in path_entries[index + 1 :]:
+            if not right_path:
+                continue
+            if left_path == right_path:
+                warning = (
+                    f"template output_key '{left_key}' is shared by fields "
+                    f"'{left_field_id}' and '{right_field_id}'; requires review"
+                )
+            elif _is_output_path_prefix(left_path, right_path) or _is_output_path_prefix(
+                right_path, left_path
+            ):
+                warning = (
+                    f"template output_key conflict between '{left_key}' and '{right_key}'; "
+                    "requires review"
+                )
+            else:
+                continue
+            conflicts.setdefault(left_key, []).append(warning)
+            conflicts.setdefault(right_key, []).append(warning)
+    return {key: tuple(dict.fromkeys(warnings)) for key, warnings in conflicts.items()}
+
+
+def _is_output_path_prefix(left: Sequence[str], right: Sequence[str]) -> bool:
+    return len(left) < len(right) and tuple(right[: len(left)]) == tuple(left)
+
+
 def _table_header_row_index(
     rows: Sequence[Sequence[str]],
     anchor: Mapping[str, Any],
@@ -691,6 +766,8 @@ def _table_header_row_index(
     anchor_index = _first_table_anchor_row_index(rows, anchor)
     for index, row in enumerate(rows[anchor_index:], start=anchor_index):
         candidate_row = _row_columns_excluding_anchor(row, anchor) if index == anchor_index else row
+        if index != anchor_index and _looks_like_wrapped_header_fragment(candidate_row, rows, index):
+            continue
         if _row_column_index(
             candidate_row,
             normalized_label,
@@ -702,13 +779,13 @@ def _table_header_row_index(
 
 def _table_header_candidate_row(
     rows: Sequence[Sequence[str]], header_index: int, anchor: Mapping[str, Any]
-) -> Sequence[str]:
+) -> tuple[Sequence[str], int]:
     row = rows[header_index]
     if header_index == _first_table_anchor_row_index(rows, anchor):
-        anchor_columns = _row_columns_excluding_anchor(row, anchor)
+        anchor_columns, column_offset = _row_columns_excluding_anchor_with_offset(row, anchor)
         if anchor_columns:
-            return anchor_columns
-    return row
+            return anchor_columns, column_offset
+    return row, 0
 
 
 def _row_column_index(
@@ -740,6 +817,30 @@ def _row_column_index(
 
 def _block_allows_merged_column_candidates(block: DocumentBlock, source_type: str) -> bool:
     return source_type != "pdf"
+
+
+def _right_side_blocks(
+    blocks: Sequence[DocumentBlock], anchor_block: DocumentBlock
+) -> list[DocumentBlock]:
+    return sorted(
+        [
+            block
+            for block in blocks
+            if block.id != anchor_block.id
+            and block.source_page == anchor_block.source_page
+            and block.bbox.x >= anchor_block.bbox.x + anchor_block.bbox.width
+            and _blocks_vertically_overlap(block, anchor_block)
+        ],
+        key=lambda block: (block.bbox.x, block.bbox.y, block.id),
+    )
+
+
+def _blocks_vertically_overlap(left: DocumentBlock, right: DocumentBlock) -> bool:
+    left_top = left.bbox.y
+    left_bottom = left.bbox.y + left.bbox.height
+    right_top = right.bbox.y
+    right_bottom = right.bbox.y + right.bbox.height
+    return min(left_bottom, right_bottom) > max(left_top, right_top)
 
 
 def _table_anchor_match_score(
@@ -907,17 +1008,30 @@ def _first_table_anchor_row_index(rows: Sequence[Sequence[str]], anchor: Mapping
 
 
 def _row_columns_excluding_anchor(row: Sequence[str], anchor: Mapping[str, Any]) -> Sequence[str]:
+    columns, _offset = _row_columns_excluding_anchor_with_offset(row, anchor)
+    return columns
+
+
+def _row_columns_excluding_anchor_with_offset(
+    row: Sequence[str], anchor: Mapping[str, Any]
+) -> tuple[Sequence[str], int]:
     expected_text = str(anchor.get("text") or "")
     if not expected_text:
-        return row
+        return row, 0
     match_mode = str(anchor.get("match") or "normalized")
     for index, cell in enumerate(row):
         if _text_match_score(expected_text, cell, match_mode) > 0.0:
-            return row[index + 1 :]
+            return row[index + 1 :], index + 1 if index > 0 else 0
     anchor_end = _anchor_cell_span_end_index(row, expected_text, match_mode)
     if anchor_end is not None:
-        return row[anchor_end:]
-    return []
+        return row[anchor_end:], anchor_end if anchor_end > 1 else 0
+    return [], 0
+
+
+def _looks_like_wrapped_header_fragment(
+    row: Sequence[str], rows: Sequence[Sequence[str]], index: int
+) -> bool:
+    return len(row) == 1 and index + 1 < len(rows) and len(rows[index + 1]) > 1
 
 
 def _anchor_cell_span_end_index(
