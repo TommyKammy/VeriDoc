@@ -49,14 +49,11 @@ class JobQueue:
         mode: str,
         template: dict[str, Any] | None = None,
     ) -> JobRecord:
-        key = idempotency_key.strip()
-        if not key:
-            raise ValueError("idempotency_key is required")
-        filename = filename.strip()
-        if not filename:
-            raise ValueError("filename is required")
-        if mode not in {"standard", "high_quality"}:
-            raise ValueError("unsupported job mode")
+        key, filename, mode = _normalize_job_request(
+            idempotency_key=idempotency_key,
+            filename=filename,
+            mode=mode,
+        )
 
         with self._lock:
             existing_id = self._idempotency_index.get(key)
@@ -83,6 +80,32 @@ class JobQueue:
             self._idempotency_index[key] = job.job_id
             self._pending_job_ids.append(job.job_id)
             return job
+
+    def get_idempotent_job(
+        self,
+        *,
+        idempotency_key: str,
+        filename: str,
+        mode: str,
+        template: dict[str, Any] | None = None,
+    ) -> JobRecord | None:
+        key, filename, mode = _normalize_job_request(
+            idempotency_key=idempotency_key,
+            filename=filename,
+            mode=mode,
+        )
+        with self._lock:
+            existing_id = self._idempotency_index.get(key)
+            if existing_id is None:
+                return None
+            existing = self._jobs[existing_id]
+            if (
+                existing.filename != filename
+                or existing.mode != mode
+                or not _same_template_binding(existing.template, template)
+            ):
+                raise ValueError("idempotency_key already bound to different job parameters")
+            return existing
 
     def get_job(self, job_id: str) -> JobRecord:
         with self._lock:
@@ -175,6 +198,23 @@ class JobQueue:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _normalize_job_request(
+    *,
+    idempotency_key: str,
+    filename: str,
+    mode: str,
+) -> tuple[str, str, str]:
+    key = idempotency_key.strip()
+    if not key:
+        raise ValueError("idempotency_key is required")
+    filename = filename.strip()
+    if not filename:
+        raise ValueError("filename is required")
+    if mode not in {"standard", "high_quality"}:
+        raise ValueError("unsupported job mode")
+    return key, filename, mode
 
 
 def _same_template_binding(

@@ -188,9 +188,9 @@ class TemplateStore:
             existing = self._templates.get(template_id)
             versions = [] if existing is None else existing["versions"]
             latest_version = None if not versions else versions[-1]
-            status = _validate_template_status(
-                _template_version_value(request, latest_version, "status", "active")
-            )
+            status_default = "active" if existing is None else existing.get("status", "active")
+            status_value = request["status"] if "status" in request else status_default
+            status = _validate_template_status(status_value)
             document_type = _validate_template_text_field(
                 _template_version_value(request, latest_version, "document_type", category),
                 "document_type",
@@ -514,16 +514,25 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             request = self._read_json_request()
             filename = str(request.get("filename") or "").strip()
             mode = str(request.get("mode") or "standard")
-            template = self._job_template_snapshot(request.get("template_id"))
             idempotency_key = str(
                 request.get("idempotency_key") or self.headers.get("Idempotency-Key") or ""
             )
-            job = self._job_queue().create_job(
+            requested_template = self._job_template_binding(request.get("template_id"))
+            job_queue = self._job_queue()
+            job = job_queue.get_idempotent_job(
                 idempotency_key=idempotency_key,
                 filename=filename,
                 mode=mode,
-                template=template,
+                template=requested_template,
             )
+            if job is None:
+                template = self._job_template_snapshot(request.get("template_id"))
+                job = job_queue.create_job(
+                    idempotency_key=idempotency_key,
+                    filename=filename,
+                    mode=mode,
+                    template=template,
+                )
         except RuntimeError as exc:
             self._send_json({"error": "job_conflict", "message": str(exc)}, status=409)
             return
@@ -769,6 +778,11 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
         except KeyError as exc:
             raise ValueError("template_id is unknown") from exc
 
+    def _job_template_binding(self, raw_template_id: Any) -> dict[str, str] | None:
+        if raw_template_id is None:
+            return None
+        return {"template_id": _validate_template_id(raw_template_id)}
+
     def _require_permission(self, permission: str) -> bool:
         authorized, _role = self._authorized_role_for_permission(permission)
         return authorized
@@ -1012,7 +1026,7 @@ def _template_request_with_auth_context(
         return request
     trusted_request = deepcopy(request)
     trusted_request["actor"] = trusted_actor
-    if "approved_by" in trusted_request:
+    if trusted_request.get("approved_by") is not None:
         trusted_request["approved_by"] = trusted_actor
     return trusted_request
 

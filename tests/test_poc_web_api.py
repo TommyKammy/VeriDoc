@@ -2649,6 +2649,18 @@ def test_poc_http_api_registers_template_versions_and_jobs_keep_version_snapshot
         )
         rejected_job_response = connection.getresponse()
         rejected_job = json.loads(rejected_job_response.read().decode("utf-8"))
+
+        connection.request(
+            "POST",
+            "/api/jobs",
+            body=create_job_payload,
+            headers={
+                "Content-Type": "application/json",
+                "Content-Length": str(len(create_job_payload)),
+            },
+        )
+        replayed_job_response = connection.getresponse()
+        replayed_job = json.loads(replayed_job_response.read().decode("utf-8"))
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -2694,6 +2706,9 @@ def test_poc_http_api_registers_template_versions_and_jobs_keep_version_snapshot
         "error": "invalid_job_request",
         "message": "template_id is inactive",
     }
+    assert replayed_job_response.status == 202
+    assert replayed_job["job"]["job_id"] == job["job"]["job_id"]
+    assert replayed_job["job"]["template"]["template_version"] == 2
 
 
 def test_poc_http_api_derives_template_audit_actor_from_local_auth() -> None:
@@ -2727,6 +2742,29 @@ def test_poc_http_api_derives_template_audit_actor_from_local_auth() -> None:
         )
         response = connection.getresponse()
         body = json.loads(response.read().decode("utf-8"))
+        null_approval_payload = json.dumps(
+            {
+                "template_id": "null-approval-template",
+                "name": "Null Approval Template",
+                "category": "manufacturing",
+                "fields": [{"field_id": "lot_number", "label": "Lot number", "required": True}],
+                "change_reason": "Register with explicit null approval",
+                "actor": {"principal_id": "spoofed-author", "role": "viewer"},
+                "approved_by": None,
+            }
+        ).encode("utf-8")
+        connection.request(
+            "POST",
+            "/api/templates",
+            body=null_approval_payload,
+            headers={
+                "Authorization": "Bearer admin-token",
+                "Content-Type": "application/json",
+                "Content-Length": str(len(null_approval_payload)),
+            },
+        )
+        null_approval_response = connection.getresponse()
+        null_approval_body = json.loads(null_approval_response.read().decode("utf-8"))
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -2738,6 +2776,13 @@ def test_poc_http_api_derives_template_audit_actor_from_local_auth() -> None:
         "status": "approved",
         "approved_by": {"principal_id": "local-principal:admin", "role": "admin"},
     }
+    null_approval_change = null_approval_body["template"]["change_history"][0]
+    assert null_approval_response.status == 201
+    assert null_approval_change["actor"] == {
+        "principal_id": "local-principal:admin",
+        "role": "admin",
+    }
+    assert null_approval_change["approval"] == {"status": "unapproved", "approved_by": None}
 
 
 def test_poc_http_api_lists_representative_seed_templates() -> None:
