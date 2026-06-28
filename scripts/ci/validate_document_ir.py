@@ -92,7 +92,7 @@ def validate(schema: dict[str, Any], value: Any, path: tuple[str, ...] = ()) -> 
         raise ValidationError(f"{format_path(path)}: expected one of {allowed}")
 
     if "pattern" in schema and isinstance(value, str):
-        if re.fullmatch(schema["pattern"], value) is None:
+        if re.search(schema["pattern"], value) is None:
             raise ValidationError(f"{format_path(path)}: expected to match pattern {schema['pattern']!r}")
 
     if "type" in schema:

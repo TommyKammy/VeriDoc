@@ -203,6 +203,14 @@ class TemplateDefinitionSchemaTest(unittest.TestCase):
         validate(self.load_schema(), template)
         validate_template_definition_consistency(template)
 
+    def test_generic_pattern_validation_uses_json_schema_search_semantics(self) -> None:
+        schema = {"type": "string", "pattern": "foo"}
+
+        validate(schema, "prefix-foo-suffix")
+
+        with self.assertRaisesRegex(ValidationError, "pattern"):
+            validate(schema, "bar")
+
     def test_required_template_definition_sections_are_enforced(self) -> None:
         schema = self.load_schema()
         sample = self.load_sample()
