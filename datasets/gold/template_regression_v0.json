@@ -1,0 +1,42 @@
+{
+  "schema_version": "veridoc-template-regression/v0",
+  "dataset_manifest": "datasets/fixtures/manifest.json",
+  "scope": {
+    "phase": "phase3-template-regression",
+    "synthetic_or_anonymized_only": true,
+    "real_confidential_records_included": false,
+    "production_or_gmp_claim": false
+  },
+  "template_cases": [
+    {
+      "id": "synthetic-batch-record-known",
+      "fixture_id": "synthetic-batch-template-regression",
+      "expected": {
+        "classification": "known_template",
+        "minimum_score": 0.95,
+        "field_values": {
+          "batch_number": "BN-001",
+          "manufacturing_date": "2026-01-01"
+        },
+        "requires_review": true,
+        "warnings": [
+          "template field 'batch_number' risk_level 'high' requires review"
+        ]
+      }
+    },
+    {
+      "id": "synthetic-release-certificate-known",
+      "fixture_id": "synthetic-release-template-regression",
+      "expected": {
+        "classification": "known_template",
+        "minimum_score": 0.95,
+        "field_values": {
+          "certificate_id": "RC-2026-001",
+          "release_status": "Released"
+        },
+        "requires_review": false,
+        "warnings": []
+      }
+    }
+  ]
+}

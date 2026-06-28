@@ -1,0 +1,222 @@
+{
+  "fixture_schema_version": "veridoc-template-regression-fixture/v0",
+  "source_policy": {
+    "synthetic_or_anonymized_only": true,
+    "real_confidential_records_included": false,
+    "public_review_safe": true
+  },
+  "template_definition": {
+    "template_id": "synthetic-release-certificate-v1",
+    "version": "1.0.0",
+    "document_type": "release_certificate",
+    "anchors": [
+      {
+        "anchor_id": "certificate-header",
+        "kind": "heading",
+        "text": "Release Certificate",
+        "match": "normalized",
+        "scope": {
+          "page": 1,
+          "block_types": [
+            "heading"
+          ]
+        }
+      },
+      {
+        "anchor_id": "release-table",
+        "kind": "table_header",
+        "text": "Release Checks",
+        "match": "contains",
+        "scope": {
+          "page": 1,
+          "block_types": [
+            "table"
+          ]
+        }
+      }
+    ],
+    "fields": [
+      {
+        "field_id": "certificate_id",
+        "label": "Certificate ID",
+        "value_type": "string",
+        "source": {
+          "anchor_id": "certificate-header",
+          "direction": "below"
+        },
+        "required": true,
+        "risk_level": "medium",
+        "validation_rule_ids": [
+          "certificate-id-required"
+        ],
+        "output_key": "release.certificate_id"
+      },
+      {
+        "field_id": "release_status",
+        "label": "Status",
+        "value_type": "string",
+        "source": {
+          "anchor_id": "certificate-header",
+          "direction": "below"
+        },
+        "required": true,
+        "risk_level": "medium",
+        "validation_rule_ids": [
+          "release-status-required"
+        ],
+        "output_key": "release.status"
+      }
+    ],
+    "tables": [
+      {
+        "table_id": "release_checks",
+        "anchor_id": "release-table",
+        "required_columns": [
+          "check",
+          "result",
+          "reviewer"
+        ],
+        "row_scope": "non_empty_rows",
+        "risk_level": "medium",
+        "output_key": "release.checks"
+      }
+    ],
+    "risk_rank": {
+      "default_level": "medium",
+      "levels": [
+        {
+          "level": "low",
+          "rank": 1
+        },
+        {
+          "level": "medium",
+          "rank": 2
+        },
+        {
+          "level": "high",
+          "rank": 3
+        },
+        {
+          "level": "critical",
+          "rank": 4
+        }
+      ],
+      "review_required_levels": [
+        "high",
+        "critical"
+      ]
+    },
+    "validation_rules": [
+      {
+        "rule_id": "certificate-id-required",
+        "target": "certificate_id",
+        "rule_type": "required",
+        "severity": "error",
+        "message": "Certificate ID must be present before release review can proceed."
+      },
+      {
+        "rule_id": "release-status-required",
+        "target": "release_status",
+        "rule_type": "required",
+        "severity": "error",
+        "message": "Release status must be present before release review can proceed."
+      }
+    ],
+    "output_mapping": {
+      "format": "json",
+      "root_key": "template_result",
+      "field_map": [
+        {
+          "field_id": "certificate_id",
+          "output_key": "release.certificate_id"
+        },
+        {
+          "field_id": "release_status",
+          "output_key": "release.status"
+        }
+      ],
+      "table_map": [
+        {
+          "table_id": "release_checks",
+          "output_key": "release.checks"
+        }
+      ]
+    }
+  },
+  "document_ir": {
+    "schema_version": "document-ir/v1",
+    "document": {
+      "id": "synthetic-release-template-doc",
+      "title": "Synthetic Release Template Regression Document",
+      "source_type": "pdf"
+    },
+    "pages": [
+      {
+        "page_number": 1,
+        "width": 612.0,
+        "height": 792.0,
+        "unit": "pt"
+      }
+    ],
+    "blocks": [
+      {
+        "id": "block-001",
+        "type": "heading",
+        "text": "Release Certificate",
+        "source_page": 1,
+        "bbox": {
+          "x": 72.0,
+          "y": 72.0,
+          "width": 220.0,
+          "height": 24.0,
+          "unit": "pt"
+        },
+        "extractor": "fixture",
+        "confidence": 0.99,
+        "review": {
+          "requires_review": false,
+          "warnings": []
+        }
+      },
+      {
+        "id": "block-002",
+        "type": "paragraph",
+        "text": "Certificate ID RC-2026-001\nStatus Released",
+        "source_page": 1,
+        "bbox": {
+          "x": 72.0,
+          "y": 120.0,
+          "width": 320.0,
+          "height": 48.0,
+          "unit": "pt"
+        },
+        "extractor": "fixture",
+        "confidence": 0.99,
+        "review": {
+          "requires_review": false,
+          "warnings": []
+        }
+      },
+      {
+        "id": "block-003",
+        "type": "table",
+        "text": "Release Checks\ncheck\tresult\treviewer\nidentity\tpass\tqa-reviewer",
+        "source_page": 1,
+        "bbox": {
+          "x": 72.0,
+          "y": 180.0,
+          "width": 420.0,
+          "height": 96.0,
+          "unit": "pt"
+        },
+        "extractor": "fixture",
+        "confidence": 0.99,
+        "review": {
+          "requires_review": false,
+          "warnings": []
+        }
+      }
+    ],
+    "warnings": []
+  }
+}
