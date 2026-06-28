@@ -732,18 +732,23 @@ def _value_satisfies_cross_field_rule(
 
 
 def _compare_template_values(left: Any, right: Any, operator: str) -> bool:
+    comparisons = {
+        "before": lambda: left < right,
+        "less_than": lambda: left < right,
+        "before_or_equal": lambda: left <= right,
+        "less_than_or_equal": lambda: left <= right,
+        "after": lambda: left > right,
+        "greater_than": lambda: left > right,
+        "after_or_equal": lambda: left >= right,
+        "greater_than_or_equal": lambda: left >= right,
+    }
+    comparison = comparisons.get(operator)
+    if comparison is None:
+        return False
     try:
-        if operator in {"before", "less_than"}:
-            return left < right
-        if operator in {"before_or_equal", "less_than_or_equal"}:
-            return left <= right
-        if operator in {"after", "greater_than"}:
-            return left > right
-        if operator in {"after_or_equal", "greater_than_or_equal"}:
-            return left >= right
+        return bool(comparison())
     except TypeError:
         return False
-    return False
 
 
 def _extract_template_field_value(
@@ -1069,10 +1074,9 @@ def _below_field_value_from_block(
     if value is not None:
         return value
     return _field_value_from_label_anchor_below(
-        text,
+        block,
         field_label=field_label,
         anchor_text=anchor_text,
-        block_type=block.type,
         stop_markers=stop_markers,
     )
 
@@ -1109,22 +1113,23 @@ def _below_scan_candidate_blocks(
 
 
 def _field_value_from_label_anchor_below(
-    text: str,
+    block: DocumentBlock,
     *,
     field_label: str,
     anchor_text: str,
-    block_type: str,
     stop_markers: Sequence[str] = (),
 ) -> str | None:
     if _normalized_text(field_label) != _normalized_text(anchor_text):
         return None
-    if block_type != "paragraph":
+    value = _value_before_next_marker(block.text.strip(), stop_markers).strip()
+    return _confirmed_unlabeled_below_value(block, value, field_label)
+
+
+def _confirmed_unlabeled_below_value(
+    block: DocumentBlock, value: str, field_label: str
+) -> str | None:
+    if block.type != "paragraph":
         return None
-    value = _value_before_next_marker(text.strip(), stop_markers).strip()
-    return _confirmed_unlabeled_below_value(value, field_label)
-
-
-def _confirmed_unlabeled_below_value(value: str, field_label: str) -> str | None:
     if not _looks_like_unlabeled_below_value_block(value):
         return None
     if not value or _normalized_text(value) == _normalized_text(field_label):
