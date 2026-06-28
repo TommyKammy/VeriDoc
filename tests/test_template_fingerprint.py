@@ -3273,7 +3273,7 @@ class TemplateFingerprintTest(unittest.TestCase):
             {
                 "rule_id": "date-allowed",
                 "rule_type": "allowed_values",
-                "allowed_values": ["2026-01-01T00:00:00Z"],
+                "allowed_values": ["2026-01-01T00:00:00+09:00"],
             }
         ]
         document = self.document_with_blocks(paragraph_text="Manufacturing Date: 2026-01-01")
