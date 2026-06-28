@@ -61,6 +61,7 @@ def match_template_fingerprint(
     anchors = [_mapping(anchor) for anchor in _list_value(template_definition.get("anchors"))]
     table_definitions = [_mapping(table) for table in _list_value(template_definition.get("tables"))]
     required_anchor_ids = _required_anchor_ids(template_definition, table_definitions)
+    optional_anchor_ids = _optional_anchor_ids(template_definition, required_anchor_ids)
     page_numbers = {page.page_number for page in document_ir.pages}
     warnings: list[str] = []
     fail_closed = False
@@ -78,7 +79,7 @@ def match_template_fingerprint(
     for anchor in anchors:
         anchor_id = str(anchor.get("anchor_id") or "")
         match_score = _best_anchor_match_score(anchor, document_ir.blocks)
-        is_required = _anchor_is_required(anchor, required_anchor_ids)
+        is_required = _anchor_is_required(anchor, required_anchor_ids, optional_anchor_ids)
         if is_required or match_score > 0.0:
             anchor_scores.append(match_score)
         if match_score > 0.0:
@@ -94,7 +95,7 @@ def match_template_fingerprint(
         for page in (
             _scope_page(_mapping(anchor.get("scope")))
             for anchor in anchors
-            if _anchor_is_required(anchor, required_anchor_ids)
+            if _anchor_is_required(anchor, required_anchor_ids, optional_anchor_ids)
         )
         if page is not None
     }
@@ -106,7 +107,13 @@ def match_template_fingerprint(
             warnings.append("document pages do not satisfy template anchor scopes")
             fail_closed = True
 
-    table_score, cap_below_known = _table_score(table_definitions, anchors, document_ir.blocks, warnings)
+    table_score, cap_below_known = _table_score(
+        table_definitions,
+        anchors,
+        document_ir.blocks,
+        warnings,
+        source_type=document_ir.document.source_type,
+    )
     warnings.extend(_document_ir_review_warnings(document_ir))
 
     score = _weighted_average(
@@ -185,6 +192,8 @@ def _table_score(
     anchors: Sequence[Mapping[str, Any]],
     blocks: Sequence[DocumentBlock],
     warnings: list[str],
+    *,
+    source_type: str,
 ) -> tuple[float, bool]:
     if not table_definitions:
         return 1.0, False
@@ -211,7 +220,15 @@ def _table_score(
         for block in table_blocks:
             best_column_score = max(
                 best_column_score,
-                _table_required_column_score(block.text, anchor, required_columns),
+                _table_required_column_score(
+                    block.text,
+                    anchor,
+                    required_columns,
+                    parse_xlsx_cell_refs=source_type == "xlsx",
+                    allow_merged_column_candidates=_block_allows_merged_column_candidates(
+                        block, source_type
+                    ),
+                ),
             )
         if best_column_score < 1.0:
             warnings.append(f"template table '{table_id}' required columns incomplete")
@@ -232,10 +249,16 @@ def _text_match_score(expected: str, actual: str, match_mode: str) -> float:
     return 1.0 if normalized_expected == normalized_actual else 0.0
 
 
-def _anchor_is_required(anchor: Mapping[str, Any], required_anchor_ids: set[str]) -> bool:
+def _anchor_is_required(
+    anchor: Mapping[str, Any], required_anchor_ids: set[str], optional_anchor_ids: set[str]
+) -> bool:
     anchor_id = str(anchor.get("anchor_id") or "")
     kind = str(anchor.get("kind") or "")
-    return kind in {"heading", "table_header"} or anchor_id in required_anchor_ids
+    if anchor_id in required_anchor_ids:
+        return True
+    if anchor_id in optional_anchor_ids:
+        return False
+    return kind in {"heading", "table_header"}
 
 
 def _required_anchor_ids(
@@ -252,6 +275,20 @@ def _required_anchor_ids(
         source = _mapping(field.get("source"))
         anchor_id = source.get("anchor_id")
         if isinstance(anchor_id, str) and anchor_id.strip():
+            anchor_ids.add(anchor_id)
+    return anchor_ids
+
+
+def _optional_anchor_ids(
+    template_definition: Mapping[str, Any], required_anchor_ids: set[str]
+) -> set[str]:
+    anchor_ids: set[str] = set()
+    for field in (_mapping(value) for value in _list_value(template_definition.get("fields"))):
+        if field.get("required") is True:
+            continue
+        source = _mapping(field.get("source"))
+        anchor_id = source.get("anchor_id")
+        if isinstance(anchor_id, str) and anchor_id.strip() and anchor_id not in required_anchor_ids:
             anchor_ids.add(anchor_id)
     return anchor_ids
 
@@ -302,6 +339,10 @@ def _document_ir_review_warnings(document_ir: DocumentIRV1) -> list[str]:
     return warnings
 
 
+def _block_allows_merged_column_candidates(block: DocumentBlock, source_type: str) -> bool:
+    return not (source_type == "pdf" and ":" in block.extractor.name)
+
+
 def _table_anchor_match_score(value: str, expected_text: str, match_mode: str) -> float:
     return max(
         (_row_anchor_match_score(row, expected_text, match_mode) for row in _table_rows(value)),
@@ -310,25 +351,31 @@ def _table_anchor_match_score(value: str, expected_text: str, match_mode: str) -
 
 
 def _table_required_column_score(
-    value: str, anchor: Mapping[str, Any], required_columns: Sequence[str]
+    value: str,
+    anchor: Mapping[str, Any],
+    required_columns: Sequence[str],
+    *,
+    parse_xlsx_cell_refs: bool,
+    allow_merged_column_candidates: bool,
 ) -> float:
     normalized_required_columns = [_normalized_column_name(column) for column in required_columns]
     normalized_required_columns = [column for column in normalized_required_columns if column]
     if not normalized_required_columns:
         return 1.0
 
-    parsed_rows = _parsed_table_rows(value)
+    parsed_rows = _parsed_table_rows(value, parse_xlsx_cell_refs=parse_xlsx_cell_refs)
     rows = parsed_rows.rows
     required_column_set = set(normalized_required_columns)
     candidate_rows = _table_required_column_candidate_rows(
         rows,
         anchor,
         required_column_set,
-        allow_merged_column_candidates=parsed_rows.allow_merged_column_candidates,
+        allow_merged_column_candidates=(
+            parsed_rows.allow_merged_column_candidates and allow_merged_column_candidates
+        ),
     )
-    candidate_rows.extend(
-        _wrapped_cell_candidate_rows(rows, anchor, required_column_set)
-    )
+    if parsed_rows.allow_merged_column_candidates and allow_merged_column_candidates:
+        candidate_rows.extend(_wrapped_cell_candidate_rows(rows, anchor, required_column_set))
     best_score = 0.0
     for row in candidate_rows:
         best_score = max(
@@ -336,7 +383,9 @@ def _table_required_column_score(
             _row_required_column_score(
                 row,
                 required_column_set,
-                allow_merged_column_candidates=parsed_rows.allow_merged_column_candidates,
+                allow_merged_column_candidates=(
+                    parsed_rows.allow_merged_column_candidates and allow_merged_column_candidates
+                ),
             ),
         )
     return best_score
@@ -482,13 +531,14 @@ def _row_matches_anchor(row: Sequence[str], anchor: Mapping[str, Any]) -> bool:
 
 
 def _table_rows(value: str) -> list[list[str]]:
-    return _parsed_table_rows(value).rows
+    return _parsed_table_rows(value, parse_xlsx_cell_refs=True).rows
 
 
-def _parsed_table_rows(value: str) -> _ParsedTableRows:
-    xlsx_rows = _xlsx_cell_rows(value)
-    if xlsx_rows:
-        return _ParsedTableRows(rows=xlsx_rows, allow_merged_column_candidates=False)
+def _parsed_table_rows(value: str, *, parse_xlsx_cell_refs: bool) -> _ParsedTableRows:
+    if parse_xlsx_cell_refs:
+        xlsx_rows = _xlsx_cell_rows(value)
+        if xlsx_rows:
+            return _ParsedTableRows(rows=xlsx_rows, allow_merged_column_candidates=False)
     return _ParsedTableRows(
         rows=[
             cells
@@ -525,10 +575,6 @@ def _xlsx_cell_rows(value: str) -> list[list[str]]:
     for line_index, line in enumerate(lines):
         cell = _xlsx_cell_line(line)
         if cell is None:
-            if _looks_like_delimited_table_row(line) and not _has_later_xlsx_cell_line(
-                lines, line_index
-            ):
-                return []
             if last_cell_ref is None:
                 return []
             row_index, column_index = last_cell_ref
@@ -560,14 +606,6 @@ def _xlsx_cell_line(value: str) -> tuple[int, int, str] | None:
     if cell_value.startswith(" "):
         cell_value = cell_value[1:]
     return int(row_number), _xlsx_column_index(column_letters), cell_value
-
-
-def _looks_like_delimited_table_row(value: str) -> bool:
-    return len(_split_table_row(value)) > 1
-
-
-def _has_later_xlsx_cell_line(lines: Sequence[str], start_index: int) -> bool:
-    return any(_xlsx_cell_line(line) is not None for line in lines[start_index + 1 :])
 
 
 def _xlsx_column_index(value: str) -> int:

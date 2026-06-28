@@ -707,6 +707,112 @@ class TemplateFingerprintTest(unittest.TestCase):
         self.assertEqual(TemplateMatchClassification.KNOWN, result.classification)
         self.assertNotIn("template table 'yield_summary' required columns incomplete", result.warnings)
 
+    def test_optional_heading_anchor_does_not_fail_closed_when_section_is_absent(self) -> None:
+        template = self.template_definition()
+        template["anchors"] = [
+            *template["anchors"],
+            {
+                "anchor_id": "optional-review-section",
+                "kind": "heading",
+                "text": "Optional Review Section",
+                "match": "normalized",
+                "scope": {"page": 2, "block_types": ["heading"]},
+            },
+        ]
+        template["fields"] = [
+            {
+                "field_id": "optional_review_note",
+                "label": "Optional review note",
+                "value_type": "string",
+                "source": {"anchor_id": "optional-review-section", "direction": "same_block"},
+                "required": False,
+                "risk_level": "low",
+                "validation_rule_ids": [],
+                "output_key": "review.optional_note",
+            }
+        ]
+
+        result = match_template_fingerprint(self.document_with_blocks(), template)
+
+        self.assertEqual(TemplateMatchClassification.KNOWN, result.classification)
+        self.assertFalse(result.requires_review)
+        self.assertNotIn(
+            "template anchor 'optional-review-section' missing from document",
+            result.warnings,
+        )
+
+    def test_xlsx_trailing_wrapped_cell_continuation_does_not_abort_row_reconstruction(self) -> None:
+        template = self.template_definition()
+        template["anchors"] = [template["anchors"][1]]
+        document = from_parser_output(
+            {
+                "source_path": "fixtures/sample.xlsx",
+                "sheets": [
+                    {
+                        "name": "Results",
+                        "dimension": "A1:C4",
+                        "cells": [
+                            {"ref": "A1", "value": "Yield Summary", "value_type": "shared_string"},
+                            {"ref": "A2", "value": "step", "value_type": "shared_string"},
+                            {"ref": "B2", "value": "expected_yield", "value_type": "shared_string"},
+                            {"ref": "C2", "value": "actual_yield", "value_type": "shared_string"},
+                            {"ref": "A3", "value": "blend", "value_type": "shared_string"},
+                            {"ref": "B3", "value": "95", "value_type": "number"},
+                            {
+                                "ref": "C3",
+                                "value": "94\ncontinued, with comma",
+                                "value_type": "shared_string",
+                            },
+                        ],
+                        "merged_ranges": [],
+                    }
+                ],
+            },
+            document_id="sample-xlsx",
+            title="Sample XLSX",
+            source_type="xlsx",
+        )
+
+        result = match_template_fingerprint(document, template)
+
+        self.assertEqual(TemplateMatchClassification.KNOWN, result.classification)
+        self.assertNotIn("template table 'yield_summary' required columns incomplete", result.warnings)
+
+    def test_pdf_parser_table_cells_are_not_merged_to_satisfy_required_columns(self) -> None:
+        template = self.template_definition()
+        template["anchors"] = [template["anchors"][1]]
+        template["tables"][0]["required_columns"] = ["Lot ID", "Value"]
+        document = from_parser_output(
+            {
+                "candidates": [
+                    {
+                        "extractor": "pdfplumber",
+                        "flavor": "lattice",
+                        "status": "ok",
+                        "tables": [
+                            {
+                                "page_number": 1,
+                                "rows": [
+                                    ["Yield Summary"],
+                                    ["Lot", "ID", "Value"],
+                                    ["L-001", "A", "94"],
+                                ],
+                            }
+                        ],
+                    }
+                ]
+            },
+            document_id="sample-pdf",
+            title="Sample PDF",
+            source_type="pdf",
+        )
+
+        result = match_template_fingerprint(document, template)
+
+        self.assertNotEqual(TemplateMatchClassification.KNOWN, result.classification)
+        self.assertTrue(result.requires_review)
+        self.assertIn("template table 'yield_summary' required columns incomplete", result.warnings)
+
     def template_definition(self) -> dict[str, Any]:
         return {
             "template_id": "synthetic-batch-record-v1",
