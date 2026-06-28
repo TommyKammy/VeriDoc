@@ -16,7 +16,8 @@
     "scanned_pdf",
     "word",
     "excel",
-    "record_excerpt"
+    "record_excerpt",
+    "template_regression"
   ],
   "fixtures": [
     {
@@ -29,6 +30,28 @@
       "confidentiality": "public",
       "public_review_safe": true,
       "notes": "Synthetic baseline fixture used until binary document fixtures are added."
+    },
+    {
+      "id": "synthetic-batch-template-regression",
+      "title": "Synthetic batch record template regression fixture",
+      "path": "datasets/fixtures/templates/synthetic-batch-template-regression.json",
+      "source_type": "template_regression",
+      "format": "template_regression_json",
+      "anonymization": "synthetic",
+      "confidentiality": "public",
+      "public_review_safe": true,
+      "notes": "Public synthetic template and Document IR pair for fingerprint, field mapping, and high-risk review regression."
+    },
+    {
+      "id": "synthetic-release-template-regression",
+      "title": "Synthetic release certificate template regression fixture",
+      "path": "datasets/fixtures/templates/synthetic-release-template-regression.json",
+      "source_type": "template_regression",
+      "format": "template_regression_json",
+      "anonymization": "synthetic",
+      "confidentiality": "public",
+      "public_review_safe": true,
+      "notes": "Public synthetic template and Document IR pair for a non-batch representative template regression."
     },
     {
       "id": "placeholder-text-pdf",

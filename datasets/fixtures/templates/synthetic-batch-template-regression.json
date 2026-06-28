@@ -1,0 +1,234 @@
+{
+  "fixture_schema_version": "veridoc-template-regression-fixture/v0",
+  "source_policy": {
+    "synthetic_or_anonymized_only": true,
+    "real_confidential_records_included": false,
+    "public_review_safe": true
+  },
+  "template_definition": {
+    "template_id": "synthetic-batch-record-v1",
+    "version": "1.0.0",
+    "document_type": "batch_record",
+    "anchors": [
+      {
+        "anchor_id": "batch-header",
+        "kind": "heading",
+        "text": "Batch Production Record",
+        "match": "normalized",
+        "scope": {
+          "page": 1,
+          "block_types": [
+            "heading"
+          ]
+        }
+      },
+      {
+        "anchor_id": "yield-table",
+        "kind": "table_header",
+        "text": "Yield Summary",
+        "match": "contains",
+        "scope": {
+          "page": 1,
+          "block_types": [
+            "table"
+          ]
+        }
+      }
+    ],
+    "fields": [
+      {
+        "field_id": "batch_number",
+        "label": "Batch No.",
+        "value_type": "string",
+        "source": {
+          "anchor_id": "batch-header",
+          "direction": "below"
+        },
+        "required": true,
+        "risk_level": "high",
+        "validation_rule_ids": [
+          "batch-number-required"
+        ],
+        "output_key": "batch.number"
+      },
+      {
+        "field_id": "manufacturing_date",
+        "label": "Manufacturing Date",
+        "value_type": "date",
+        "source": {
+          "anchor_id": "batch-header",
+          "direction": "below"
+        },
+        "required": true,
+        "risk_level": "medium",
+        "validation_rule_ids": [
+          "manufacturing-date-required"
+        ],
+        "output_key": "batch.manufacturing_date"
+      }
+    ],
+    "tables": [
+      {
+        "table_id": "yield_summary",
+        "anchor_id": "yield-table",
+        "required_columns": [
+          "step",
+          "expected_yield",
+          "actual_yield"
+        ],
+        "row_scope": "non_empty_rows",
+        "risk_level": "high",
+        "output_key": "batch.yield_summary"
+      }
+    ],
+    "risk_rank": {
+      "default_level": "medium",
+      "levels": [
+        {
+          "level": "low",
+          "rank": 1
+        },
+        {
+          "level": "medium",
+          "rank": 2
+        },
+        {
+          "level": "high",
+          "rank": 3
+        },
+        {
+          "level": "critical",
+          "rank": 4
+        }
+      ],
+      "review_required_levels": [
+        "high",
+        "critical"
+      ]
+    },
+    "validation_rules": [
+      {
+        "rule_id": "batch-number-required",
+        "target": "batch_number",
+        "rule_type": "required",
+        "severity": "error",
+        "message": "Batch number must be present before template-derived review can proceed."
+      },
+      {
+        "rule_id": "manufacturing-date-required",
+        "target": "manufacturing_date",
+        "rule_type": "required",
+        "severity": "error",
+        "message": "Manufacturing date must be present before template-derived review can proceed."
+      }
+    ],
+    "output_mapping": {
+      "format": "json",
+      "root_key": "template_result",
+      "field_map": [
+        {
+          "field_id": "batch_number",
+          "output_key": "batch.number"
+        },
+        {
+          "field_id": "manufacturing_date",
+          "output_key": "batch.manufacturing_date"
+        }
+      ],
+      "table_map": [
+        {
+          "table_id": "yield_summary",
+          "output_key": "batch.yield_summary"
+        }
+      ]
+    }
+  },
+  "document_ir": {
+    "schema_version": "document-ir/v1",
+    "document": {
+      "id": "synthetic-batch-template-doc",
+      "title": "Synthetic Batch Template Regression Document",
+      "source_type": "pdf"
+    },
+    "pages": [
+      {
+        "page_number": 1,
+        "width": 612.0,
+        "height": 792.0,
+        "unit": "pt"
+      }
+    ],
+    "blocks": [
+      {
+        "id": "block-001",
+        "type": "heading",
+        "text": "Batch Production Record",
+        "source_page": 1,
+        "bbox": {
+          "x": 72.0,
+          "y": 72.0,
+          "width": 220.0,
+          "height": 24.0,
+          "unit": "pt",
+          "origin": "top-left"
+        },
+        "extractor": {
+          "name": "fixture",
+          "version": "1.0.0"
+        },
+        "confidence": 0.99,
+        "review": {
+          "requires_review": false,
+          "warnings": []
+        }
+      },
+      {
+        "id": "block-002",
+        "type": "paragraph",
+        "text": "Batch No. BN-001\nManufacturing Date 2026-01-01",
+        "source_page": 1,
+        "bbox": {
+          "x": 72.0,
+          "y": 120.0,
+          "width": 320.0,
+          "height": 48.0,
+          "unit": "pt",
+          "origin": "top-left"
+        },
+        "extractor": {
+          "name": "fixture",
+          "version": "1.0.0"
+        },
+        "confidence": 0.99,
+        "review": {
+          "requires_review": false,
+          "warnings": []
+        }
+      },
+      {
+        "id": "block-003",
+        "type": "table",
+        "text": "Yield Summary\nstep\texpected_yield\tactual_yield\nblend\t95\t94",
+        "source_page": 1,
+        "bbox": {
+          "x": 72.0,
+          "y": 180.0,
+          "width": 420.0,
+          "height": 96.0,
+          "unit": "pt",
+          "origin": "top-left"
+        },
+        "extractor": {
+          "name": "fixture",
+          "version": "1.0.0"
+        },
+        "confidence": 0.99,
+        "review": {
+          "requires_review": false,
+          "warnings": []
+        }
+      }
+    ],
+    "warnings": []
+  }
+}
