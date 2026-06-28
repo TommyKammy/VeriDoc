@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import re
+from datetime import datetime, timezone
 from typing import Any, Iterable
 
 
@@ -38,10 +39,11 @@ class TemplateVersionRegistry:
         if template_id not in self._templates_by_id:
             raise TemplateVersionError(f"template_id {template_id!r} is not registered")
 
+        selected_at = _selection_time(as_of)
         active_versions = [
             template
             for template in self._templates_by_id[template_id].values()
-            if template.get("status") == _ACTIVE_STATUS and _is_effective_at(template, as_of)
+            if template.get("status") == _ACTIVE_STATUS and _is_effective_at(template, selected_at)
         ]
         if not active_versions:
             raise TemplateVersionError(f"template_id {template_id!r} has no active template version")
@@ -68,7 +70,7 @@ class TemplateVersionRegistry:
             raise TemplateVersionError(
                 f"template_id {template_id!r} version {version!r} is inactive"
             )
-        if not _is_effective_at(template, as_of):
+        if not _is_effective_at(template, _selection_time(as_of)):
             raise TemplateVersionError(
                 f"template_id {template_id!r} version {version!r} is not effective"
             )
@@ -109,17 +111,42 @@ def _validate_effective_metadata(template: dict[str, Any], index: int) -> None:
     effective_until = effective.get("until")
     if effective_until is not None and (not isinstance(effective_until, str) or not effective_until):
         raise TemplateVersionError(f"template[{index}].effective.until must be a non-empty string")
-    if isinstance(effective_until, str) and effective_until <= effective_from:
+    parsed_from = _parse_effective_timestamp(effective_from, f"template[{index}].effective.from")
+    parsed_until = (
+        _parse_effective_timestamp(effective_until, f"template[{index}].effective.until")
+        if isinstance(effective_until, str)
+        else None
+    )
+    if parsed_until is not None and parsed_until <= parsed_from:
         raise TemplateVersionError(f"template[{index}].effective.until must be after effective.from")
 
 
-def _is_effective_at(template: dict[str, Any], as_of: str | None) -> bool:
+def _selection_time(as_of: str | None) -> datetime:
     if as_of is None:
-        return True
+        return datetime.now(timezone.utc)
+    return _parse_effective_timestamp(as_of, "as_of")
+
+
+def _is_effective_at(template: dict[str, Any], as_of: datetime) -> bool:
     effective = template["effective"]
-    effective_from = effective["from"]
+    effective_from = _parse_effective_timestamp(effective["from"], "effective.from")
     effective_until = effective.get("until")
-    return effective_from <= as_of and (effective_until is None or as_of < effective_until)
+    parsed_until = (
+        _parse_effective_timestamp(effective_until, "effective.until")
+        if isinstance(effective_until, str)
+        else None
+    )
+    return effective_from <= as_of and (parsed_until is None or as_of < parsed_until)
+
+
+def _parse_effective_timestamp(value: str, path: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise TemplateVersionError(f"{path} must be an ISO-8601 timestamp with timezone") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise TemplateVersionError(f"{path} must include a timezone offset")
+    return parsed
 
 
 def _version_key(version: str, index: int | None = None) -> tuple[int, int, int]:

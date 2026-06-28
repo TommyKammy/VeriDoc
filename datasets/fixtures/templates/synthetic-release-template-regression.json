@@ -8,6 +8,10 @@
   "template_definition": {
     "template_id": "synthetic-release-certificate-v1",
     "version": "1.0.0",
+    "status": "active",
+    "effective": {
+      "from": "2026-01-01T00:00:00Z"
+    },
     "document_type": "certificate_of_analysis",
     "anchors": [
       {
