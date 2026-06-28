@@ -802,9 +802,11 @@ def _extract_template_nearby_field(
                 for block in _right_side_blocks(document_ir.blocks, anchor_block):
                     value = _field_value_from_text(block.text, label, anchor_text, stop_markers=stop_markers)
                     if value is None:
-                        value = _value_before_next_marker(block.text.strip(), stop_markers).strip() or None
-                        if value is None and _text_starts_with_label_like_marker(block.text, stop_markers):
+                        if _text_starts_with_label_like_marker(block.text, (label,)):
+                            continue
+                        if _text_starts_with_label_like_marker(block.text, stop_markers):
                             break
+                        value = _value_before_next_marker(block.text.strip(), stop_markers).strip() or None
                     if value:
                         return _template_value(block, value, 0.94, direction=direction)
         return None
@@ -819,7 +821,7 @@ def _extract_template_nearby_field(
     for anchor_block in anchor_blocks:
         for block in _below_scan_candidate_blocks(ordered_blocks, anchor_block, anchor):
             value = _below_field_value_from_block(
-                block.text,
+                block,
                 field_label=label,
                 anchor_text=anchor_text,
                 stop_markers=stop_markers,
@@ -1050,12 +1052,13 @@ def _field_value_from_text(
 
 
 def _below_field_value_from_block(
-    text: str,
+    block: DocumentBlock,
     *,
     field_label: str,
     anchor_text: str,
     stop_markers: Sequence[str] = (),
 ) -> str | None:
+    text = block.text
     value = _field_value_from_text(
         text,
         field_label,
@@ -1069,6 +1072,7 @@ def _below_field_value_from_block(
         text,
         field_label=field_label,
         anchor_text=anchor_text,
+        block_type=block.type,
         stop_markers=stop_markers,
     )
 
@@ -1109,9 +1113,12 @@ def _field_value_from_label_anchor_below(
     *,
     field_label: str,
     anchor_text: str,
+    block_type: str,
     stop_markers: Sequence[str] = (),
 ) -> str | None:
     if _normalized_text(field_label) != _normalized_text(anchor_text):
+        return None
+    if block_type != "paragraph":
         return None
     value = _value_before_next_marker(text.strip(), stop_markers).strip()
     return _confirmed_unlabeled_below_value(value, field_label)
