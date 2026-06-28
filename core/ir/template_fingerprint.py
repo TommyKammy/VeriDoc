@@ -211,7 +211,14 @@ def apply_template_field_mapping(
         or str(field.get("output_key") or field.get("field_id") or "")
         for field in fields
     }
-    output_conflicts = _output_key_conflicts(output_keys_by_field_id_for_conflicts)
+    table_output_keys_by_id_for_conflicts = {
+        f"table:{mapping.get('table_id')}": str(mapping.get("output_key") or "")
+        for mapping in (_mapping(value) for value in _list_value(output_mapping.get("table_map")))
+        if isinstance(mapping.get("table_id"), str) and isinstance(mapping.get("output_key"), str)
+    }
+    output_conflicts = _output_key_conflicts(
+        {**output_keys_by_field_id_for_conflicts, **table_output_keys_by_id_for_conflicts}
+    )
     for conflict_warnings in output_conflicts.values():
         warnings.extend(conflict_warnings)
 
@@ -274,7 +281,7 @@ def apply_template_field_mapping(
                 warnings=field_warnings,
             )
         )
-        if not output_conflict_warnings:
+        if not requires_review:
             _set_output_value(output, output_key, extracted.value)
 
     result_warnings = tuple(dict.fromkeys([*template_match.warnings, *warnings]))
@@ -598,6 +605,13 @@ def _extract_template_nearby_field(
                 stop_markers=stop_markers,
                 allow_anchor_fallback=False,
             )
+            if value is None:
+                value = _field_value_from_below_label_anchor(
+                    block.text,
+                    label,
+                    anchor_text,
+                    stop_markers=stop_markers,
+                )
             if value:
                 return _template_value(block, value, 0.95, direction=direction)
     return None
@@ -614,6 +628,8 @@ def _extract_template_table_cell(
     normalized_label = _normalized_column_name(label)
     if not normalized_label:
         return None
+    table_definition = _field_mapping_table_definition(anchor, template_definition)
+    required_columns = [str(column) for column in _list_value(table_definition.get("required_columns"))]
     matching_blocks = _field_mapping_table_blocks(document_ir, anchor, anchor_blocks, template_definition)
     for block in matching_blocks:
         parsed_rows = _parsed_table_rows(
@@ -624,6 +640,7 @@ def _extract_template_table_cell(
             parsed_rows.rows,
             anchor,
             normalized_label,
+            required_columns=required_columns,
             allow_merged_column_candidates=(
                 parsed_rows.allow_merged_column_candidates
                 and _block_allows_merged_column_candidates(block, document_ir.document.source_type)
@@ -669,15 +686,7 @@ def _field_mapping_table_blocks(
     anchor_blocks: Sequence[DocumentBlock],
     template_definition: Mapping[str, Any],
 ) -> Sequence[DocumentBlock]:
-    anchor_id = str(anchor.get("anchor_id") or "")
-    table_definition = next(
-        (
-            _mapping(table)
-            for table in _list_value(template_definition.get("tables"))
-            if str(_mapping(table).get("anchor_id") or "") == anchor_id
-        ),
-        {},
-    )
+    table_definition = _field_mapping_table_definition(anchor, template_definition)
     required_columns = [str(column) for column in _list_value(table_definition.get("required_columns"))]
     if not required_columns:
         return anchor_blocks
@@ -696,6 +705,20 @@ def _field_mapping_table_blocks(
         >= 1.0
     ]
     return matching_blocks
+
+
+def _field_mapping_table_definition(
+    anchor: Mapping[str, Any], template_definition: Mapping[str, Any]
+) -> Mapping[str, Any]:
+    anchor_id = str(anchor.get("anchor_id") or "")
+    return next(
+        (
+            _mapping(table)
+            for table in _list_value(template_definition.get("tables"))
+            if str(_mapping(table).get("anchor_id") or "") == anchor_id
+        ),
+        {},
+    )
 
 
 def _table_cell_value_at_physical_column(row: Sequence[str], column_index: int) -> str | None:
@@ -735,6 +758,21 @@ def _field_value_from_text(
     if not allow_anchor_fallback:
         return None
     return _value_after_marker(text, anchor_text, stop_markers=stop_markers)
+
+
+def _field_value_from_below_label_anchor(
+    text: str,
+    label: str,
+    anchor_text: str,
+    *,
+    stop_markers: Sequence[str] = (),
+) -> str | None:
+    if _normalized_text(label) != _normalized_text(anchor_text):
+        return None
+    value = _value_before_next_marker(text.strip(), stop_markers).strip()
+    if not value or _normalized_text(value) == _normalized_text(label):
+        return None
+    return value
 
 
 def _value_after_marker(
@@ -867,9 +905,38 @@ def _table_header_row_index(
     anchor: Mapping[str, Any],
     normalized_label: str,
     *,
+    required_columns: Sequence[str] = (),
     allow_merged_column_candidates: bool,
 ) -> int | None:
     anchor_index = _first_table_anchor_row_index(rows, anchor)
+    normalized_required_columns = {
+        column for column in (_normalized_column_name(column) for column in required_columns) if column
+    }
+    if normalized_required_columns:
+        for index, row in enumerate(rows[anchor_index:], start=anchor_index):
+            candidate_row = _row_columns_excluding_anchor(row, anchor) if index == anchor_index else row
+            if index != anchor_index and _looks_like_wrapped_header_fragment(candidate_row, rows, index):
+                continue
+            if (
+                _row_required_column_score(
+                    candidate_row,
+                    normalized_required_columns,
+                    allow_merged_column_candidates=allow_merged_column_candidates,
+                )
+                < 1.0
+            ):
+                continue
+            if (
+                _row_column_index(
+                    candidate_row,
+                    normalized_label,
+                    allow_merged_column_candidates=allow_merged_column_candidates,
+                )
+                is not None
+            ):
+                return index
+            return None
+        return None
     for index, row in enumerate(rows[anchor_index:], start=anchor_index):
         candidate_row = _row_columns_excluding_anchor(row, anchor) if index == anchor_index else row
         if index != anchor_index and _looks_like_wrapped_header_fragment(candidate_row, rows, index):
@@ -1203,11 +1270,10 @@ def _parsed_table_rows(value: str, *, parse_xlsx_cell_refs: bool) -> _ParsedTabl
 
 
 def _table_row_cells(value: str) -> list[str]:
-    return [
-        cell
-        for cell in _split_table_row(value)
-        if _normalized_column_name(cell)
-    ]
+    cells = _split_table_row(value)
+    if "\t" in value or "|" in value or "," in value:
+        return cells if any(_normalized_column_name(cell) for cell in cells) else []
+    return [cell for cell in cells if _normalized_column_name(cell)]
 
 
 def _split_table_row(value: str) -> list[str]:
