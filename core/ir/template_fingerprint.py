@@ -269,7 +269,8 @@ def apply_template_field_mapping(
                 if required
                 else ()
             )
-            field_warnings = (*missing_warnings, *risk_warnings, *output_conflict_warnings)
+            absent_risk_warnings = risk_warnings if required else ()
+            field_warnings = (*missing_warnings, *absent_risk_warnings, *output_conflict_warnings)
             warnings.extend(field_warnings)
             mapped_fields.append(
                 TemplateMappedField(
@@ -280,7 +281,7 @@ def apply_template_field_mapping(
                     confidence=0.0,
                     evidence={},
                     requires_review=required
-                    or bool(risk_warnings)
+                    or bool(absent_risk_warnings)
                     or bool(output_conflict_warnings),
                     warnings=field_warnings,
                 )
