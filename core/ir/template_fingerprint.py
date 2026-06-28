@@ -269,7 +269,13 @@ def apply_template_field_mapping(
                 if required
                 else ()
             )
-            absent_risk_warnings = risk_warnings if required else ()
+            absent_risk_warnings = _template_absent_field_risk_warnings(
+                field,
+                risk_warnings,
+                required=required,
+                risk_rank_declared=risk_rank_declared,
+                defined_levels=defined_risk_levels,
+            )
             field_warnings = (*missing_warnings, *absent_risk_warnings, *output_conflict_warnings)
             warnings.extend(field_warnings)
             mapped_fields.append(
@@ -626,6 +632,25 @@ def _template_field_risk_warnings(
         return (
             f"template field '{field_id}' risk_level '{raw_risk_level}' requires review",
         )
+    return ()
+
+
+def _template_absent_field_risk_warnings(
+    field: Mapping[str, Any],
+    risk_warnings: Sequence[str],
+    *,
+    required: bool,
+    risk_rank_declared: bool,
+    defined_levels: set[str],
+) -> tuple[str, ...]:
+    if required:
+        return tuple(risk_warnings)
+    if not risk_rank_declared:
+        return ()
+    raw_risk_level = field.get("risk_level")
+    risk_level = str(raw_risk_level or "").strip().casefold()
+    if not risk_level or risk_level not in defined_levels:
+        return tuple(risk_warnings)
     return ()
 
 

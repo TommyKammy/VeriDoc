@@ -3485,6 +3485,87 @@ class TemplateFingerprintTest(unittest.TestCase):
             result.output,
         )
 
+    def test_optional_missing_malformed_risk_level_fails_closed(self) -> None:
+        template = self.template_definition()
+        template["risk_rank"] = {
+            "levels": [
+                {"level": "low", "rank": 1},
+                {"level": "high", "rank": 2},
+            ],
+            "review_required_levels": ["high"],
+        }
+        template["anchors"] = [
+            *template["anchors"],
+            {
+                "anchor_id": "optional-review-note",
+                "kind": "label",
+                "text": "Review Note",
+                "match": "contains",
+                "scope": {"page": 2, "block_types": ["paragraph"]},
+            },
+            {
+                "anchor_id": "optional-release-note",
+                "kind": "label",
+                "text": "Release Note",
+                "match": "contains",
+                "scope": {"page": 2, "block_types": ["paragraph"]},
+            },
+        ]
+        template["fields"] = [
+            {
+                "field_id": "batch_number",
+                "label": "Batch No.",
+                "value_type": "string",
+                "source": {"anchor_id": "batch-header", "direction": "below"},
+                "required": True,
+                "risk_level": "low",
+                "validation_rule_ids": [],
+                "output_key": "batch.number",
+            },
+            {
+                "field_id": "review_note",
+                "label": "Review Note",
+                "value_type": "string",
+                "source": {"anchor_id": "optional-review-note", "direction": "same_block"},
+                "required": False,
+                "risk_level": "experimental",
+                "validation_rule_ids": [],
+                "output_key": "batch.review_note",
+            },
+            {
+                "field_id": "release_note",
+                "label": "Release Note",
+                "value_type": "string",
+                "source": {"anchor_id": "optional-release-note", "direction": "same_block"},
+                "required": False,
+                "validation_rule_ids": [],
+                "output_key": "batch.release_note",
+            },
+        ]
+        document = self.document_with_blocks()
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertTrue(result.requires_review)
+        self.assertTrue(mapped["review_note"].requires_review)
+        self.assertTrue(mapped["release_note"].requires_review)
+        self.assertIsNone(mapped["review_note"].value)
+        self.assertIsNone(mapped["release_note"].value)
+        self.assertEqual(
+            {"template_result": {"batch": {"number": "BN-001"}}},
+            result.output,
+        )
+        self.assertIn(
+            "template field 'review_note' risk_level 'experimental' is not defined "
+            "by template risk_rank; requires review",
+            result.warnings,
+        )
+        self.assertIn(
+            "template field 'release_note' missing risk_level; requires review",
+            result.warnings,
+        )
+
     def test_template_empty_risk_matrix_fails_closed(self) -> None:
         template = self.template_definition()
         template["risk_rank"] = {}
