@@ -190,6 +190,8 @@ class TemplateStore:
             latest_version = None if not versions else versions[-1]
             status_default = "active" if existing is None else existing.get("status", "active")
             status_value = request["status"] if "status" in request else status_default
+            if status_value is None:
+                status_value = status_default
             status = _validate_template_status(status_value)
             document_type = _validate_template_text_field(
                 _template_version_value(request, latest_version, "document_type", category),
@@ -1027,6 +1029,7 @@ def _template_request_with_auth_context(
     trusted_request = deepcopy(request)
     trusted_request["actor"] = trusted_actor
     if trusted_request.get("approved_by") is not None:
+        _validate_template_actor(trusted_request["approved_by"], "approved_by")
         trusted_request["approved_by"] = trusted_actor
     return trusted_request
 
