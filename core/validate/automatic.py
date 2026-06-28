@@ -423,7 +423,9 @@ def _gmp_category_requires_review(record: Mapping[str, Any]) -> bool:
     categories = (
         _normalized_category(record.get("gmp_review_category")),
         _normalized_category(record.get("field_category")),
+        _normalized_category(record.get("field_id")),
         _normalized_category(record.get("label_id")),
+        _normalized_category(record.get("label")),
         _category_from_value_type(record.get("value_type")),
     )
     return any(category in GMP_REVIEW_REQUIRED_CATEGORIES for category in categories)

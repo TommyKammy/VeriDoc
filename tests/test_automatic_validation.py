@@ -479,6 +479,38 @@ def test_status_label_id_alias_requires_review_as_judgment() -> None:
     assert "risk_gate" in decision.failed_rules
 
 
+def test_status_field_id_alias_requires_review_as_judgment() -> None:
+    scope = {
+        "fixture_id": "fixture-001",
+        "document_id": "doc-001",
+        "block_id": "block-001",
+    }
+    decision = validate_extracted_item(
+        expected=_expected_item(
+            label_id="release-template-field",
+            field_id="release_status",
+            label="Status",
+            expected_value="Approved",
+            risk_level="medium",
+            requires_review=False,
+            **scope,
+        ),
+        actual=_actual_item(
+            label_id="release-template-field",
+            field_id="release_status",
+            label="Status",
+            value="Approved",
+            auto_confirmed=True,
+            **scope,
+        ),
+    )
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert decision.requires_review is True
+    assert "risk_gate" in decision.failed_rules
+
+
 def test_value_metadata_source_comparison_ignores_non_source_fields() -> None:
     source = _evidence()
     decision = validate_extracted_item(
