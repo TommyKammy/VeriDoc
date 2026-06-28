@@ -209,6 +209,7 @@ def apply_template_field_mapping(
     output_conflicts = _output_key_conflicts(
         _field_and_table_output_keys_for_conflicts(fields, output_mapping, output_keys_by_field_id)
     )
+    review_required_levels = _template_review_required_levels(template_definition)
     for conflict_warnings in output_conflicts.values():
         warnings.extend(conflict_warnings)
 
@@ -248,10 +249,19 @@ def apply_template_field_mapping(
             continue
 
         block_warnings = tuple(extracted.block.review.warnings)
-        field_warnings = (*block_warnings, *output_conflict_warnings)
+        risk_warnings = (
+            (
+                f"template field '{field_id or '<unknown>'}' risk_level "
+                f"'{field.get('risk_level')}' requires review",
+            )
+            if _field_requires_template_risk_review(field, review_required_levels)
+            else ()
+        )
+        field_warnings = (*block_warnings, *risk_warnings, *output_conflict_warnings)
         requires_review = (
             extracted.block.review.requires_review
             or bool(block_warnings)
+            or bool(risk_warnings)
             or bool(output_conflict_warnings)
         )
         mapped_fields.append(
@@ -273,6 +283,8 @@ def apply_template_field_mapping(
         )
         if not requires_review:
             _set_output_value(output, output_key, extracted.value)
+        else:
+            warnings.extend(field_warnings)
 
     result_warnings = tuple(dict.fromkeys([*template_match.warnings, *warnings]))
     return TemplateFieldMappingResult(
@@ -521,6 +533,24 @@ def _document_ir_review_warnings(document_ir: DocumentIRV1) -> list[str]:
     return warnings
 
 
+def _template_review_required_levels(template_definition: Mapping[str, Any]) -> set[str]:
+    risk_rank = _mapping(template_definition.get("risk_rank"))
+    return {
+        str(level).strip().casefold()
+        for level in _list_value(risk_rank.get("review_required_levels"))
+        if str(level).strip()
+    }
+
+
+def _field_requires_template_risk_review(
+    field: Mapping[str, Any], review_required_levels: set[str]
+) -> bool:
+    if not review_required_levels:
+        return False
+    risk_level = str(field.get("risk_level") or "").strip().casefold()
+    return bool(risk_level) and risk_level in review_required_levels
+
+
 def _extract_template_field_value(
     document_ir: DocumentIRV1,
     field: Mapping[str, Any],
@@ -568,7 +598,7 @@ def _extract_template_nearby_field(
                 for block in _right_side_blocks(document_ir.blocks, anchor_block):
                     value = _field_value_from_text(block.text, label, anchor_text, stop_markers=stop_markers)
                     if value is None:
-                        value = block.text.strip() or None
+                        value = _value_before_next_marker(block.text.strip(), stop_markers).strip() or None
                     if value:
                         return _template_value(block, value, 0.94, direction=direction)
         return None
@@ -719,6 +749,7 @@ def _table_body_values_at_physical_column(
     return [
         (row_index, _table_cell_value_at_physical_column(row, column_index))
         for row_index, row in enumerate(rows[header_index + 1 :], start=header_index + 1)
+        if not _is_markdown_alignment_row(row)
     ]
 
 
@@ -817,11 +848,15 @@ def _value_after_marker(
     normalized_marker = marker.casefold().strip()
     if not normalized_marker:
         return None
-    for line in text.splitlines() or [text]:
+    lines = text.splitlines() or [text]
+    for line_index, line in enumerate(lines):
         for match in re.finditer(re.escape(marker.strip()), line, flags=re.IGNORECASE):
             if not _marker_match_has_boundaries(line, match.start(), match.end()):
                 continue
             value = _candidate_value_after_marker_match(line, match.end(), stop_markers)
+            if value:
+                return value
+            value = _first_next_line_value(lines[line_index + 1 :], stop_markers)
             if value:
                 return value
     return None
@@ -831,8 +866,20 @@ def _candidate_value_after_marker_match(
     line: str, marker_end: int, stop_markers: Sequence[str]
 ) -> str:
     value = line[marker_end:].strip()
-    value = re.sub(r"^[\s:：=-]+", "", value).strip()
+    value = re.sub(r"^[\s:：=]+", "", value).strip()
+    if value.startswith("-") and (len(value) == 1 or value[1].isspace()):
+        value = value[1:].strip()
     return _value_before_next_marker(value, stop_markers)
+
+
+def _first_next_line_value(lines: Sequence[str], stop_markers: Sequence[str]) -> str | None:
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        value = _value_before_next_marker(stripped, stop_markers).strip()
+        return value or None
+    return None
 
 
 def _value_before_next_marker(value: str, stop_markers: Sequence[str]) -> str:
@@ -1329,11 +1376,21 @@ def _table_row_cells(value: str) -> list[str]:
     return [cell for cell in cells if _normalized_column_name(cell)]
 
 
+def _is_markdown_alignment_row(row: Sequence[str]) -> bool:
+    cells = [str(cell).strip() for cell in row if str(cell).strip()]
+    return bool(cells) and all(re.fullmatch(r":?-{3,}:?", cell) for cell in cells)
+
+
 def _split_table_row(value: str) -> list[str]:
     if "\t" in value:
         return value.split("\t")
     if "|" in value:
-        return value.split("|")
+        cells = value.split("|")
+        if cells and not cells[0].strip():
+            cells = cells[1:]
+        if cells and not cells[-1].strip():
+            cells = cells[:-1]
+        return cells
     if "," in value:
         return re.split(r"\s*,\s*", value)
     return re.split(r"\s{2,}", value)
