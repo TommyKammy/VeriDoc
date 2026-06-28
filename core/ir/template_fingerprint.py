@@ -292,7 +292,7 @@ def apply_template_field_mapping(
                 warnings=field_warnings,
             )
         )
-        if not requires_review:
+        if _mapped_field_output_is_confirmed(requires_review):
             _set_output_value(output, output_key, extracted.value)
         else:
             warnings.extend(field_warnings)
@@ -568,6 +568,10 @@ def _template_field_requires_review(
     return block_requires_review or any(bool(warnings) for warnings in warning_groups)
 
 
+def _mapped_field_output_is_confirmed(requires_review: bool) -> bool:
+    return not requires_review
+
+
 def _template_field_value_validation_warnings(
     field: Mapping[str, Any], value: str, template_definition: Mapping[str, Any]
 ) -> tuple[str, ...]:
@@ -723,6 +727,8 @@ def _extract_template_nearby_field(
                 continue
             if block.bbox.y < anchor_block.bbox.y:
                 continue
+            if _below_scan_block_is_not_field_value(block):
+                continue
             value = _below_field_value_from_block(
                 block.text,
                 field_label=label,
@@ -856,9 +862,12 @@ def _table_body_values_at_physical_column(
     return [
         (row_index, _table_cell_value_at_physical_column(row, column_index))
         for row_index, row in enumerate(rows[header_index + 1 :], start=header_index + 1)
-        if not _is_markdown_alignment_row(row)
-        and not _table_row_repeats_header(row, header_row)
+        if _table_body_row_is_value_candidate(row, header_row)
     ]
+
+
+def _table_body_row_is_value_candidate(row: Sequence[str], header_row: Sequence[str]) -> bool:
+    return not _is_markdown_alignment_row(row) and not _table_row_repeats_header(row, header_row)
 
 
 def _table_row_repeats_header(row: Sequence[str], header_row: Sequence[str]) -> bool:
@@ -954,6 +963,10 @@ def _below_field_value_from_block(
     )
 
 
+def _below_scan_block_is_not_field_value(block: DocumentBlock) -> bool:
+    return block.type == "table"
+
+
 def _field_value_from_label_anchor_below(
     text: str,
     *,
@@ -1040,11 +1053,15 @@ def _value_before_next_marker(value: str, stop_markers: Sequence[str]) -> str:
                 continue
             if not _marker_match_is_label_like_stop(value, match.start(), match.end()):
                 continue
-            earliest_stop = match.start() if earliest_stop is None else min(earliest_stop, match.start())
+            earliest_stop = _earlier_marker_stop_index(earliest_stop, match.start())
             break
     if earliest_stop is None:
         return value
     return re.sub(r"[\s:：=-]+$", "", value[:earliest_stop]).strip()
+
+
+def _earlier_marker_stop_index(current: int | None, candidate: int) -> int:
+    return candidate if current is None else min(current, candidate)
 
 
 def _looks_like_unlabeled_below_value_block(value: str) -> bool:
