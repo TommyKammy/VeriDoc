@@ -258,11 +258,11 @@ def apply_template_field_mapping(
             else ()
         )
         field_warnings = (*block_warnings, *risk_warnings, *output_conflict_warnings)
-        requires_review = (
-            extracted.block.review.requires_review
-            or bool(block_warnings)
-            or bool(risk_warnings)
-            or bool(output_conflict_warnings)
+        requires_review = _template_field_requires_review(
+            extracted.block.review.requires_review,
+            block_warnings,
+            risk_warnings,
+            output_conflict_warnings,
         )
         mapped_fields.append(
             TemplateMappedField(
@@ -551,6 +551,12 @@ def _field_requires_template_risk_review(
     return bool(risk_level) and risk_level in review_required_levels
 
 
+def _template_field_requires_review(
+    block_requires_review: bool, *warning_groups: Sequence[str]
+) -> bool:
+    return block_requires_review or any(bool(warnings) for warnings in warning_groups)
+
+
 def _extract_template_field_value(
     document_ir: DocumentIRV1,
     field: Mapping[str, Any],
@@ -677,21 +683,22 @@ def _extract_template_table_cell(
         if column_index is None:
             continue
         actual_column_index = column_offset + column_index
-        for row_index, value in _table_body_values_at_physical_column(
+        table_value = _first_table_body_value_at_physical_column(
             parsed_rows.rows,
             header_index,
             actual_column_index,
-        ):
-            if value:
-                return _template_value(
-                    block,
-                    value,
-                    0.90,
-                    direction="table_cell",
-                    row_index=row_index,
-                    column_index=actual_column_index,
-                    column_label=label,
-                )
+        )
+        if table_value is not None:
+            row_index, value = table_value
+            return _template_value(
+                block,
+                value,
+                0.90,
+                direction="table_cell",
+                row_index=row_index,
+                column_index=actual_column_index,
+                column_label=label,
+            )
     return None
 
 
@@ -751,6 +758,19 @@ def _table_body_values_at_physical_column(
         for row_index, row in enumerate(rows[header_index + 1 :], start=header_index + 1)
         if not _is_markdown_alignment_row(row)
     ]
+
+
+def _first_table_body_value_at_physical_column(
+    rows: Sequence[Sequence[str]], header_index: int, column_index: int
+) -> tuple[int, str] | None:
+    for row_index, value in _table_body_values_at_physical_column(
+        rows,
+        header_index,
+        column_index,
+    ):
+        if value:
+            return row_index, value
+    return None
 
 
 def _field_and_table_output_keys_for_conflicts(
@@ -853,10 +873,13 @@ def _value_after_marker(
         for match in re.finditer(re.escape(marker.strip()), line, flags=re.IGNORECASE):
             if not _marker_match_has_boundaries(line, match.start(), match.end()):
                 continue
-            value = _candidate_value_after_marker_match(line, match.end(), stop_markers)
-            if value:
-                return value
-            value = _first_next_line_value(lines[line_index + 1 :], stop_markers)
+            value = _value_after_marker_match_or_next_line(
+                lines,
+                line_index,
+                line,
+                match.end(),
+                stop_markers,
+            )
             if value:
                 return value
     return None
@@ -870,6 +893,19 @@ def _candidate_value_after_marker_match(
     if value.startswith("-") and (len(value) == 1 or value[1].isspace()):
         value = value[1:].strip()
     return _value_before_next_marker(value, stop_markers)
+
+
+def _value_after_marker_match_or_next_line(
+    lines: Sequence[str],
+    line_index: int,
+    line: str,
+    marker_end: int,
+    stop_markers: Sequence[str],
+) -> str | None:
+    value = _candidate_value_after_marker_match(line, marker_end, stop_markers)
+    if value:
+        return value
+    return _first_next_line_value(lines[line_index + 1 :], stop_markers)
 
 
 def _first_next_line_value(lines: Sequence[str], stop_markers: Sequence[str]) -> str | None:
@@ -1304,11 +1340,37 @@ def _row_columns_excluding_anchor_with_offset(
     match_mode = str(anchor.get("match") or "normalized")
     for index, cell in enumerate(row):
         if _text_match_score(expected_text, cell, match_mode) > 0.0:
-            return row[index + 1 :], index + 1 if preserve_column_positions or index > 0 else 0
+            return row[index + 1 :], _column_offset_after_anchor_cell(
+                index,
+                preserve_column_positions=preserve_column_positions,
+            )
     anchor_end = _anchor_cell_span_end_index(row, expected_text, match_mode)
     if anchor_end is not None:
-        return row[anchor_end:], anchor_end if preserve_column_positions or anchor_end > 1 else 0
+        return row[anchor_end:], _column_offset_after_anchor_span(
+            anchor_end,
+            preserve_column_positions=preserve_column_positions,
+        )
     return [], 0
+
+
+def _column_offset_after_anchor_cell(
+    anchor_cell_index: int, *, preserve_column_positions: bool
+) -> int:
+    return (
+        anchor_cell_index + 1
+        if preserve_column_positions or anchor_cell_index > 0
+        else 0
+    )
+
+
+def _column_offset_after_anchor_span(
+    anchor_end_index: int, *, preserve_column_positions: bool
+) -> int:
+    return (
+        anchor_end_index
+        if preserve_column_positions or anchor_end_index > 1
+        else 0
+    )
 
 
 def _looks_like_wrapped_header_fragment(
