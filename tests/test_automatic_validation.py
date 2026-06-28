@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 
 from core.validate.automatic import (
+    GMP_REVIEW_REQUIRED_CATEGORIES,
     ValidationStatus,
     validate_extracted_item,
     validate_table_consistency,
@@ -280,6 +281,77 @@ def test_actual_high_risk_item_blocks_auto_confirm() -> None:
     assert "risk_gate" in decision.failed_rules
 
 
+def test_critical_risk_item_cannot_be_auto_confirmed() -> None:
+    decision = validate_extracted_item(
+        expected=_expected_item(risk_level="critical", requires_review=False),
+        actual=_actual_item(auto_confirmed=True),
+    )
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert decision.requires_review is True
+    assert "risk_gate" in decision.failed_rules
+
+
+def test_gmp_review_required_categories_are_explicit_and_not_auto_confirmed() -> None:
+    assert GMP_REVIEW_REQUIRED_CATEGORIES == frozenset(
+        {
+            "lot_number",
+            "item",
+            "date_time",
+            "numeric_value",
+            "specification",
+            "judgment",
+            "person",
+            "correction",
+            "deviation",
+        }
+    )
+
+    for category in sorted(GMP_REVIEW_REQUIRED_CATEGORIES):
+        decision = validate_extracted_item(
+            expected=_expected_item(
+                risk_level="medium",
+                requires_review=False,
+                gmp_review_category=category,
+            ),
+            actual=_actual_item(auto_confirmed=True),
+        )
+
+        assert decision.auto_confirm_allowed is False, category
+        assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM, category
+        assert decision.requires_review is True, category
+        assert "risk_gate" in decision.failed_rules, category
+
+
+def test_gmp_review_required_conditions_are_not_auto_confirmed() -> None:
+    expected = _expected_item(
+        risk_level="medium",
+        requires_review=False,
+        gmp_review_category="lot_number",
+        extraction_engine="template-v1",
+    )
+
+    cases = (
+        ("low_confidence", _actual_item(auto_confirmed=True, confidence=0.79)),
+        ("ocr_derived", _actual_item(auto_confirmed=True, extraction_method="ocr")),
+        (
+            "engine_mismatch",
+            _actual_item(auto_confirmed=True, extraction_engine="llm-repair-v1"),
+        ),
+        ("missing_source", _actual_item(auto_confirmed=True, evidence={})),
+        ("llm_involved", _actual_item(auto_confirmed=True, llm_involved=True)),
+    )
+
+    for name, actual in cases:
+        decision = validate_extracted_item(expected=expected, actual=actual)
+
+        assert decision.auto_confirm_allowed is False, name
+        assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM, name
+        assert decision.requires_review is True, name
+        assert "risk_gate" in decision.failed_rules, name
+
+
 def test_malformed_item_risk_level_blocks_auto_confirm() -> None:
     decision = validate_extracted_item(
         expected=_expected_item(risk_level="todo", requires_review=False),
@@ -447,6 +519,7 @@ def test_documented_top_left_source_origin_allows_auto_confirm() -> None:
 
     decision = validate_extracted_item(
         expected=_expected_item(
+            label_id="summary_note",
             risk_level="medium",
             requires_review=False,
             fixture_id="fixture-001",
@@ -455,6 +528,7 @@ def test_documented_top_left_source_origin_allows_auto_confirm() -> None:
             evidence=top_left_source,
         ),
         actual=_actual_item(
+            label_id="summary_note",
             fixture_id="fixture-001",
             document_id="doc-001",
             block_id="block-001",

@@ -15,6 +15,51 @@ class ValidationStatus(Enum):
 
 SUPPORTED_BBOX_UNITS = {"pt", "px", "mm"}
 MIN_IMPORTANT_VALUE_CONFIDENCE = 0.8
+SUPPORTED_RISK_LEVELS = {"low", "medium", "high", "critical"}
+REVIEW_REQUIRED_RISK_LEVELS = {"high", "critical"}
+GMP_REVIEW_REQUIRED_CATEGORIES = frozenset(
+    {
+        "lot_number",
+        "item",
+        "date_time",
+        "numeric_value",
+        "specification",
+        "judgment",
+        "person",
+        "correction",
+        "deviation",
+    }
+)
+GMP_REVIEW_CATEGORY_ALIASES = {
+    "batch_number": "lot_number",
+    "lot": "lot_number",
+    "lot_no": "lot_number",
+    "product": "item",
+    "material": "item",
+    "component": "item",
+    "date": "date_time",
+    "time": "date_time",
+    "timestamp": "date_time",
+    "datetime": "date_time",
+    "quantity": "numeric_value",
+    "measurement": "numeric_value",
+    "number": "numeric_value",
+    "limit": "specification",
+    "standard": "specification",
+    "acceptance_criteria": "specification",
+    "result": "judgment",
+    "decision": "judgment",
+    "disposition": "judgment",
+    "operator": "person",
+    "reviewer": "person",
+    "approver": "person",
+    "signature": "person",
+    "change": "correction",
+    "amendment": "correction",
+    "nonconformance": "deviation",
+    "oos": "deviation",
+}
+OCR_SOURCE_MARKERS = {"ocr", "optical_character_recognition"}
 
 
 @dataclass(frozen=True)
@@ -75,7 +120,22 @@ def validate_extracted_item(
 
     explicit_review_required = _requires_review(expected) or _requires_review(actual)
     high_risk = _is_high_risk(expected) or _is_high_risk(actual)
-    requires_review = explicit_review_required or high_risk or confidence_requires_review
+    category_requires_review = _gmp_category_requires_review(
+        expected
+    ) or _gmp_category_requires_review(actual)
+    condition_warnings = _gmp_condition_review_warnings(
+        expected,
+        actual,
+        important_item=high_risk or category_requires_review or explicit_review_required,
+    )
+    warnings.extend(condition_warnings)
+    requires_review = (
+        explicit_review_required
+        or high_risk
+        or category_requires_review
+        or confidence_requires_review
+        or bool(condition_warnings)
+    )
     scope_binding_required = not (explicit_review_required or high_risk)
     if scope_binding_required:
         for scope_key in ("fixture_id", "document_id", "block_id"):
@@ -266,17 +326,17 @@ def _confidence_requires_review(value: object) -> bool:
 
 
 def _cell_requires_review(cell: Mapping[str, Any]) -> bool:
-    return _requires_review(cell) or _is_high_risk(cell)
+    return _requires_review(cell) or _is_high_risk(cell) or _gmp_category_requires_review(cell)
 
 
 def _is_high_risk(record: Mapping[str, Any]) -> bool:
-    return record.get("risk_level") == "high"
+    return record.get("risk_level") in REVIEW_REQUIRED_RISK_LEVELS
 
 
 def _has_malformed_risk_level(record: Mapping[str, Any]) -> bool:
     if "risk_level" not in record:
         return False
-    return record.get("risk_level") not in {"low", "medium", "high"}
+    return record.get("risk_level") not in SUPPORTED_RISK_LEVELS
 
 
 def _has_missing_or_malformed_risk_level(record: Mapping[str, Any]) -> bool:
@@ -292,6 +352,62 @@ def _has_malformed_review_flag(record: Mapping[str, Any]) -> bool:
         return False
     value = record.get("requires_review")
     return not isinstance(value, bool)
+
+
+def _gmp_category_requires_review(record: Mapping[str, Any]) -> bool:
+    category = _normalized_category(record.get("gmp_review_category"))
+    if not category:
+        category = _normalized_category(record.get("field_category"))
+    if not category:
+        category = _normalized_category(record.get("label_id"))
+    return category in GMP_REVIEW_REQUIRED_CATEGORIES
+
+
+def _normalized_category(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    normalized = value.strip().casefold().replace("-", "_").replace(" ", "_")
+    return GMP_REVIEW_CATEGORY_ALIASES.get(normalized, normalized)
+
+
+def _gmp_condition_review_warnings(
+    expected: Mapping[str, Any],
+    actual: Mapping[str, Any],
+    *,
+    important_item: bool,
+) -> tuple[str, ...]:
+    warnings: list[str] = []
+    if _ocr_derived(expected) or _ocr_derived(actual):
+        warnings.append("ocr-derived item requires human review")
+    if _extraction_engine_mismatch(expected, actual):
+        warnings.append("extraction engine mismatch requires human review")
+    if not _evidence_matches(expected.get("evidence"), actual.get("evidence")):
+        warnings.append("item source requires human review")
+    if important_item and (_llm_involved(expected) or _llm_involved(actual)):
+        warnings.append("llm-involved important item requires human review")
+    return tuple(dict.fromkeys(warnings))
+
+
+def _ocr_derived(record: Mapping[str, Any]) -> bool:
+    for key in ("source_kind", "source_type", "extraction_method", "extractor_kind"):
+        value = record.get(key)
+        if isinstance(value, str) and value.strip().casefold() in OCR_SOURCE_MARKERS:
+            return True
+    return False
+
+
+def _extraction_engine_mismatch(
+    expected: Mapping[str, Any], actual: Mapping[str, Any]
+) -> bool:
+    expected_engine = expected.get("extraction_engine")
+    actual_engine = actual.get("extraction_engine")
+    if expected_engine is None and actual_engine is None:
+        return False
+    return not _same_non_empty_string(expected_engine, actual_engine)
+
+
+def _llm_involved(record: Mapping[str, Any]) -> bool:
+    return record.get("llm_involved") is True or record.get("llm_generated") is True
 
 
 def _cells_by_id(value: object) -> dict[str, Mapping[str, Any]] | None:
