@@ -3346,6 +3346,56 @@ class TemplateFingerprintTest(unittest.TestCase):
             result.warnings,
         )
 
+    def test_template_unknown_or_missing_risk_level_fails_closed(self) -> None:
+        template = self.template_definition()
+        template["risk_rank"] = {
+            "levels": [
+                {"level": "low", "rank": 1},
+                {"level": "medium", "rank": 2},
+                {"level": "high", "rank": 3},
+                {"level": "critical", "rank": 4},
+            ],
+            "review_required_levels": ["high", "critical"],
+        }
+        template["fields"] = [
+            {
+                "field_id": "batch_number",
+                "label": "Batch No.",
+                "value_type": "string",
+                "source": {"anchor_id": "batch-header", "direction": "below"},
+                "required": True,
+                "risk_level": "experimental",
+                "validation_rule_ids": [],
+                "output_key": "batch.number",
+            },
+            {
+                "field_id": "manufacturing_date",
+                "label": "Manufacturing Date",
+                "value_type": "date",
+                "source": {"anchor_id": "batch-header", "direction": "below"},
+                "required": True,
+                "validation_rule_ids": [],
+                "output_key": "batch.manufacturing_date",
+            },
+        ]
+        document = self.document_with_blocks()
+
+        result = apply_template_field_mapping(document, template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertTrue(mapped["batch_number"].requires_review)
+        self.assertTrue(mapped["manufacturing_date"].requires_review)
+        self.assertEqual({"template_result": {}}, result.output)
+        self.assertIn(
+            "template field 'batch_number' risk_level 'experimental' is not defined "
+            "by template risk_rank; requires review",
+            result.warnings,
+        )
+        self.assertIn(
+            "template field 'manufacturing_date' missing risk_level; requires review",
+            result.warnings,
+        )
+
     def test_table_cell_mapping_does_not_search_data_rows_for_optional_header(self) -> None:
         template = self.template_definition()
         template["tables"][0]["required_columns"] = ["step"]
