@@ -446,6 +446,38 @@ def test_invalid_explicit_gmp_category_blocks_auto_confirm() -> None:
     assert "risk_gate" in decision.failed_rules
 
 
+def test_non_gmp_field_category_does_not_block_auto_confirm() -> None:
+    source = _evidence()
+    decision = validate_extracted_item(
+        expected=_expected_item(
+            label_id="summary_note",
+            field_category="comment",
+            expected_value="Reviewed note",
+            risk_level="medium",
+            requires_review=False,
+            fixture_id="fixture-001",
+            document_id="doc-001",
+            block_id="block-001",
+            evidence=source,
+        ),
+        actual=_actual_item(
+            label_id="summary_note",
+            field_category="comment",
+            value="Reviewed note",
+            auto_confirmed=True,
+            fixture_id="fixture-001",
+            document_id="doc-001",
+            block_id="block-001",
+            evidence=source,
+        ),
+    )
+
+    assert decision.auto_confirm_allowed is True
+    assert decision.status is ValidationStatus.PASS
+    assert decision.requires_review is False
+    assert decision.failed_rules == ()
+
+
 def test_gmp_review_required_conditions_are_not_auto_confirmed() -> None:
     expected = _expected_item(
         risk_level="medium",
@@ -591,6 +623,38 @@ def test_nested_extractor_metadata_mismatch_blocks_item_auto_confirm() -> None:
     assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
     assert decision.requires_review is True
     assert "risk_gate" in decision.failed_rules
+    assert "extraction engine mismatch requires human review" in decision.warnings
+
+
+def test_expected_extraction_engine_missing_from_actual_blocks_auto_confirm() -> None:
+    source = _evidence()
+    decision = validate_extracted_item(
+        expected=_expected_item(
+            label_id="summary_note",
+            expected_value="Reviewed note",
+            risk_level="medium",
+            requires_review=False,
+            fixture_id="fixture-001",
+            document_id="doc-001",
+            block_id="block-001",
+            evidence=source,
+            extractor="pymupdf-text",
+        ),
+        actual=_actual_item(
+            label_id="summary_note",
+            value="Reviewed note",
+            auto_confirmed=True,
+            fixture_id="fixture-001",
+            document_id="doc-001",
+            block_id="block-001",
+            evidence=source,
+        ),
+    )
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert decision.requires_review is True
+    assert decision.failed_rules == ("risk_gate",)
     assert "extraction engine mismatch requires human review" in decision.warnings
 
 
@@ -871,6 +935,38 @@ def test_actual_only_extraction_engine_does_not_create_mismatch() -> None:
     assert decision.requires_review is False
     assert decision.failed_rules == ()
     assert "extraction engine mismatch requires human review" not in decision.warnings
+
+
+def test_llm_extractor_metadata_marks_important_item_for_review() -> None:
+    source = _evidence()
+    decision = validate_extracted_item(
+        expected=_expected_item(
+            label_id="release_status",
+            expected_value="Approved",
+            risk_level="medium",
+            requires_review=False,
+            fixture_id="fixture-001",
+            document_id="doc-001",
+            block_id="block-001",
+            evidence=source,
+        ),
+        actual=_actual_item(
+            label_id="release_status",
+            value="Approved",
+            auto_confirmed=True,
+            fixture_id="fixture-001",
+            document_id="doc-001",
+            block_id="block-001",
+            evidence=source,
+            extractor={"name": "local-llm-conversion-plan"},
+        ),
+    )
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert decision.requires_review is True
+    assert "risk_gate" in decision.failed_rules
+    assert "llm-involved important item requires human review" in decision.warnings
 
 
 def test_generic_non_ocr_engine_does_not_mark_item_ocr_derived() -> None:
@@ -2677,6 +2773,30 @@ def test_current_head_review_examples_fail_closed() -> None:
                     document_id="doc-001",
                     block_id="block-001",
                     extractor="llm-repair-v1",
+                ),
+            ),
+            "risk_gate",
+        ),
+        (
+            "current_thread_missing_actual_engine",
+            validate_extracted_item(
+                expected=_expected_item(
+                    label_id="summary_note",
+                    expected_value="Reviewed note",
+                    risk_level="medium",
+                    requires_review=False,
+                    fixture_id="fixture-001",
+                    document_id="doc-001",
+                    block_id="block-001",
+                    extractor="pymupdf",
+                ),
+                actual=_actual_item(
+                    label_id="summary_note",
+                    value="Reviewed note",
+                    auto_confirmed=True,
+                    fixture_id="fixture-001",
+                    document_id="doc-001",
+                    block_id="block-001",
                 ),
             ),
             "risk_gate",

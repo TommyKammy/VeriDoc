@@ -104,6 +104,7 @@ OCR_SOURCE_MARKERS = {
     "scanned_pdf_ocr",
 }
 OCR_EXTRACTOR_NAME_MARKERS = ("ocr", "tesseract")
+LLM_EXTRACTOR_NAME_MARKERS = ("llm", "gpt")
 GMP_CONDITION_METADATA_KEYS = (
     "source_kind",
     "source_type",
@@ -550,12 +551,11 @@ def _gmp_category_requires_review(record: Mapping[str, Any]) -> bool:
 
 
 def _has_malformed_explicit_gmp_category(record: Mapping[str, Any]) -> bool:
-    for key in ("gmp_review_category", "field_category"):
-        if key not in record:
-            continue
-        if _normalized_category(record.get(key)) not in GMP_REVIEW_REQUIRED_CATEGORIES:
-            return True
-    return False
+    if "gmp_review_category" not in record:
+        return False
+    return _normalized_category(record.get("gmp_review_category")) not in (
+        GMP_REVIEW_REQUIRED_CATEGORIES
+    )
 
 
 def _table_gmp_category_requires_review(table: Mapping[str, Any]) -> bool:
@@ -711,8 +711,10 @@ def _extraction_engine_mismatch(
 ) -> bool:
     expected_engine = _extraction_engine(expected)
     actual_engine = _extraction_engine(actual)
-    if expected_engine is None or actual_engine is None:
+    if expected_engine is None:
         return False
+    if actual_engine is None:
+        return True
     return not _same_non_empty_string(expected_engine, actual_engine)
 
 
@@ -745,7 +747,13 @@ def _extractor_name(record: Mapping[str, Any]) -> str | None:
 
 
 def _llm_involved(record: Mapping[str, Any]) -> bool:
-    return record.get("llm_involved") is True or record.get("llm_generated") is True
+    if record.get("llm_involved") is True or record.get("llm_generated") is True:
+        return True
+    extractor_name = _extractor_name(record)
+    if extractor_name is None:
+        return False
+    normalized = re.sub(r"[^a-z0-9]+", "_", extractor_name.strip().casefold()).strip("_")
+    return any(marker in normalized for marker in LLM_EXTRACTOR_NAME_MARKERS)
 
 
 def _cells_by_id(value: object) -> dict[str, Mapping[str, Any]] | None:
