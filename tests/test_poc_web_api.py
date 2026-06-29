@@ -83,6 +83,7 @@ def test_convert_uploaded_document_surfaces_review_items_and_download_payload() 
         {
             "document_id": "phase0-output",
             "block_id": "block-0001",
+            "source_id": "phase0-output:block-0001",
             "source_page": 1,
             "source_bbox": {
                 "x": 10.0,
@@ -176,14 +177,64 @@ def test_convert_uploaded_document_omits_synthetic_missing_bbox_from_review_item
         {
             "document_id": "phase0-output",
             "block_id": "block-0001",
+            "source_id": "phase0-output:block-0001",
             "source_page": 1,
             "text": "Missing bbox",
             "warnings": [
                 "blocks[0].bbox missing; block marked requires_review",
                 "blocks[0].low confidence; block marked requires_review",
+                "blocks[0].source metadata incomplete; original jump unavailable",
             ],
         }
     ]
+
+
+def test_convert_uploaded_document_warns_when_review_item_source_jump_is_incomplete() -> None:
+    parser_output = {
+        "schema_version": "document-ir/v0",
+        "document": {
+            "id": "sample-document-001",
+            "title": "High Risk Missing Source Metadata",
+            "source_type": "pdf",
+        },
+        "pages": [{"page_number": 1, "width": 612, "height": 792, "unit": "pt"}],
+        "blocks": [
+            {
+                "id": "block-001",
+                "type": "paragraph",
+                "text": "Assay result: 99.8%",
+                "value_metadata": {
+                    "source_page": 1,
+                    "confidence": 0.98,
+                    "requires_review": True,
+                },
+            }
+        ],
+    }
+
+    result = convert_uploaded_document(
+        filename="phase0-output.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+    )
+
+    assert result["status"] == "requires_review"
+    assert result["validation"]["requires_review"] is True
+    assert result["review_items"] == [
+        {
+            "document_id": "sample-document-001",
+            "block_id": "block-0001",
+            "source_id": "sample-document-001:block-0001",
+            "source_page": 1,
+            "text": "Assay result: 99.8%",
+            "warnings": [
+                "blocks[0].bbox missing; block marked requires_review",
+                "blocks[0].parser marked block requires_review",
+                "blocks[0].source metadata incomplete; original jump unavailable",
+            ],
+        }
+    ]
+    assert "source_bbox" not in result["review_items"][0]
+    assert "source_page_geometry" not in result["review_items"][0]
 
 
 def test_convert_uploaded_document_omits_unsupported_unit_review_bbox() -> None:
@@ -220,9 +271,13 @@ def test_convert_uploaded_document_omits_unsupported_unit_review_bbox() -> None:
         {
             "document_id": "phase0-output",
             "block_id": "block-0001",
+            "source_id": "phase0-output:block-0001",
             "source_page": 1,
             "text": "Unsupported unit",
-            "warnings": ["blocks[0].low confidence; block marked requires_review"],
+            "warnings": [
+                "blocks[0].low confidence; block marked requires_review",
+                "blocks[0].source metadata incomplete; original jump unavailable",
+            ],
         }
     ]
 
@@ -287,6 +342,7 @@ def test_convert_uploaded_pdf_adapts_phase0_document_ir_v0_blocks(monkeypatch) -
         {
             "document_id": "batch-record",
             "block_id": "block-0001",
+            "source_id": "batch-record:block-0001",
             "source_page": 1,
             "source_bbox": {
                 "x": 72.0,

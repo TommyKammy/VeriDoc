@@ -1829,15 +1829,16 @@ def _plain_text_parser_output(text: str) -> dict[str, Any]:
 def _review_items(document_ir: DocumentIRV1) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     pages_by_number = {page.page_number: page for page in document_ir.pages}
-    for block in document_ir.blocks:
+    for block_index, block in enumerate(document_ir.blocks):
         if not block.review.requires_review and not block.review.warnings:
             continue
         item = {
             "document_id": document_ir.document.id,
             "block_id": block.id,
+            "source_id": f"{document_ir.document.id}:{block.id}",
             "source_page": block.source_page,
             "text": block.text,
-            "warnings": block.review.warnings,
+            "warnings": list(block.review.warnings),
         }
         if _block_llm_involved(block):
             item["llm_involved"] = True
@@ -1846,6 +1847,11 @@ def _review_items(document_ir: DocumentIRV1) -> list[dict[str, Any]]:
         if source_bbox is not None:
             item["source_bbox"] = source_bbox
             item["source_page_geometry"] = asdict(page)
+        else:
+            item["warnings"] = [
+                *item["warnings"],
+                f"blocks[{block_index}].source metadata incomplete; original jump unavailable",
+            ]
         items.append(item)
     return items
 
