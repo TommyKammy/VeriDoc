@@ -15,7 +15,8 @@ Related source notes:
 
 ## Target Changes
 
-Treat the following changes as controlled re-evaluation triggers:
+Treat product changes and evaluation gate-data changes as controlled
+re-evaluation triggers:
 
 | Change target | Examples | Required reason |
 | --- | --- | --- |
@@ -51,6 +52,8 @@ At minimum, run repository hygiene:
 python3 scripts/ci/repo_hygiene.py
 ```
 
+### Extraction Metrics Gate
+
 For parser, extractor, or source-linkage logic changes that can affect table
 extraction, cell matching, or source traceability, rerun the public extraction
 metrics harness or an equivalent scored fixture-level check:
@@ -64,13 +67,16 @@ metrics at the approved baseline for the changed fixture scope, or the PR must
 block until the regression has an explicit reviewer-approved difference
 explanation and rollback note.
 
+### High-Risk Comparison Gate
+
 For model, prompt, logic, template, or renderer changes that can affect
-automatic confirmation or review recommendations, the comparison gate has two
-ordered evidence stages: first capture current-branch public synthetic outputs
-through the changed path, then score those captured outputs with the public
-high-risk comparison harness:
+automatic confirmation or review recommendations, the comparison command is only
+the scoring step. The complete gate has two ordered evidence stages: first
+capture current-branch public synthetic outputs through the changed path, then
+score those captured outputs with the public high-risk comparison harness:
 
 ```sh
+# Score the freshly recaptured comparison record.
 python3 scripts/evaluate_dataset.py --poc-comparison datasets/gold/poc_mode_comparison_v1.json
 ```
 
@@ -86,8 +92,11 @@ renderer version does not satisfy the re-evaluation gate. If the required
 inference profile, fixture, or capture path is unavailable, the PR must stay
 blocked and record the missing prerequisite.
 
+### Stability Gate
+
 For model or prompt changes that can affect JSON stability, conversion-plan
-shape, or confirmed-value agreement, also rerun the public stability harness:
+shape, or confirmed-value agreement, the high-risk comparison gate is not
+sufficient; also rerun the public stability harness:
 
 ```sh
 python3 scripts/evaluate_dataset.py --llm-stability-runs datasets/gold/llm_stability_runs_v0.json
@@ -169,12 +178,18 @@ Before requesting review for a controlled change, confirm:
 - gate-data edits, including template-regression golden edits, explain the
   authoritative source or fixture record that justifies changing the controlled
   target and rerun the consuming harness or fixture test;
+- parser, extractor, or source-linkage logic changes run
+  `python3 scripts/evaluate_dataset.py --cases datasets/gold/evaluation_cases_v0.json`
+  or an equivalent scored fixture-level extraction check, and any metric
+  regression has explicit reviewer approval plus rollback notes;
 - model, prompt, logic, template, or renderer changes refresh the affected
   public synthetic outputs in `datasets/gold/poc_mode_comparison_v1.json`
   before the comparison harness is run;
 - model or prompt changes that can affect JSON stability run
   `python3 scripts/evaluate_dataset.py --llm-stability-runs datasets/gold/llm_stability_runs_v0.json`
-  or an equivalent fresh same-input N-run capture;
+  or an equivalent fresh same-input N-run capture, and the PR records whether
+  `plan_agreement_rate`, `confirmed_value_agreement_rate`, or
+  `unstable_examples` block approval;
 - `python3 scripts/evaluate_dataset.py --poc-comparison datasets/gold/poc_mode_comparison_v1.json`
   was run when automatic confirmation or review recommendation behavior can
   change;
