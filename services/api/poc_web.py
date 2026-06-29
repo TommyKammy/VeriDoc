@@ -98,6 +98,7 @@ HTTP_CONTENT_TYPE = re.compile(
     r"(?:[ \t]*;[ \t]*[A-Za-z0-9!#$&^_.+-]+=[A-Za-z0-9!#$&^_.+-]+)*$"
 )
 DEFAULT_JOB_QUEUE = JobQueue()
+AUDIT_INTEGRITY_ALGORITHM = "sha256-canonical-json-chain-v1"
 
 
 class PocServerDependencyError(RuntimeError):
@@ -107,12 +108,19 @@ class PocServerDependencyError(RuntimeError):
 class ReviewAuditEventStore:
     def __init__(self) -> None:
         self._events: list[dict[str, Any]] = []
+        self._integrity_checkpoint = _audit_event_integrity_checkpoint(self._events)
         self._lock = Lock()
 
     def record(self, audit_event: dict[str, Any]) -> dict[str, Any]:
-        event = deepcopy(audit_event)
         with self._lock:
+            self._require_integrity_locked()
+            event = _audit_event_with_integrity(
+                audit_event,
+                previous_events=self._events,
+                checkpoint=self._integrity_checkpoint,
+            )
             self._events.append(event)
+            self._integrity_checkpoint = _audit_event_integrity_checkpoint(self._events)
         return deepcopy(event)
 
     def record_validated(
@@ -122,9 +130,22 @@ class ReviewAuditEventStore:
     ) -> dict[str, Any]:
         event = deepcopy(audit_event)
         with self._lock:
+            self._require_integrity_locked()
             validate(event, [_review_workflow_event_view(item) for item in self._events])
+            event = _audit_event_with_integrity(
+                event,
+                previous_events=self._events,
+                checkpoint=self._integrity_checkpoint,
+            )
             self._events.append(event)
+            self._integrity_checkpoint = _audit_event_integrity_checkpoint(self._events)
         return deepcopy(event)
+
+    def _require_integrity_locked(self) -> None:
+        _raise_for_audit_event_integrity_violation(
+            self._events,
+            checkpoint=self._integrity_checkpoint,
+        )
 
     def list_events(self, filters: dict[str, str] | None = None) -> list[dict[str, Any]]:
         with self._lock:
@@ -138,17 +159,41 @@ class ReviewAuditEventStore:
                 events = self._events
             return deepcopy(events)
 
+    def verify_integrity(self) -> dict[str, Any]:
+        with self._lock:
+            return _verify_audit_event_integrity(
+                self._events,
+                checkpoint=self._integrity_checkpoint,
+            )
+
 
 class JobAuditEventStore:
     def __init__(self) -> None:
         self._events: list[dict[str, Any]] = []
+        self._integrity_checkpoint = _audit_event_integrity_checkpoint(self._events)
         self._lock = Lock()
 
     def record(self, audit_event: dict[str, Any]) -> dict[str, Any]:
-        event = deepcopy(audit_event)
         with self._lock:
+            self._require_integrity_locked()
+            event = _audit_event_with_integrity(
+                audit_event,
+                previous_events=self._events,
+                checkpoint=self._integrity_checkpoint,
+            )
             self._events.append(event)
+            self._integrity_checkpoint = _audit_event_integrity_checkpoint(self._events)
         return deepcopy(event)
+
+    def require_integrity(self) -> None:
+        with self._lock:
+            self._require_integrity_locked()
+
+    def _require_integrity_locked(self) -> None:
+        _raise_for_audit_event_integrity_violation(
+            self._events,
+            checkpoint=self._integrity_checkpoint,
+        )
 
     def list_events(self, filters: dict[str, str] | None = None) -> list[dict[str, Any]]:
         with self._lock:
@@ -161,6 +206,105 @@ class JobAuditEventStore:
             else:
                 events = self._events
             return deepcopy(events)
+
+    def verify_integrity(self) -> dict[str, Any]:
+        with self._lock:
+            return _verify_audit_event_integrity(
+                self._events,
+                checkpoint=self._integrity_checkpoint,
+            )
+
+
+def _audit_event_with_integrity(
+    audit_event: dict[str, Any],
+    *,
+    previous_events: list[dict[str, Any]],
+    checkpoint: dict[str, Any],
+) -> dict[str, Any]:
+    event = deepcopy(audit_event)
+    event["integrity_algorithm"] = AUDIT_INTEGRITY_ALGORITHM
+    expected_terminal_sequence = checkpoint.get("terminal_sequence")
+    if expected_terminal_sequence != len(previous_events):
+        raise ValueError(
+            "audit log integrity violation: audit log terminal sequence mismatch"
+        )
+    event["sequence"] = expected_terminal_sequence + 1
+    previous_hash = previous_events[-1].get("event_hash") if previous_events else None
+    event["prev_event_hash"] = previous_hash if isinstance(previous_hash, str) else None
+    event["event_hash"] = _audit_event_hash(event)
+    return event
+
+
+def _audit_event_integrity_checkpoint(events: list[dict[str, Any]]) -> dict[str, Any]:
+    head_hash = events[-1].get("event_hash") if events else None
+    return {
+        "terminal_sequence": len(events),
+        "head_event_hash": head_hash if isinstance(head_hash, str) else None,
+    }
+
+
+def _verify_audit_event_integrity(
+    events: list[dict[str, Any]],
+    *,
+    checkpoint: dict[str, Any],
+) -> dict[str, Any]:
+    errors: list[str] = []
+    previous_hash: str | None = None
+    for index, event in enumerate(events):
+        sequence = index + 1
+        if event.get("integrity_algorithm") != AUDIT_INTEGRITY_ALGORITHM:
+            errors.append(f"event[{index}] integrity algorithm mismatch")
+        if event.get("sequence") != sequence:
+            errors.append(f"event[{index}] sequence mismatch")
+        if event.get("prev_event_hash") != previous_hash:
+            errors.append(f"event[{index}] previous hash mismatch")
+        event_hash = event.get("event_hash")
+        if not isinstance(event_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", event_hash):
+            errors.append(f"event[{index}] hash missing")
+        elif event_hash != _audit_event_hash(event):
+            errors.append(f"event[{index}] hash mismatch")
+        previous_hash = event_hash if isinstance(event_hash, str) else None
+    errors.extend(_audit_event_checkpoint_errors(events, checkpoint=checkpoint))
+    ok = not errors
+    return {"ok": ok, "errors": errors}
+
+
+def _audit_event_checkpoint_errors(
+    events: list[dict[str, Any]],
+    *,
+    checkpoint: dict[str, Any],
+) -> list[str]:
+    errors: list[str] = []
+    expected_terminal_sequence = checkpoint.get("terminal_sequence")
+    if expected_terminal_sequence != len(events):
+        errors.append("audit log terminal sequence mismatch")
+    expected_head_hash = checkpoint.get("head_event_hash")
+    actual_head_hash = events[-1].get("event_hash") if events else None
+    if expected_head_hash != actual_head_hash:
+        errors.append("audit log head hash mismatch")
+    return errors
+
+
+def _raise_for_audit_event_integrity_violation(
+    events: list[dict[str, Any]],
+    *,
+    checkpoint: dict[str, Any],
+) -> None:
+    result = _verify_audit_event_integrity(events, checkpoint=checkpoint)
+    if not result["ok"]:
+        details = "; ".join(result["errors"])
+        raise ValueError(f"audit log integrity violation: {details}")
+
+
+def _audit_event_hash(event: dict[str, Any]) -> str:
+    hash_input = {key: value for key, value in event.items() if key != "event_hash"}
+    canonical = json.dumps(
+        hash_input,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
 
 
 class TemplateStore:
@@ -617,10 +761,12 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             job_queue = self._job_queue()
             job = job_queue.get_job(job_id)
             accepted_event = _validate_job_event(job, action, audit_event, job_queue)
+            job_event_store = self._job_event_store()
             updated_job = job
             if action == "retry_conversion":
+                job_event_store.require_integrity()
                 updated_job = job_queue.retry_failed_job(job_id)
-            stored_event = self._job_event_store().record(
+            stored_event = job_event_store.record(
                 _job_event_with_auth_context(accepted_event, auth_context)
             )
         except KeyError:
