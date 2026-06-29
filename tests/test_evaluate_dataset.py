@@ -731,6 +731,8 @@ class EvaluateDatasetTest(unittest.TestCase):
             "python3 private/recompute.py",
             evaluate_dataset.EXPECTED_GMP_ACCEPTANCE_COMMAND
             + " python3 private/recompute.py",
+            "PYTHONPATH=private "
+            + evaluate_dataset.EXPECTED_GMP_ACCEPTANCE_COMMAND,
         )
         for command in commands:
             with self.subTest(command=command):

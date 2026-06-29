@@ -1622,7 +1622,7 @@ def validate_gmp_acceptance_verification_command_paths(
                 f"verification_commands[{index}] must be shell-tokenizable"
             ) from exc
 
-        candidates: list[str] = []
+        candidates: list[tuple[str, bool]] = []
         for token in tokens:
             normalized_token = token.strip("\"'")
             if any(
@@ -1639,10 +1639,13 @@ def validate_gmp_acceptance_verification_command_paths(
                 raise EvaluationCaseError(
                     f"verification_commands[{index}] must not contain shell control operators"
                 )
-            candidates.append(normalized_token)
+            candidates.append((normalized_token, False))
             if "=" in normalized_token:
-                candidates.append(normalized_token.split("=", 1)[1])
-        for candidate in candidates:
+                assignment_name, assignment_value = normalized_token.split("=", 1)
+                candidates.append(
+                    (assignment_value, assignment_name.upper().endswith("PATH"))
+                )
+        for candidate, _ in candidates:
             if not candidate:
                 continue
             candidate_path = Path(candidate)
@@ -1650,13 +1653,14 @@ def validate_gmp_acceptance_verification_command_paths(
                 raise EvaluationCaseError(
                     f"verification_commands[{index}] must not contain absolute paths"
                 )
-        for candidate in candidates:
+        for candidate, force_path_validation in candidates:
             if not candidate:
                 continue
             candidate_path = Path(candidate)
 
             path_like = (
-                "/" in candidate
+                force_path_validation
+                or "/" in candidate
                 or "\\" in candidate
                 or candidate.startswith(".")
                 or candidate_path.suffix
