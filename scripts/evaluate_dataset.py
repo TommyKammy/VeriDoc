@@ -1616,9 +1616,9 @@ def evaluate_gmp_acceptance(
         raise EvaluationCaseError(
             f"unsupported GMP acceptance schema_version {data.get('schema_version')!r}"
         )
-    validate_scope(data)
     root = repo_root or Path.cwd()
     validate_gmp_acceptance_dataset_manifest(data, root)
+    validate_scope(data)
     poc_path = poc_comparison_path_from_gmp_acceptance(data, root)
     poc_metrics = evaluate_poc_mode_comparison(load_json(poc_path), repo_root=root)
     high_quality_metrics = high_quality_poc_mode_metrics(poc_metrics)
@@ -1692,6 +1692,7 @@ def evaluate_gmp_acceptance(
         not failed_criteria
         and poc_metrics.high_risk_false_auto_confirmed_count
         <= poc_metrics.high_risk_false_auto_confirmed_target
+        and high_quality_metrics.source_linkage_rate >= 1.0
     )
     return GmpAcceptanceMetrics(
         poc_comparison=str(EXPECTED_POC_COMPARISON),
