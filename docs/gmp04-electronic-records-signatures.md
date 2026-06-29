@@ -70,11 +70,13 @@ current local PoC boundary:
 - A witness or QA approval must be represented as an explicit workflow step
   before it can be treated as required evidence.
 - Approval workflow validation must stay tied to the explicit review event:
-  when comparable prior-edit evidence exists, approval text must match the
-  latest saved revised text; standalone approvals without a saved edit are
-  validated against caller-supplied original and revised text instead of
-  proving comparison to independent prior reviewed text; same-actor rejection
-  applies only to enforced paths where comparable prior-review evidence and
+  when comparable prior-edit evidence exists, the endpoint rejects approval
+  text that differs from the latest saved revised text. Standalone approvals
+  without a saved edit can be accepted from caller-supplied original and
+  revised text, including the fallback where missing `revised_text` defaults to
+  `original_text`; that path does not compare against the converted document's
+  current text or independent prior reviewed text. Same-actor rejection applies
+  only to enforced paths where comparable prior-review evidence and
   authenticated actor IDs exist; and `conversion_id`, when present, scopes the
   prior-review search instead of proving universal conversion-version binding.
 

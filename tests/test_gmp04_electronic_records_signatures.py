@@ -68,15 +68,21 @@ class Gmp04ElectronicRecordsSignaturesTest(unittest.TestCase):
             "unchanged approvals do not require an",
             "existing edit for the same conversion",
             "when comparable prior-edit evidence exists",
-            "approval text must match the",
+            "the endpoint rejects approval",
+            "text that differs from the latest saved revised text",
             "latest saved revised text",
-            "standalone approvals without a saved edit",
-            "caller-supplied original and revised text",
+            "Standalone approvals",
+            "without a saved edit can be accepted",
+            "can be accepted from caller-supplied original and",
+            "missing `revised_text` defaults to",
+            "`original_text`",
+            "does not compare against the converted document's",
             "independent prior reviewed text",
             "same-actor separation enforced only",
             "when authenticated actor IDs exist",
-            "same-actor rejection",
-            "applies only to enforced paths",
+            "Same-actor rejection",
+            "applies",
+            "only to enforced paths",
             "comparable prior-review evidence",
             "admin approval events can be accepted by the local PoC API",
             "must not claim conversion-version binding as universal",
@@ -111,6 +117,7 @@ class Gmp04ElectronicRecordsSignaturesTest(unittest.TestCase):
             docs,
         )
         self.assertNotIn("approval text must match the current reviewed text", docs)
+        self.assertNotIn("approval text must match", docs)
 
 
 if __name__ == "__main__":
