@@ -51,13 +51,25 @@ class Gmp04ElectronicRecordsSignaturesTest(unittest.TestCase):
             "_validate_review_workflow_event",
             "tests/test_poc_web_api.py",
             "when local auth is enabled",
+            "default unauthenticated",
+            "null actor and role fields and must not be treated as",
+            "authenticated GMP evidence",
+            "when local auth is enabled, missing or invalid actor and role",
+            "authentication also fails closed",
             "default unauthenticated PoC mode stores null actor/role fields",
             "`conversion_id` as an optional review-audit scope field",
             "unchanged approvals do not require an",
             "existing edit for the same conversion",
             "same-actor separation enforced only when authenticated actor IDs exist",
+            "same-actor rejection",
+            "applies only to enforced paths",
+            "comparable prior-review evidence",
             "admin approval events can be accepted by the local PoC API",
             "must not claim conversion-version binding as universal",
+            "caller-supplied source context fields",
+            "syntactic validation",
+            "without treating direct review-event submissions as",
+            "verified lookup-backed links",
         ):
             self.assertIn(required_text, docs)
 
@@ -67,6 +79,15 @@ class Gmp04ElectronicRecordsSignaturesTest(unittest.TestCase):
         self.assertNotIn("GMP-03 established the role", docs)
         self.assertNotIn("job actions, and related operator decisions", docs)
         self.assertNotIn("document, block, actor, and latest edited text", docs)
+        self.assertNotIn(
+            "failing closed when required provenance, actor, role, or target binding",
+            docs,
+        )
+        self.assertNotIn(
+            "when auth context exists, the approver must be a different actor",
+            docs,
+        )
+        self.assertNotIn("source context directly linked to the reviewed record", docs)
 
 
 if __name__ == "__main__":

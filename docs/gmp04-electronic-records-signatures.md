@@ -16,9 +16,12 @@ responsible for:
   event paths; direct result downloads are protected by job-read authorization
   but are not yet recorded as job-action audit events;
 - keeping reviewer, approver, and admin actions tied to the authenticated local
-  actor context when local auth is enabled;
-- failing closed when required provenance, actor, role, or target binding is
-  missing or malformed;
+  actor context when local auth is enabled, while the default unauthenticated
+  PoC mode stores null actor and role fields and must not be treated as
+  authenticated GMP evidence;
+- failing closed when required provenance or target binding is missing or
+  malformed; when local auth is enabled, missing or invalid actor and role
+  authentication also fails closed before those fields can be relied on;
 - making controlled-record assumptions explicit so QA and GMP SMEs can decide
   whether the resulting workflow is acceptable for a specific site procedure.
 
@@ -63,10 +66,10 @@ current local PoC boundary:
 - A witness or QA approval must be represented as an explicit workflow step
   before it can be treated as required evidence.
 - Approval workflow validation must stay tied to the explicit review event:
-  when auth context exists, the approver must be a different actor than the
-  prior reviewer; approval text must match the current reviewed text; and
-  `conversion_id`, when present, scopes the prior-review search instead of
-  proving universal conversion-version binding.
+  approval text must match the current reviewed text; same-actor rejection
+  applies only to enforced paths where comparable prior-review evidence and
+  authenticated actor IDs exist; and `conversion_id`, when present, scopes the
+  prior-review search instead of proving universal conversion-version binding.
 
 The design must not infer approval from naming conventions, nearby metadata, or
 comments. If a future signature workflow needs a signer, witness, or QA role,
@@ -76,9 +79,9 @@ The verifiable anchors for this boundary are the `ROLE_PERMISSIONS` matrix,
 `_validate_review_event`, and `_validate_review_workflow_event` in
 `services/api/poc_web.py`, plus the local PoC API tests in
 `tests/test_poc_web_api.py` that reject reviewer-only approval, same-actor
-approval, stale approval text, and unbound conversion approval. Future GMP-03
-changes must update this note and the focused GMP-04 documentation regression
-together.
+approval on enforced comparable prior-review paths, stale approval text, and
+unbound conversion approval. Future GMP-03 changes must update this note and
+the focused GMP-04 documentation regression together.
 
 ## Audit Log and Electronic Record Posture
 
@@ -100,7 +103,10 @@ Audit events should continue to:
   existing edit for the same conversion; legacy events without a conversion ID
   remain constrained by document, block, and latest edited text checks, with
   same-actor separation enforced only when authenticated actor IDs exist;
-- preserve source context directly linked to the reviewed record;
+- preserve caller-supplied source context fields with the review event after
+  syntactic validation, without treating direct review-event submissions as
+  verified lookup-backed links to a converted document, block, page, or bounding
+  box;
 - avoid broadening advisory or reconciliation context from sibling records;
 - keep append and projection updates all-or-nothing when persistent storage is
   introduced;
