@@ -117,7 +117,11 @@ class ReviewAuditEventStore:
                 self._events,
                 checkpoint=self._integrity_checkpoint,
             )
-            event = _audit_event_with_integrity(audit_event, previous_events=self._events)
+            event = _audit_event_with_integrity(
+                audit_event,
+                previous_events=self._events,
+                checkpoint=self._integrity_checkpoint,
+            )
             self._events.append(event)
             self._integrity_checkpoint = _audit_event_integrity_checkpoint(self._events)
         return deepcopy(event)
@@ -134,7 +138,11 @@ class ReviewAuditEventStore:
                 checkpoint=self._integrity_checkpoint,
             )
             validate(event, [_review_workflow_event_view(item) for item in self._events])
-            event = _audit_event_with_integrity(event, previous_events=self._events)
+            event = _audit_event_with_integrity(
+                event,
+                previous_events=self._events,
+                checkpoint=self._integrity_checkpoint,
+            )
             self._events.append(event)
             self._integrity_checkpoint = _audit_event_integrity_checkpoint(self._events)
         return deepcopy(event)
@@ -171,7 +179,11 @@ class JobAuditEventStore:
                 self._events,
                 checkpoint=self._integrity_checkpoint,
             )
-            event = _audit_event_with_integrity(audit_event, previous_events=self._events)
+            event = _audit_event_with_integrity(
+                audit_event,
+                previous_events=self._events,
+                checkpoint=self._integrity_checkpoint,
+            )
             self._events.append(event)
             self._integrity_checkpoint = _audit_event_integrity_checkpoint(self._events)
         return deepcopy(event)
@@ -200,10 +212,16 @@ def _audit_event_with_integrity(
     audit_event: dict[str, Any],
     *,
     previous_events: list[dict[str, Any]],
+    checkpoint: dict[str, Any],
 ) -> dict[str, Any]:
     event = deepcopy(audit_event)
     event["integrity_algorithm"] = AUDIT_INTEGRITY_ALGORITHM
-    event["sequence"] = len(previous_events) + 1
+    expected_terminal_sequence = checkpoint.get("terminal_sequence")
+    if expected_terminal_sequence != len(previous_events):
+        raise ValueError(
+            "audit log integrity violation: audit log terminal sequence mismatch"
+        )
+    event["sequence"] = expected_terminal_sequence + 1
     previous_hash = previous_events[-1].get("event_hash") if previous_events else None
     event["prev_event_hash"] = previous_hash if isinstance(previous_hash, str) else None
     event["event_hash"] = _audit_event_hash(event)

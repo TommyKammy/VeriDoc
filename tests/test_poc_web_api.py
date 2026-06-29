@@ -978,6 +978,33 @@ def test_review_audit_event_store_rejects_append_after_tail_truncation() -> None
     }
 
 
+def test_review_audit_event_store_rejects_validated_append_after_tail_truncation() -> None:
+    store = ReviewAuditEventStore()
+    store.record(_review_audit_event(conversion_id="conversion-first"))
+    store.record(_review_audit_event(conversion_id="conversion-second"))
+    del store._events[-1]  # noqa: SLF001
+
+    def fail_if_validation_runs(
+        audit_event: dict[str, object],
+        stored_events: list[dict[str, object]],
+    ) -> None:
+        raise AssertionError("validation should not run for a truncated audit log")
+
+    with pytest.raises(ValueError, match="audit log integrity violation"):
+        store.record_validated(
+            _review_audit_event(conversion_id="conversion-third"),
+            fail_if_validation_runs,
+        )
+
+    assert store.verify_integrity() == {
+        "ok": False,
+        "errors": [
+            "audit log terminal sequence mismatch",
+            "audit log head hash mismatch",
+        ],
+    }
+
+
 def test_job_audit_event_store_detects_tail_truncation() -> None:
     store = JobAuditEventStore()
     store.record(
