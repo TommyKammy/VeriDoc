@@ -51,6 +51,19 @@ At minimum, run repository hygiene:
 python3 scripts/ci/repo_hygiene.py
 ```
 
+For parser, extractor, or source-linkage logic changes that can affect table
+extraction, cell matching, or source traceability, rerun the public extraction
+metrics harness or an equivalent scored fixture-level check:
+
+```sh
+python3 scripts/evaluate_dataset.py --cases datasets/gold/evaluation_cases_v0.json
+```
+
+The extraction gate must keep table extraction, cell match, and source-linkage
+metrics at the approved baseline for the changed fixture scope, or the PR must
+block until the regression has an explicit reviewer-approved difference
+explanation and rollback note.
+
 For model, prompt, logic, template, or renderer changes that can affect
 automatic confirmation or review recommendations, the comparison gate has two
 ordered evidence stages: first capture current-branch public synthetic outputs
@@ -83,7 +96,11 @@ python3 scripts/evaluate_dataset.py --llm-stability-runs datasets/gold/llm_stabi
 The stability gate must use a fresh same-input N-run capture from the changed
 branch or an equivalent documented N-run capture that exercises the changed
 model or prompt path. A single captured PoC comparison output does not satisfy
-this stability check.
+this stability check. The PR must declare the stability acceptance criterion
+before approval: `plan_agreement_rate` and `confirmed_value_agreement_rate` must
+stay at or above the approved baseline for the fixture scope, and any new
+`unstable_examples` block the change unless a reviewer explicitly approves the
+difference and the rollback plan.
 
 The comparison output must keep the GMP-01 high-risk miss gate at zero:
 
