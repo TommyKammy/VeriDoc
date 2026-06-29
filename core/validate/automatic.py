@@ -68,6 +68,10 @@ GMP_REVIEW_CATEGORY_ALIASES = {
     "quantity": "numeric_value",
     "measurement": "numeric_value",
     "number": "numeric_value",
+    "actual_yield": "numeric_value",
+    "expected_yield": "numeric_value",
+    "target_yield": "numeric_value",
+    "yield": "numeric_value",
     "limit": "specification",
     "standard": "specification",
     "acceptance_criteria": "specification",
@@ -79,7 +83,14 @@ GMP_REVIEW_CATEGORY_ALIASES = {
     "operator": "person",
     "reviewer": "person",
     "approver": "person",
+    "approved_by": "person",
+    "checked_by": "person",
+    "performed_by": "person",
+    "prepared_by": "person",
+    "reviewed_by": "person",
     "signature": "person",
+    "signed_by": "person",
+    "verified_by": "person",
     "change": "correction",
     "amendment": "correction",
     "nonconformance": "deviation",
@@ -212,6 +223,10 @@ def validate_table_consistency(
     table_category_requires_review = _table_gmp_category_requires_review(
         expected_table
     ) or _table_gmp_category_requires_review(actual_table)
+    table_auto_confirmed = actual_table.get("auto_confirmed", False)
+    if not isinstance(table_auto_confirmed, bool):
+        failed_rules.append("risk_gate")
+        table_auto_confirmed = True
 
     expected_cells = _cells_by_id(expected_table.get("cells"))
     actual_cells = _cells_by_id(actual_table.get("cells"))
@@ -297,6 +312,8 @@ def validate_table_consistency(
                 if auto_confirmed:
                     failed_rules.append("risk_gate")
 
+    if table_requires_review and table_auto_confirmed:
+        failed_rules.append("risk_gate")
     if failed_rules:
         warnings.append("table content requires human review")
     return _decision(failed_rules, warnings, bool(failed_rules) or table_requires_review)
@@ -476,7 +493,7 @@ def _table_gmp_category_requires_review(table: Mapping[str, Any]) -> bool:
     if not isinstance(required_columns, list):
         return "required_columns" in table
     return any(
-        _normalized_category(column) in GMP_REVIEW_REQUIRED_CATEGORIES
+        _required_column_requires_review(column)
         for column in required_columns
     )
 
@@ -521,6 +538,13 @@ def _category_from_record_value(record: Mapping[str, Any]) -> str:
     ):
         return "numeric_value"
     return ""
+
+
+def _required_column_requires_review(column: str) -> bool:
+    category = _normalized_category(column)
+    if category in GMP_REVIEW_REQUIRED_CATEGORIES:
+        return True
+    return _category_from_value_type(category) in GMP_REVIEW_REQUIRED_CATEGORIES
 
 
 def _gmp_condition_review_warnings(

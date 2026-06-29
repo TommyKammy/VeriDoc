@@ -1878,6 +1878,31 @@ def test_current_head_review_examples_fail_closed() -> None:
             "risk_gate",
         ),
         (
+            "current_thread_prepared_by_label_id",
+            validate_extracted_item(
+                expected=_expected_item(
+                    label_id="prepared_by",
+                    label="Prepared By",
+                    expected_value="Alex Reviewer",
+                    risk_level="medium",
+                    requires_review=False,
+                    fixture_id="fixture-001",
+                    document_id="doc-001",
+                    block_id="block-001",
+                ),
+                actual=_actual_item(
+                    label_id="prepared_by",
+                    label="Prepared By",
+                    value="Alex Reviewer",
+                    auto_confirmed=True,
+                    fixture_id="fixture-001",
+                    document_id="doc-001",
+                    block_id="block-001",
+                ),
+            ),
+            "risk_gate",
+        ),
+        (
             "current_thread_date_value_type",
             validate_extracted_item(
                 expected=_expected_item(
@@ -1934,6 +1959,38 @@ def test_current_head_review_examples_fail_closed() -> None:
             "risk_gate",
         ),
         (
+            "current_thread_table_auto_confirmed_review_table",
+            validate_table_consistency(
+                {
+                    "id": "table-001",
+                    "fixture_table_id": "table-001",
+                    "requires_review": True,
+                    "cells": [
+                        {
+                            "id": "table-001-r1-c1",
+                            "text": "Reviewed note",
+                            "source": source,
+                            "requires_review": False,
+                            "risk_level": "low",
+                        },
+                    ],
+                },
+                {
+                    "id": "table-001",
+                    "auto_confirmed": True,
+                    "cells": [
+                        {
+                            "id": "table-001-r1-c1",
+                            "text": "Reviewed note",
+                            "source": source,
+                            "auto_confirmed": False,
+                        },
+                    ],
+                },
+            ),
+            "risk_gate",
+        ),
+        (
             "current_thread_malformed_table_risk_level",
             validate_table_consistency(
                 {
@@ -1958,6 +2015,38 @@ def test_current_head_review_examples_fail_closed() -> None:
                             "text": "Reviewed note",
                             "source": source,
                             "auto_confirmed": False,
+                        },
+                    ],
+                },
+            ),
+            "risk_gate",
+        ),
+        (
+            "current_thread_numeric_required_column",
+            validate_table_consistency(
+                {
+                    "id": "table-001",
+                    "fixture_table_id": "table-001",
+                    "risk_level": "medium",
+                    "required_columns": ["actual_yield"],
+                    "cells": [
+                        {
+                            "id": "table-001-r1-c1",
+                            "text": "98.5",
+                            "source": source,
+                            "requires_review": False,
+                            "risk_level": "low",
+                        },
+                    ],
+                },
+                {
+                    "id": "table-001",
+                    "cells": [
+                        {
+                            "id": "table-001-r1-c1",
+                            "text": "98.5",
+                            "source": source,
+                            "auto_confirmed": True,
                         },
                     ],
                 },
