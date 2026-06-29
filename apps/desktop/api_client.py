@@ -61,9 +61,10 @@ class DesktopApiClientConfig:
             raise ValueError("base_url must be an HTTP(S) URL")
         if parsed.username or parsed.password:
             raise ValueError("base_url must not include embedded credentials")
-        if not _is_local_api_host(parsed.hostname):
+        local_host = _validated_local_api_host(parsed.hostname)
+        if local_host is None:
             raise ValueError("base_url must point to a local API endpoint")
-        base_url = normalized.rstrip("/") + "/"
+        base_url = _replace_url_host(parsed, local_host).geturl().rstrip("/") + "/"
         object.__setattr__(self, "base_url", base_url)
 
 
@@ -135,29 +136,51 @@ class _NoRedirectHandler(HTTPRedirectHandler):
     http_error_308 = http_error_302
 
 
-def _is_local_api_host(hostname: str | None) -> bool:
-    if hostname is None:
-        return False
+def _replace_url_host(parsed: SplitResult, hostname: str) -> SplitResult:
+    host = _format_url_host(hostname)
+    port = parsed.port
+    netloc = host if port is None else f"{host}:{port}"
+    return parsed._replace(netloc=netloc)
+
+
+def _format_url_host(hostname: str) -> str:
     try:
-        return ipaddress.ip_address(hostname).is_loopback
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        return hostname
+    if address.version == 6:
+        return f"[{address.compressed}]"
+    return address.compressed
+
+
+def _validated_local_api_host(hostname: str | None) -> str | None:
+    if hostname is None:
+        return None
+    try:
+        address = ipaddress.ip_address(hostname)
+        return address.compressed if address.is_loopback else None
     except ValueError:
         pass
     if hostname.lower() != "localhost":
-        return False
+        return None
     try:
         results = socket.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
     except socket.gaierror:
-        return False
+        return None
     if not results:
-        return False
+        return None
+    pinned_address: str | None = None
     for result in results:
         address = result[4][0]
         try:
-            if not ipaddress.ip_address(address).is_loopback:
-                return False
+            parsed_address = ipaddress.ip_address(address)
+            if not parsed_address.is_loopback:
+                return None
+            if pinned_address is None:
+                pinned_address = parsed_address.compressed
         except ValueError:
-            return False
-    return True
+            return None
+    return pinned_address
 
 
 def _looks_like_placeholder_token(token: str) -> bool:

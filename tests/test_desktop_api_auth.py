@@ -169,7 +169,39 @@ def test_desktop_api_client_config_accepts_localhost_resolved_to_loopback(
 
     config = DesktopApiClientConfig(base_url="http://localhost:8765")
 
-    assert config.base_url == "http://localhost:8765/"
+    assert config.base_url == "http://127.0.0.1:8765/"
+
+
+def test_desktop_api_client_pins_validated_localhost_before_sending_bearer_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def trusted_getaddrinfo(host: str, port: object, *, type: int):
+        assert host == "localhost"
+        assert port is None
+        assert type == socket.SOCK_STREAM
+        return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", 0))]
+
+    monkeypatch.setattr("apps.desktop.api_client.socket.getaddrinfo", trusted_getaddrinfo)
+    config = DesktopApiClientConfig(base_url="http://localhost:8765")
+
+    def rebound_getaddrinfo(host: str, port: object, *, type: int):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("203.0.113.10", 0))]
+
+    monkeypatch.setattr("apps.desktop.api_client.socket.getaddrinfo", rebound_getaddrinfo)
+    transport = RecordingTransport()
+    client = DesktopApiClient(
+        config,
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=transport,
+    )
+
+    assert client.list_jobs() == {"jobs": []}
+
+    assert len(transport.requests) == 1
+    request = transport.requests[0]
+    assert request.full_url == "http://127.0.0.1:8765/api/jobs"
+    assert request.host == "127.0.0.1:8765"
+    assert request.get_header("Authorization") == "Bearer reviewer-token"
 
 
 @pytest.mark.parametrize(
