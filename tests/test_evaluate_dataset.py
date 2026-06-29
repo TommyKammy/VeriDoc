@@ -672,6 +672,10 @@ class EvaluateDatasetTest(unittest.TestCase):
             [criterion["id"] for criterion in report["criteria"]],
         )
         self.assertTrue(all(criterion["status"] == "pass" for criterion in report["criteria"]))
+        segregation = report["criteria"][-1]
+        self.assertEqual("segregation_of_duties", segregation["id"])
+        self.assertIn("Authenticated role-token flows", segregation["notes"])
+        self.assertIn("no-auth approval remains", segregation["notes"])
 
     def test_gmp_acceptance_requires_canonical_dataset_manifest(self) -> None:
         data = self.valid_gmp_acceptance_data()
@@ -746,6 +750,23 @@ class EvaluateDatasetTest(unittest.TestCase):
                 with self.assertRaisesRegex(
                     evaluate_dataset.EvaluationCaseError,
                     r"verification_commands\[\d+\] must not contain shell control operators",
+                ):
+                    evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=REPO_ROOT)
+
+    def test_gmp_acceptance_rejects_shell_expansion_verification_command(self) -> None:
+        commands = (
+            "python3 $PRIVATE_RECOMPUTE",
+            "PYTHONPATH=$PRIVATE_LIB python3 scripts/evaluate_dataset.py",
+            "python3 $(pwd)/scripts/evaluate_dataset.py",
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                data = self.valid_gmp_acceptance_data()
+                data["verification_commands"].append(command)
+
+                with self.assertRaisesRegex(
+                    evaluate_dataset.EvaluationCaseError,
+                    r"verification_commands\[\d+\] must not contain shell expansion tokens",
                 ):
                     evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=REPO_ROOT)
 

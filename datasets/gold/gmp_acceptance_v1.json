@@ -92,7 +92,7 @@
         "tests/test_poc_web_api.py",
         "docs/gmp07-validation-draft.md"
       ],
-      "notes": "Existing review workflow tests reject same-actor approval and the GMP-07 traceability matrix maps this to URS-03."
+      "notes": "Authenticated role-token flows reject same-actor approval and the GMP-07 traceability matrix maps this to URS-03; no-auth approval remains a PoC compatibility risk and is not counted as segregation-of-duties evidence."
     }
   ]
 }

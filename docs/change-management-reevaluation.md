@@ -201,7 +201,7 @@ Before requesting review for a controlled change, confirm:
 - gate-data edits, including template-regression golden edits, explain the
   authoritative source or fixture record that justifies changing the controlled
   target and rerun the consuming harness or fixture test;
-- GMP acceptance record, criterion, or evidence edits run
+- GMP acceptance record, criterion, evidence, or evaluator edits run
   `python3 scripts/evaluate_dataset.py --gmp-acceptance datasets/gold/gmp_acceptance_v1.json`
   and keep `target_met` true with no failed criteria;
 - parser, extractor, or source-linkage logic changes run

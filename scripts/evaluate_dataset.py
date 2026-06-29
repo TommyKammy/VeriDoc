@@ -48,6 +48,7 @@ GMP_ACCEPTANCE_PUBLIC_EVIDENCE_ROOTS = (
     Path("tests"),
 )
 GMP_ACCEPTANCE_VERIFICATION_SHELL_CONTROL_CHARS = frozenset(";&|<>()")
+GMP_ACCEPTANCE_VERIFICATION_SHELL_EXPANSION_MARKERS = ("$", "`")
 EXPECTED_SCOPE_PHASE = "phase0"
 PUBLIC_FIXTURE_ANONYMIZATION_VALUES = {"anonymized", "synthetic"}
 PUBLIC_LLM_STABILITY_SOURCE_KINDS = {"anonymized_text", "synthetic_text"}
@@ -1624,10 +1625,17 @@ def validate_gmp_acceptance_verification_command_paths(
         candidates: list[str] = []
         for token in tokens:
             normalized_token = token.strip("\"'")
+            if any(
+                marker in normalized_token
+                for marker in GMP_ACCEPTANCE_VERIFICATION_SHELL_EXPANSION_MARKERS
+            ):
+                raise EvaluationCaseError(
+                    f"verification_commands[{index}] must not contain shell expansion tokens"
+                )
             if (
                 normalized_token
                 and set(normalized_token) <= GMP_ACCEPTANCE_VERIFICATION_SHELL_CONTROL_CHARS
-            ) or "`" in normalized_token or "$(" in normalized_token:
+            ):
                 raise EvaluationCaseError(
                     f"verification_commands[{index}] must not contain shell control operators"
                 )

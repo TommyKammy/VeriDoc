@@ -54,6 +54,7 @@ class ChangeManagementReevaluationDocsTest(unittest.TestCase):
             "python3 scripts/evaluate_dataset.py --llm-stability-runs datasets/gold/llm_stability_runs_v0.json",
             "python3 scripts/evaluate_dataset.py --gmp-acceptance datasets/gold/gmp_acceptance_v1.json",
             "GMP Acceptance Gate",
+            "GMP acceptance record, criterion, evidence, or evaluator edits",
             "failed_criterion_count",
             "fresh same-input N-run capture",
             "plan_agreement_rate",
