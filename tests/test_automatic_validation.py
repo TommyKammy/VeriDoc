@@ -1941,6 +1941,33 @@ def test_current_head_review_examples_fail_closed() -> None:
             "risk_gate",
         ),
         (
+            "current_thread_release_status_with_qualifier_and_suffix",
+            validate_extracted_item(
+                expected=_expected_item(
+                    label_id="release-template-field",
+                    field_id="final_release_status_code",
+                    label="Status",
+                    expected_value="Approved",
+                    risk_level="medium",
+                    requires_review=False,
+                    fixture_id="fixture-001",
+                    document_id="doc-001",
+                    block_id="block-001",
+                ),
+                actual=_actual_item(
+                    label_id="release-template-field",
+                    field_id="final_release_status_code",
+                    label="Status",
+                    value="Approved",
+                    auto_confirmed=True,
+                    fixture_id="fixture-001",
+                    document_id="doc-001",
+                    block_id="block-001",
+                ),
+            ),
+            "risk_gate",
+        ),
+        (
             "current_thread_prepared_by_label_id",
             validate_extracted_item(
                 expected=_expected_item(
@@ -1969,7 +1996,7 @@ def test_current_head_review_examples_fail_closed() -> None:
             "current_thread_qualified_person_alias_label_id",
             validate_extracted_item(
                 expected=_expected_item(
-                    label_id="qa_reviewer",
+                    label_id="qa_reviewer_name",
                     label="QA Reviewer",
                     expected_value="Alex Reviewer",
                     risk_level="medium",
@@ -1979,7 +2006,7 @@ def test_current_head_review_examples_fail_closed() -> None:
                     block_id="block-001",
                 ),
                 actual=_actual_item(
-                    label_id="qa_reviewer",
+                    label_id="qa_reviewer_name",
                     label="QA Reviewer",
                     value="Alex Reviewer",
                     auto_confirmed=True,
@@ -2116,7 +2143,7 @@ def test_current_head_review_examples_fail_closed() -> None:
                     "id": "table-001",
                     "fixture_table_id": "table-001",
                     "risk_level": "medium",
-                    "required_columns": ["actual_yield"],
+                    "required_columns": ["final_actual_yield_value"],
                     "cells": [
                         {
                             "id": "table-001-r1-c1",
@@ -2239,7 +2266,7 @@ def test_current_head_review_examples_fail_closed() -> None:
             "current_thread_deviation_alias_with_suffix",
             validate_extracted_item(
                 expected=_expected_item(
-                    label_id="Deviation ID",
+                    label_id="qa_deviation_id_value",
                     expected_value="DEV-001",
                     risk_level="medium",
                     requires_review=False,
@@ -2248,7 +2275,7 @@ def test_current_head_review_examples_fail_closed() -> None:
                     block_id="block-001",
                 ),
                 actual=_actual_item(
-                    label_id="Deviation ID",
+                    label_id="qa_deviation_id_value",
                     value="DEV-001",
                     auto_confirmed=True,
                     fixture_id="fixture-001",

@@ -551,13 +551,19 @@ def _normalized_category(value: object) -> str:
         key=len,
         reverse=True,
     ):
-        if normalized.startswith(f"{known_category}_") or normalized.endswith(
-            f"_{known_category}"
-        ):
+        if _contains_category_token(normalized, known_category):
             return GMP_REVIEW_CATEGORY_ALIASES.get(known_category, known_category)
     if normalized.endswith(("_date", "_time", "_timestamp", "_datetime")):
         return "date_time"
     return normalized
+
+
+def _contains_category_token(normalized: str, category: str) -> bool:
+    return (
+        normalized.startswith(f"{category}_")
+        or normalized.endswith(f"_{category}")
+        or f"_{category}_" in normalized
+    )
 
 
 def _category_from_value_type(value: object) -> str:
