@@ -1805,6 +1805,16 @@ def evaluate_gmp_acceptance(
             "evidence_refs": list(evidence_refs),
             "notes": normalized_text(notes),
         }
+        scope = criterion.get("scope")
+        if scope is not None:
+            if not isinstance(scope, str) or not normalized_text(scope):
+                raise EvaluationCaseError(f"{context}.scope must be a non-empty string")
+            normalized["scope"] = normalized_text(scope)
+        excluded_contexts = criterion.get("excluded_contexts")
+        if excluded_contexts is not None:
+            normalized["excluded_contexts"] = list(
+                validate_text_list(excluded_contexts, f"{context}.excluded_contexts")
+            )
         if criterion_id == "missed_detection_zero":
             if (
                 poc_metrics.high_risk_false_auto_confirmed_count

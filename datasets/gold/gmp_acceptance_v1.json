@@ -87,6 +87,10 @@
     {
       "id": "segregation_of_duties",
       "title": "Segregation of duties",
+      "scope": "authenticated role-token approval flows only",
+      "excluded_contexts": [
+        "no-auth PoC compatibility approval flow"
+      ],
       "status": "pass",
       "evidence_refs": [
         "tests/test_poc_web_api.py",

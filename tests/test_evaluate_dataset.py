@@ -674,6 +674,13 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertTrue(all(criterion["status"] == "pass" for criterion in report["criteria"]))
         segregation = report["criteria"][-1]
         self.assertEqual("segregation_of_duties", segregation["id"])
+        self.assertEqual(
+            "authenticated role-token approval flows only", segregation["scope"]
+        )
+        self.assertEqual(
+            ["no-auth PoC compatibility approval flow"],
+            segregation["excluded_contexts"],
+        )
         self.assertIn("Authenticated role-token flows", segregation["notes"])
         self.assertIn("no-auth approval remains", segregation["notes"])
 
