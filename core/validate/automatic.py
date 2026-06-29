@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
@@ -15,6 +16,107 @@ class ValidationStatus(Enum):
 
 SUPPORTED_BBOX_UNITS = {"pt", "px", "mm"}
 MIN_IMPORTANT_VALUE_CONFIDENCE = 0.8
+SUPPORTED_RISK_LEVELS = {"low", "medium", "high", "critical"}
+REVIEW_REQUIRED_RISK_LEVELS = {"high", "critical"}
+GMP_REVIEW_REQUIRED_CATEGORIES = frozenset(
+    {
+        "lot_number",
+        "item",
+        "date_time",
+        "numeric_value",
+        "specification",
+        "judgment",
+        "person",
+        "correction",
+        "deviation",
+    }
+)
+GMP_REVIEW_CATEGORY_ALIASES = {
+    "batch_id": "lot_number",
+    "batch_lot_id": "lot_number",
+    "batch_lot_no": "lot_number",
+    "batch_lot_number": "lot_number",
+    "batch_number": "lot_number",
+    "batch_no": "lot_number",
+    "lot": "lot_number",
+    "lot_id": "lot_number",
+    "lot_identifier": "lot_number",
+    "lot_no": "lot_number",
+    "lot_number": "lot_number",
+    "product": "item",
+    "material": "item",
+    "component": "item",
+    "date": "date_time",
+    "approval_date": "date_time",
+    "approved_at": "date_time",
+    "collection_date": "date_time",
+    "effective_date": "date_time",
+    "expiration_date": "date_time",
+    "expiry_date": "date_time",
+    "manufacture_date": "date_time",
+    "manufactured_at": "date_time",
+    "manufacturing_date": "date_time",
+    "mfg_date": "date_time",
+    "production_date": "date_time",
+    "review_date": "date_time",
+    "reviewed_at": "date_time",
+    "sample_date": "date_time",
+    "test_date": "date_time",
+    "time": "date_time",
+    "timestamp": "date_time",
+    "datetime": "date_time",
+    "quantity": "numeric_value",
+    "measurement": "numeric_value",
+    "number": "numeric_value",
+    "actual_yield": "numeric_value",
+    "expected_yield": "numeric_value",
+    "target_yield": "numeric_value",
+    "yield": "numeric_value",
+    "limit": "specification",
+    "standard": "specification",
+    "acceptance_criteria": "specification",
+    "result": "judgment",
+    "decision": "judgment",
+    "disposition": "judgment",
+    "status": "judgment",
+    "release_status": "judgment",
+    "operator": "person",
+    "reviewer": "person",
+    "approver": "person",
+    "approved_by": "person",
+    "checked_by": "person",
+    "performed_by": "person",
+    "prepared_by": "person",
+    "reviewed_by": "person",
+    "signature": "person",
+    "signed_by": "person",
+    "verified_by": "person",
+    "change": "correction",
+    "amendment": "correction",
+    "nonconformance": "deviation",
+    "oos": "deviation",
+}
+OCR_SOURCE_MARKERS = {
+    "ocr",
+    "optical_character_recognition",
+    "pdf_ocr",
+    "scanned_pdf",
+    "scanned_pdf_ocr",
+}
+OCR_EXTRACTOR_NAME_MARKERS = ("ocr", "tesseract")
+LLM_EXTRACTOR_NAME_MARKERS = ("llm", "gpt")
+GMP_CONDITION_METADATA_KEYS = (
+    "source_kind",
+    "source_type",
+    "extraction_method",
+    "extractor_kind",
+    "engine",
+    "extraction_engine",
+    "extractor_engine",
+    "extractor",
+    "llm_involved",
+    "llm_generated",
+)
 
 
 @dataclass(frozen=True)
@@ -47,7 +149,7 @@ def validate_extracted_item(
     if not _values_match(expected.get("expected_value"), actual.get("value")):
         failed_rules.append("value_non_modification")
 
-    if not _evidence_matches(expected.get("evidence"), actual.get("evidence")):
+    if not _evidence_matches(_record_source_anchor(expected), _record_source_anchor(actual)):
         failed_rules.append("provenance")
 
     if _number_expected(expected.get("expected_value")) and not _same_finite_number(
@@ -70,13 +172,34 @@ def validate_extracted_item(
         failed_rules.append("risk_gate")
     if _has_missing_or_malformed_risk_level(expected) or _has_malformed_risk_level(actual):
         failed_rules.append("risk_gate")
-    if not isinstance(expected.get("requires_review"), bool):
+    if _has_malformed_explicit_gmp_category(expected) or _has_malformed_explicit_gmp_category(
+        actual
+    ):
+        failed_rules.append("risk_gate")
+    if not _has_review_flag(expected):
         failed_rules.append("risk_gate")
 
     explicit_review_required = _requires_review(expected) or _requires_review(actual)
     high_risk = _is_high_risk(expected) or _is_high_risk(actual)
-    requires_review = explicit_review_required or high_risk or confidence_requires_review
-    scope_binding_required = not (explicit_review_required or high_risk)
+    category_requires_review = _gmp_category_requires_review(
+        expected
+    ) or _gmp_category_requires_review(actual)
+    condition_warnings = _gmp_condition_review_warnings(
+        expected,
+        actual,
+        important_item=high_risk or category_requires_review or explicit_review_required,
+    )
+    warnings.extend(condition_warnings)
+    requires_review = (
+        explicit_review_required
+        or high_risk
+        or category_requires_review
+        or confidence_requires_review
+        or bool(condition_warnings)
+    )
+    scope_binding_required = not (
+        explicit_review_required or high_risk or category_requires_review
+    )
     if scope_binding_required:
         for scope_key in ("fixture_id", "document_id", "block_id"):
             if not _same_non_empty_string(expected.get(scope_key), actual.get(scope_key)):
@@ -101,10 +224,47 @@ def validate_table_consistency(
         expected_table.get("fixture_table_id"), expected_table.get("id")
     ):
         failed_rules.append("table_consistency")
+    if _has_malformed_review_flag(expected_table) or _has_malformed_review_flag(
+        actual_table
+    ):
+        failed_rules.append("risk_gate")
+    if _has_malformed_required_columns(expected_table) or _has_malformed_required_columns(
+        actual_table
+    ):
+        failed_rules.append("risk_gate")
+    if _has_missing_or_malformed_risk_level(expected_table) or _has_malformed_risk_level(
+        actual_table
+    ):
+        failed_rules.append("risk_gate")
+    if _has_malformed_explicit_gmp_category(
+        expected_table
+    ) or _has_malformed_explicit_gmp_category(actual_table):
+        failed_rules.append("risk_gate")
+    table_explicit_review_required = _requires_review(expected_table) or _requires_review(
+        actual_table
+    )
+    table_high_risk = _is_high_risk(expected_table) or _is_high_risk(actual_table)
+    table_category_requires_review = _table_gmp_category_requires_review(
+        expected_table
+    ) or _table_gmp_category_requires_review(actual_table)
+    table_confidence_requires_review = "confidence" in actual_table and (
+        _confidence_requires_review(actual_table.get("confidence"))
+    )
+    if table_confidence_requires_review:
+        warnings.append("table confidence requires human review")
+    table_auto_confirmed = actual_table.get("auto_confirmed", False)
+    if not isinstance(table_auto_confirmed, bool):
+        failed_rules.append("risk_gate")
+        table_auto_confirmed = True
 
     expected_cells = _cells_by_id(expected_table.get("cells"))
     actual_cells = _cells_by_id(actual_table.get("cells"))
-    table_requires_review = False
+    table_requires_review = (
+        table_explicit_review_required
+        or table_high_risk
+        or table_category_requires_review
+        or table_confidence_requires_review
+    )
     if expected_cells is None or actual_cells is None:
         failed_rules.append("table_consistency")
     else:
@@ -122,8 +282,8 @@ def validate_table_consistency(
         for cell_id in matching_cell_ids:
             expected_cell = expected_cells[cell_id]
             actual_cell = actual_cells[cell_id]
-            expected_source = expected_cell.get("source")
-            actual_source = actual_cell.get("source")
+            expected_source = _record_source_anchor(expected_cell)
+            actual_source = _record_source_anchor(actual_cell)
             if not _evidence_matches(expected_source, actual_source):
                 failed_rules.append("provenance")
 
@@ -139,14 +299,62 @@ def validate_table_consistency(
                 actual_cell
             ):
                 failed_rules.append("risk_gate")
-            if not isinstance(expected_cell.get("requires_review"), bool):
+            if _has_malformed_explicit_gmp_category(
+                expected_cell
+            ) or _has_malformed_explicit_gmp_category(actual_cell):
                 failed_rules.append("risk_gate")
-            if _cell_requires_review(expected_cell) or _cell_requires_review(actual_cell):
+            if not _has_review_flag(expected_cell):
+                failed_rules.append("risk_gate")
+            confidence_requires_review = "confidence" in actual_cell and (
+                _confidence_requires_review(actual_cell.get("confidence"))
+            )
+            if confidence_requires_review:
+                warnings.append("table cell confidence requires human review")
+            explicit_review_required = (
+                table_explicit_review_required
+                or table_confidence_requires_review
+                or _requires_review(expected_cell)
+                or _requires_review(actual_cell)
+            )
+            high_risk = (
+                table_high_risk
+                or _is_high_risk(expected_cell)
+                or _is_high_risk(actual_cell)
+            )
+            category_requires_review = (
+                table_category_requires_review
+                or _gmp_category_requires_review(expected_cell)
+                or _gmp_category_requires_review(actual_cell)
+            )
+            expected_condition_record = _with_inherited_condition_metadata(
+                expected_table, expected_cell
+            )
+            actual_condition_record = _with_inherited_condition_metadata(
+                actual_table, actual_cell
+            )
+            condition_warnings = _gmp_condition_review_warnings(
+                expected_condition_record,
+                actual_condition_record,
+                important_item=high_risk
+                or category_requires_review
+                or explicit_review_required,
+            )
+            warnings.extend(f"table cell {warning}" for warning in condition_warnings)
+            cell_requires_review = (
+                explicit_review_required
+                or high_risk
+                or category_requires_review
+                or confidence_requires_review
+                or bool(condition_warnings)
+            )
+            if cell_requires_review:
                 table_requires_review = True
                 warnings.append("table cell requires human review")
                 if auto_confirmed:
                     failed_rules.append("risk_gate")
 
+    if table_requires_review and table_auto_confirmed:
+        failed_rules.append("risk_gate")
     if failed_rules:
         warnings.append("table content requires human review")
     return _decision(failed_rules, warnings, bool(failed_rules) or table_requires_review)
@@ -224,6 +432,22 @@ def _evidence_matches(expected: object, actual: object) -> bool:
     return _is_source_anchor(expected) and _is_source_anchor(actual) and expected == actual
 
 
+def _record_source_anchor(record: Mapping[str, Any]) -> object:
+    if "evidence" in record:
+        return record.get("evidence")
+    if "source" in record:
+        return record.get("source")
+    value_metadata = record.get("value_metadata")
+    if isinstance(value_metadata, Mapping) and (
+        "source_page" in value_metadata or "bbox" in value_metadata
+    ):
+        return {
+            "source_page": value_metadata.get("source_page"),
+            "bbox": value_metadata.get("bbox"),
+        }
+    return None
+
+
 def _is_source_anchor(value: object) -> bool:
     if not isinstance(value, Mapping):
         return False
@@ -265,18 +489,16 @@ def _confidence_requires_review(value: object) -> bool:
     return float(value) < MIN_IMPORTANT_VALUE_CONFIDENCE or float(value) > 1
 
 
-def _cell_requires_review(cell: Mapping[str, Any]) -> bool:
-    return _requires_review(cell) or _is_high_risk(cell)
-
-
 def _is_high_risk(record: Mapping[str, Any]) -> bool:
-    return record.get("risk_level") == "high"
+    risk_level = record.get("risk_level")
+    return isinstance(risk_level, str) and risk_level in REVIEW_REQUIRED_RISK_LEVELS
 
 
 def _has_malformed_risk_level(record: Mapping[str, Any]) -> bool:
     if "risk_level" not in record:
         return False
-    return record.get("risk_level") not in {"low", "medium", "high"}
+    risk_level = record.get("risk_level")
+    return not isinstance(risk_level, str) or risk_level not in SUPPORTED_RISK_LEVELS
 
 
 def _has_missing_or_malformed_risk_level(record: Mapping[str, Any]) -> bool:
@@ -284,14 +506,254 @@ def _has_missing_or_malformed_risk_level(record: Mapping[str, Any]) -> bool:
 
 
 def _requires_review(record: Mapping[str, Any]) -> bool:
-    return record.get("requires_review") is True
+    return _review_flag(record) is True
+
+
+def _has_review_flag(record: Mapping[str, Any]) -> bool:
+    return isinstance(_review_flag(record), bool)
+
+
+def _review_flag(record: Mapping[str, Any]) -> object:
+    values = []
+    if "requires_review" in record:
+        values.append(record.get("requires_review"))
+    value_metadata = record.get("value_metadata")
+    if isinstance(value_metadata, Mapping) and "requires_review" in value_metadata:
+        values.append(value_metadata.get("requires_review"))
+    if any(value is True for value in values):
+        return True
+    if any(value is False for value in values):
+        return False
+    return None
 
 
 def _has_malformed_review_flag(record: Mapping[str, Any]) -> bool:
-    if "requires_review" not in record:
+    values = []
+    if "requires_review" in record:
+        values.append(record.get("requires_review"))
+    value_metadata = record.get("value_metadata")
+    if isinstance(value_metadata, Mapping) and "requires_review" in value_metadata:
+        values.append(value_metadata.get("requires_review"))
+    return any(not isinstance(value, bool) for value in values)
+
+
+def _gmp_category_requires_review(record: Mapping[str, Any]) -> bool:
+    categories = (
+        _normalized_category(record.get("gmp_review_category")),
+        _normalized_category(record.get("field_category")),
+        _normalized_category(record.get("field_id")),
+        _normalized_category(record.get("label_id")),
+        _normalized_category(record.get("label")),
+        _category_from_value_type(record.get("value_type")),
+        _category_from_record_value(record),
+    )
+    return any(category in GMP_REVIEW_REQUIRED_CATEGORIES for category in categories)
+
+
+def _has_malformed_explicit_gmp_category(record: Mapping[str, Any]) -> bool:
+    if "gmp_review_category" not in record:
         return False
-    value = record.get("requires_review")
-    return not isinstance(value, bool)
+    return _normalized_category(record.get("gmp_review_category")) not in (
+        GMP_REVIEW_REQUIRED_CATEGORIES
+    )
+
+
+def _table_gmp_category_requires_review(table: Mapping[str, Any]) -> bool:
+    if _gmp_category_requires_review(table):
+        return True
+    required_columns = table.get("required_columns")
+    if not isinstance(required_columns, list):
+        return "required_columns" in table
+    return any(
+        _required_column_requires_review(column)
+        for column in required_columns
+    )
+
+
+def _has_malformed_required_columns(record: Mapping[str, Any]) -> bool:
+    if "required_columns" not in record:
+        return False
+    required_columns = record.get("required_columns")
+    return (
+        not isinstance(required_columns, list)
+        or not required_columns
+        or any(
+            not isinstance(column, str) or not column.strip()
+            for column in required_columns
+        )
+    )
+
+
+def _normalized_category(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    tokenized = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", value.strip())
+    normalized = re.sub(r"[^a-z0-9]+", "_", tokenized.casefold()).strip("_")
+    while "__" in normalized:
+        normalized = normalized.replace("__", "_")
+    alias = GMP_REVIEW_CATEGORY_ALIASES.get(normalized)
+    if alias:
+        return alias
+    if normalized in GMP_REVIEW_REQUIRED_CATEGORIES:
+        return normalized
+    for known_category in sorted(
+        GMP_REVIEW_REQUIRED_CATEGORIES | frozenset(GMP_REVIEW_CATEGORY_ALIASES),
+        key=len,
+        reverse=True,
+    ):
+        if _contains_category_token(normalized, known_category):
+            return GMP_REVIEW_CATEGORY_ALIASES.get(known_category, known_category)
+    if normalized.endswith(("_date", "_time", "_timestamp", "_datetime")):
+        return "date_time"
+    return normalized
+
+
+def _contains_category_token(normalized: str, category: str) -> bool:
+    return (
+        normalized.startswith(f"{category}_")
+        or normalized.endswith(f"_{category}")
+        or f"_{category}_" in normalized
+    )
+
+
+def _category_from_value_type(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    normalized = value.strip().casefold().replace("-", "_").replace(" ", "_")
+    if normalized in {"number", "numeric", "integer", "int", "float", "decimal"}:
+        return "numeric_value"
+    if normalized in {"date", "datetime", "time", "timestamp"}:
+        return "date_time"
+    return ""
+
+
+def _category_from_record_value(record: Mapping[str, Any]) -> str:
+    if _number_expected(record.get("expected_value")) or _number_expected(
+        record.get("value")
+    ):
+        return "numeric_value"
+    return ""
+
+
+def _required_column_requires_review(column: str) -> bool:
+    category = _normalized_category(column)
+    if category in GMP_REVIEW_REQUIRED_CATEGORIES:
+        return True
+    return _category_from_value_type(category) in GMP_REVIEW_REQUIRED_CATEGORIES
+
+
+def _gmp_condition_review_warnings(
+    expected: Mapping[str, Any],
+    actual: Mapping[str, Any],
+    *,
+    important_item: bool,
+) -> tuple[str, ...]:
+    warnings: list[str] = []
+    if _ocr_derived(expected) or _ocr_derived(actual):
+        warnings.append("ocr-derived item requires human review")
+    if _extraction_engine_mismatch(expected, actual):
+        warnings.append("extraction engine mismatch requires human review")
+    if not _evidence_matches(_record_source_anchor(expected), _record_source_anchor(actual)):
+        warnings.append("item source requires human review")
+    if important_item and (_llm_involved(expected) or _llm_involved(actual)):
+        warnings.append("llm-involved important item requires human review")
+    return tuple(dict.fromkeys(warnings))
+
+
+def _with_inherited_condition_metadata(
+    table: Mapping[str, Any], cell: Mapping[str, Any]
+) -> Mapping[str, Any]:
+    inherited = {
+        key: table[key]
+        for key in GMP_CONDITION_METADATA_KEYS
+        if key in table and key not in cell
+    }
+    if not inherited:
+        return cell
+    combined = dict(inherited)
+    combined.update(cell)
+    return combined
+
+
+def _ocr_derived(record: Mapping[str, Any]) -> bool:
+    for key in ("source_kind", "source_type", "extraction_method", "extractor_kind"):
+        value = record.get(key)
+        if isinstance(value, str) and _source_marker_indicates_ocr(value):
+            return True
+    engine = record.get("engine")
+    if isinstance(engine, str) and _engine_name_indicates_ocr(engine):
+        return True
+    extractor_name = _extractor_name(record)
+    if extractor_name:
+        return _engine_name_indicates_ocr(extractor_name)
+    return False
+
+
+def _engine_name_indicates_ocr(value: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", "_", value.strip().casefold()).strip("_")
+    return _source_marker_indicates_ocr(value) or any(
+        marker in normalized for marker in OCR_EXTRACTOR_NAME_MARKERS
+    )
+
+
+def _source_marker_indicates_ocr(value: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", "_", value.strip().casefold()).strip("_")
+    return (
+        normalized in OCR_SOURCE_MARKERS
+        or normalized.endswith("_ocr")
+        or normalized.startswith("ocr_")
+        or "_ocr_" in normalized
+    )
+
+
+def _extraction_engine_mismatch(
+    expected: Mapping[str, Any], actual: Mapping[str, Any]
+) -> bool:
+    expected_engine = _extraction_engine(expected)
+    actual_engine = _extraction_engine(actual)
+    if expected_engine is None:
+        return False
+    if actual_engine is None:
+        return True
+    return not _same_non_empty_string(expected_engine, actual_engine)
+
+
+def _extraction_engine(record: Mapping[str, Any]) -> object:
+    for key in ("extraction_engine", "extractor_engine", "engine"):
+        value = record.get(key)
+        if isinstance(value, str):
+            return value
+    return _extractor_name(record)
+
+
+def _extractor_name(record: Mapping[str, Any]) -> str | None:
+    extractor = record.get("extractor")
+    if isinstance(extractor, str):
+        return extractor
+    if isinstance(extractor, Mapping):
+        name = extractor.get("name")
+        if isinstance(name, str):
+            return name
+    value_metadata = record.get("value_metadata")
+    if isinstance(value_metadata, Mapping):
+        extractor = value_metadata.get("extractor")
+        if isinstance(extractor, str):
+            return extractor
+        if isinstance(extractor, Mapping):
+            name = extractor.get("name")
+            if isinstance(name, str):
+                return name
+    return None
+
+
+def _llm_involved(record: Mapping[str, Any]) -> bool:
+    if record.get("llm_involved") is True or record.get("llm_generated") is True:
+        return True
+    extractor_name = _extractor_name(record)
+    if extractor_name is None:
+        return False
+    normalized = re.sub(r"[^a-z0-9]+", "_", extractor_name.strip().casefold()).strip("_")
+    return any(marker in normalized for marker in LLM_EXTRACTOR_NAME_MARKERS)
 
 
 def _cells_by_id(value: object) -> dict[str, Mapping[str, Any]] | None:
