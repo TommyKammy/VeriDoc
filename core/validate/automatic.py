@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
@@ -31,9 +32,17 @@ GMP_REVIEW_REQUIRED_CATEGORIES = frozenset(
     }
 )
 GMP_REVIEW_CATEGORY_ALIASES = {
+    "batch_id": "lot_number",
+    "batch_lot_id": "lot_number",
+    "batch_lot_no": "lot_number",
+    "batch_lot_number": "lot_number",
     "batch_number": "lot_number",
+    "batch_no": "lot_number",
     "lot": "lot_number",
+    "lot_id": "lot_number",
+    "lot_identifier": "lot_number",
     "lot_no": "lot_number",
+    "lot_number": "lot_number",
     "product": "item",
     "material": "item",
     "component": "item",
@@ -76,7 +85,12 @@ GMP_REVIEW_CATEGORY_ALIASES = {
     "nonconformance": "deviation",
     "oos": "deviation",
 }
-OCR_SOURCE_MARKERS = {"ocr", "optical_character_recognition"}
+OCR_SOURCE_MARKERS = {
+    "ocr",
+    "optical_character_recognition",
+    "pdf_ocr",
+    "scanned_pdf_ocr",
+}
 OCR_EXTRACTOR_NAME_MARKERS = ("ocr", "tesseract")
 
 
@@ -180,6 +194,10 @@ def validate_table_consistency(
     ):
         failed_rules.append("table_consistency")
     if _has_malformed_review_flag(expected_table) or _has_malformed_review_flag(
+        actual_table
+    ):
+        failed_rules.append("risk_gate")
+    if _has_malformed_required_columns(expected_table) or _has_malformed_required_columns(
         actual_table
     ):
         failed_rules.append("risk_gate")
@@ -456,19 +474,26 @@ def _table_gmp_category_requires_review(table: Mapping[str, Any]) -> bool:
         return True
     required_columns = table.get("required_columns")
     if not isinstance(required_columns, list):
-        return False
+        return "required_columns" in table
     return any(
         _normalized_category(column) in GMP_REVIEW_REQUIRED_CATEGORIES
         for column in required_columns
     )
 
 
+def _has_malformed_required_columns(record: Mapping[str, Any]) -> bool:
+    if "required_columns" not in record:
+        return False
+    required_columns = record.get("required_columns")
+    return not isinstance(required_columns, list) or any(
+        not isinstance(column, str) for column in required_columns
+    )
+
+
 def _normalized_category(value: object) -> str:
     if not isinstance(value, str):
         return ""
-    normalized = (
-        value.strip().casefold().replace("-", "_").replace("/", "_").replace(" ", "_")
-    )
+    normalized = re.sub(r"[^a-z0-9]+", "_", value.strip().casefold()).strip("_")
     while "__" in normalized:
         normalized = normalized.replace("__", "_")
     alias = GMP_REVIEW_CATEGORY_ALIASES.get(normalized)
@@ -519,7 +544,7 @@ def _gmp_condition_review_warnings(
 def _ocr_derived(record: Mapping[str, Any]) -> bool:
     for key in ("source_kind", "source_type", "extraction_method", "extractor_kind"):
         value = record.get(key)
-        if isinstance(value, str) and value.strip().casefold() in OCR_SOURCE_MARKERS:
+        if isinstance(value, str) and _source_marker_indicates_ocr(value):
             return True
     engine = record.get("engine")
     if isinstance(engine, str) and engine.strip():
@@ -529,6 +554,16 @@ def _ocr_derived(record: Mapping[str, Any]) -> bool:
         normalized = extractor_name.strip().casefold()
         return any(marker in normalized for marker in OCR_EXTRACTOR_NAME_MARKERS)
     return False
+
+
+def _source_marker_indicates_ocr(value: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", "_", value.strip().casefold()).strip("_")
+    return (
+        normalized in OCR_SOURCE_MARKERS
+        or normalized.endswith("_ocr")
+        or normalized.startswith("ocr_")
+        or "_ocr_" in normalized
+    )
 
 
 def _extraction_engine_mismatch(
