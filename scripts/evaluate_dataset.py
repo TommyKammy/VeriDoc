@@ -69,6 +69,7 @@ GMP_ACCEPTANCE_VERIFICATION_PATH_OPTION_NAMES = frozenset(
         "--rootdir",
     )
 )
+GMP_ACCEPTANCE_VERIFICATION_PATH_ENV_NAMES = frozenset(("PYTHONHOME",))
 GMP_ACCEPTANCE_VERIFICATION_ALLOWED_PYTHON_MODULES = frozenset(("pytest",))
 EXPECTED_GMP_ACCEPTANCE_SOD_SCOPE = (
     "review approval flows with authenticated actor identity"
@@ -1645,7 +1646,8 @@ def require_gmp_acceptance_rerun_command(verification_commands: tuple[str, ...])
 def gmp_acceptance_assignment_path_values(name: str, value: str) -> tuple[str, ...]:
     if not name:
         return ()
-    if name.upper().endswith("PATH"):
+    upper_name = name.upper()
+    if upper_name.endswith("PATH") or upper_name in GMP_ACCEPTANCE_VERIFICATION_PATH_ENV_NAMES:
         if Path(value).is_absolute() or PureWindowsPath(value).is_absolute():
             return (value,)
         separators = tuple(separator for separator in (os.pathsep, ";", ":") if separator)

@@ -708,6 +708,10 @@ class EvaluateDatasetTest(unittest.TestCase):
             evaluate_dataset.EXPECTED_GMP_ACCEPTANCE_COMMAND
             + " "
             + f"python3 {'/' + 'private' + '/recompute.py'}",
+            "PYTHONHOME="
+            + "/"
+            + "private "
+            + "python3 scripts/evaluate_dataset.py",
             "PYTHONPATH="
             + "D:"
             + "\\private "
@@ -729,6 +733,8 @@ class EvaluateDatasetTest(unittest.TestCase):
             "python3 private/recompute.py",
             evaluate_dataset.EXPECTED_GMP_ACCEPTANCE_COMMAND
             + " python3 private/recompute.py",
+            "PYTHONHOME=private "
+            + evaluate_dataset.EXPECTED_GMP_ACCEPTANCE_COMMAND,
             "PYTHONPATH=private "
             + evaluate_dataset.EXPECTED_GMP_ACCEPTANCE_COMMAND,
         )
