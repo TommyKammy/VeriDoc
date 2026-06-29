@@ -108,12 +108,14 @@ class PocServerDependencyError(RuntimeError):
 class ReviewAuditEventStore:
     def __init__(self) -> None:
         self._events: list[dict[str, Any]] = []
+        self._integrity_checkpoint = _audit_event_integrity_checkpoint(self._events)
         self._lock = Lock()
 
     def record(self, audit_event: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
             event = _audit_event_with_integrity(audit_event, previous_events=self._events)
             self._events.append(event)
+            self._integrity_checkpoint = _audit_event_integrity_checkpoint(self._events)
         return deepcopy(event)
 
     def record_validated(
@@ -126,6 +128,7 @@ class ReviewAuditEventStore:
             validate(event, [_review_workflow_event_view(item) for item in self._events])
             event = _audit_event_with_integrity(event, previous_events=self._events)
             self._events.append(event)
+            self._integrity_checkpoint = _audit_event_integrity_checkpoint(self._events)
         return deepcopy(event)
 
     def list_events(self, filters: dict[str, str] | None = None) -> list[dict[str, Any]]:
@@ -142,18 +145,23 @@ class ReviewAuditEventStore:
 
     def verify_integrity(self) -> dict[str, Any]:
         with self._lock:
-            return _verify_audit_event_integrity(self._events)
+            return _verify_audit_event_integrity(
+                self._events,
+                checkpoint=self._integrity_checkpoint,
+            )
 
 
 class JobAuditEventStore:
     def __init__(self) -> None:
         self._events: list[dict[str, Any]] = []
+        self._integrity_checkpoint = _audit_event_integrity_checkpoint(self._events)
         self._lock = Lock()
 
     def record(self, audit_event: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
             event = _audit_event_with_integrity(audit_event, previous_events=self._events)
             self._events.append(event)
+            self._integrity_checkpoint = _audit_event_integrity_checkpoint(self._events)
         return deepcopy(event)
 
     def list_events(self, filters: dict[str, str] | None = None) -> list[dict[str, Any]]:
@@ -170,7 +178,10 @@ class JobAuditEventStore:
 
     def verify_integrity(self) -> dict[str, Any]:
         with self._lock:
-            return _verify_audit_event_integrity(self._events)
+            return _verify_audit_event_integrity(
+                self._events,
+                checkpoint=self._integrity_checkpoint,
+            )
 
 
 def _audit_event_with_integrity(
@@ -187,7 +198,19 @@ def _audit_event_with_integrity(
     return event
 
 
-def _verify_audit_event_integrity(events: list[dict[str, Any]]) -> dict[str, Any]:
+def _audit_event_integrity_checkpoint(events: list[dict[str, Any]]) -> dict[str, Any]:
+    head_hash = events[-1].get("event_hash") if events else None
+    return {
+        "terminal_sequence": len(events),
+        "head_event_hash": head_hash if isinstance(head_hash, str) else None,
+    }
+
+
+def _verify_audit_event_integrity(
+    events: list[dict[str, Any]],
+    *,
+    checkpoint: dict[str, Any],
+) -> dict[str, Any]:
     errors: list[str] = []
     previous_hash: str | None = None
     for index, event in enumerate(events):
@@ -204,6 +227,13 @@ def _verify_audit_event_integrity(events: list[dict[str, Any]]) -> dict[str, Any
         elif event_hash != _audit_event_hash(event):
             errors.append(f"event[{index}] hash mismatch")
         previous_hash = event_hash if isinstance(event_hash, str) else None
+    expected_terminal_sequence = checkpoint.get("terminal_sequence")
+    if expected_terminal_sequence != len(events):
+        errors.append("audit log terminal sequence mismatch")
+    expected_head_hash = checkpoint.get("head_event_hash")
+    actual_head_hash = events[-1].get("event_hash") if events else None
+    if expected_head_hash != actual_head_hash:
+        errors.append("audit log head hash mismatch")
     return {"ok": not errors, "errors": errors}
 
 

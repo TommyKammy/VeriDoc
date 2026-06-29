@@ -16,6 +16,7 @@ import pytest
 import services.api.poc_web as poc_web
 from services.api.job_queue import JobQueue
 from services.api.poc_web import (
+    JobAuditEventStore,
     PocWebRequestHandler,
     ReviewAuditEventStore,
     convert_uploaded_document,
@@ -940,6 +941,50 @@ def test_review_audit_event_store_detects_tampered_fixture() -> None:
     assert store.verify_integrity() == {
         "ok": False,
         "errors": ["event[0] hash mismatch"],
+    }
+
+
+def test_review_audit_event_store_detects_tail_truncation() -> None:
+    store = ReviewAuditEventStore()
+    store.record(_review_audit_event(conversion_id="conversion-first"))
+    store.record(_review_audit_event(conversion_id="conversion-second"))
+
+    del store._events[-1]  # noqa: SLF001
+
+    assert store.verify_integrity() == {
+        "ok": False,
+        "errors": [
+            "audit log terminal sequence mismatch",
+            "audit log head hash mismatch",
+        ],
+    }
+
+
+def test_job_audit_event_store_detects_tail_truncation() -> None:
+    store = JobAuditEventStore()
+    store.record(
+        {
+            "event_type": "job.lifecycle",
+            "job_id": "job-first",
+            "action": "conversion_completed",
+        }
+    )
+    store.record(
+        {
+            "event_type": "job.lifecycle",
+            "job_id": "job-second",
+            "action": "retry_conversion",
+        }
+    )
+
+    del store._events[-1]  # noqa: SLF001
+
+    assert store.verify_integrity() == {
+        "ok": False,
+        "errors": [
+            "audit log terminal sequence mismatch",
+            "audit log head hash mismatch",
+        ],
     }
 
 
