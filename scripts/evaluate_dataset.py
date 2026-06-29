@@ -1602,6 +1602,19 @@ def validate_gmp_acceptance_source_traceability(
         )
 
 
+def gmp_acceptance_target_met(
+    failed_criteria: list[dict[str, object]],
+    poc_metrics: PoCComparisonMetrics,
+    high_quality_metrics: PoCModeMetrics,
+) -> bool:
+    high_risk_target_met = (
+        poc_metrics.high_risk_false_auto_confirmed_count
+        <= poc_metrics.high_risk_false_auto_confirmed_target
+    )
+    source_traceability_target_met = high_quality_metrics.source_linkage_rate >= 1.0
+    return not failed_criteria and high_risk_target_met and source_traceability_target_met
+
+
 def high_quality_poc_mode_metrics(poc_metrics: PoCComparisonMetrics) -> PoCModeMetrics:
     for mode_metrics in poc_metrics.modes:
         if mode_metrics.mode == "high_quality":
@@ -1688,11 +1701,8 @@ def evaluate_gmp_acceptance(
         if status == "fail":
             failed_criteria.append(normalized)
 
-    target_met = (
-        not failed_criteria
-        and poc_metrics.high_risk_false_auto_confirmed_count
-        <= poc_metrics.high_risk_false_auto_confirmed_target
-        and high_quality_metrics.source_linkage_rate >= 1.0
+    target_met = gmp_acceptance_target_met(
+        failed_criteria, poc_metrics, high_quality_metrics
     )
     return GmpAcceptanceMetrics(
         poc_comparison=str(EXPECTED_POC_COMPARISON),
