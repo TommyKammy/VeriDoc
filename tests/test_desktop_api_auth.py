@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from urllib.error import HTTPError
-from urllib.request import Request
+from urllib.request import ProxyHandler, Request
 
 import pytest
 
@@ -109,14 +109,22 @@ def test_desktop_api_client_maps_unauthorized_api_response_fail_closed() -> None
         client.list_jobs()
 
 
-def test_desktop_api_client_default_transport_passes_timeout_as_keyword(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_desktop_api_client_default_transport_disables_proxy_and_redirects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     calls: list[dict[str, object]] = []
+    handlers: list[object] = []
 
-    def fake_urlopen(request: Request, data: object | None = None, *, timeout: float | None = None):
-        calls.append({"request": request, "data": data, "timeout": timeout})
-        return JsonResponse({"jobs": []})
+    class FakeOpener:
+        def open(self, request: Request, *, timeout: float):
+            calls.append({"request": request, "timeout": timeout})
+            return JsonResponse({"jobs": []})
 
-    monkeypatch.setattr("apps.desktop.api_client.urlopen", fake_urlopen)
+    def fake_build_opener(*configured_handlers: object) -> FakeOpener:
+        handlers.extend(configured_handlers)
+        return FakeOpener()
+
+    monkeypatch.setattr("apps.desktop.api_client.build_opener", fake_build_opener)
     client = DesktopApiClient(
         DesktopApiClientConfig(base_url="http://127.0.0.1:8765", timeout_seconds=2.5),
         credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
@@ -124,11 +132,12 @@ def test_desktop_api_client_default_transport_passes_timeout_as_keyword(monkeypa
 
     assert client.list_jobs() == {"jobs": []}
     assert len(calls) == 1
-    assert calls[0]["data"] is None
     assert calls[0]["timeout"] == 2.5
     request = calls[0]["request"]
     assert isinstance(request, Request)
     assert request.get_header("Authorization") == "Bearer reviewer-token"
+    assert any(isinstance(handler, ProxyHandler) and handler.proxies == {} for handler in handlers)
+    assert any(handler.__class__.__name__ == "_NoRedirectHandler" for handler in handlers)
 
 
 @pytest.mark.parametrize(
@@ -152,4 +161,16 @@ def test_desktop_api_client_config_rejects_non_local_api_endpoints(base_url: str
 )
 def test_desktop_api_client_config_rejects_embedded_url_credentials(base_url: str) -> None:
     with pytest.raises(ValueError, match="embedded credentials"):
+        DesktopApiClientConfig(base_url=base_url)
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://127.0.0.1:99999",
+        "http://127.0.0.1:not-a-port",
+    ],
+)
+def test_desktop_api_client_config_rejects_invalid_api_ports(base_url: str) -> None:
+    with pytest.raises(ValueError, match="valid TCP port"):
         DesktopApiClientConfig(base_url=base_url)

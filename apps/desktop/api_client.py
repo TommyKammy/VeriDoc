@@ -6,7 +6,7 @@ import json
 from typing import Any, Protocol
 from urllib.error import HTTPError
 from urllib.parse import urljoin, urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 
 class MissingApiTokenError(RuntimeError):
@@ -60,6 +60,10 @@ class DesktopApiClientConfig:
             raise ValueError("base_url must be an HTTP(S) URL")
         if parsed.username or parsed.password:
             raise ValueError("base_url must not include embedded credentials")
+        try:
+            parsed.port
+        except ValueError as exc:
+            raise ValueError("base_url port must be a valid TCP port") from exc
         if not _is_local_api_host(parsed.hostname):
             raise ValueError("base_url must point to a local API endpoint")
         base_url = normalized.rstrip("/") + "/"
@@ -111,7 +115,18 @@ class DesktopApiClient:
 
 
 def _urlopen_transport(request: Request, *, timeout: float) -> Any:
-    return urlopen(request, timeout=timeout)
+    opener = build_opener(ProxyHandler({}), _NoRedirectHandler())
+    return opener.open(request, timeout=timeout)
+
+
+class _NoRedirectHandler(HTTPRedirectHandler):
+    def http_error_302(self, req: Request, fp: Any, code: int, msg: str, headers: Any) -> Any:
+        raise HTTPError(req.full_url, code, msg, headers, fp)
+
+    http_error_301 = http_error_302
+    http_error_303 = http_error_302
+    http_error_307 = http_error_302
+    http_error_308 = http_error_302
 
 
 def _is_local_api_host(hostname: str | None) -> bool:
