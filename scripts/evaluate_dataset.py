@@ -7,9 +7,11 @@ import argparse
 from collections import Counter
 import json
 import math
+import os
+import shlex
 import sys
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -22,9 +24,11 @@ from core.llm.conversion_plan import ConversionPlanValidationError, validate_con
 DEFAULT_EVALUATION_CASES = Path("datasets/gold/evaluation_cases_v0.json")
 DEFAULT_LLM_STABILITY_RUNS = Path("datasets/gold/llm_stability_runs_v0.json")
 DEFAULT_POC_COMPARISON = Path("datasets/gold/poc_mode_comparison_v1.json")
+DEFAULT_GMP_ACCEPTANCE = Path("datasets/gold/gmp_acceptance_v1.json")
 EVALUATION_CASES_SCHEMA_VERSION = "veridoc-evaluation-cases/v0"
 LLM_STABILITY_RUNS_SCHEMA_VERSION = "veridoc-llm-stability-runs/v0"
 POC_MODE_COMPARISON_SCHEMA_VERSION = "veridoc-poc-mode-comparison/v1"
+GMP_ACCEPTANCE_SCHEMA_VERSION = "veridoc-gmp-acceptance/v1"
 HIGH_RISK_LABELS_SCHEMA_VERSION = "veridoc-high-risk-labels/v0"
 FIXTURE_MANIFEST_SCHEMA_VERSION = "veridoc-eval-fixtures/v0"
 FIXTURE_SCHEMA_VERSION = "veridoc-evaluation-fixture/v0"
@@ -32,10 +36,59 @@ EXPECTED_ALLOWED_FIXTURE_ROOT = Path("datasets/fixtures")
 EXPECTED_DATASET_MANIFEST = EXPECTED_ALLOWED_FIXTURE_ROOT / "manifest.json"
 EXPECTED_EVALUATION_CASES = Path("datasets/gold/evaluation_cases_v0.json")
 EXPECTED_HIGH_RISK_LABELS = Path("datasets/gold/high_risk_labels_v0.json")
+EXPECTED_POC_COMPARISON = Path("datasets/gold/poc_mode_comparison_v1.json")
+EXPECTED_GMP_ACCEPTANCE_COMMAND = (
+    "python3 scripts/evaluate_dataset.py --gmp-acceptance "
+    "datasets/gold/gmp_acceptance_v1.json"
+)
+GMP_ACCEPTANCE_PUBLIC_EVIDENCE_ROOTS = (
+    Path("datasets/fixtures"),
+    Path("datasets/gold"),
+    Path("docs"),
+    Path("scripts"),
+    Path("tests"),
+)
+GMP_ACCEPTANCE_VERIFICATION_SHELL_CONTROL_CHARS = frozenset(";&|<>()")
+GMP_ACCEPTANCE_VERIFICATION_SHELL_EXPANSION_MARKERS = (
+    "$",
+    "`",
+    "*",
+    "?",
+    "[",
+    "]",
+    "{",
+    "}",
+    "~",
+)
+GMP_ACCEPTANCE_VERIFICATION_PATH_OPTION_NAMES = frozenset(
+    (
+        "--basetemp",
+        "--cache-dir",
+        "--confcutdir",
+        "--junitxml",
+        "--rootdir",
+    )
+)
+GMP_ACCEPTANCE_VERIFICATION_PATH_ENV_NAMES = frozenset(("PYTHONHOME",))
+GMP_ACCEPTANCE_VERIFICATION_ALLOWED_PYTHON_MODULES = frozenset(("pytest",))
+EXPECTED_GMP_ACCEPTANCE_SOD_SCOPE = (
+    "review approval flows with authenticated actor identity"
+)
+EXPECTED_GMP_ACCEPTANCE_SOD_NO_AUTH_NOTE = "no-auth approval attempts are forbidden"
 EXPECTED_SCOPE_PHASE = "phase0"
 PUBLIC_FIXTURE_ANONYMIZATION_VALUES = {"anonymized", "synthetic"}
 PUBLIC_LLM_STABILITY_SOURCE_KINDS = {"anonymized_text", "synthetic_text"}
 REQUIRED_POC_MODES = ("no_llm", "standard", "high_quality")
+REQUIRED_GMP_ACCEPTANCE_CRITERIA = (
+    "high_risk_review",
+    "missed_detection_zero",
+    "source_traceability",
+    "originality",
+    "audit_trail",
+    "completeness",
+    "reproducibility",
+    "segregation_of_duties",
+)
 HighRiskLabelKey = tuple[str, str, str]
 
 
@@ -151,6 +204,34 @@ class PoCComparisonMetrics:
             "target_met": self.target_met,
             "manual_correction_time": self.manual_correction_time.as_dict(),
             "modes": [mode.as_dict() for mode in self.modes],
+        }
+
+
+@dataclass(frozen=True)
+class GmpAcceptanceMetrics:
+    poc_comparison: str
+    criterion_count: int
+    failed_criterion_count: int
+    high_risk_false_auto_confirmed_count: int
+    high_risk_false_auto_confirmed_target: int
+    target_met: bool
+    criteria: tuple[dict[str, object], ...]
+    failed_criteria: tuple[dict[str, object], ...]
+    verification_commands: tuple[str, ...]
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "poc_comparison": self.poc_comparison,
+            "criterion_count": self.criterion_count,
+            "failed_criterion_count": self.failed_criterion_count,
+            "high_risk_false_auto_confirmed_count": self.high_risk_false_auto_confirmed_count,
+            "high_risk_false_auto_confirmed_target": (
+                self.high_risk_false_auto_confirmed_target
+            ),
+            "target_met": self.target_met,
+            "criteria": list(self.criteria),
+            "failed_criteria": list(self.failed_criteria),
+            "verification_commands": list(self.verification_commands),
         }
 
 
@@ -969,6 +1050,18 @@ def evaluation_cases_path_from_comparison(data: dict[str, Any], repo_root: Path)
     return repo_root / path
 
 
+def poc_comparison_path_from_gmp_acceptance(data: dict[str, Any], repo_root: Path) -> Path:
+    comparison_path = data.get("poc_comparison")
+    if not isinstance(comparison_path, str) or not comparison_path:
+        raise EvaluationCaseError("poc_comparison must be a non-empty string")
+    path = Path(comparison_path)
+    if path.is_absolute() or path != EXPECTED_POC_COMPARISON:
+        raise EvaluationCaseError(
+            "poc_comparison must be datasets/gold/poc_mode_comparison_v1.json"
+        )
+    return repo_root / path
+
+
 def high_risk_label_index(labels_data: dict[str, Any]) -> dict[HighRiskLabelKey, dict[str, Any]]:
     if labels_data.get("schema_version") != HIGH_RISK_LABELS_SCHEMA_VERSION:
         raise EvaluationCaseError(
@@ -1468,6 +1561,437 @@ def evaluate_poc_mode_comparison(
     )
 
 
+def validate_text_list(value: object, context: str) -> tuple[str, ...]:
+    if not isinstance(value, list) or not value:
+        raise EvaluationCaseError(f"{context} must be a non-empty list")
+    workstation_home_fragments = ("/" + "Users" + "/", "C:" + "\\Users" + "\\")
+    items: list[str] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, str) or not normalized_text(item):
+            raise EvaluationCaseError(f"{context}[{index}] must be a non-empty string")
+        if Path(item).is_absolute() or any(
+            fragment in item for fragment in workstation_home_fragments
+        ):
+            raise EvaluationCaseError(f"{context}[{index}] must be repo-relative or generic")
+        items.append(normalized_text(item))
+    return tuple(items)
+
+
+def validate_repo_relative_file_refs(
+    refs: tuple[str, ...], context: str, repo_root: Path
+) -> tuple[Path, ...]:
+    resolved_root = repo_root.resolve()
+    resolved_paths: list[Path] = []
+    for index, ref in enumerate(refs):
+        path = Path(ref)
+        if path.is_absolute() or ".." in path.parts:
+            raise EvaluationCaseError(f"{context}[{index}] must be a repo-relative file")
+        resolved_path = (repo_root / path).resolve()
+        if not resolved_path.is_relative_to(resolved_root):
+            raise EvaluationCaseError(f"{context}[{index}] must stay inside the repository")
+        if not resolved_path.is_file():
+            raise EvaluationCaseError(f"{context}[{index}] must reference an existing file")
+        resolved_paths.append(resolved_path)
+    return tuple(resolved_paths)
+
+
+def validate_public_gmp_acceptance_evidence_refs(
+    refs: tuple[str, ...],
+    context: str,
+    repo_root: Path,
+    declared_fixture_paths: frozenset[Path],
+) -> None:
+    resolved_refs = validate_repo_relative_file_refs(refs, context, repo_root)
+    resolved_allowed_roots = tuple(
+        (repo_root / allowed_root).resolve()
+        for allowed_root in GMP_ACCEPTANCE_PUBLIC_EVIDENCE_ROOTS
+    )
+    for index, (ref, resolved_ref) in enumerate(zip(refs, resolved_refs)):
+        path = Path(ref)
+        lexical_public = any(
+            path == allowed_root or path.is_relative_to(allowed_root)
+            for allowed_root in GMP_ACCEPTANCE_PUBLIC_EVIDENCE_ROOTS
+        )
+        resolved_public = any(
+            resolved_ref == allowed_root or resolved_ref.is_relative_to(allowed_root)
+            for allowed_root in resolved_allowed_roots
+        )
+        if not lexical_public or not resolved_public:
+            raise EvaluationCaseError(
+                f"{context}[{index}] must reference public synthetic GMP evidence"
+            )
+        resolved_fixture_root = (repo_root / EXPECTED_ALLOWED_FIXTURE_ROOT).resolve()
+        resolved_fixture_manifest = (repo_root / EXPECTED_DATASET_MANIFEST).resolve()
+        lexical_fixture_ref = path.is_relative_to(EXPECTED_ALLOWED_FIXTURE_ROOT)
+        resolved_fixture_ref = resolved_ref.is_relative_to(resolved_fixture_root)
+        if (
+            lexical_fixture_ref
+            or resolved_fixture_ref
+        ) and resolved_ref != resolved_fixture_manifest:
+            if resolved_ref not in declared_fixture_paths:
+                raise EvaluationCaseError(
+                    f"{context}[{index}] must reference manifest-declared "
+                    "public synthetic GMP fixture evidence"
+                )
+
+
+def require_gmp_acceptance_rerun_command(verification_commands: tuple[str, ...]) -> None:
+    if EXPECTED_GMP_ACCEPTANCE_COMMAND not in verification_commands:
+        raise EvaluationCaseError(
+            "verification_commands must include "
+            f"{EXPECTED_GMP_ACCEPTANCE_COMMAND!r}"
+        )
+
+
+def gmp_acceptance_assignment_path_values(name: str, value: str) -> tuple[str, ...]:
+    if not name:
+        return ()
+    upper_name = name.upper()
+    if upper_name.endswith("PATH") or upper_name in GMP_ACCEPTANCE_VERIFICATION_PATH_ENV_NAMES:
+        if Path(value).is_absolute() or PureWindowsPath(value).is_absolute():
+            return (value,)
+        separators = tuple(separator for separator in (os.pathsep, ";", ":") if separator)
+        values = [value]
+        for separator in separators:
+            if separator in value:
+                values = [part for item in values for part in item.split(separator)]
+        return tuple(part for part in values if part)
+    if name in GMP_ACCEPTANCE_VERIFICATION_PATH_OPTION_NAMES:
+        return (value,)
+    return ()
+
+
+def gmp_acceptance_python_module_path_candidates(module_name: str) -> tuple[str, ...]:
+    if module_name in GMP_ACCEPTANCE_VERIFICATION_ALLOWED_PYTHON_MODULES:
+        return ()
+    module_parts = tuple(part for part in module_name.split(".") if part)
+    if not module_parts or tuple(module_name.split(".")) != module_parts:
+        return (module_name,)
+    module_path = Path(*module_parts)
+    return (module_path.as_posix(), module_path.with_suffix(".py").as_posix())
+
+
+def validate_gmp_acceptance_verification_command_paths(
+    verification_commands: tuple[str, ...],
+    repo_root: Path,
+) -> None:
+    resolved_root = repo_root.resolve()
+    resolved_allowed_roots = tuple(
+        (repo_root / allowed_root).resolve()
+        for allowed_root in GMP_ACCEPTANCE_PUBLIC_EVIDENCE_ROOTS
+    )
+    lexical_allowed_roots = tuple(str(path) for path in GMP_ACCEPTANCE_PUBLIC_EVIDENCE_ROOTS)
+    for index, command in enumerate(verification_commands):
+        try:
+            lexer = shlex.shlex(command, posix=False, punctuation_chars=True)
+            lexer.whitespace_split = True
+            lexer.commenters = ""
+            tokens = list(lexer)
+        except ValueError as exc:
+            raise EvaluationCaseError(
+                f"verification_commands[{index}] must be shell-tokenizable"
+            ) from exc
+
+        candidates: list[tuple[str, bool]] = []
+        executable_seen = False
+        validate_next_module_name = False
+        for token in tokens:
+            normalized_token = token.strip("\"'")
+            if any(
+                marker in normalized_token
+                for marker in GMP_ACCEPTANCE_VERIFICATION_SHELL_EXPANSION_MARKERS
+            ):
+                raise EvaluationCaseError(
+                    f"verification_commands[{index}] must not contain shell expansion tokens"
+                )
+            if (
+                normalized_token
+                and set(normalized_token) <= GMP_ACCEPTANCE_VERIFICATION_SHELL_CONTROL_CHARS
+            ):
+                raise EvaluationCaseError(
+                    f"verification_commands[{index}] must not contain shell control operators"
+                )
+            if validate_next_module_name:
+                validate_next_module_name = False
+                for module_candidate in gmp_acceptance_python_module_path_candidates(
+                    normalized_token
+                ):
+                    candidates.append((module_candidate, True))
+                continue
+            candidates.append((normalized_token, False))
+            if "=" in normalized_token:
+                assignment_name, assignment_value = normalized_token.split("=", 1)
+                for assignment_candidate in gmp_acceptance_assignment_path_values(
+                    assignment_name, assignment_value
+                ):
+                    candidates.append((assignment_candidate, True))
+            if not normalized_token or set(
+                normalized_token
+            ) <= GMP_ACCEPTANCE_VERIFICATION_SHELL_CONTROL_CHARS:
+                continue
+            if normalized_token == "-m":
+                validate_next_module_name = True
+                continue
+            if normalized_token.startswith("-"):
+                continue
+            if "=" in normalized_token:
+                continue
+            if not executable_seen:
+                executable_seen = True
+                continue
+            candidates.append((normalized_token, True))
+        for candidate, _ in candidates:
+            if not candidate:
+                continue
+            candidate_path = Path(candidate)
+            if candidate_path.is_absolute() or PureWindowsPath(candidate).is_absolute():
+                raise EvaluationCaseError(
+                    f"verification_commands[{index}] must not contain absolute paths"
+                )
+        for candidate, force_path_validation in candidates:
+            if not candidate:
+                continue
+            candidate_path = Path(candidate)
+
+            path_like = (
+                force_path_validation
+                or "/" in candidate
+                or "\\" in candidate
+                or candidate.startswith(".")
+                or candidate_path.suffix
+                or candidate in lexical_allowed_roots
+            )
+            if not path_like:
+                continue
+            if ".." in candidate_path.parts:
+                raise EvaluationCaseError(
+                    f"verification_commands[{index}] must not contain parent paths"
+                )
+            resolved_candidate = (repo_root / candidate_path).resolve()
+            if not resolved_candidate.is_relative_to(resolved_root):
+                raise EvaluationCaseError(
+                    f"verification_commands[{index}] must stay inside the repository"
+                )
+            public_path = any(
+                resolved_candidate == allowed_root
+                or resolved_candidate.is_relative_to(allowed_root)
+                for allowed_root in resolved_allowed_roots
+            )
+            if not public_path:
+                raise EvaluationCaseError(
+                    f"verification_commands[{index}] must reference public repository files"
+                )
+            if not resolved_candidate.exists():
+                raise EvaluationCaseError(
+                    f"verification_commands[{index}] must reference existing public repository paths"
+                )
+
+
+def validate_gmp_acceptance_dataset_manifest(
+    data: dict[str, Any], repo_root: Path
+) -> Path:
+    manifest_path = manifest_path_from_cases(data, repo_root)
+    if not manifest_path.is_file():
+        raise EvaluationCaseError("dataset_manifest must reference an existing file")
+    return manifest_path
+
+
+def validate_gmp_acceptance_verification_commands(
+    data: dict[str, Any],
+    repo_root: Path,
+) -> tuple[str, ...]:
+    verification_commands = validate_text_list(
+        data.get("verification_commands"), "verification_commands"
+    )
+    validate_gmp_acceptance_verification_command_paths(verification_commands, repo_root)
+    require_gmp_acceptance_rerun_command(verification_commands)
+    return verification_commands
+
+
+def validate_gmp_acceptance_evidence_refs(
+    criterion: dict[str, Any],
+    context: str,
+    repo_root: Path,
+    declared_fixture_paths: frozenset[Path],
+) -> tuple[str, ...]:
+    evidence_refs = validate_text_list(
+        criterion.get("evidence_refs"), f"{context}.evidence_refs"
+    )
+    validate_public_gmp_acceptance_evidence_refs(
+        evidence_refs,
+        f"{context}.evidence_refs",
+        repo_root,
+        declared_fixture_paths,
+    )
+    return evidence_refs
+
+
+def validate_gmp_acceptance_source_traceability(
+    status: object, high_quality_metrics: PoCModeMetrics
+) -> None:
+    if high_quality_metrics.source_linkage_rate < 1.0 and status == "pass":
+        raise EvaluationCaseError(
+            "source_traceability cannot pass when high_quality source linkage is incomplete"
+        )
+
+
+def validate_gmp_acceptance_segregation_of_duties(
+    criterion: dict[str, Any], context: str, status: str
+) -> None:
+    if status != "pass":
+        return
+    if criterion.get("scope") != EXPECTED_GMP_ACCEPTANCE_SOD_SCOPE:
+        raise EvaluationCaseError(
+            f"{context}.scope must qualify segregation_of_duties pass status to "
+            "authenticated actor identity"
+        )
+    notes = criterion.get("notes")
+    if not isinstance(notes, str) or EXPECTED_GMP_ACCEPTANCE_SOD_NO_AUTH_NOTE not in notes:
+        raise EvaluationCaseError(
+            f"{context}.notes must document fail-closed no-auth approval handling"
+        )
+
+
+def gmp_acceptance_target_met(
+    failed_criteria: list[dict[str, object]],
+    poc_metrics: PoCComparisonMetrics,
+    high_quality_metrics: PoCModeMetrics,
+) -> bool:
+    high_risk_target_met = (
+        poc_metrics.high_risk_false_auto_confirmed_count
+        <= poc_metrics.high_risk_false_auto_confirmed_target
+    )
+    source_traceability_target_met = high_quality_metrics.source_linkage_rate >= 1.0
+    return not failed_criteria and high_risk_target_met and source_traceability_target_met
+
+
+def high_quality_poc_mode_metrics(poc_metrics: PoCComparisonMetrics) -> PoCModeMetrics:
+    for mode_metrics in poc_metrics.modes:
+        if mode_metrics.mode == "high_quality":
+            return mode_metrics
+    raise EvaluationCaseError("PoC comparison must include high_quality mode")
+
+
+def evaluate_gmp_acceptance(
+    data: dict[str, Any], repo_root: Path | None = None
+) -> GmpAcceptanceMetrics:
+    if data.get("schema_version") != GMP_ACCEPTANCE_SCHEMA_VERSION:
+        raise EvaluationCaseError(
+            f"unsupported GMP acceptance schema_version {data.get('schema_version')!r}"
+        )
+    root = repo_root or Path.cwd()
+    manifest_path = validate_gmp_acceptance_dataset_manifest(data, root)
+    declared_fixture_paths = frozenset(
+        path.resolve()
+        for path in fixture_paths_from_manifest(load_json(manifest_path), root).values()
+    )
+    validate_scope(data)
+    poc_path = poc_comparison_path_from_gmp_acceptance(data, root)
+    poc_metrics = evaluate_poc_mode_comparison(load_json(poc_path), repo_root=root)
+    high_quality_metrics = high_quality_poc_mode_metrics(poc_metrics)
+
+    verification_commands = validate_gmp_acceptance_verification_commands(data, root)
+    criteria = data.get("criteria")
+    if not isinstance(criteria, list):
+        raise EvaluationCaseError("GMP acceptance criteria must be a list")
+    if len(criteria) != len(REQUIRED_GMP_ACCEPTANCE_CRITERIA):
+        raise EvaluationCaseError("GMP acceptance criteria must cover all 15.7 criteria")
+
+    seen_ids: set[str] = set()
+    normalized_criteria: list[dict[str, object]] = []
+    failed_criteria: list[dict[str, object]] = []
+    for index, criterion in enumerate(criteria):
+        context = f"criteria[{index}]"
+        if not isinstance(criterion, dict):
+            raise EvaluationCaseError(f"{context} must be an object")
+        criterion_id = criterion.get("id")
+        if criterion_id != REQUIRED_GMP_ACCEPTANCE_CRITERIA[index]:
+            raise EvaluationCaseError(
+                f"{context}.id must be {REQUIRED_GMP_ACCEPTANCE_CRITERIA[index]!r}"
+            )
+        if criterion_id in seen_ids:
+            raise EvaluationCaseError(f"duplicate GMP acceptance criterion {criterion_id!r}")
+        seen_ids.add(criterion_id)
+
+        title = criterion.get("title")
+        if not isinstance(title, str) or not normalized_text(title):
+            raise EvaluationCaseError(f"{context}.title must be a non-empty string")
+        status = criterion.get("status")
+        if status not in {"pass", "fail"}:
+            raise EvaluationCaseError(f"{context}.status must be pass or fail")
+        evidence_refs = validate_gmp_acceptance_evidence_refs(
+            criterion,
+            context,
+            root,
+            declared_fixture_paths,
+        )
+        notes = criterion.get("notes")
+        if not isinstance(notes, str) or not normalized_text(notes):
+            raise EvaluationCaseError(f"{context}.notes must be a non-empty string")
+
+        normalized = {
+            "id": criterion_id,
+            "title": normalized_text(title),
+            "status": status,
+            "evidence_refs": list(evidence_refs),
+            "notes": normalized_text(notes),
+        }
+        scope = criterion.get("scope")
+        if scope is not None:
+            if not isinstance(scope, str) or not normalized_text(scope):
+                raise EvaluationCaseError(f"{context}.scope must be a non-empty string")
+            normalized["scope"] = normalized_text(scope)
+        excluded_contexts = criterion.get("excluded_contexts")
+        if excluded_contexts is not None:
+            normalized["excluded_contexts"] = list(
+                validate_text_list(excluded_contexts, f"{context}.excluded_contexts")
+            )
+        if criterion_id == "missed_detection_zero":
+            if (
+                poc_metrics.high_risk_false_auto_confirmed_count
+                > poc_metrics.high_risk_false_auto_confirmed_target
+                and status == "pass"
+            ):
+                raise EvaluationCaseError(
+                    "missed_detection_zero cannot pass when high-risk false "
+                    "auto-confirmation count exceeds target"
+                )
+            normalized["observed_count"] = poc_metrics.high_risk_false_auto_confirmed_count
+            normalized["target"] = poc_metrics.high_risk_false_auto_confirmed_target
+
+        if criterion_id == "source_traceability":
+            validate_gmp_acceptance_source_traceability(status, high_quality_metrics)
+            normalized["high_quality_source_linkage_rate"] = (
+                high_quality_metrics.source_linkage_rate
+            )
+            normalized["target"] = 1.0
+        if criterion_id == "segregation_of_duties":
+            validate_gmp_acceptance_segregation_of_duties(criterion, context, status)
+
+        normalized_criteria.append(normalized)
+        if status == "fail":
+            failed_criteria.append(normalized)
+
+    target_met = gmp_acceptance_target_met(
+        failed_criteria, poc_metrics, high_quality_metrics
+    )
+    return GmpAcceptanceMetrics(
+        poc_comparison=str(EXPECTED_POC_COMPARISON),
+        criterion_count=len(normalized_criteria),
+        failed_criterion_count=len(failed_criteria),
+        high_risk_false_auto_confirmed_count=(
+            poc_metrics.high_risk_false_auto_confirmed_count
+        ),
+        high_risk_false_auto_confirmed_target=(
+            poc_metrics.high_risk_false_auto_confirmed_target
+        ),
+        target_met=target_met,
+        criteria=tuple(normalized_criteria),
+        failed_criteria=tuple(failed_criteria),
+        verification_commands=verification_commands,
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cases", type=Path, default=DEFAULT_EVALUATION_CASES)
@@ -1481,10 +2005,21 @@ def main() -> int:
         type=Path,
         help="Compare no-LLM, standard, and high-quality PoC outputs from public records.",
     )
+    parser.add_argument(
+        "--gmp-acceptance",
+        type=Path,
+        help="Report GMP-08 15.7 acceptance criteria from public synthetic records.",
+    )
     args = parser.parse_args()
 
     try:
-        if args.poc_comparison is not None:
+        if args.gmp_acceptance is not None:
+            gmp_acceptance_path = args.gmp_acceptance.resolve()
+            metrics = evaluate_gmp_acceptance(
+                load_json(gmp_acceptance_path),
+                repo_root=repository_root_for_gold_path(gmp_acceptance_path),
+            )
+        elif args.poc_comparison is not None:
             poc_comparison_path = args.poc_comparison.resolve()
             metrics = evaluate_poc_mode_comparison(
                 load_json(poc_comparison_path),
@@ -1503,6 +2038,8 @@ def main() -> int:
         return 1
 
     print(json.dumps(metrics.as_dict(), indent=2, sort_keys=True))
+    if args.gmp_acceptance is not None and not metrics.target_met:
+        return 1
     return 0
 
 

@@ -4,6 +4,7 @@ import copy
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -17,6 +18,7 @@ CASES_PATH = REPO_ROOT / "datasets" / "gold" / "evaluation_cases_v0.json"
 HIGH_RISK_LABELS_PATH = REPO_ROOT / "datasets" / "gold" / "high_risk_labels_v0.json"
 LLM_STABILITY_RUNS_PATH = REPO_ROOT / "datasets" / "gold" / "llm_stability_runs_v0.json"
 POC_COMPARISON_PATH = REPO_ROOT / "datasets" / "gold" / "poc_mode_comparison_v1.json"
+GMP_ACCEPTANCE_PATH = REPO_ROOT / "datasets" / "gold" / "gmp_acceptance_v1.json"
 
 
 spec = importlib.util.spec_from_file_location("evaluate_dataset", SCRIPT_PATH)
@@ -37,8 +39,37 @@ class EvaluateDatasetTest(unittest.TestCase):
     def valid_poc_comparison_data(self) -> dict[str, object]:
         return copy.deepcopy(evaluate_dataset.load_json(POC_COMPARISON_PATH))
 
+    def valid_gmp_acceptance_data(self) -> dict[str, object]:
+        return copy.deepcopy(evaluate_dataset.load_json(GMP_ACCEPTANCE_PATH))
+
     def valid_high_risk_labels_data(self) -> dict[str, object]:
         return copy.deepcopy(evaluate_dataset.load_json(HIGH_RISK_LABELS_PATH))
+
+    def prepare_gmp_acceptance_repo(self, temp_root: Path) -> None:
+        shutil.copytree(REPO_ROOT / "datasets", temp_root / "datasets")
+        (temp_root / "docs").mkdir()
+        for doc_name in (
+            "change-management-reevaluation.md",
+            "gmp04-electronic-records-signatures.md",
+            "gmp07-validation-draft.md",
+            "gmp08-acceptance-evaluation.md",
+        ):
+            shutil.copy2(REPO_ROOT / "docs" / doc_name, temp_root / "docs" / doc_name)
+        (temp_root / "scripts").mkdir()
+        shutil.copy2(
+            REPO_ROOT / "scripts" / "evaluate_dataset.py",
+            temp_root / "scripts" / "evaluate_dataset.py",
+        )
+        (temp_root / "scripts" / "ci").mkdir()
+        shutil.copy2(
+            REPO_ROOT / "scripts" / "ci" / "repo_hygiene.py",
+            temp_root / "scripts" / "ci" / "repo_hygiene.py",
+        )
+        (temp_root / "tests").mkdir()
+        shutil.copy2(
+            REPO_ROOT / "tests" / "test_poc_web_api.py",
+            temp_root / "tests" / "test_poc_web_api.py",
+        )
 
     def evaluate_valid_cases(self, data: dict[str, object]) -> object:
         return evaluate_dataset.evaluate_cases(data, manifest_root=REPO_ROOT)
@@ -614,6 +645,405 @@ class EvaluateDatasetTest(unittest.TestCase):
         )
         self.assertEqual(1, metrics.high_risk_false_auto_confirmed_count)
         self.assertFalse(metrics.target_met)
+
+    def test_gmp_acceptance_reports_15_7_criteria(self) -> None:
+        metrics = evaluate_dataset.evaluate_gmp_acceptance(
+            self.valid_gmp_acceptance_data(), repo_root=REPO_ROOT
+        )
+
+        report = metrics.as_dict()
+
+        self.assertTrue(report["target_met"])
+        self.assertEqual(8, report["criterion_count"])
+        self.assertEqual(0, report["failed_criterion_count"])
+        self.assertEqual(0, report["high_risk_false_auto_confirmed_count"])
+        self.assertEqual("datasets/gold/poc_mode_comparison_v1.json", report["poc_comparison"])
+        self.assertEqual(
+            [
+                "high_risk_review",
+                "missed_detection_zero",
+                "source_traceability",
+                "originality",
+                "audit_trail",
+                "completeness",
+                "reproducibility",
+                "segregation_of_duties",
+            ],
+            [criterion["id"] for criterion in report["criteria"]],
+        )
+        self.assertTrue(all(criterion["status"] == "pass" for criterion in report["criteria"]))
+        segregation = report["criteria"][-1]
+        self.assertEqual("segregation_of_duties", segregation["id"])
+        self.assertEqual(
+            "review approval flows with authenticated actor identity",
+            segregation["scope"],
+        )
+        self.assertNotIn("excluded_contexts", segregation)
+        self.assertIn("Authenticated role-token flows", segregation["notes"])
+        self.assertIn("no-auth approval attempts are forbidden", segregation["notes"])
+
+    def test_gmp_acceptance_requires_canonical_dataset_manifest(self) -> None:
+        data = self.valid_gmp_acceptance_data()
+        data["dataset_manifest"] = "datasets/fixtures/alternate_manifest.json"
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError,
+            "dataset_manifest must be datasets/fixtures/manifest.json",
+        ):
+            evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=REPO_ROOT)
+
+    def test_gmp_acceptance_requires_rerun_command(self) -> None:
+        data = self.valid_gmp_acceptance_data()
+        data["verification_commands"] = ["python3 -m pytest tests -q"]
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError,
+            "verification_commands must include",
+        ):
+            evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=REPO_ROOT)
+
+    def test_gmp_acceptance_rejects_absolute_path_verification_command(self) -> None:
+        commands = (
+            f"python3 {'/' + 'private' + '/recompute.py'}",
+            evaluate_dataset.EXPECTED_GMP_ACCEPTANCE_COMMAND
+            + " "
+            + f"python3 {'/' + 'private' + '/recompute.py'}",
+            "PYTHONHOME="
+            + "/"
+            + "private "
+            + "python3 scripts/evaluate_dataset.py",
+            "PYTHONPATH="
+            + "D:"
+            + "\\private "
+            + "python3 scripts/evaluate_dataset.py",
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                data = self.valid_gmp_acceptance_data()
+                data["verification_commands"].append(command)
+
+                with self.assertRaisesRegex(
+                    evaluate_dataset.EvaluationCaseError,
+                    r"verification_commands\[\d+\] must not contain absolute paths",
+                ):
+                    evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=REPO_ROOT)
+
+    def test_gmp_acceptance_rejects_non_public_verification_command_path(self) -> None:
+        commands = (
+            "python3 private/recompute.py",
+            evaluate_dataset.EXPECTED_GMP_ACCEPTANCE_COMMAND
+            + " python3 private/recompute.py",
+            "PYTHONHOME=private "
+            + evaluate_dataset.EXPECTED_GMP_ACCEPTANCE_COMMAND,
+            "PYTHONPATH=private "
+            + evaluate_dataset.EXPECTED_GMP_ACCEPTANCE_COMMAND,
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                data = self.valid_gmp_acceptance_data()
+                data["verification_commands"].append(command)
+
+                with self.assertRaisesRegex(
+                    evaluate_dataset.EvaluationCaseError,
+                    r"verification_commands\[\d+\] must reference public repository files",
+                ):
+                    evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=REPO_ROOT)
+
+    def test_gmp_acceptance_rejects_non_public_path_option_assignment(self) -> None:
+        data = self.valid_gmp_acceptance_data()
+        data["verification_commands"].append(
+            "python3 -m pytest --rootdir=private tests -q"
+        )
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError,
+            r"verification_commands\[\d+\] must reference public repository files",
+        ):
+            evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=REPO_ROOT)
+
+    def test_gmp_acceptance_rejects_bare_non_public_command_path(self) -> None:
+        commands = (
+            "python3 private_runner",
+            "pytest private",
+        )
+        for command in commands:
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as temp_dir:
+                temp_root = Path(temp_dir)
+                self.prepare_gmp_acceptance_repo(temp_root)
+                (temp_root / "private").mkdir()
+                (temp_root / "private_runner").write_text(
+                    "not public verification evidence",
+                    encoding="utf-8",
+                )
+                data = self.valid_gmp_acceptance_data()
+                data["verification_commands"].append(command)
+
+                with self.assertRaisesRegex(
+                    evaluate_dataset.EvaluationCaseError,
+                    r"verification_commands\[\d+\] must reference public repository files",
+                ):
+                    evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=temp_root)
+
+    def test_gmp_acceptance_rejects_private_python_module_target(self) -> None:
+        data = self.valid_gmp_acceptance_data()
+        data["verification_commands"].append("python3 -m private_runner")
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError,
+            r"verification_commands\[\d+\] must reference public repository files",
+        ):
+            evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=REPO_ROOT)
+
+    def test_gmp_acceptance_rejects_shell_control_verification_command(self) -> None:
+        commands = (
+            "python3 scripts/evaluate_dataset.py;/" + "private/recompute.py",
+            evaluate_dataset.EXPECTED_GMP_ACCEPTANCE_COMMAND
+            + " && python3 scripts/evaluate_dataset.py",
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                data = self.valid_gmp_acceptance_data()
+                data["verification_commands"].append(command)
+
+                with self.assertRaisesRegex(
+                    evaluate_dataset.EvaluationCaseError,
+                    r"verification_commands\[\d+\] must not contain shell control operators",
+                ):
+                    evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=REPO_ROOT)
+
+    def test_gmp_acceptance_rejects_shell_expansion_verification_command(self) -> None:
+        commands = (
+            "python3 $PRIVATE_RECOMPUTE",
+            "PYTHONPATH=$PRIVATE_LIB python3 scripts/evaluate_dataset.py",
+            "python3 $(pwd)/scripts/evaluate_dataset.py",
+            "pytest *",
+            "python3 ~",
+            "python3 scripts/*.py",
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                data = self.valid_gmp_acceptance_data()
+                data["verification_commands"].append(command)
+
+                with self.assertRaisesRegex(
+                    evaluate_dataset.EvaluationCaseError,
+                    r"verification_commands\[\d+\] must not contain shell expansion tokens",
+                ):
+                    evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=REPO_ROOT)
+
+    def test_gmp_acceptance_rejects_missing_public_verification_command_path(
+        self,
+    ) -> None:
+        data = self.valid_gmp_acceptance_data()
+        data["verification_commands"].append("python3 scripts/ci/deleted_gate.py")
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError,
+            r"verification_commands\[\d+\] must reference existing public repository paths",
+        ):
+            evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=REPO_ROOT)
+
+    def test_gmp_acceptance_rejects_missing_criterion_evidence_ref(self) -> None:
+        data = self.valid_gmp_acceptance_data()
+        data["criteria"][0]["evidence_refs"] = ["datasets/gold/deleted-evidence.json"]
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError,
+            r"criteria\[0\]\.evidence_refs\[0\] must reference an existing file",
+        ):
+            evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=REPO_ROOT)
+
+    def test_gmp_acceptance_rejects_non_public_criterion_evidence_ref(self) -> None:
+        data = self.valid_gmp_acceptance_data()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            self.prepare_gmp_acceptance_repo(temp_root)
+            private_evidence = temp_root / "private" / "confidential-record.pdf"
+            private_evidence.parent.mkdir()
+            private_evidence.write_text("not public synthetic evidence", encoding="utf-8")
+            data["criteria"][0]["evidence_refs"] = [
+                private_evidence.relative_to(temp_root).as_posix()
+            ]
+
+            with self.assertRaisesRegex(
+                evaluate_dataset.EvaluationCaseError,
+                r"criteria\[0\]\.evidence_refs\[0\] must reference public synthetic GMP evidence",
+            ):
+                evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=temp_root)
+
+    def test_gmp_acceptance_rejects_public_path_to_non_public_evidence_target(
+        self,
+    ) -> None:
+        data = self.valid_gmp_acceptance_data()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            self.prepare_gmp_acceptance_repo(temp_root)
+            private_evidence = temp_root / "private" / "confidential-record.pdf"
+            private_evidence.parent.mkdir()
+            private_evidence.write_text("not public synthetic evidence", encoding="utf-8")
+            public_ref = Path("datasets/gold/confidential-record.pdf")
+            try:
+                os.symlink(private_evidence, temp_root / public_ref)
+            except OSError as exc:
+                self.skipTest(f"symlink unavailable: {exc}")
+            data["criteria"][0]["evidence_refs"] = [public_ref.as_posix()]
+
+            with self.assertRaisesRegex(
+                evaluate_dataset.EvaluationCaseError,
+                r"criteria\[0\]\.evidence_refs\[0\] must reference public synthetic GMP evidence",
+            ):
+                evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=temp_root)
+
+    def test_gmp_acceptance_rejects_unmanifested_fixture_evidence_ref(self) -> None:
+        data = self.valid_gmp_acceptance_data()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            self.prepare_gmp_acceptance_repo(temp_root)
+            undeclared_evidence = Path("datasets/fixtures/raw-record.pdf")
+            (temp_root / undeclared_evidence).write_text(
+                "not manifest-declared synthetic fixture evidence",
+                encoding="utf-8",
+            )
+            data["criteria"][0]["evidence_refs"] = [undeclared_evidence.as_posix()]
+
+            with self.assertRaisesRegex(
+                evaluate_dataset.EvaluationCaseError,
+                r"criteria\[0\]\.evidence_refs\[0\] must reference manifest-declared "
+                "public synthetic GMP fixture evidence",
+            ):
+                evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=temp_root)
+
+    def test_gmp_acceptance_rejects_source_traceability_without_recomputed_linkage(
+        self,
+    ) -> None:
+        data = self.valid_gmp_acceptance_data()
+        poc_data = self.valid_poc_comparison_data()
+        for mode in poc_data["modes"]:
+            if mode["mode"] == "high_quality":
+                mode["cases"][0]["actual"]["tables"][0]["cells"][0].pop("source")
+                mode["metrics"]["source_linkage_rate"] = 0.5
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            self.prepare_gmp_acceptance_repo(temp_root)
+            (temp_root / POC_COMPARISON_PATH.relative_to(REPO_ROOT)).write_text(
+                json.dumps(poc_data),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                evaluate_dataset.EvaluationCaseError,
+                "source_traceability cannot pass when high_quality source linkage is incomplete",
+            ):
+                evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=temp_root)
+
+    def test_gmp_acceptance_rejects_tampered_review_evidence_package(self) -> None:
+        def omit_dataset_manifest(
+            data: dict[str, object], poc_data: dict[str, object]
+        ) -> None:
+            data.pop("dataset_manifest")
+
+        def replace_rerun_command(
+            data: dict[str, object], poc_data: dict[str, object]
+        ) -> None:
+            data["verification_commands"] = ["python3 -m pytest tests -q"]
+
+        def delete_evidence_ref(
+            data: dict[str, object], poc_data: dict[str, object]
+        ) -> None:
+            data["criteria"][0]["evidence_refs"] = ["datasets/gold/deleted-evidence.json"]
+
+        def remove_high_quality_source_anchor(
+            data: dict[str, object], poc_data: dict[str, object]
+        ) -> None:
+            for mode in poc_data["modes"]:
+                if mode["mode"] == "high_quality":
+                    mode["cases"][0]["actual"]["tables"][0]["cells"][0].pop("source")
+                    mode["metrics"]["source_linkage_rate"] = 0.5
+
+        cases = (
+            ("dataset_manifest", omit_dataset_manifest, "dataset_manifest"),
+            ("verification_commands", replace_rerun_command, "verification_commands"),
+            (
+                "evidence_refs",
+                delete_evidence_ref,
+                r"criteria\[0\]\.evidence_refs\[0\] must reference an existing file",
+            ),
+            (
+                "source_traceability",
+                remove_high_quality_source_anchor,
+                "source_traceability cannot pass when high_quality source linkage is incomplete",
+            ),
+        )
+        for name, tamper, expected_error in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temp_dir:
+                temp_root = Path(temp_dir)
+                data = self.valid_gmp_acceptance_data()
+                poc_data = self.valid_poc_comparison_data()
+                tamper(data, poc_data)
+                self.prepare_gmp_acceptance_repo(temp_root)
+                (temp_root / POC_COMPARISON_PATH.relative_to(REPO_ROOT)).write_text(
+                    json.dumps(poc_data),
+                    encoding="utf-8",
+                )
+
+                with self.assertRaisesRegex(
+                    evaluate_dataset.EvaluationCaseError, expected_error
+                ):
+                    evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=temp_root)
+
+    def test_gmp_acceptance_ignores_manual_correction_timing_gate(self) -> None:
+        data = self.valid_gmp_acceptance_data()
+        poc_data = self.valid_poc_comparison_data()
+        poc_data["manual_correction_time"]["assisted_minutes"] = 13.0
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            self.prepare_gmp_acceptance_repo(temp_root)
+            (temp_root / POC_COMPARISON_PATH.relative_to(REPO_ROOT)).write_text(
+                json.dumps(poc_data),
+                encoding="utf-8",
+            )
+
+            metrics = evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=temp_root)
+
+        self.assertTrue(metrics.target_met)
+        self.assertEqual(0, metrics.failed_criterion_count)
+        self.assertEqual((), metrics.failed_criteria)
+
+    def test_gmp_acceptance_rejects_unqualified_sod_pass(self) -> None:
+        data = self.valid_gmp_acceptance_data()
+        data["criteria"][7].pop("scope")
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError,
+            r"criteria\[7\]\.scope must qualify segregation_of_duties pass status",
+        ):
+            evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=REPO_ROOT)
+
+    def test_gmp_acceptance_fails_when_audit_evidence_is_unmet(self) -> None:
+        data = self.valid_gmp_acceptance_data()
+        data["criteria"][4]["status"] = "fail"
+
+        metrics = evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=REPO_ROOT)
+
+        self.assertFalse(metrics.target_met)
+        self.assertEqual(1, metrics.failed_criterion_count)
+        self.assertEqual("audit_trail", metrics.failed_criteria[0]["id"])
+
+    def test_change_management_requires_gmp_acceptance_gate(self) -> None:
+        docs = (
+            REPO_ROOT / "docs" / "change-management-reevaluation.md"
+        ).read_text(encoding="utf-8")
+        command = evaluate_dataset.EXPECTED_GMP_ACCEPTANCE_COMMAND
+        gate_start = docs.index("### GMP Acceptance Gate")
+        checklist_start = docs.index("## PR Checklist")
+
+        self.assertIn(command, docs[gate_start:checklist_start])
+        self.assertIn(command, docs[checklist_start:])
 
     def test_llm_stability_agreement_rates_do_not_depend_on_run_order(self) -> None:
         data = self.valid_llm_stability_data()
@@ -1220,6 +1650,59 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertEqual(7.0, metrics["manual_correction_time"]["reduction_minutes"])
         self.assertEqual(7 / 12, metrics["manual_correction_time"]["reduction_rate"])
         self.assertTrue(metrics["target_met"])
+
+    def test_cli_emits_gmp_acceptance_for_phase0_acceptance(self) -> None:
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT_PATH),
+                "--gmp-acceptance",
+                str(GMP_ACCEPTANCE_PATH),
+            ],
+            cwd=REPO_ROOT,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        self.assertEqual("", proc.stderr)
+        self.assertEqual(0, proc.returncode)
+        metrics = json.loads(proc.stdout)
+        self.assertEqual(8, metrics["criterion_count"])
+        self.assertEqual(0, metrics["failed_criterion_count"])
+        self.assertTrue(metrics["target_met"])
+
+    def test_cli_fails_when_gmp_acceptance_target_is_unmet(self) -> None:
+        data = self.valid_gmp_acceptance_data()
+        data["criteria"][4]["status"] = "fail"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            self.prepare_gmp_acceptance_repo(temp_root)
+            gmp_path = temp_root / GMP_ACCEPTANCE_PATH.relative_to(REPO_ROOT)
+            gmp_path.write_text(json.dumps(data), encoding="utf-8")
+
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_PATH),
+                    "--gmp-acceptance",
+                    str(gmp_path),
+                ],
+                cwd=REPO_ROOT,
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+
+        self.assertEqual("", proc.stderr)
+        self.assertEqual(1, proc.returncode)
+        metrics = json.loads(proc.stdout)
+        self.assertFalse(metrics["target_met"])
+        self.assertEqual(1, metrics["failed_criterion_count"])
+        self.assertEqual("audit_trail", metrics["failed_criteria"][0]["id"])
 
 
 if __name__ == "__main__":

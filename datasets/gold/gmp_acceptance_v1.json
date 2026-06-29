@@ -1,0 +1,99 @@
+{
+  "schema_version": "veridoc-gmp-acceptance/v1",
+  "dataset_manifest": "datasets/fixtures/manifest.json",
+  "scope": {
+    "phase": "phase0",
+    "public_only": true,
+    "confidential_source_documents_allowed": false,
+    "production_or_gmp_claim": false
+  },
+  "poc_comparison": "datasets/gold/poc_mode_comparison_v1.json",
+  "verification_commands": [
+    "python3 scripts/evaluate_dataset.py --gmp-acceptance datasets/gold/gmp_acceptance_v1.json",
+    "python3 scripts/ci/repo_hygiene.py",
+    "python3 -m pytest tests -q"
+  ],
+  "criteria": [
+    {
+      "id": "high_risk_review",
+      "title": "High-risk review routing",
+      "status": "pass",
+      "evidence_refs": [
+        "datasets/gold/high_risk_labels_v0.json",
+        "datasets/gold/poc_mode_comparison_v1.json"
+      ],
+      "notes": "All authoritative high-risk labels are reported as requires_review in each captured mode."
+    },
+    {
+      "id": "missed_detection_zero",
+      "title": "Missed detection count is zero",
+      "status": "pass",
+      "evidence_refs": [
+        "datasets/gold/poc_mode_comparison_v1.json"
+      ],
+      "notes": "The evaluator recomputes high-risk false auto-confirmation from captured cells and reported high-risk items."
+    },
+    {
+      "id": "source_traceability",
+      "title": "Source traceability",
+      "status": "pass",
+      "evidence_refs": [
+        "datasets/fixtures/sample-document-ir-v0.json",
+        "datasets/gold/evaluation_cases_v0.json",
+        "datasets/gold/poc_mode_comparison_v1.json"
+      ],
+      "notes": "The high-quality representative output preserves page and bbox source anchors for the high-risk lot value."
+    },
+    {
+      "id": "originality",
+      "title": "Originality and source anchoring",
+      "status": "pass",
+      "evidence_refs": [
+        "datasets/fixtures/manifest.json",
+        "datasets/fixtures/sample-document-ir-v0.json"
+      ],
+      "notes": "The fixture is synthetic public data and preserves original-page geometry needed for review evidence."
+    },
+    {
+      "id": "audit_trail",
+      "title": "Audit trail presentability",
+      "status": "pass",
+      "evidence_refs": [
+        "tests/test_poc_web_api.py",
+        "docs/gmp04-electronic-records-signatures.md"
+      ],
+      "notes": "Existing API tests cover review-event audit persistence, integrity checks, search, export, and bounded electronic-record posture."
+    },
+    {
+      "id": "completeness",
+      "title": "Completeness of acceptance evidence",
+      "status": "pass",
+      "evidence_refs": [
+        "datasets/gold/gmp_acceptance_v1.json",
+        "docs/gmp08-acceptance-evaluation.md"
+      ],
+      "notes": "The acceptance record lists all eight 15.7 criteria and fails the report when any criterion is unmet."
+    },
+    {
+      "id": "reproducibility",
+      "title": "Reproducible evaluation command",
+      "status": "pass",
+      "evidence_refs": [
+        "scripts/evaluate_dataset.py",
+        "docs/change-management-reevaluation.md"
+      ],
+      "notes": "The report records the command needed to regenerate the same public synthetic acceptance summary."
+    },
+    {
+      "id": "segregation_of_duties",
+      "title": "Segregation of duties",
+      "scope": "review approval flows with authenticated actor identity",
+      "status": "pass",
+      "evidence_refs": [
+        "tests/test_poc_web_api.py",
+        "docs/gmp07-validation-draft.md"
+      ],
+      "notes": "Authenticated role-token flows reject reviewer-only, same-actor, and same-principal approval; no-auth approval attempts are forbidden before workflow validation, and the GMP-07 traceability matrix maps this to URS-03."
+    }
+  ]
+}
