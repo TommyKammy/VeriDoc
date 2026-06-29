@@ -100,9 +100,22 @@ OCR_SOURCE_MARKERS = {
     "ocr",
     "optical_character_recognition",
     "pdf_ocr",
+    "scanned_pdf",
     "scanned_pdf_ocr",
 }
 OCR_EXTRACTOR_NAME_MARKERS = ("ocr", "tesseract")
+GMP_CONDITION_METADATA_KEYS = (
+    "source_kind",
+    "source_type",
+    "extraction_method",
+    "extractor_kind",
+    "engine",
+    "extraction_engine",
+    "extractor_engine",
+    "extractor",
+    "llm_involved",
+    "llm_generated",
+)
 
 
 @dataclass(frozen=True)
@@ -305,9 +318,15 @@ def validate_table_consistency(
                 or _gmp_category_requires_review(expected_cell)
                 or _gmp_category_requires_review(actual_cell)
             )
+            expected_condition_record = _with_inherited_condition_metadata(
+                expected_table, expected_cell
+            )
+            actual_condition_record = _with_inherited_condition_metadata(
+                actual_table, actual_cell
+            )
             condition_warnings = _gmp_condition_review_warnings(
-                expected_cell,
-                actual_cell,
+                expected_condition_record,
+                actual_condition_record,
                 important_item=high_risk
                 or category_requires_review
                 or explicit_review_required,
@@ -540,7 +559,8 @@ def _has_malformed_required_columns(record: Mapping[str, Any]) -> bool:
 def _normalized_category(value: object) -> str:
     if not isinstance(value, str):
         return ""
-    normalized = re.sub(r"[^a-z0-9]+", "_", value.strip().casefold()).strip("_")
+    tokenized = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", value.strip())
+    normalized = re.sub(r"[^a-z0-9]+", "_", tokenized.casefold()).strip("_")
     while "__" in normalized:
         normalized = normalized.replace("__", "_")
     alias = GMP_REVIEW_CATEGORY_ALIASES.get(normalized)
@@ -610,6 +630,21 @@ def _gmp_condition_review_warnings(
     if important_item and (_llm_involved(expected) or _llm_involved(actual)):
         warnings.append("llm-involved important item requires human review")
     return tuple(dict.fromkeys(warnings))
+
+
+def _with_inherited_condition_metadata(
+    table: Mapping[str, Any], cell: Mapping[str, Any]
+) -> Mapping[str, Any]:
+    inherited = {
+        key: table[key]
+        for key in GMP_CONDITION_METADATA_KEYS
+        if key in table and key not in cell
+    }
+    if not inherited:
+        return cell
+    combined = dict(inherited)
+    combined.update(cell)
+    return combined
 
 
 def _ocr_derived(record: Mapping[str, Any]) -> bool:

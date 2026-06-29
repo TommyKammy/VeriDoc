@@ -372,6 +372,34 @@ def test_suffixed_gmp_category_aliases_are_not_auto_confirmed() -> None:
         assert "risk_gate" in decision.failed_rules, label_id
 
 
+def test_camel_case_gmp_aliases_are_not_auto_confirmed() -> None:
+    cases = (
+        ("batchLotNumber", "SAMPLE-LOT-001"),
+        ("preparedBy", "Alex Reviewer"),
+        ("releaseStatus", "Approved"),
+    )
+
+    for label_id, value in cases:
+        decision = validate_extracted_item(
+            expected=_expected_item(
+                label_id=label_id,
+                expected_value=value,
+                risk_level="medium",
+                requires_review=False,
+            ),
+            actual=_actual_item(
+                label_id=label_id,
+                value=value,
+                auto_confirmed=True,
+            ),
+        )
+
+        assert decision.auto_confirm_allowed is False, label_id
+        assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM, label_id
+        assert decision.requires_review is True, label_id
+        assert "risk_gate" in decision.failed_rules, label_id
+
+
 def test_invalid_explicit_gmp_category_blocks_auto_confirm() -> None:
     decision = validate_extracted_item(
         expected=_expected_item(
@@ -461,6 +489,35 @@ def test_scanned_pdf_ocr_source_kind_marks_item_as_ocr_derived() -> None:
             value="Reviewed note",
             auto_confirmed=True,
             source_kind="scanned_pdf_ocr",
+            fixture_id="fixture-001",
+            document_id="doc-001",
+            block_id="block-001",
+        ),
+    )
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert decision.requires_review is True
+    assert "risk_gate" in decision.failed_rules
+    assert "ocr-derived item requires human review" in decision.warnings
+
+
+def test_scanned_pdf_source_type_marks_item_as_ocr_derived() -> None:
+    decision = validate_extracted_item(
+        expected=_expected_item(
+            label_id="summary_note",
+            expected_value="Reviewed note",
+            risk_level="medium",
+            requires_review=False,
+            fixture_id="fixture-001",
+            document_id="doc-001",
+            block_id="block-001",
+        ),
+        actual=_actual_item(
+            label_id="summary_note",
+            value="Reviewed note",
+            auto_confirmed=True,
+            source_type="scanned_pdf",
             fixture_id="fixture-001",
             document_id="doc-001",
             block_id="block-001",
@@ -1132,6 +1189,52 @@ def test_table_cells_apply_gmp_condition_gates() -> None:
                 "source": source,
                 "auto_confirmed": True,
                 "engine": "fake-tesseract",
+            },
+        ],
+    }
+
+    decision = validate_table_consistency(expected_table, actual_table)
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert decision.requires_review is True
+    assert "risk_gate" in decision.failed_rules
+    assert "table cell ocr-derived item requires human review" in decision.warnings
+    assert (
+        "table cell extraction engine mismatch requires human review"
+        in decision.warnings
+    )
+
+
+def test_table_level_metadata_applies_gmp_condition_gates_to_cells() -> None:
+    source = _evidence()
+    expected_table = {
+        "id": "table-001",
+        "fixture_table_id": "table-001",
+        "risk_level": "medium",
+        "source_type": "scanned_pdf",
+        "extraction_engine": "template-v1",
+        "cells": [
+            {
+                "id": "table-001-r1-c1",
+                "text": "Reviewed note",
+                "source": source,
+                "requires_review": False,
+                "risk_level": "low",
+            },
+        ],
+    }
+    actual_table = {
+        "id": "table-001",
+        "source_type": "scanned_pdf",
+        "extraction_engine": "llm-repair-v1",
+        "cells": [
+            {
+                "id": "table-001-r1-c1",
+                "text": "Reviewed note",
+                "source": source,
+                "confidence": 0.95,
+                "auto_confirmed": True,
             },
         ],
     }
