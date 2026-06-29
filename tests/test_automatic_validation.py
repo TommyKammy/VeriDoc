@@ -1966,6 +1966,31 @@ def test_current_head_review_examples_fail_closed() -> None:
             "risk_gate",
         ),
         (
+            "current_thread_qualified_person_alias_label_id",
+            validate_extracted_item(
+                expected=_expected_item(
+                    label_id="qa_reviewer",
+                    label="QA Reviewer",
+                    expected_value="Alex Reviewer",
+                    risk_level="medium",
+                    requires_review=False,
+                    fixture_id="fixture-001",
+                    document_id="doc-001",
+                    block_id="block-001",
+                ),
+                actual=_actual_item(
+                    label_id="qa_reviewer",
+                    label="QA Reviewer",
+                    value="Alex Reviewer",
+                    auto_confirmed=True,
+                    fixture_id="fixture-001",
+                    document_id="doc-001",
+                    block_id="block-001",
+                ),
+            ),
+            "risk_gate",
+        ),
+        (
             "current_thread_date_value_type",
             validate_extracted_item(
                 expected=_expected_item(
@@ -2140,6 +2165,29 @@ def test_current_head_review_examples_fail_closed() -> None:
             "risk_gate",
         ),
         (
+            "current_thread_numeric_actual_value",
+            validate_extracted_item(
+                expected=_expected_item(
+                    label_id="generic-field",
+                    expected_value="98.5",
+                    risk_level="medium",
+                    requires_review=False,
+                    fixture_id="fixture-001",
+                    document_id="doc-001",
+                    block_id="block-001",
+                ),
+                actual=_actual_item(
+                    label_id="generic-field",
+                    value=98.5,
+                    auto_confirmed=True,
+                    fixture_id="fixture-001",
+                    document_id="doc-001",
+                    block_id="block-001",
+                ),
+            ),
+            "risk_gate",
+        ),
+        (
             "current_thread_string_extractor_mismatch",
             validate_extracted_item(
                 expected=_expected_item(
@@ -2179,6 +2227,29 @@ def test_current_head_review_examples_fail_closed() -> None:
                 actual=_actual_item(
                     label_id="Batch No.",
                     value="SAMPLE-LOT-001",
+                    auto_confirmed=True,
+                    fixture_id="fixture-001",
+                    document_id="doc-001",
+                    block_id="block-001",
+                ),
+            ),
+            "risk_gate",
+        ),
+        (
+            "current_thread_deviation_alias_with_suffix",
+            validate_extracted_item(
+                expected=_expected_item(
+                    label_id="Deviation ID",
+                    expected_value="DEV-001",
+                    risk_level="medium",
+                    requires_review=False,
+                    fixture_id="fixture-001",
+                    document_id="doc-001",
+                    block_id="block-001",
+                ),
+                actual=_actual_item(
+                    label_id="Deviation ID",
+                    value="DEV-001",
                     auto_confirmed=True,
                     fixture_id="fixture-001",
                     document_id="doc-001",
@@ -2271,6 +2342,30 @@ def test_current_head_review_examples_fail_closed() -> None:
                         },
                     ],
                 },
+            ),
+            "risk_gate",
+        ),
+        (
+            "current_thread_actual_malformed_gmp_category",
+            validate_extracted_item(
+                expected=_expected_item(
+                    label_id="generic-field",
+                    expected_value="Reviewed note",
+                    risk_level="medium",
+                    requires_review=False,
+                    fixture_id="fixture-001",
+                    document_id="doc-001",
+                    block_id="block-001",
+                ),
+                actual=_actual_item(
+                    label_id="generic-field",
+                    value="Reviewed note",
+                    auto_confirmed=False,
+                    gmp_review_category="not-a-gmp-category",
+                    fixture_id="fixture-001",
+                    document_id="doc-001",
+                    block_id="block-001",
+                ),
             ),
             "risk_gate",
         ),
