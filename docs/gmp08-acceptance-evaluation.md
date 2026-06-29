@@ -11,6 +11,10 @@ Run the report with:
 python3 scripts/evaluate_dataset.py --gmp-acceptance datasets/gold/gmp_acceptance_v1.json
 ```
 
+`docs/change-management-reevaluation.md` lists this command in the required
+GMP acceptance gate and PR checklist for changes to the GMP acceptance record,
+criteria, evidence, or evaluator.
+
 The report is anchored to `datasets/gold/poc_mode_comparison_v1.json` and
 recomputes the high-risk false auto-confirmation count instead of trusting the
 GMP acceptance JSON alone. Any high-risk auto-confirmed item keeps the report

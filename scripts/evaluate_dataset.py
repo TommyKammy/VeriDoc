@@ -1551,8 +1551,9 @@ def validate_text_list(value: object, context: str) -> tuple[str, ...]:
 
 def validate_repo_relative_file_refs(
     refs: tuple[str, ...], context: str, repo_root: Path
-) -> None:
+) -> tuple[Path, ...]:
     resolved_root = repo_root.resolve()
+    resolved_paths: list[Path] = []
     for index, ref in enumerate(refs):
         path = Path(ref)
         if path.is_absolute() or ".." in path.parts:
@@ -1562,18 +1563,29 @@ def validate_repo_relative_file_refs(
             raise EvaluationCaseError(f"{context}[{index}] must stay inside the repository")
         if not resolved_path.is_file():
             raise EvaluationCaseError(f"{context}[{index}] must reference an existing file")
+        resolved_paths.append(resolved_path)
+    return tuple(resolved_paths)
 
 
 def validate_public_gmp_acceptance_evidence_refs(
     refs: tuple[str, ...], context: str, repo_root: Path
 ) -> None:
-    validate_repo_relative_file_refs(refs, context, repo_root)
-    for index, ref in enumerate(refs):
+    resolved_refs = validate_repo_relative_file_refs(refs, context, repo_root)
+    resolved_allowed_roots = tuple(
+        (repo_root / allowed_root).resolve()
+        for allowed_root in GMP_ACCEPTANCE_PUBLIC_EVIDENCE_ROOTS
+    )
+    for index, (ref, resolved_ref) in enumerate(zip(refs, resolved_refs)):
         path = Path(ref)
-        if not any(
+        lexical_public = any(
             path == allowed_root or path.is_relative_to(allowed_root)
             for allowed_root in GMP_ACCEPTANCE_PUBLIC_EVIDENCE_ROOTS
-        ):
+        )
+        resolved_public = any(
+            resolved_ref == allowed_root or resolved_ref.is_relative_to(allowed_root)
+            for allowed_root in resolved_allowed_roots
+        )
+        if not lexical_public or not resolved_public:
             raise EvaluationCaseError(
                 f"{context}[{index}] must reference public synthetic GMP evidence"
             )

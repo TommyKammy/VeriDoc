@@ -689,15 +689,23 @@ class EvaluateDatasetTest(unittest.TestCase):
             evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=REPO_ROOT)
 
     def test_gmp_acceptance_rejects_absolute_path_verification_command(self) -> None:
-        data = self.valid_gmp_acceptance_data()
-        private_script = "/" + "home" + "/alice/private/recompute.py"
-        data["verification_commands"].append(f"python3 {private_script}")
+        commands = (
+            f"python3 {'/' + 'private' + '/recompute.py'}",
+            "PYTHONPATH="
+            + "D:"
+            + "\\private "
+            + "python3 scripts/evaluate_dataset.py",
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                data = self.valid_gmp_acceptance_data()
+                data["verification_commands"].append(command)
 
-        with self.assertRaisesRegex(
-            evaluate_dataset.EvaluationCaseError,
-            r"verification_commands\[\d+\] must not contain absolute paths",
-        ):
-            evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=REPO_ROOT)
+                with self.assertRaisesRegex(
+                    evaluate_dataset.EvaluationCaseError,
+                    r"verification_commands\[\d+\] must not contain absolute paths",
+                ):
+                    evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=REPO_ROOT)
 
     def test_gmp_acceptance_rejects_missing_criterion_evidence_ref(self) -> None:
         data = self.valid_gmp_acceptance_data()
@@ -721,6 +729,30 @@ class EvaluateDatasetTest(unittest.TestCase):
             data["criteria"][0]["evidence_refs"] = [
                 private_evidence.relative_to(temp_root).as_posix()
             ]
+
+            with self.assertRaisesRegex(
+                evaluate_dataset.EvaluationCaseError,
+                r"criteria\[0\]\.evidence_refs\[0\] must reference public synthetic GMP evidence",
+            ):
+                evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=temp_root)
+
+    def test_gmp_acceptance_rejects_public_path_to_non_public_evidence_target(
+        self,
+    ) -> None:
+        data = self.valid_gmp_acceptance_data()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            self.prepare_gmp_acceptance_repo(temp_root)
+            private_evidence = temp_root / "private" / "confidential-record.pdf"
+            private_evidence.parent.mkdir()
+            private_evidence.write_text("not public synthetic evidence", encoding="utf-8")
+            public_ref = Path("datasets/gold/confidential-record.pdf")
+            try:
+                os.symlink(private_evidence, temp_root / public_ref)
+            except OSError as exc:
+                self.skipTest(f"symlink unavailable: {exc}")
+            data["criteria"][0]["evidence_refs"] = [public_ref.as_posix()]
 
             with self.assertRaisesRegex(
                 evaluate_dataset.EvaluationCaseError,
