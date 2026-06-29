@@ -113,10 +113,7 @@ class ReviewAuditEventStore:
 
     def record(self, audit_event: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
-            _raise_for_audit_event_integrity_violation(
-                self._events,
-                checkpoint=self._integrity_checkpoint,
-            )
+            self._require_integrity_locked()
             event = _audit_event_with_integrity(
                 audit_event,
                 previous_events=self._events,
@@ -133,10 +130,7 @@ class ReviewAuditEventStore:
     ) -> dict[str, Any]:
         event = deepcopy(audit_event)
         with self._lock:
-            _raise_for_audit_event_integrity_violation(
-                self._events,
-                checkpoint=self._integrity_checkpoint,
-            )
+            self._require_integrity_locked()
             validate(event, [_review_workflow_event_view(item) for item in self._events])
             event = _audit_event_with_integrity(
                 event,
@@ -146,6 +140,12 @@ class ReviewAuditEventStore:
             self._events.append(event)
             self._integrity_checkpoint = _audit_event_integrity_checkpoint(self._events)
         return deepcopy(event)
+
+    def _require_integrity_locked(self) -> None:
+        _raise_for_audit_event_integrity_violation(
+            self._events,
+            checkpoint=self._integrity_checkpoint,
+        )
 
     def list_events(self, filters: dict[str, str] | None = None) -> list[dict[str, Any]]:
         with self._lock:
@@ -175,10 +175,7 @@ class JobAuditEventStore:
 
     def record(self, audit_event: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
-            _raise_for_audit_event_integrity_violation(
-                self._events,
-                checkpoint=self._integrity_checkpoint,
-            )
+            self._require_integrity_locked()
             event = _audit_event_with_integrity(
                 audit_event,
                 previous_events=self._events,
@@ -190,10 +187,13 @@ class JobAuditEventStore:
 
     def require_integrity(self) -> None:
         with self._lock:
-            _raise_for_audit_event_integrity_violation(
-                self._events,
-                checkpoint=self._integrity_checkpoint,
-            )
+            self._require_integrity_locked()
+
+    def _require_integrity_locked(self) -> None:
+        _raise_for_audit_event_integrity_violation(
+            self._events,
+            checkpoint=self._integrity_checkpoint,
+        )
 
     def list_events(self, filters: dict[str, str] | None = None) -> list[dict[str, Any]]:
         with self._lock:
