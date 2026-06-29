@@ -5,7 +5,7 @@ import ipaddress
 import json
 from typing import Any, Protocol
 from urllib.error import HTTPError
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import SplitResult, urljoin, urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 
@@ -55,15 +55,11 @@ class DesktopApiClientConfig:
         normalized = self.base_url.strip()
         if not normalized:
             raise ValueError("base_url is required")
-        parsed = urlsplit(normalized)
+        parsed = _split_valid_base_url(normalized)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError("base_url must be an HTTP(S) URL")
         if parsed.username or parsed.password:
             raise ValueError("base_url must not include embedded credentials")
-        try:
-            parsed.port
-        except ValueError as exc:
-            raise ValueError("base_url port must be a valid TCP port") from exc
         if not _is_local_api_host(parsed.hostname):
             raise ValueError("base_url must point to a local API endpoint")
         base_url = normalized.rstrip("/") + "/"
@@ -117,6 +113,15 @@ class DesktopApiClient:
 def _urlopen_transport(request: Request, *, timeout: float) -> Any:
     opener = build_opener(ProxyHandler({}), _NoRedirectHandler())
     return opener.open(request, timeout=timeout)
+
+
+def _split_valid_base_url(base_url: str) -> SplitResult:
+    parsed = urlsplit(base_url)
+    try:
+        parsed.port
+    except ValueError as exc:
+        raise ValueError("base_url port must be a valid TCP port") from exc
+    return parsed
 
 
 class _NoRedirectHandler(HTTPRedirectHandler):
