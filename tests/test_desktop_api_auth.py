@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import socket
 from urllib.error import HTTPError
 from urllib.request import ProxyHandler, Request
 
@@ -150,6 +151,57 @@ def test_desktop_api_client_default_transport_disables_proxy_and_redirects(
 def test_desktop_api_client_config_rejects_non_local_api_endpoints(base_url: str) -> None:
     with pytest.raises(ValueError, match="local API endpoint"):
         DesktopApiClientConfig(base_url=base_url)
+
+
+def test_desktop_api_client_config_accepts_localhost_resolved_to_loopback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_getaddrinfo(host: str, port: object, *, type: int):
+        assert host == "localhost"
+        assert port is None
+        assert type == socket.SOCK_STREAM
+        return [
+            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", 0)),
+            (socket.AF_INET6, socket.SOCK_STREAM, 0, "", ("::1", 0, 0, 0)),
+        ]
+
+    monkeypatch.setattr("apps.desktop.api_client.socket.getaddrinfo", fake_getaddrinfo)
+
+    config = DesktopApiClientConfig(base_url="http://localhost:8765")
+
+    assert config.base_url == "http://localhost:8765/"
+
+
+@pytest.mark.parametrize(
+    "resolved_address",
+    [
+        "203.0.113.10",
+        "not-an-address",
+    ],
+)
+def test_desktop_api_client_config_rejects_localhost_unless_resolution_is_loopback(
+    monkeypatch: pytest.MonkeyPatch,
+    resolved_address: str,
+) -> None:
+    def fake_getaddrinfo(host: str, port: object, *, type: int):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", (resolved_address, 0))]
+
+    monkeypatch.setattr("apps.desktop.api_client.socket.getaddrinfo", fake_getaddrinfo)
+
+    with pytest.raises(ValueError, match="local API endpoint"):
+        DesktopApiClientConfig(base_url="http://localhost:8765")
+
+
+def test_desktop_api_client_config_rejects_localhost_when_resolution_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_getaddrinfo(host: str, port: object, *, type: int):
+        raise socket.gaierror("blocked")
+
+    monkeypatch.setattr("apps.desktop.api_client.socket.getaddrinfo", fake_getaddrinfo)
+
+    with pytest.raises(ValueError, match="local API endpoint"):
+        DesktopApiClientConfig(base_url="http://localhost:8765")
 
 
 @pytest.mark.parametrize(

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import ipaddress
 import json
+import socket
 from typing import Any, Protocol
 from urllib.error import HTTPError
 from urllib.parse import SplitResult, urljoin, urlsplit
@@ -137,12 +138,26 @@ class _NoRedirectHandler(HTTPRedirectHandler):
 def _is_local_api_host(hostname: str | None) -> bool:
     if hostname is None:
         return False
-    if hostname.lower() == "localhost":
-        return True
     try:
         return ipaddress.ip_address(hostname).is_loopback
     except ValueError:
+        pass
+    if hostname.lower() != "localhost":
         return False
+    try:
+        results = socket.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
+    except socket.gaierror:
+        return False
+    if not results:
+        return False
+    for result in results:
+        address = result[4][0]
+        try:
+            if not ipaddress.ip_address(address).is_loopback:
+                return False
+        except ValueError:
+            return False
+    return True
 
 
 def _looks_like_placeholder_token(token: str) -> bool:
