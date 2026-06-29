@@ -707,24 +707,31 @@ def test_status_field_id_alias_requires_review_as_judgment() -> None:
 
 
 def test_category_required_item_without_scope_is_review_only() -> None:
-    decision = validate_extracted_item(
-        expected=_expected_item(
-            label_id="release_status",
-            expected_value="Approved",
-            risk_level="medium",
-            requires_review=False,
-        ),
-        actual=_actual_item(
-            label_id="release_status",
-            value="Approved",
-            auto_confirmed=False,
-        ),
+    cases = (
+        ("judgment_alias", {"label_id": "release_status"}, "Approved"),
+        ("lot_alias", {"label_id": "lot_number"}, "SAMPLE-LOT-001"),
+        ("explicit_category", {"gmp_review_category": "lot_number"}, "SAMPLE-LOT-001"),
     )
 
-    assert decision.auto_confirm_allowed is False
-    assert decision.status is ValidationStatus.REQUIRES_REVIEW
-    assert decision.requires_review is True
-    assert decision.failed_rules == ()
+    for case_name, metadata, value in cases:
+        decision = validate_extracted_item(
+            expected=_expected_item(
+                expected_value=value,
+                risk_level="medium",
+                requires_review=False,
+                **metadata,
+            ),
+            actual=_actual_item(
+                value=value,
+                auto_confirmed=False,
+                **metadata,
+            ),
+        )
+
+        assert decision.auto_confirm_allowed is False, case_name
+        assert decision.status is ValidationStatus.REQUIRES_REVIEW, case_name
+        assert decision.requires_review is True, case_name
+        assert decision.failed_rules == (), case_name
 
 
 def test_value_metadata_source_comparison_ignores_non_source_fields() -> None:
