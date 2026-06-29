@@ -1666,7 +1666,6 @@ def evaluate_gmp_acceptance(
 
     target_met = (
         not failed_criteria
-        and poc_metrics.target_met
         and poc_metrics.high_risk_false_auto_confirmed_count
         <= poc_metrics.high_risk_false_auto_confirmed_target
     )

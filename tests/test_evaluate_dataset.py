@@ -49,10 +49,17 @@ class EvaluateDatasetTest(unittest.TestCase):
         shutil.copytree(REPO_ROOT / "datasets", temp_root / "datasets")
         (temp_root / "docs").mkdir()
         for doc_name in (
+            "change-management-reevaluation.md",
             "gmp04-electronic-records-signatures.md",
+            "gmp07-validation-draft.md",
             "gmp08-acceptance-evaluation.md",
         ):
             shutil.copy2(REPO_ROOT / "docs" / doc_name, temp_root / "docs" / doc_name)
+        (temp_root / "scripts").mkdir()
+        shutil.copy2(
+            REPO_ROOT / "scripts" / "evaluate_dataset.py",
+            temp_root / "scripts" / "evaluate_dataset.py",
+        )
         (temp_root / "tests").mkdir()
         shutil.copy2(
             REPO_ROOT / "tests" / "test_poc_web_api.py",
@@ -714,6 +721,25 @@ class EvaluateDatasetTest(unittest.TestCase):
                 "source_traceability cannot pass when high_quality source linkage is incomplete",
             ):
                 evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=temp_root)
+
+    def test_gmp_acceptance_ignores_manual_correction_timing_gate(self) -> None:
+        data = self.valid_gmp_acceptance_data()
+        poc_data = self.valid_poc_comparison_data()
+        poc_data["manual_correction_time"]["assisted_minutes"] = 13.0
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            self.prepare_gmp_acceptance_repo(temp_root)
+            (temp_root / POC_COMPARISON_PATH.relative_to(REPO_ROOT)).write_text(
+                json.dumps(poc_data),
+                encoding="utf-8",
+            )
+
+            metrics = evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=temp_root)
+
+        self.assertTrue(metrics.target_met)
+        self.assertEqual(0, metrics.failed_criterion_count)
+        self.assertEqual((), metrics.failed_criteria)
 
     def test_gmp_acceptance_fails_when_audit_evidence_is_unmet(self) -> None:
         data = self.valid_gmp_acceptance_data()
