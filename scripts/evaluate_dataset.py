@@ -47,6 +47,7 @@ GMP_ACCEPTANCE_PUBLIC_EVIDENCE_ROOTS = (
     Path("scripts"),
     Path("tests"),
 )
+GMP_ACCEPTANCE_VERIFICATION_SHELL_CONTROL_CHARS = frozenset(";&|<>()")
 EXPECTED_SCOPE_PHASE = "phase0"
 PUBLIC_FIXTURE_ANONYMIZATION_VALUES = {"anonymized", "synthetic"}
 PUBLIC_LLM_STABILITY_SOURCE_KINDS = {"anonymized_text", "synthetic_text"}
@@ -1611,7 +1612,10 @@ def validate_gmp_acceptance_verification_command_paths(
     lexical_allowed_roots = tuple(str(path) for path in GMP_ACCEPTANCE_PUBLIC_EVIDENCE_ROOTS)
     for index, command in enumerate(verification_commands):
         try:
-            tokens = shlex.split(command, posix=False)
+            lexer = shlex.shlex(command, posix=False, punctuation_chars=True)
+            lexer.whitespace_split = True
+            lexer.commenters = ""
+            tokens = list(lexer)
         except ValueError as exc:
             raise EvaluationCaseError(
                 f"verification_commands[{index}] must be shell-tokenizable"
@@ -1620,6 +1624,13 @@ def validate_gmp_acceptance_verification_command_paths(
         candidates: list[str] = []
         for token in tokens:
             normalized_token = token.strip("\"'")
+            if (
+                normalized_token
+                and set(normalized_token) <= GMP_ACCEPTANCE_VERIFICATION_SHELL_CONTROL_CHARS
+            ) or "`" in normalized_token or "$(" in normalized_token:
+                raise EvaluationCaseError(
+                    f"verification_commands[{index}] must not contain shell control operators"
+                )
             candidates.append(normalized_token)
             if "=" in normalized_token:
                 candidates.append(normalized_token.split("=", 1)[1])
@@ -1662,6 +1673,10 @@ def validate_gmp_acceptance_verification_command_paths(
             if not public_path:
                 raise EvaluationCaseError(
                     f"verification_commands[{index}] must reference public repository files"
+                )
+            if not resolved_candidate.exists():
+                raise EvaluationCaseError(
+                    f"verification_commands[{index}] must reference existing public repository paths"
                 )
 
 

@@ -60,6 +60,11 @@ class EvaluateDatasetTest(unittest.TestCase):
             REPO_ROOT / "scripts" / "evaluate_dataset.py",
             temp_root / "scripts" / "evaluate_dataset.py",
         )
+        (temp_root / "scripts" / "ci").mkdir()
+        shutil.copy2(
+            REPO_ROOT / "scripts" / "ci" / "repo_hygiene.py",
+            temp_root / "scripts" / "ci" / "repo_hygiene.py",
+        )
         (temp_root / "tests").mkdir()
         shutil.copy2(
             REPO_ROOT / "tests" / "test_poc_web_api.py",
@@ -692,7 +697,7 @@ class EvaluateDatasetTest(unittest.TestCase):
         commands = (
             f"python3 {'/' + 'private' + '/recompute.py'}",
             evaluate_dataset.EXPECTED_GMP_ACCEPTANCE_COMMAND
-            + " && "
+            + " "
             + f"python3 {'/' + 'private' + '/recompute.py'}",
             "PYTHONPATH="
             + "D:"
@@ -714,7 +719,7 @@ class EvaluateDatasetTest(unittest.TestCase):
         commands = (
             "python3 private/recompute.py",
             evaluate_dataset.EXPECTED_GMP_ACCEPTANCE_COMMAND
-            + " && python3 private/recompute.py",
+            + " python3 private/recompute.py",
         )
         for command in commands:
             with self.subTest(command=command):
@@ -726,6 +731,35 @@ class EvaluateDatasetTest(unittest.TestCase):
                     r"verification_commands\[\d+\] must reference public repository files",
                 ):
                     evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=REPO_ROOT)
+
+    def test_gmp_acceptance_rejects_shell_control_verification_command(self) -> None:
+        commands = (
+            "python3 scripts/evaluate_dataset.py;/" + "private/recompute.py",
+            evaluate_dataset.EXPECTED_GMP_ACCEPTANCE_COMMAND
+            + " && python3 scripts/evaluate_dataset.py",
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                data = self.valid_gmp_acceptance_data()
+                data["verification_commands"].append(command)
+
+                with self.assertRaisesRegex(
+                    evaluate_dataset.EvaluationCaseError,
+                    r"verification_commands\[\d+\] must not contain shell control operators",
+                ):
+                    evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=REPO_ROOT)
+
+    def test_gmp_acceptance_rejects_missing_public_verification_command_path(
+        self,
+    ) -> None:
+        data = self.valid_gmp_acceptance_data()
+        data["verification_commands"].append("python3 scripts/ci/deleted_gate.py")
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError,
+            r"verification_commands\[\d+\] must reference existing public repository paths",
+        ):
+            evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=REPO_ROOT)
 
     def test_gmp_acceptance_rejects_missing_criterion_evidence_ref(self) -> None:
         data = self.valid_gmp_acceptance_data()
