@@ -113,6 +113,10 @@ class ReviewAuditEventStore:
 
     def record(self, audit_event: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
+            _raise_for_audit_event_integrity_violation(
+                self._events,
+                checkpoint=self._integrity_checkpoint,
+            )
             event = _audit_event_with_integrity(audit_event, previous_events=self._events)
             self._events.append(event)
             self._integrity_checkpoint = _audit_event_integrity_checkpoint(self._events)
@@ -125,6 +129,10 @@ class ReviewAuditEventStore:
     ) -> dict[str, Any]:
         event = deepcopy(audit_event)
         with self._lock:
+            _raise_for_audit_event_integrity_violation(
+                self._events,
+                checkpoint=self._integrity_checkpoint,
+            )
             validate(event, [_review_workflow_event_view(item) for item in self._events])
             event = _audit_event_with_integrity(event, previous_events=self._events)
             self._events.append(event)
@@ -159,6 +167,10 @@ class JobAuditEventStore:
 
     def record(self, audit_event: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
+            _raise_for_audit_event_integrity_violation(
+                self._events,
+                checkpoint=self._integrity_checkpoint,
+            )
             event = _audit_event_with_integrity(audit_event, previous_events=self._events)
             self._events.append(event)
             self._integrity_checkpoint = _audit_event_integrity_checkpoint(self._events)
@@ -235,6 +247,17 @@ def _verify_audit_event_integrity(
     if expected_head_hash != actual_head_hash:
         errors.append("audit log head hash mismatch")
     return {"ok": not errors, "errors": errors}
+
+
+def _raise_for_audit_event_integrity_violation(
+    events: list[dict[str, Any]],
+    *,
+    checkpoint: dict[str, Any],
+) -> None:
+    result = _verify_audit_event_integrity(events, checkpoint=checkpoint)
+    if not result["ok"]:
+        details = "; ".join(result["errors"])
+        raise ValueError(f"audit log integrity violation: {details}")
 
 
 def _audit_event_hash(event: dict[str, Any]) -> str:

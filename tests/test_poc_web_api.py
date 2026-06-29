@@ -960,6 +960,24 @@ def test_review_audit_event_store_detects_tail_truncation() -> None:
     }
 
 
+def test_review_audit_event_store_rejects_append_after_tail_truncation() -> None:
+    store = ReviewAuditEventStore()
+    store.record(_review_audit_event(conversion_id="conversion-first"))
+    store.record(_review_audit_event(conversion_id="conversion-second"))
+    del store._events[-1]  # noqa: SLF001
+
+    with pytest.raises(ValueError, match="audit log integrity violation"):
+        store.record(_review_audit_event(conversion_id="conversion-third"))
+
+    assert store.verify_integrity() == {
+        "ok": False,
+        "errors": [
+            "audit log terminal sequence mismatch",
+            "audit log head hash mismatch",
+        ],
+    }
+
+
 def test_job_audit_event_store_detects_tail_truncation() -> None:
     store = JobAuditEventStore()
     store.record(
@@ -978,6 +996,42 @@ def test_job_audit_event_store_detects_tail_truncation() -> None:
     )
 
     del store._events[-1]  # noqa: SLF001
+
+    assert store.verify_integrity() == {
+        "ok": False,
+        "errors": [
+            "audit log terminal sequence mismatch",
+            "audit log head hash mismatch",
+        ],
+    }
+
+
+def test_job_audit_event_store_rejects_append_after_tail_truncation() -> None:
+    store = JobAuditEventStore()
+    store.record(
+        {
+            "event_type": "job.lifecycle",
+            "job_id": "job-first",
+            "action": "conversion_completed",
+        }
+    )
+    store.record(
+        {
+            "event_type": "job.lifecycle",
+            "job_id": "job-second",
+            "action": "retry_conversion",
+        }
+    )
+    del store._events[-1]  # noqa: SLF001
+
+    with pytest.raises(ValueError, match="audit log integrity violation"):
+        store.record(
+            {
+                "event_type": "job.lifecycle",
+                "job_id": "job-third",
+                "action": "retry_conversion",
+            }
+        )
 
     assert store.verify_integrity() == {
         "ok": False,
@@ -1099,7 +1153,7 @@ def test_poc_http_api_filters_review_action_audit_events_by_action() -> None:
 
 
 def test_poc_http_api_filters_review_events_before_copying_payloads() -> None:
-    class CopyForbiddenText:
+    class CopyForbiddenText(str):
         def __deepcopy__(self, _memo: dict[object, object]) -> object:
             raise AssertionError("unrelated event payload was copied")
 
@@ -1118,7 +1172,14 @@ def test_poc_http_api_filters_review_events_before_copying_payloads() -> None:
         "occurred_at": "2026-06-27T00:00:00Z",
     }
     with store._lock:
+        unrelated_event["integrity_algorithm"] = poc_web.AUDIT_INTEGRITY_ALGORITHM
+        unrelated_event["sequence"] = 1
+        unrelated_event["prev_event_hash"] = None
+        unrelated_event["event_hash"] = poc_web._audit_event_hash(unrelated_event)
         store._events.append(unrelated_event)
+        store._integrity_checkpoint = poc_web._audit_event_integrity_checkpoint(  # noqa: SLF001
+            store._events
+        )
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
