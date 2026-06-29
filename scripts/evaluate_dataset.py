@@ -35,6 +35,10 @@ EXPECTED_DATASET_MANIFEST = EXPECTED_ALLOWED_FIXTURE_ROOT / "manifest.json"
 EXPECTED_EVALUATION_CASES = Path("datasets/gold/evaluation_cases_v0.json")
 EXPECTED_HIGH_RISK_LABELS = Path("datasets/gold/high_risk_labels_v0.json")
 EXPECTED_POC_COMPARISON = Path("datasets/gold/poc_mode_comparison_v1.json")
+EXPECTED_GMP_ACCEPTANCE_COMMAND = (
+    "python3 scripts/evaluate_dataset.py --gmp-acceptance "
+    "datasets/gold/gmp_acceptance_v1.json"
+)
 EXPECTED_SCOPE_PHASE = "phase0"
 PUBLIC_FIXTURE_ANONYMIZATION_VALUES = {"anonymized", "synthetic"}
 PUBLIC_LLM_STABILITY_SOURCE_KINDS = {"anonymized_text", "synthetic_text"}
@@ -1537,6 +1541,36 @@ def validate_text_list(value: object, context: str) -> tuple[str, ...]:
     return tuple(items)
 
 
+def validate_repo_relative_file_refs(
+    refs: tuple[str, ...], context: str, repo_root: Path
+) -> None:
+    resolved_root = repo_root.resolve()
+    for index, ref in enumerate(refs):
+        path = Path(ref)
+        if path.is_absolute() or ".." in path.parts:
+            raise EvaluationCaseError(f"{context}[{index}] must be a repo-relative file")
+        resolved_path = (repo_root / path).resolve()
+        if not resolved_path.is_relative_to(resolved_root):
+            raise EvaluationCaseError(f"{context}[{index}] must stay inside the repository")
+        if not resolved_path.is_file():
+            raise EvaluationCaseError(f"{context}[{index}] must reference an existing file")
+
+
+def require_gmp_acceptance_rerun_command(verification_commands: tuple[str, ...]) -> None:
+    if EXPECTED_GMP_ACCEPTANCE_COMMAND not in verification_commands:
+        raise EvaluationCaseError(
+            "verification_commands must include "
+            f"{EXPECTED_GMP_ACCEPTANCE_COMMAND!r}"
+        )
+
+
+def high_quality_poc_mode_metrics(poc_metrics: PoCComparisonMetrics) -> PoCModeMetrics:
+    for mode_metrics in poc_metrics.modes:
+        if mode_metrics.mode == "high_quality":
+            return mode_metrics
+    raise EvaluationCaseError("PoC comparison must include high_quality mode")
+
+
 def evaluate_gmp_acceptance(
     data: dict[str, Any], repo_root: Path | None = None
 ) -> GmpAcceptanceMetrics:
@@ -1546,12 +1580,17 @@ def evaluate_gmp_acceptance(
         )
     validate_scope(data)
     root = repo_root or Path.cwd()
+    manifest_path = manifest_path_from_cases(data, root)
+    if not manifest_path.is_file():
+        raise EvaluationCaseError("dataset_manifest must reference an existing file")
     poc_path = poc_comparison_path_from_gmp_acceptance(data, root)
     poc_metrics = evaluate_poc_mode_comparison(load_json(poc_path), repo_root=root)
+    high_quality_metrics = high_quality_poc_mode_metrics(poc_metrics)
 
     verification_commands = validate_text_list(
         data.get("verification_commands"), "verification_commands"
     )
+    require_gmp_acceptance_rerun_command(verification_commands)
     criteria = data.get("criteria")
     if not isinstance(criteria, list):
         raise EvaluationCaseError("GMP acceptance criteria must be a list")
@@ -1583,6 +1622,9 @@ def evaluate_gmp_acceptance(
         evidence_refs = validate_text_list(
             criterion.get("evidence_refs"), f"{context}.evidence_refs"
         )
+        validate_repo_relative_file_refs(
+            evidence_refs, f"{context}.evidence_refs", root
+        )
         notes = criterion.get("notes")
         if not isinstance(notes, str) or not normalized_text(notes):
             raise EvaluationCaseError(f"{context}.notes must be a non-empty string")
@@ -1606,6 +1648,17 @@ def evaluate_gmp_acceptance(
                 )
             normalized["observed_count"] = poc_metrics.high_risk_false_auto_confirmed_count
             normalized["target"] = poc_metrics.high_risk_false_auto_confirmed_target
+
+        if criterion_id == "source_traceability":
+            if high_quality_metrics.source_linkage_rate < 1.0 and status == "pass":
+                raise EvaluationCaseError(
+                    "source_traceability cannot pass when high_quality source "
+                    "linkage is incomplete"
+                )
+            normalized["high_quality_source_linkage_rate"] = (
+                high_quality_metrics.source_linkage_rate
+            )
+            normalized["target"] = 1.0
 
         normalized_criteria.append(normalized)
         if status == "fail":

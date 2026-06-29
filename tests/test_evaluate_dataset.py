@@ -4,6 +4,7 @@ import copy
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -43,6 +44,20 @@ class EvaluateDatasetTest(unittest.TestCase):
 
     def valid_high_risk_labels_data(self) -> dict[str, object]:
         return copy.deepcopy(evaluate_dataset.load_json(HIGH_RISK_LABELS_PATH))
+
+    def prepare_gmp_acceptance_repo(self, temp_root: Path) -> None:
+        shutil.copytree(REPO_ROOT / "datasets", temp_root / "datasets")
+        (temp_root / "docs").mkdir()
+        for doc_name in (
+            "gmp04-electronic-records-signatures.md",
+            "gmp08-acceptance-evaluation.md",
+        ):
+            shutil.copy2(REPO_ROOT / "docs" / doc_name, temp_root / "docs" / doc_name)
+        (temp_root / "tests").mkdir()
+        shutil.copy2(
+            REPO_ROOT / "tests" / "test_poc_web_api.py",
+            temp_root / "tests" / "test_poc_web_api.py",
+        )
 
     def evaluate_valid_cases(self, data: dict[str, object]) -> object:
         return evaluate_dataset.evaluate_cases(data, manifest_root=REPO_ROOT)
@@ -645,6 +660,60 @@ class EvaluateDatasetTest(unittest.TestCase):
             [criterion["id"] for criterion in report["criteria"]],
         )
         self.assertTrue(all(criterion["status"] == "pass" for criterion in report["criteria"]))
+
+    def test_gmp_acceptance_requires_canonical_dataset_manifest(self) -> None:
+        data = self.valid_gmp_acceptance_data()
+        data["dataset_manifest"] = "datasets/fixtures/alternate_manifest.json"
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError,
+            "dataset_manifest must be datasets/fixtures/manifest.json",
+        ):
+            evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=REPO_ROOT)
+
+    def test_gmp_acceptance_requires_rerun_command(self) -> None:
+        data = self.valid_gmp_acceptance_data()
+        data["verification_commands"] = ["python3 -m pytest tests -q"]
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError,
+            "verification_commands must include",
+        ):
+            evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=REPO_ROOT)
+
+    def test_gmp_acceptance_rejects_missing_criterion_evidence_ref(self) -> None:
+        data = self.valid_gmp_acceptance_data()
+        data["criteria"][0]["evidence_refs"] = ["datasets/gold/deleted-evidence.json"]
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError,
+            r"criteria\[0\]\.evidence_refs\[0\] must reference an existing file",
+        ):
+            evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=REPO_ROOT)
+
+    def test_gmp_acceptance_rejects_source_traceability_without_recomputed_linkage(
+        self,
+    ) -> None:
+        data = self.valid_gmp_acceptance_data()
+        poc_data = self.valid_poc_comparison_data()
+        for mode in poc_data["modes"]:
+            if mode["mode"] == "high_quality":
+                mode["cases"][0]["actual"]["tables"][0]["cells"][0].pop("source")
+                mode["metrics"]["source_linkage_rate"] = 0.5
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            self.prepare_gmp_acceptance_repo(temp_root)
+            (temp_root / POC_COMPARISON_PATH.relative_to(REPO_ROOT)).write_text(
+                json.dumps(poc_data),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                evaluate_dataset.EvaluationCaseError,
+                "source_traceability cannot pass when high_quality source linkage is incomplete",
+            ):
+                evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=temp_root)
 
     def test_gmp_acceptance_fails_when_audit_evidence_is_unmet(self) -> None:
         data = self.valid_gmp_acceptance_data()
