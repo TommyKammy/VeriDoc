@@ -62,7 +62,8 @@ class DesktopApiClientConfig:
             raise ValueError("base_url must not include embedded credentials")
         if not _is_local_api_host(parsed.hostname):
             raise ValueError("base_url must point to a local API endpoint")
-        object.__setattr__(self, "base_url", normalized.rstrip("/") + "/")
+        base_url = normalized.rstrip("/") + "/"
+        object.__setattr__(self, "base_url", base_url)
 
 
 class Transport(Protocol):
