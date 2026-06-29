@@ -2003,7 +2003,7 @@ def test_review_event_store_validates_and_records_under_same_lock() -> None:
     ]
 
 
-def test_poc_http_api_preserves_no_auth_review_approval_flow(
+def test_poc_http_api_rejects_no_auth_review_approval_flow(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv(poc_web.LOCAL_AUTH_TOKENS_ENV, raising=False)
@@ -2034,12 +2034,15 @@ def test_poc_http_api_preserves_no_auth_review_approval_flow(
 
     assert edit_status == 202
     assert edit_body["audit_event"]["actor"] == {"id": None, "role": None}
-    assert approve_status == 202
-    assert approve_body["audit_event"]["actor"] == {"id": None, "role": None}
-    assert [event["action"] for event in store.list_events()] == ["edit", "approve"]
+    assert approve_status == 403
+    assert approve_body == {
+        "error": "forbidden",
+        "message": "review approval requires authenticated actor identity",
+    }
+    assert [event["action"] for event in store.list_events()] == ["edit"]
 
 
-def test_poc_http_api_validates_no_auth_approval_text(
+def test_poc_http_api_rejects_no_auth_approval_before_workflow_validation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv(poc_web.LOCAL_AUTH_TOKENS_ENV, raising=False)
@@ -2069,10 +2072,10 @@ def test_poc_http_api_validates_no_auth_approval_text(
         thread.join(timeout=5)
 
     assert edit_status == 202
-    assert approve_status == 409
+    assert approve_status == 403
     assert approve_body == {
-        "error": "review_conflict",
-        "message": "review approval must target latest edited text",
+        "error": "forbidden",
+        "message": "review approval requires authenticated actor identity",
     }
     assert [event["action"] for event in store.list_events()] == ["edit"]
 
@@ -2198,6 +2201,7 @@ def test_poc_http_api_rejects_viewer_review_edit() -> None:
 
 def test_poc_http_api_rejects_malformed_review_action_audit_event() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.local_auth_tokens = _local_auth_tokens()
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -2228,7 +2232,11 @@ def test_poc_http_api_rejects_malformed_review_action_audit_event() -> None:
             "POST",
             "/api/review-events",
             body=payload,
-            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+            headers={
+                "Authorization": "Bearer approver-token",
+                "Content-Type": "application/json",
+                "Content-Length": str(len(payload)),
+            },
         )
         response = connection.getresponse()
         body = json.loads(response.read().decode("utf-8"))

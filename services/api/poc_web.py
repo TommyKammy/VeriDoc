@@ -976,6 +976,15 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
 
     def _role_has_permission(self, role: str | None, permission: str) -> bool:
         if role is None:
+            if permission == "review_events:approve":
+                self._send_json(
+                    {
+                        "error": "forbidden",
+                        "message": "review approval requires authenticated actor identity",
+                    },
+                    status=403,
+                )
+                return False
             return True
         if permission not in ROLE_PERMISSIONS[role]:
             self._send_json(

@@ -87,16 +87,13 @@
     {
       "id": "segregation_of_duties",
       "title": "Segregation of duties",
-      "scope": "authenticated role-token approval flows only",
-      "excluded_contexts": [
-        "no-auth PoC compatibility approval flow"
-      ],
+      "scope": "review approval flows with authenticated actor identity",
       "status": "pass",
       "evidence_refs": [
         "tests/test_poc_web_api.py",
         "docs/gmp07-validation-draft.md"
       ],
-      "notes": "Authenticated role-token flows reject same-actor approval and the GMP-07 traceability matrix maps this to URS-03; no-auth approval remains a PoC compatibility risk and is not counted as segregation-of-duties evidence."
+      "notes": "Authenticated role-token flows reject reviewer-only, same-actor, and same-principal approval; no-auth approval attempts are forbidden before workflow validation, and the GMP-07 traceability matrix maps this to URS-03."
     }
   ]
 }

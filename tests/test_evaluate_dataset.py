@@ -675,14 +675,12 @@ class EvaluateDatasetTest(unittest.TestCase):
         segregation = report["criteria"][-1]
         self.assertEqual("segregation_of_duties", segregation["id"])
         self.assertEqual(
-            "authenticated role-token approval flows only", segregation["scope"]
+            "review approval flows with authenticated actor identity",
+            segregation["scope"],
         )
-        self.assertEqual(
-            ["no-auth PoC compatibility approval flow"],
-            segregation["excluded_contexts"],
-        )
+        self.assertNotIn("excluded_contexts", segregation)
         self.assertIn("Authenticated role-token flows", segregation["notes"])
-        self.assertIn("no-auth approval remains", segregation["notes"])
+        self.assertIn("no-auth approval attempts are forbidden", segregation["notes"])
 
     def test_gmp_acceptance_requires_canonical_dataset_manifest(self) -> None:
         data = self.valid_gmp_acceptance_data()

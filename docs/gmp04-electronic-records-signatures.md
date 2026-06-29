@@ -111,8 +111,9 @@ Audit events should continue to:
   approval-history conflict checks, but unchanged approvals do not require an
   existing edit for the same conversion; legacy events without a conversion ID
   remain constrained by document and block, and by latest edited text checks
-  when comparable prior edits exist, with same-actor separation enforced only
-  when authenticated actor IDs exist;
+  when comparable prior edits exist;
+- reject approval attempts without authenticated actor identity before workflow
+  validation, while no-auth edit capture remains a local PoC compatibility path;
 - preserve caller-supplied source context fields with the review event after
   syntactic validation, without treating direct review-event submissions as
   verified lookup-backed links to a converted document, block, page, or bounding
