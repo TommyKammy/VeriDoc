@@ -3178,6 +3178,78 @@ def test_poc_http_api_persists_and_filters_job_audit_events() -> None:
     assert list_body == {"job_events": [event_body["audit_event"]]}
 
 
+def test_poc_http_api_checks_job_audit_integrity_before_retrying_job() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue(max_attempts=1)
+    server.job_event_store = JobAuditEventStore()
+    failed_job = server.job_queue.create_job(
+        idempotency_key="failed-1",
+        filename="failed-record.docx",
+        mode="standard",
+    )
+    running = server.job_queue.start_next_job()
+    assert running is not None
+    server.job_queue.mark_failed(failed_job.job_id, error="parser unavailable")
+    server.job_event_store.record(
+        {
+            "event_type": "job.lifecycle",
+            "job_id": "job-first",
+            "action": "conversion_completed",
+        }
+    )
+    server.job_event_store.record(
+        {
+            "event_type": "job.lifecycle",
+            "job_id": "job-second",
+            "action": "retry_conversion",
+        }
+    )
+    del server.job_event_store._events[-1]  # noqa: SLF001
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request("GET", "/api/jobs?status=failed")
+        failed_response = connection.getresponse()
+        failed_body = json.loads(failed_response.read().decode("utf-8"))
+        retry_action = next(
+            action
+            for action in failed_body["jobs"][0]["available_actions"]
+            if action["action"] == "retry_conversion"
+        )
+        event_payload = json.dumps(
+            {
+                "job_id": failed_job.job_id,
+                "action": "retry_conversion",
+                "audit_event": retry_action["audit_event"],
+            }
+        ).encode("utf-8")
+        connection.request(
+            "POST",
+            "/api/job-events",
+            body=event_payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(event_payload))},
+        )
+        event_response = connection.getresponse()
+        event_body = json.loads(event_response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert failed_response.status == 200
+    assert event_response.status == 400
+    assert event_body["error"] == "invalid_job_event"
+    assert "audit log integrity violation" in event_body["message"]
+    assert server.job_queue.get_job(failed_job.job_id).status == "failed"
+    assert server.job_event_store.verify_integrity() == {
+        "ok": False,
+        "errors": [
+            "audit log terminal sequence mismatch",
+            "audit log head hash mismatch",
+        ],
+    }
+
+
 def test_poc_http_api_requires_admin_role_for_retry_job_event() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     server.job_queue = JobQueue(max_attempts=1)

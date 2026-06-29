@@ -188,6 +188,13 @@ class JobAuditEventStore:
             self._integrity_checkpoint = _audit_event_integrity_checkpoint(self._events)
         return deepcopy(event)
 
+    def require_integrity(self) -> None:
+        with self._lock:
+            _raise_for_audit_event_integrity_violation(
+                self._events,
+                checkpoint=self._integrity_checkpoint,
+            )
+
     def list_events(self, filters: dict[str, str] | None = None) -> list[dict[str, Any]]:
         with self._lock:
             if filters:
@@ -754,10 +761,12 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             job_queue = self._job_queue()
             job = job_queue.get_job(job_id)
             accepted_event = _validate_job_event(job, action, audit_event, job_queue)
+            job_event_store = self._job_event_store()
             updated_job = job
             if action == "retry_conversion":
+                job_event_store.require_integrity()
                 updated_job = job_queue.retry_failed_job(job_id)
-            stored_event = self._job_event_store().record(
+            stored_event = job_event_store.record(
                 _job_event_with_auth_context(accepted_event, auth_context)
             )
         except KeyError:
