@@ -37,10 +37,16 @@ class Gmp04ElectronicRecordsSignaturesTest(unittest.TestCase):
             "no legal or regulatory compliance conclusion",
             "fail closed",
             "GMP-03",
+            "self-contained",
+            "and traceable to the current implementation anchors",
+            "standalone GMP-03 design artifact",
+            "The `reviewer` role has `review_events:edit` but not",
+            "`review_events:approve`; reviewer-only approval is rejected",
             "witness or QA approval",
             "ROLE_PERMISSIONS",
             "_validate_review_event",
             "_validate_review_workflow_event",
+            "tests/test_poc_web_api.py",
             "when local auth is enabled",
             "default unauthenticated PoC mode stores null actor/role fields",
             "`conversion_id` as an optional review-audit scope field",
@@ -54,6 +60,7 @@ class Gmp04ElectronicRecordsSignaturesTest(unittest.TestCase):
         forbidden_fragments = ("/" + "Users" + "/", "C:" + "\\Users" + "\\")
         for fragment in forbidden_fragments:
             self.assertNotIn(fragment, docs)
+        self.assertNotIn("GMP-03 established the role", docs)
 
 
 if __name__ == "__main__":

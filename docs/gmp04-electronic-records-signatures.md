@@ -43,29 +43,40 @@ system owns the signature ceremony and signature record.
 
 ## Relationship to GMP-03
 
-GMP-03 established the role and segregation of duties direction for local PoC
-review. GMP-04 depends on that boundary:
+Until a standalone GMP-03 design artifact exists in this repository, this note
+makes the role boundary and segregation of duties requirements self-contained
+and traceable to the current implementation anchors. GMP-04 depends on this
+current local PoC boundary:
 
-- `reviewer` actions can prepare or correct conversion review evidence.
-- `approver` actions can approve review items where the workflow allows it.
+- The `reviewer` role has `review_events:edit` but not
+  `review_events:approve`; reviewer-only approval is rejected by the local PoC
+  API.
+- The `approver` role has both `review_events:edit` and
+  `review_events:approve`, so it can approve review items where the workflow
+  allows it.
 - `admin` is currently authorized for both review edit and review approve API
   operations, so admin approval events can be accepted by the local PoC API;
   they still remain operational review events and must not be treated as QA or
   formal quality approval by role name alone.
 - A witness or QA approval must be represented as an explicit workflow step
   before it can be treated as required evidence.
+- Approval workflow validation must stay tied to the explicit review event:
+  when auth context exists, the approver must be a different actor than the
+  prior reviewer; approval text must match the current reviewed text; and
+  `conversion_id`, when present, scopes the prior-review search instead of
+  proving universal conversion-version binding.
 
 The design must not infer approval from naming conventions, nearby metadata, or
 comments. If a future signature workflow needs a signer, witness, or QA role,
 that binding must be explicit in the authoritative workflow record.
 
-The current verifiable implementation anchors for this dependency are the
-`ROLE_PERMISSIONS` matrix, `_validate_review_event`, and
-`_validate_review_workflow_event` in `services/api/poc_web.py`, plus the local
-PoC API tests that reject reviewer-only approval, same-actor approval, stale
-approval text, and unbound conversion approval. Those checks define the present
-GMP-03 enforcement boundary for GMP-04 documentation; future GMP-03 changes
-must update this note and the focused documentation regression together.
+The verifiable anchors for this boundary are the `ROLE_PERMISSIONS` matrix,
+`_validate_review_event`, and `_validate_review_workflow_event` in
+`services/api/poc_web.py`, plus the local PoC API tests in
+`tests/test_poc_web_api.py` that reject reviewer-only approval, same-actor
+approval, stale approval text, and unbound conversion approval. Future GMP-03
+changes must update this note and the focused GMP-04 documentation regression
+together.
 
 ## Audit Log and Electronic Record Posture
 
