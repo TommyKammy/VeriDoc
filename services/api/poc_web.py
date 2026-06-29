@@ -257,6 +257,17 @@ def _verify_audit_event_integrity(
         elif event_hash != _audit_event_hash(event):
             errors.append(f"event[{index}] hash mismatch")
         previous_hash = event_hash if isinstance(event_hash, str) else None
+    errors.extend(_audit_event_checkpoint_errors(events, checkpoint=checkpoint))
+    ok = not errors
+    return {"ok": ok, "errors": errors}
+
+
+def _audit_event_checkpoint_errors(
+    events: list[dict[str, Any]],
+    *,
+    checkpoint: dict[str, Any],
+) -> list[str]:
+    errors: list[str] = []
     expected_terminal_sequence = checkpoint.get("terminal_sequence")
     if expected_terminal_sequence != len(events):
         errors.append("audit log terminal sequence mismatch")
@@ -264,7 +275,7 @@ def _verify_audit_event_integrity(
     actual_head_hash = events[-1].get("event_hash") if events else None
     if expected_head_hash != actual_head_hash:
         errors.append("audit log head hash mismatch")
-    return {"ok": not errors, "errors": errors}
+    return errors
 
 
 def _raise_for_audit_event_integrity_violation(
