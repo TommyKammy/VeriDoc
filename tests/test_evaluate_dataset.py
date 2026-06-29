@@ -722,6 +722,61 @@ class EvaluateDatasetTest(unittest.TestCase):
             ):
                 evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=temp_root)
 
+    def test_gmp_acceptance_rejects_tampered_review_evidence_package(self) -> None:
+        def omit_dataset_manifest(
+            data: dict[str, object], poc_data: dict[str, object]
+        ) -> None:
+            data.pop("dataset_manifest")
+
+        def replace_rerun_command(
+            data: dict[str, object], poc_data: dict[str, object]
+        ) -> None:
+            data["verification_commands"] = ["python3 -m pytest tests -q"]
+
+        def delete_evidence_ref(
+            data: dict[str, object], poc_data: dict[str, object]
+        ) -> None:
+            data["criteria"][0]["evidence_refs"] = ["datasets/gold/deleted-evidence.json"]
+
+        def remove_high_quality_source_anchor(
+            data: dict[str, object], poc_data: dict[str, object]
+        ) -> None:
+            for mode in poc_data["modes"]:
+                if mode["mode"] == "high_quality":
+                    mode["cases"][0]["actual"]["tables"][0]["cells"][0].pop("source")
+                    mode["metrics"]["source_linkage_rate"] = 0.5
+
+        cases = (
+            ("dataset_manifest", omit_dataset_manifest, "dataset_manifest"),
+            ("verification_commands", replace_rerun_command, "verification_commands"),
+            (
+                "evidence_refs",
+                delete_evidence_ref,
+                r"criteria\[0\]\.evidence_refs\[0\] must reference an existing file",
+            ),
+            (
+                "source_traceability",
+                remove_high_quality_source_anchor,
+                "source_traceability cannot pass when high_quality source linkage is incomplete",
+            ),
+        )
+        for name, tamper, expected_error in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temp_dir:
+                temp_root = Path(temp_dir)
+                data = self.valid_gmp_acceptance_data()
+                poc_data = self.valid_poc_comparison_data()
+                tamper(data, poc_data)
+                self.prepare_gmp_acceptance_repo(temp_root)
+                (temp_root / POC_COMPARISON_PATH.relative_to(REPO_ROOT)).write_text(
+                    json.dumps(poc_data),
+                    encoding="utf-8",
+                )
+
+                with self.assertRaisesRegex(
+                    evaluate_dataset.EvaluationCaseError, expected_error
+                ):
+                    evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=temp_root)
+
     def test_gmp_acceptance_ignores_manual_correction_timing_gate(self) -> None:
         data = self.valid_gmp_acceptance_data()
         poc_data = self.valid_poc_comparison_data()

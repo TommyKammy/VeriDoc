@@ -1564,6 +1564,44 @@ def require_gmp_acceptance_rerun_command(verification_commands: tuple[str, ...])
         )
 
 
+def validate_gmp_acceptance_dataset_manifest(
+    data: dict[str, Any], repo_root: Path
+) -> Path:
+    manifest_path = manifest_path_from_cases(data, repo_root)
+    if not manifest_path.is_file():
+        raise EvaluationCaseError("dataset_manifest must reference an existing file")
+    return manifest_path
+
+
+def validate_gmp_acceptance_verification_commands(
+    data: dict[str, Any],
+) -> tuple[str, ...]:
+    verification_commands = validate_text_list(
+        data.get("verification_commands"), "verification_commands"
+    )
+    require_gmp_acceptance_rerun_command(verification_commands)
+    return verification_commands
+
+
+def validate_gmp_acceptance_evidence_refs(
+    criterion: dict[str, Any], context: str, repo_root: Path
+) -> tuple[str, ...]:
+    evidence_refs = validate_text_list(
+        criterion.get("evidence_refs"), f"{context}.evidence_refs"
+    )
+    validate_repo_relative_file_refs(evidence_refs, f"{context}.evidence_refs", repo_root)
+    return evidence_refs
+
+
+def validate_gmp_acceptance_source_traceability(
+    status: object, high_quality_metrics: PoCModeMetrics
+) -> None:
+    if high_quality_metrics.source_linkage_rate < 1.0 and status == "pass":
+        raise EvaluationCaseError(
+            "source_traceability cannot pass when high_quality source linkage is incomplete"
+        )
+
+
 def high_quality_poc_mode_metrics(poc_metrics: PoCComparisonMetrics) -> PoCModeMetrics:
     for mode_metrics in poc_metrics.modes:
         if mode_metrics.mode == "high_quality":
@@ -1580,17 +1618,12 @@ def evaluate_gmp_acceptance(
         )
     validate_scope(data)
     root = repo_root or Path.cwd()
-    manifest_path = manifest_path_from_cases(data, root)
-    if not manifest_path.is_file():
-        raise EvaluationCaseError("dataset_manifest must reference an existing file")
+    validate_gmp_acceptance_dataset_manifest(data, root)
     poc_path = poc_comparison_path_from_gmp_acceptance(data, root)
     poc_metrics = evaluate_poc_mode_comparison(load_json(poc_path), repo_root=root)
     high_quality_metrics = high_quality_poc_mode_metrics(poc_metrics)
 
-    verification_commands = validate_text_list(
-        data.get("verification_commands"), "verification_commands"
-    )
-    require_gmp_acceptance_rerun_command(verification_commands)
+    verification_commands = validate_gmp_acceptance_verification_commands(data)
     criteria = data.get("criteria")
     if not isinstance(criteria, list):
         raise EvaluationCaseError("GMP acceptance criteria must be a list")
@@ -1619,12 +1652,7 @@ def evaluate_gmp_acceptance(
         status = criterion.get("status")
         if status not in {"pass", "fail"}:
             raise EvaluationCaseError(f"{context}.status must be pass or fail")
-        evidence_refs = validate_text_list(
-            criterion.get("evidence_refs"), f"{context}.evidence_refs"
-        )
-        validate_repo_relative_file_refs(
-            evidence_refs, f"{context}.evidence_refs", root
-        )
+        evidence_refs = validate_gmp_acceptance_evidence_refs(criterion, context, root)
         notes = criterion.get("notes")
         if not isinstance(notes, str) or not normalized_text(notes):
             raise EvaluationCaseError(f"{context}.notes must be a non-empty string")
@@ -1650,11 +1678,7 @@ def evaluate_gmp_acceptance(
             normalized["target"] = poc_metrics.high_risk_false_auto_confirmed_target
 
         if criterion_id == "source_traceability":
-            if high_quality_metrics.source_linkage_rate < 1.0 and status == "pass":
-                raise EvaluationCaseError(
-                    "source_traceability cannot pass when high_quality source "
-                    "linkage is incomplete"
-                )
+            validate_gmp_acceptance_source_traceability(status, high_quality_metrics)
             normalized["high_quality_source_linkage_rate"] = (
                 high_quality_metrics.source_linkage_rate
             )
