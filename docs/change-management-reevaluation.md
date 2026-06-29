@@ -77,7 +77,7 @@ score those captured outputs with the public high-risk comparison harness:
 
 ```sh
 # Score the freshly recaptured comparison record.
-python3 scripts/evaluate_dataset.py --poc-comparison datasets/gold/poc_mode_comparison_v1.json
+python3 scripts/evaluate_dataset.py --poc-comparison datasets/gold/poc_mode_comparison_v1.json  # after fresh capture only
 ```
 
 This gate must use fresh public synthetic outputs from the changed branch for
