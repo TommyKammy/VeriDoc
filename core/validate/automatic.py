@@ -183,7 +183,9 @@ def validate_extracted_item(
         or confidence_requires_review
         or bool(condition_warnings)
     )
-    scope_binding_required = not (explicit_review_required or high_risk)
+    scope_binding_required = not (
+        explicit_review_required or high_risk or category_requires_review
+    )
     if scope_binding_required:
         for scope_key in ("fixture_id", "document_id", "block_id"):
             if not _same_non_empty_string(expected.get(scope_key), actual.get(scope_key)):
@@ -616,13 +618,19 @@ def _ocr_derived(record: Mapping[str, Any]) -> bool:
         if isinstance(value, str) and _source_marker_indicates_ocr(value):
             return True
     engine = record.get("engine")
-    if isinstance(engine, str) and engine.strip():
+    if isinstance(engine, str) and _engine_name_indicates_ocr(engine):
         return True
     extractor_name = _extractor_name(record)
     if extractor_name:
-        normalized = extractor_name.strip().casefold()
-        return any(marker in normalized for marker in OCR_EXTRACTOR_NAME_MARKERS)
+        return _engine_name_indicates_ocr(extractor_name)
     return False
+
+
+def _engine_name_indicates_ocr(value: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", "_", value.strip().casefold()).strip("_")
+    return _source_marker_indicates_ocr(value) or any(
+        marker in normalized for marker in OCR_EXTRACTOR_NAME_MARKERS
+    )
 
 
 def _source_marker_indicates_ocr(value: str) -> bool:
@@ -640,7 +648,7 @@ def _extraction_engine_mismatch(
 ) -> bool:
     expected_engine = _extraction_engine(expected)
     actual_engine = _extraction_engine(actual)
-    if expected_engine is None and actual_engine is None:
+    if expected_engine is None or actual_engine is None:
         return False
     return not _same_non_empty_string(expected_engine, actual_engine)
 

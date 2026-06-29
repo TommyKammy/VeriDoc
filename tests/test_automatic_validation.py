@@ -112,8 +112,17 @@ def test_low_confidence_item_cannot_be_auto_confirmed_even_with_matching_source(
 
 def test_low_confidence_item_does_not_skip_mandatory_scope_binding() -> None:
     decision = validate_extracted_item(
-        expected=_expected_item(risk_level="medium", requires_review=False),
-        actual=_actual_item(confidence=0.42),
+        expected=_expected_item(
+            label_id="summary_note",
+            expected_value="Reviewed note",
+            risk_level="medium",
+            requires_review=False,
+        ),
+        actual=_actual_item(
+            label_id="summary_note",
+            value="Reviewed note",
+            confidence=0.42,
+        ),
     )
 
     assert decision.auto_confirm_allowed is False
@@ -188,8 +197,13 @@ def test_item_scope_binding_requires_matching_fixture_id() -> None:
 
 def test_missing_expected_item_fixture_id_blocks_auto_confirm() -> None:
     decision = validate_extracted_item(
-        expected=_expected_item(risk_level="medium", requires_review=False),
-        actual=_actual_item(),
+        expected=_expected_item(
+            label_id="summary_note",
+            expected_value="Reviewed note",
+            risk_level="medium",
+            requires_review=False,
+        ),
+        actual=_actual_item(label_id="summary_note", value="Reviewed note"),
     )
 
     assert decision.auto_confirm_allowed is False
@@ -201,11 +215,17 @@ def test_missing_expected_item_fixture_id_blocks_auto_confirm() -> None:
 def test_missing_expected_item_document_or_block_scope_blocks_auto_confirm() -> None:
     decision = validate_extracted_item(
         expected=_expected_item(
+            label_id="summary_note",
+            expected_value="Reviewed note",
             risk_level="medium",
             requires_review=False,
             fixture_id="fixture-001",
         ),
-        actual=_actual_item(fixture_id="fixture-001"),
+        actual=_actual_item(
+            label_id="summary_note",
+            value="Reviewed note",
+            fixture_id="fixture-001",
+        ),
     )
 
     assert decision.auto_confirm_allowed is False
@@ -629,6 +649,27 @@ def test_status_field_id_alias_requires_review_as_judgment() -> None:
     assert "risk_gate" in decision.failed_rules
 
 
+def test_category_required_item_without_scope_is_review_only() -> None:
+    decision = validate_extracted_item(
+        expected=_expected_item(
+            label_id="release_status",
+            expected_value="Approved",
+            risk_level="medium",
+            requires_review=False,
+        ),
+        actual=_actual_item(
+            label_id="release_status",
+            value="Approved",
+            auto_confirmed=False,
+        ),
+    )
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.REQUIRES_REVIEW
+    assert decision.requires_review is True
+    assert decision.failed_rules == ()
+
+
 def test_value_metadata_source_comparison_ignores_non_source_fields() -> None:
     source = _evidence()
     decision = validate_extracted_item(
@@ -704,6 +745,70 @@ def test_value_metadata_extractor_mismatch_blocks_without_provenance_failure() -
     assert decision.requires_review is True
     assert decision.failed_rules == ("risk_gate",)
     assert "extraction engine mismatch requires human review" in decision.warnings
+
+
+def test_actual_only_extraction_engine_does_not_create_mismatch() -> None:
+    source = _evidence()
+    decision = validate_extracted_item(
+        expected=_expected_item(
+            label_id="summary_note",
+            expected_value="Reviewed note",
+            risk_level="medium",
+            requires_review=False,
+            fixture_id="fixture-001",
+            document_id="doc-001",
+            block_id="block-001",
+            evidence=source,
+        ),
+        actual=_actual_item(
+            label_id="summary_note",
+            value="Reviewed note",
+            auto_confirmed=True,
+            fixture_id="fixture-001",
+            document_id="doc-001",
+            block_id="block-001",
+            evidence=source,
+            extraction_engine="pymupdf-text",
+        ),
+    )
+
+    assert decision.auto_confirm_allowed is True
+    assert decision.status is ValidationStatus.PASS
+    assert decision.requires_review is False
+    assert decision.failed_rules == ()
+    assert "extraction engine mismatch requires human review" not in decision.warnings
+
+
+def test_generic_non_ocr_engine_does_not_mark_item_ocr_derived() -> None:
+    source = _evidence()
+    decision = validate_extracted_item(
+        expected=_expected_item(
+            label_id="summary_note",
+            expected_value="Reviewed note",
+            risk_level="medium",
+            requires_review=False,
+            fixture_id="fixture-001",
+            document_id="doc-001",
+            block_id="block-001",
+            evidence=source,
+        ),
+        actual=_actual_item(
+            label_id="summary_note",
+            value="Reviewed note",
+            auto_confirmed=True,
+            fixture_id="fixture-001",
+            document_id="doc-001",
+            block_id="block-001",
+            evidence=source,
+            engine="pymupdf-text",
+        ),
+    )
+
+    assert decision.auto_confirm_allowed is True
+    assert decision.status is ValidationStatus.PASS
+    assert decision.requires_review is False
+    assert decision.failed_rules == ()
+    assert "ocr-derived item requires human review" not in decision.warnings
 
 
 def test_malformed_item_risk_level_blocks_auto_confirm() -> None:
@@ -1440,6 +1545,43 @@ def test_malformed_table_cell_risk_level_blocks_auto_confirm() -> None:
     assert "risk_gate" in decision.failed_rules
 
 
+def test_actual_table_cell_malformed_gmp_category_blocks_auto_confirm() -> None:
+    source = _evidence()
+    expected_table = {
+        "id": "table-001",
+        "fixture_table_id": "table-001",
+        "risk_level": "medium",
+        "cells": [
+            {
+                "id": "table-001-r1-c1",
+                "text": "SAMPLE-LOT-001",
+                "source": source,
+                "requires_review": False,
+                "risk_level": "low",
+            },
+        ],
+    }
+    actual_table = {
+        "id": "table-001",
+        "cells": [
+            {
+                "id": "table-001-r1-c1",
+                "text": "SAMPLE-LOT-001",
+                "source": source,
+                "gmp_review_category": "not-a-gmp-category",
+                "auto_confirmed": False,
+            },
+        ],
+    }
+
+    decision = validate_table_consistency(expected_table, actual_table)
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert decision.requires_review is True
+    assert "risk_gate" in decision.failed_rules
+
+
 def test_table_cell_text_rejects_numeric_actual_value() -> None:
     expected_table = {
         "id": "table-001",
@@ -1701,8 +1843,13 @@ def test_current_head_review_examples_fail_closed() -> None:
         (
             "missing_fixture_scope",
             validate_extracted_item(
-                expected=_expected_item(risk_level="medium", requires_review=False),
-                actual=_actual_item(),
+                expected=_expected_item(
+                    label_id="summary_note",
+                    expected_value="Reviewed note",
+                    risk_level="medium",
+                    requires_review=False,
+                ),
+                actual=_actual_item(label_id="summary_note", value="Reviewed note"),
             ),
             "scope_binding",
         ),
@@ -1710,11 +1857,17 @@ def test_current_head_review_examples_fail_closed() -> None:
             "missing_document_block_scope",
             validate_extracted_item(
                 expected=_expected_item(
+                    label_id="summary_note",
+                    expected_value="Reviewed note",
                     risk_level="medium",
                     requires_review=False,
                     fixture_id="fixture-001",
                 ),
-                actual=_actual_item(fixture_id="fixture-001"),
+                actual=_actual_item(
+                    label_id="summary_note",
+                    value="Reviewed note",
+                    fixture_id="fixture-001",
+                ),
             ),
             "scope_binding",
         ),
