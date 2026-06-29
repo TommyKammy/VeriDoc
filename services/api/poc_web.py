@@ -98,6 +98,7 @@ HTTP_CONTENT_TYPE = re.compile(
     r"(?:[ \t]*;[ \t]*[A-Za-z0-9!#$&^_.+-]+=[A-Za-z0-9!#$&^_.+-]+)*$"
 )
 DEFAULT_JOB_QUEUE = JobQueue()
+AUDIT_INTEGRITY_ALGORITHM = "sha256-canonical-json-chain-v1"
 
 
 class PocServerDependencyError(RuntimeError):
@@ -110,8 +111,8 @@ class ReviewAuditEventStore:
         self._lock = Lock()
 
     def record(self, audit_event: dict[str, Any]) -> dict[str, Any]:
-        event = deepcopy(audit_event)
         with self._lock:
+            event = _audit_event_with_integrity(audit_event, previous_events=self._events)
             self._events.append(event)
         return deepcopy(event)
 
@@ -123,6 +124,7 @@ class ReviewAuditEventStore:
         event = deepcopy(audit_event)
         with self._lock:
             validate(event, [_review_workflow_event_view(item) for item in self._events])
+            event = _audit_event_with_integrity(event, previous_events=self._events)
             self._events.append(event)
         return deepcopy(event)
 
@@ -138,6 +140,10 @@ class ReviewAuditEventStore:
                 events = self._events
             return deepcopy(events)
 
+    def verify_integrity(self) -> dict[str, Any]:
+        with self._lock:
+            return _verify_audit_event_integrity(self._events)
+
 
 class JobAuditEventStore:
     def __init__(self) -> None:
@@ -145,8 +151,8 @@ class JobAuditEventStore:
         self._lock = Lock()
 
     def record(self, audit_event: dict[str, Any]) -> dict[str, Any]:
-        event = deepcopy(audit_event)
         with self._lock:
+            event = _audit_event_with_integrity(audit_event, previous_events=self._events)
             self._events.append(event)
         return deepcopy(event)
 
@@ -161,6 +167,55 @@ class JobAuditEventStore:
             else:
                 events = self._events
             return deepcopy(events)
+
+    def verify_integrity(self) -> dict[str, Any]:
+        with self._lock:
+            return _verify_audit_event_integrity(self._events)
+
+
+def _audit_event_with_integrity(
+    audit_event: dict[str, Any],
+    *,
+    previous_events: list[dict[str, Any]],
+) -> dict[str, Any]:
+    event = deepcopy(audit_event)
+    event["integrity_algorithm"] = AUDIT_INTEGRITY_ALGORITHM
+    event["sequence"] = len(previous_events) + 1
+    previous_hash = previous_events[-1].get("event_hash") if previous_events else None
+    event["prev_event_hash"] = previous_hash if isinstance(previous_hash, str) else None
+    event["event_hash"] = _audit_event_hash(event)
+    return event
+
+
+def _verify_audit_event_integrity(events: list[dict[str, Any]]) -> dict[str, Any]:
+    errors: list[str] = []
+    previous_hash: str | None = None
+    for index, event in enumerate(events):
+        sequence = index + 1
+        if event.get("integrity_algorithm") != AUDIT_INTEGRITY_ALGORITHM:
+            errors.append(f"event[{index}] integrity algorithm mismatch")
+        if event.get("sequence") != sequence:
+            errors.append(f"event[{index}] sequence mismatch")
+        if event.get("prev_event_hash") != previous_hash:
+            errors.append(f"event[{index}] previous hash mismatch")
+        event_hash = event.get("event_hash")
+        if not isinstance(event_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", event_hash):
+            errors.append(f"event[{index}] hash missing")
+        elif event_hash != _audit_event_hash(event):
+            errors.append(f"event[{index}] hash mismatch")
+        previous_hash = event_hash if isinstance(event_hash, str) else None
+    return {"ok": not errors, "errors": errors}
+
+
+def _audit_event_hash(event: dict[str, Any]) -> str:
+    hash_input = {key: value for key, value in event.items() if key != "event_hash"}
+    canonical = json.dumps(
+        hash_input,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
 
 
 class TemplateStore:

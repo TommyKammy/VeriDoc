@@ -916,6 +916,33 @@ def test_poc_http_api_persists_review_action_audit_event_server_side() -> None:
     assert events[0]["revised_text"] == "Lot: SAMPLE-001 corrected"
 
 
+def test_review_audit_event_store_records_hash_chain_metadata() -> None:
+    store = ReviewAuditEventStore()
+
+    first = store.record(_review_audit_event(conversion_id="conversion-first"))
+    second = store.record(_review_audit_event(conversion_id="conversion-second"))
+
+    assert first["integrity_algorithm"] == "sha256-canonical-json-chain-v1"
+    assert first["sequence"] == 1
+    assert first["prev_event_hash"] is None
+    assert re.fullmatch(r"[0-9a-f]{64}", first["event_hash"])
+    assert second["sequence"] == 2
+    assert second["prev_event_hash"] == first["event_hash"]
+    assert store.verify_integrity() == {"ok": True, "errors": []}
+
+
+def test_review_audit_event_store_detects_tampered_fixture() -> None:
+    store = ReviewAuditEventStore()
+    store.record(_review_audit_event())
+
+    store._events[0]["revised_text"] = "tampered after append"  # noqa: SLF001
+
+    assert store.verify_integrity() == {
+        "ok": False,
+        "errors": ["event[0] hash mismatch"],
+    }
+
+
 def test_poc_http_api_lists_server_side_review_action_audit_events() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     server.review_event_store = ReviewAuditEventStore()
