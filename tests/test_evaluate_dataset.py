@@ -17,6 +17,7 @@ CASES_PATH = REPO_ROOT / "datasets" / "gold" / "evaluation_cases_v0.json"
 HIGH_RISK_LABELS_PATH = REPO_ROOT / "datasets" / "gold" / "high_risk_labels_v0.json"
 LLM_STABILITY_RUNS_PATH = REPO_ROOT / "datasets" / "gold" / "llm_stability_runs_v0.json"
 POC_COMPARISON_PATH = REPO_ROOT / "datasets" / "gold" / "poc_mode_comparison_v1.json"
+GMP_ACCEPTANCE_PATH = REPO_ROOT / "datasets" / "gold" / "gmp_acceptance_v1.json"
 
 
 spec = importlib.util.spec_from_file_location("evaluate_dataset", SCRIPT_PATH)
@@ -36,6 +37,9 @@ class EvaluateDatasetTest(unittest.TestCase):
 
     def valid_poc_comparison_data(self) -> dict[str, object]:
         return copy.deepcopy(evaluate_dataset.load_json(POC_COMPARISON_PATH))
+
+    def valid_gmp_acceptance_data(self) -> dict[str, object]:
+        return copy.deepcopy(evaluate_dataset.load_json(GMP_ACCEPTANCE_PATH))
 
     def valid_high_risk_labels_data(self) -> dict[str, object]:
         return copy.deepcopy(evaluate_dataset.load_json(HIGH_RISK_LABELS_PATH))
@@ -614,6 +618,43 @@ class EvaluateDatasetTest(unittest.TestCase):
         )
         self.assertEqual(1, metrics.high_risk_false_auto_confirmed_count)
         self.assertFalse(metrics.target_met)
+
+    def test_gmp_acceptance_reports_15_7_criteria(self) -> None:
+        metrics = evaluate_dataset.evaluate_gmp_acceptance(
+            self.valid_gmp_acceptance_data(), repo_root=REPO_ROOT
+        )
+
+        report = metrics.as_dict()
+
+        self.assertTrue(report["target_met"])
+        self.assertEqual(8, report["criterion_count"])
+        self.assertEqual(0, report["failed_criterion_count"])
+        self.assertEqual(0, report["high_risk_false_auto_confirmed_count"])
+        self.assertEqual("datasets/gold/poc_mode_comparison_v1.json", report["poc_comparison"])
+        self.assertEqual(
+            [
+                "high_risk_review",
+                "missed_detection_zero",
+                "source_traceability",
+                "originality",
+                "audit_trail",
+                "completeness",
+                "reproducibility",
+                "segregation_of_duties",
+            ],
+            [criterion["id"] for criterion in report["criteria"]],
+        )
+        self.assertTrue(all(criterion["status"] == "pass" for criterion in report["criteria"]))
+
+    def test_gmp_acceptance_fails_when_audit_evidence_is_unmet(self) -> None:
+        data = self.valid_gmp_acceptance_data()
+        data["criteria"][4]["status"] = "fail"
+
+        metrics = evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=REPO_ROOT)
+
+        self.assertFalse(metrics.target_met)
+        self.assertEqual(1, metrics.failed_criterion_count)
+        self.assertEqual("audit_trail", metrics.failed_criteria[0]["id"])
 
     def test_llm_stability_agreement_rates_do_not_depend_on_run_order(self) -> None:
         data = self.valid_llm_stability_data()

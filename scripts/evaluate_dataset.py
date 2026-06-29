@@ -22,9 +22,11 @@ from core.llm.conversion_plan import ConversionPlanValidationError, validate_con
 DEFAULT_EVALUATION_CASES = Path("datasets/gold/evaluation_cases_v0.json")
 DEFAULT_LLM_STABILITY_RUNS = Path("datasets/gold/llm_stability_runs_v0.json")
 DEFAULT_POC_COMPARISON = Path("datasets/gold/poc_mode_comparison_v1.json")
+DEFAULT_GMP_ACCEPTANCE = Path("datasets/gold/gmp_acceptance_v1.json")
 EVALUATION_CASES_SCHEMA_VERSION = "veridoc-evaluation-cases/v0"
 LLM_STABILITY_RUNS_SCHEMA_VERSION = "veridoc-llm-stability-runs/v0"
 POC_MODE_COMPARISON_SCHEMA_VERSION = "veridoc-poc-mode-comparison/v1"
+GMP_ACCEPTANCE_SCHEMA_VERSION = "veridoc-gmp-acceptance/v1"
 HIGH_RISK_LABELS_SCHEMA_VERSION = "veridoc-high-risk-labels/v0"
 FIXTURE_MANIFEST_SCHEMA_VERSION = "veridoc-eval-fixtures/v0"
 FIXTURE_SCHEMA_VERSION = "veridoc-evaluation-fixture/v0"
@@ -32,10 +34,21 @@ EXPECTED_ALLOWED_FIXTURE_ROOT = Path("datasets/fixtures")
 EXPECTED_DATASET_MANIFEST = EXPECTED_ALLOWED_FIXTURE_ROOT / "manifest.json"
 EXPECTED_EVALUATION_CASES = Path("datasets/gold/evaluation_cases_v0.json")
 EXPECTED_HIGH_RISK_LABELS = Path("datasets/gold/high_risk_labels_v0.json")
+EXPECTED_POC_COMPARISON = Path("datasets/gold/poc_mode_comparison_v1.json")
 EXPECTED_SCOPE_PHASE = "phase0"
 PUBLIC_FIXTURE_ANONYMIZATION_VALUES = {"anonymized", "synthetic"}
 PUBLIC_LLM_STABILITY_SOURCE_KINDS = {"anonymized_text", "synthetic_text"}
 REQUIRED_POC_MODES = ("no_llm", "standard", "high_quality")
+REQUIRED_GMP_ACCEPTANCE_CRITERIA = (
+    "high_risk_review",
+    "missed_detection_zero",
+    "source_traceability",
+    "originality",
+    "audit_trail",
+    "completeness",
+    "reproducibility",
+    "segregation_of_duties",
+)
 HighRiskLabelKey = tuple[str, str, str]
 
 
@@ -151,6 +164,34 @@ class PoCComparisonMetrics:
             "target_met": self.target_met,
             "manual_correction_time": self.manual_correction_time.as_dict(),
             "modes": [mode.as_dict() for mode in self.modes],
+        }
+
+
+@dataclass(frozen=True)
+class GmpAcceptanceMetrics:
+    poc_comparison: str
+    criterion_count: int
+    failed_criterion_count: int
+    high_risk_false_auto_confirmed_count: int
+    high_risk_false_auto_confirmed_target: int
+    target_met: bool
+    criteria: tuple[dict[str, object], ...]
+    failed_criteria: tuple[dict[str, object], ...]
+    verification_commands: tuple[str, ...]
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "poc_comparison": self.poc_comparison,
+            "criterion_count": self.criterion_count,
+            "failed_criterion_count": self.failed_criterion_count,
+            "high_risk_false_auto_confirmed_count": self.high_risk_false_auto_confirmed_count,
+            "high_risk_false_auto_confirmed_target": (
+                self.high_risk_false_auto_confirmed_target
+            ),
+            "target_met": self.target_met,
+            "criteria": list(self.criteria),
+            "failed_criteria": list(self.failed_criteria),
+            "verification_commands": list(self.verification_commands),
         }
 
 
@@ -969,6 +1010,18 @@ def evaluation_cases_path_from_comparison(data: dict[str, Any], repo_root: Path)
     return repo_root / path
 
 
+def poc_comparison_path_from_gmp_acceptance(data: dict[str, Any], repo_root: Path) -> Path:
+    comparison_path = data.get("poc_comparison")
+    if not isinstance(comparison_path, str) or not comparison_path:
+        raise EvaluationCaseError("poc_comparison must be a non-empty string")
+    path = Path(comparison_path)
+    if path.is_absolute() or path != EXPECTED_POC_COMPARISON:
+        raise EvaluationCaseError(
+            "poc_comparison must be datasets/gold/poc_mode_comparison_v1.json"
+        )
+    return repo_root / path
+
+
 def high_risk_label_index(labels_data: dict[str, Any]) -> dict[HighRiskLabelKey, dict[str, Any]]:
     if labels_data.get("schema_version") != HIGH_RISK_LABELS_SCHEMA_VERSION:
         raise EvaluationCaseError(
@@ -1468,6 +1521,119 @@ def evaluate_poc_mode_comparison(
     )
 
 
+def validate_text_list(value: object, context: str) -> tuple[str, ...]:
+    if not isinstance(value, list) or not value:
+        raise EvaluationCaseError(f"{context} must be a non-empty list")
+    workstation_home_fragments = ("/" + "Users" + "/", "C:" + "\\Users" + "\\")
+    items: list[str] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, str) or not normalized_text(item):
+            raise EvaluationCaseError(f"{context}[{index}] must be a non-empty string")
+        if Path(item).is_absolute() or any(
+            fragment in item for fragment in workstation_home_fragments
+        ):
+            raise EvaluationCaseError(f"{context}[{index}] must be repo-relative or generic")
+        items.append(normalized_text(item))
+    return tuple(items)
+
+
+def evaluate_gmp_acceptance(
+    data: dict[str, Any], repo_root: Path | None = None
+) -> GmpAcceptanceMetrics:
+    if data.get("schema_version") != GMP_ACCEPTANCE_SCHEMA_VERSION:
+        raise EvaluationCaseError(
+            f"unsupported GMP acceptance schema_version {data.get('schema_version')!r}"
+        )
+    validate_scope(data)
+    root = repo_root or Path.cwd()
+    poc_path = poc_comparison_path_from_gmp_acceptance(data, root)
+    poc_metrics = evaluate_poc_mode_comparison(load_json(poc_path), repo_root=root)
+
+    verification_commands = validate_text_list(
+        data.get("verification_commands"), "verification_commands"
+    )
+    criteria = data.get("criteria")
+    if not isinstance(criteria, list):
+        raise EvaluationCaseError("GMP acceptance criteria must be a list")
+    if len(criteria) != len(REQUIRED_GMP_ACCEPTANCE_CRITERIA):
+        raise EvaluationCaseError("GMP acceptance criteria must cover all 15.7 criteria")
+
+    seen_ids: set[str] = set()
+    normalized_criteria: list[dict[str, object]] = []
+    failed_criteria: list[dict[str, object]] = []
+    for index, criterion in enumerate(criteria):
+        context = f"criteria[{index}]"
+        if not isinstance(criterion, dict):
+            raise EvaluationCaseError(f"{context} must be an object")
+        criterion_id = criterion.get("id")
+        if criterion_id != REQUIRED_GMP_ACCEPTANCE_CRITERIA[index]:
+            raise EvaluationCaseError(
+                f"{context}.id must be {REQUIRED_GMP_ACCEPTANCE_CRITERIA[index]!r}"
+            )
+        if criterion_id in seen_ids:
+            raise EvaluationCaseError(f"duplicate GMP acceptance criterion {criterion_id!r}")
+        seen_ids.add(criterion_id)
+
+        title = criterion.get("title")
+        if not isinstance(title, str) or not normalized_text(title):
+            raise EvaluationCaseError(f"{context}.title must be a non-empty string")
+        status = criterion.get("status")
+        if status not in {"pass", "fail"}:
+            raise EvaluationCaseError(f"{context}.status must be pass or fail")
+        evidence_refs = validate_text_list(
+            criterion.get("evidence_refs"), f"{context}.evidence_refs"
+        )
+        notes = criterion.get("notes")
+        if not isinstance(notes, str) or not normalized_text(notes):
+            raise EvaluationCaseError(f"{context}.notes must be a non-empty string")
+
+        normalized = {
+            "id": criterion_id,
+            "title": normalized_text(title),
+            "status": status,
+            "evidence_refs": list(evidence_refs),
+            "notes": normalized_text(notes),
+        }
+        if criterion_id == "missed_detection_zero":
+            if (
+                poc_metrics.high_risk_false_auto_confirmed_count
+                > poc_metrics.high_risk_false_auto_confirmed_target
+                and status == "pass"
+            ):
+                raise EvaluationCaseError(
+                    "missed_detection_zero cannot pass when high-risk false "
+                    "auto-confirmation count exceeds target"
+                )
+            normalized["observed_count"] = poc_metrics.high_risk_false_auto_confirmed_count
+            normalized["target"] = poc_metrics.high_risk_false_auto_confirmed_target
+
+        normalized_criteria.append(normalized)
+        if status == "fail":
+            failed_criteria.append(normalized)
+
+    target_met = (
+        not failed_criteria
+        and poc_metrics.target_met
+        and poc_metrics.high_risk_false_auto_confirmed_count
+        <= poc_metrics.high_risk_false_auto_confirmed_target
+    )
+    return GmpAcceptanceMetrics(
+        poc_comparison=str(EXPECTED_POC_COMPARISON),
+        criterion_count=len(normalized_criteria),
+        failed_criterion_count=len(failed_criteria),
+        high_risk_false_auto_confirmed_count=(
+            poc_metrics.high_risk_false_auto_confirmed_count
+        ),
+        high_risk_false_auto_confirmed_target=(
+            poc_metrics.high_risk_false_auto_confirmed_target
+        ),
+        target_met=target_met,
+        criteria=tuple(normalized_criteria),
+        failed_criteria=tuple(failed_criteria),
+        verification_commands=verification_commands,
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cases", type=Path, default=DEFAULT_EVALUATION_CASES)
@@ -1481,10 +1647,21 @@ def main() -> int:
         type=Path,
         help="Compare no-LLM, standard, and high-quality PoC outputs from public records.",
     )
+    parser.add_argument(
+        "--gmp-acceptance",
+        type=Path,
+        help="Report GMP-08 15.7 acceptance criteria from public synthetic records.",
+    )
     args = parser.parse_args()
 
     try:
-        if args.poc_comparison is not None:
+        if args.gmp_acceptance is not None:
+            gmp_acceptance_path = args.gmp_acceptance.resolve()
+            metrics = evaluate_gmp_acceptance(
+                load_json(gmp_acceptance_path),
+                repo_root=repository_root_for_gold_path(gmp_acceptance_path),
+            )
+        elif args.poc_comparison is not None:
             poc_comparison_path = args.poc_comparison.resolve()
             metrics = evaluate_poc_mode_comparison(
                 load_json(poc_comparison_path),
