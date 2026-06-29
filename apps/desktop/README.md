@@ -36,6 +36,18 @@ Tauri v2 scaffold here, but it should preserve these constraints:
 - UI state is derived from API responses and durable job state, not inferred
   from filenames, local path shape, or display text.
 
+## API Authentication Boundary
+
+`apps.desktop.api_client` keeps endpoint configuration separate from API
+credentials. `DesktopApiClientConfig` stores only the local API base URL and
+timeout; bearer tokens are read through `ApiCredentialStore`, which should be
+wired to the OS credential store by the desktop shell.
+
+The client fails closed before network dispatch when no token is available or
+when the configured value is an obvious placeholder such as `<viewer-token>` or
+`TODO`. Authenticated requests attach the credential as an `Authorization:
+Bearer ...` header and treat `401`/`403` responses as authentication failures.
+
 ## Initial Local Checks
 
 The documentation-only boundary introduced by P5-01 is verified with:
