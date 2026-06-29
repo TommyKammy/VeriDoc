@@ -48,14 +48,24 @@ review. GMP-04 depends on that boundary:
 
 - `reviewer` actions can prepare or correct conversion review evidence.
 - `approver` actions can approve review items where the workflow allows it.
-- `admin` actions remain operational and must not be treated as quality approval
-  by role name alone.
+- `admin` is currently authorized for both review edit and review approve API
+  operations, so admin approval events can be accepted by the local PoC API;
+  they still remain operational review events and must not be treated as QA or
+  formal quality approval by role name alone.
 - A witness or QA approval must be represented as an explicit workflow step
   before it can be treated as required evidence.
 
 The design must not infer approval from naming conventions, nearby metadata, or
 comments. If a future signature workflow needs a signer, witness, or QA role,
 that binding must be explicit in the authoritative workflow record.
+
+The current verifiable implementation anchors for this dependency are the
+`ROLE_PERMISSIONS` matrix, `_validate_review_event`, and
+`_validate_review_workflow_event` in `services/api/poc_web.py`, plus the local
+PoC API tests that reject reviewer-only approval, same-actor approval, stale
+approval text, and unbound conversion approval. Those checks define the present
+GMP-03 enforcement boundary for GMP-04 documentation; future GMP-03 changes
+must update this note and the focused documentation regression together.
 
 ## Audit Log and Electronic Record Posture
 
@@ -66,8 +76,13 @@ workflow.
 
 Audit events should continue to:
 
-- reject missing actor, role, document, block, conversion, or source-position
+- reject missing actor, role, document, block, or required source-position
   signals at the enforcement boundary;
+- treat `conversion_id` as an optional review-audit scope field in the current
+  endpoint: when present it must be a non-empty string and approval must stay
+  bound to the matching conversion history, while legacy events without a
+  conversion ID remain constrained by document, block, actor, and latest edited
+  text checks;
 - preserve source context directly linked to the reviewed record;
 - avoid broadening advisory or reconciliation context from sibling records;
 - keep append and projection updates all-or-nothing when persistent storage is
@@ -77,6 +92,13 @@ Audit events should continue to:
 The audit log can support controlled review evidence, but it is not a signature
 ledger unless a future validated signing boundary writes and verifies the
 signature-specific record.
+
+Because the current review audit endpoint accepts legacy events without
+`conversion_id`, VeriDoc must not claim conversion-version binding as universal
+electronic-record evidence for all existing audit rows. For regulated acceptance,
+QA and GMP SMEs must either require conversion IDs for the controlled workflow or
+document why document/block/latest-edit scoping is sufficient for the applicable
+site procedure.
 
 ## External Signature Integration Option
 

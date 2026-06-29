@@ -38,6 +38,12 @@ class Gmp04ElectronicRecordsSignaturesTest(unittest.TestCase):
             "fail closed",
             "GMP-03",
             "witness or QA approval",
+            "ROLE_PERMISSIONS",
+            "_validate_review_event",
+            "_validate_review_workflow_event",
+            "`conversion_id` as an optional review-audit scope field",
+            "admin approval events can be accepted by the local PoC API",
+            "must not claim conversion-version binding as universal",
         ):
             self.assertIn(required_text, docs)
 
