@@ -39,6 +39,13 @@ EXPECTED_GMP_ACCEPTANCE_COMMAND = (
     "python3 scripts/evaluate_dataset.py --gmp-acceptance "
     "datasets/gold/gmp_acceptance_v1.json"
 )
+GMP_ACCEPTANCE_PUBLIC_EVIDENCE_ROOTS = (
+    Path("datasets/fixtures"),
+    Path("datasets/gold"),
+    Path("docs"),
+    Path("scripts"),
+    Path("tests"),
+)
 EXPECTED_SCOPE_PHASE = "phase0"
 PUBLIC_FIXTURE_ANONYMIZATION_VALUES = {"anonymized", "synthetic"}
 PUBLIC_LLM_STABILITY_SOURCE_KINDS = {"anonymized_text", "synthetic_text"}
@@ -1556,6 +1563,21 @@ def validate_repo_relative_file_refs(
             raise EvaluationCaseError(f"{context}[{index}] must reference an existing file")
 
 
+def validate_public_gmp_acceptance_evidence_refs(
+    refs: tuple[str, ...], context: str, repo_root: Path
+) -> None:
+    validate_repo_relative_file_refs(refs, context, repo_root)
+    for index, ref in enumerate(refs):
+        path = Path(ref)
+        if not any(
+            path == allowed_root or path.is_relative_to(allowed_root)
+            for allowed_root in GMP_ACCEPTANCE_PUBLIC_EVIDENCE_ROOTS
+        ):
+            raise EvaluationCaseError(
+                f"{context}[{index}] must reference public synthetic GMP evidence"
+            )
+
+
 def require_gmp_acceptance_rerun_command(verification_commands: tuple[str, ...]) -> None:
     if EXPECTED_GMP_ACCEPTANCE_COMMAND not in verification_commands:
         raise EvaluationCaseError(
@@ -1589,7 +1611,9 @@ def validate_gmp_acceptance_evidence_refs(
     evidence_refs = validate_text_list(
         criterion.get("evidence_refs"), f"{context}.evidence_refs"
     )
-    validate_repo_relative_file_refs(evidence_refs, f"{context}.evidence_refs", repo_root)
+    validate_public_gmp_acceptance_evidence_refs(
+        evidence_refs, f"{context}.evidence_refs", repo_root
+    )
     return evidence_refs
 
 
@@ -1767,6 +1791,8 @@ def main() -> int:
         return 1
 
     print(json.dumps(metrics.as_dict(), indent=2, sort_keys=True))
+    if args.gmp_acceptance is not None and not metrics.target_met:
+        return 1
     return 0
 
 

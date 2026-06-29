@@ -25,7 +25,7 @@ re-evaluation triggers:
 | logic | parser, validator, template matching, automatic confirmation, review-state transition | Logic changes can alter authoritative state and must fail closed when provenance or scope is missing. |
 | template | template definition schema, template fingerprinting, version registry, field mapping | Template changes can move field anchors or risk labels and must remain auditable by version. |
 | renderer | OOXML/PDF renderer behavior, cell formatting, exported record shape | Renderer changes can alter operator-facing records and must preserve traceability to the reviewed source. |
-| evaluation gate data | `datasets/gold/high_risk_labels_v0.json`, `datasets/gold/evaluation_cases_v0.json`, `datasets/gold/poc_mode_comparison_v1.json`, `datasets/gold/llm_stability_runs_v0.json`, `datasets/gold/template_regression_v0.json` | Gate data defines the controlled target and expected high-risk, stability, template-classification, review, or warning outcome, so edits can weaken or move the GMP-01 boundary even without product-code changes. |
+| evaluation gate data | `datasets/gold/high_risk_labels_v0.json`, `datasets/gold/evaluation_cases_v0.json`, `datasets/gold/poc_mode_comparison_v1.json`, `datasets/gold/llm_stability_runs_v0.json`, `datasets/gold/template_regression_v0.json`, `datasets/gold/gmp_acceptance_v1.json` | Gate data defines the controlled target and expected high-risk, stability, template-classification, review, warning, or GMP acceptance outcome, so edits can weaken or move the GMP-01 or GMP-08 boundary even without product-code changes. |
 
 If a pull request touches more than one target, apply the strongest gate from
 all affected rows. Do not infer that a neighboring template, prompt, or model is
@@ -33,14 +33,21 @@ covered unless the change record explicitly names it.
 
 Changes to evaluation gate data are controlled changes. A PR that edits a gold
 label set, evaluation case, PoC comparison record, LLM stability run record,
-template-regression golden, or the fixture manifest it depends on must explain
-why the controlled target changed, identify the authoritative source or fixture
-record that justifies the update, rerun the harness or fixture test that
-consumes that gate data, and preserve the GMP-01 high-risk miss target at zero
-when automatic confirmation or review recommendation behavior can change. For
-template-regression goldens, the consuming check is the fixture test that
-verifies expected classification, field values, `requires_review`, and
-warnings. Do not treat gate-data edits as harmless fixture maintenance.
+template-regression golden, GMP acceptance record, or the fixture manifest it
+depends on must explain why the controlled target changed, identify the
+authoritative source or fixture record that justifies the update, rerun the
+harness or fixture test that consumes that gate data, and preserve the GMP-01
+high-risk miss target at zero when automatic confirmation or review
+recommendation behavior can change. For template-regression goldens, the
+consuming check is the fixture test that verifies expected classification,
+field values, `requires_review`, and warnings. For GMP acceptance records or
+their summarized criteria/evidence, the consuming check is:
+
+```sh
+python3 scripts/evaluate_dataset.py --gmp-acceptance datasets/gold/gmp_acceptance_v1.json
+```
+
+Do not treat gate-data edits as harmless fixture maintenance.
 
 ## Required Re-Evaluation Gates
 
@@ -121,6 +128,22 @@ If the harness cannot run, the PR must stay blocked and record the missing
 prerequisite. Do not replace the high-risk check with a subjective review note,
 sample secret, placeholder credential, or unscored local file.
 
+### GMP Acceptance Gate
+
+For changes that edit `datasets/gold/gmp_acceptance_v1.json`, the 15.7
+criteria/evidence it summarizes, or the GMP acceptance evaluator, rerun the
+public synthetic GMP-08 acceptance report:
+
+```sh
+python3 scripts/evaluate_dataset.py --gmp-acceptance datasets/gold/gmp_acceptance_v1.json
+```
+
+This gate must keep `target_met` true, `failed_criterion_count` at `0`, and
+`high_risk_false_auto_confirmed_count` at `0`. The report must use only public
+synthetic fixtures, repository tests, repository documentation, and the
+documented acceptance command as evidence. If the harness cannot run, the PR
+must stay blocked and record the missing prerequisite.
+
 Use these additional focused checks when the touched target makes them relevant:
 
 | Change target | Additional focused check |
@@ -178,6 +201,9 @@ Before requesting review for a controlled change, confirm:
 - gate-data edits, including template-regression golden edits, explain the
   authoritative source or fixture record that justifies changing the controlled
   target and rerun the consuming harness or fixture test;
+- GMP acceptance record, criterion, or evidence edits run
+  `python3 scripts/evaluate_dataset.py --gmp-acceptance datasets/gold/gmp_acceptance_v1.json`
+  and keep `target_met` true with no failed criteria;
 - parser, extractor, or source-linkage logic changes run
   `python3 scripts/evaluate_dataset.py --cases datasets/gold/evaluation_cases_v0.json`
   or an equivalent scored fixture-level extraction check, and any metric

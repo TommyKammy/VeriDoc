@@ -698,6 +698,25 @@ class EvaluateDatasetTest(unittest.TestCase):
         ):
             evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=REPO_ROOT)
 
+    def test_gmp_acceptance_rejects_non_public_criterion_evidence_ref(self) -> None:
+        data = self.valid_gmp_acceptance_data()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            self.prepare_gmp_acceptance_repo(temp_root)
+            private_evidence = temp_root / "private" / "confidential-record.pdf"
+            private_evidence.parent.mkdir()
+            private_evidence.write_text("not public synthetic evidence", encoding="utf-8")
+            data["criteria"][0]["evidence_refs"] = [
+                private_evidence.relative_to(temp_root).as_posix()
+            ]
+
+            with self.assertRaisesRegex(
+                evaluate_dataset.EvaluationCaseError,
+                r"criteria\[0\]\.evidence_refs\[0\] must reference public synthetic GMP evidence",
+            ):
+                evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=temp_root)
+
     def test_gmp_acceptance_rejects_source_traceability_without_recomputed_linkage(
         self,
     ) -> None:
@@ -1411,6 +1430,59 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertEqual(7.0, metrics["manual_correction_time"]["reduction_minutes"])
         self.assertEqual(7 / 12, metrics["manual_correction_time"]["reduction_rate"])
         self.assertTrue(metrics["target_met"])
+
+    def test_cli_emits_gmp_acceptance_for_phase0_acceptance(self) -> None:
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT_PATH),
+                "--gmp-acceptance",
+                str(GMP_ACCEPTANCE_PATH),
+            ],
+            cwd=REPO_ROOT,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        self.assertEqual("", proc.stderr)
+        self.assertEqual(0, proc.returncode)
+        metrics = json.loads(proc.stdout)
+        self.assertEqual(8, metrics["criterion_count"])
+        self.assertEqual(0, metrics["failed_criterion_count"])
+        self.assertTrue(metrics["target_met"])
+
+    def test_cli_fails_when_gmp_acceptance_target_is_unmet(self) -> None:
+        data = self.valid_gmp_acceptance_data()
+        data["criteria"][4]["status"] = "fail"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            self.prepare_gmp_acceptance_repo(temp_root)
+            gmp_path = temp_root / GMP_ACCEPTANCE_PATH.relative_to(REPO_ROOT)
+            gmp_path.write_text(json.dumps(data), encoding="utf-8")
+
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_PATH),
+                    "--gmp-acceptance",
+                    str(gmp_path),
+                ],
+                cwd=REPO_ROOT,
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+
+        self.assertEqual("", proc.stderr)
+        self.assertEqual(1, proc.returncode)
+        metrics = json.loads(proc.stdout)
+        self.assertFalse(metrics["target_met"])
+        self.assertEqual(1, metrics["failed_criterion_count"])
+        self.assertEqual("audit_trail", metrics["failed_criteria"][0]["id"])
 
 
 if __name__ == "__main__":
