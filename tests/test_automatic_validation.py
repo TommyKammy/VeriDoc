@@ -287,6 +287,36 @@ def test_actual_review_flag_blocks_item_auto_confirm_without_failures() -> None:
     assert decision.failed_rules == ()
 
 
+def test_value_metadata_review_flag_blocks_item_auto_confirm() -> None:
+    expected = _expected_item(
+        label_id="summary_note",
+        expected_value="Reviewed note",
+        risk_level="medium",
+        requires_review=False,
+        fixture_id="fixture-001",
+        document_id="doc-001",
+        block_id="block-001",
+    )
+
+    decision = validate_extracted_item(
+        expected=expected,
+        actual=_actual_item(
+            label_id="summary_note",
+            value="Reviewed note",
+            auto_confirmed=True,
+            fixture_id="fixture-001",
+            document_id="doc-001",
+            block_id="block-001",
+            value_metadata={"requires_review": True},
+        ),
+    )
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert decision.requires_review is True
+    assert "risk_gate" in decision.failed_rules
+
+
 def test_actual_high_risk_item_blocks_auto_confirm() -> None:
     expected = _expected_item(risk_level="medium", requires_review=False)
 
@@ -1287,6 +1317,44 @@ def test_low_table_cell_confidence_blocks_auto_confirm() -> None:
     assert "table cell confidence requires human review" in decision.warnings
 
 
+def test_low_table_confidence_blocks_auto_confirmed_cells() -> None:
+    source = _evidence()
+    expected_table = {
+        "id": "table-001",
+        "fixture_table_id": "table-001",
+        "risk_level": "low",
+        "cells": [
+            {
+                "id": "table-001-r1-c1",
+                "text": "Reviewed note",
+                "source": source,
+                "requires_review": False,
+                "risk_level": "low",
+            },
+        ],
+    }
+    actual_table = {
+        "id": "table-001",
+        "confidence": 0.42,
+        "cells": [
+            {
+                "id": "table-001-r1-c1",
+                "text": "Reviewed note",
+                "source": source,
+                "auto_confirmed": True,
+            },
+        ],
+    }
+
+    decision = validate_table_consistency(expected_table, actual_table)
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert decision.requires_review is True
+    assert "risk_gate" in decision.failed_rules
+    assert "table confidence requires human review" in decision.warnings
+
+
 def test_table_level_metadata_applies_gmp_condition_gates_to_cells() -> None:
     source = _evidence()
     expected_table = {
@@ -1355,6 +1423,43 @@ def test_table_level_risk_requires_review_for_matching_cells() -> None:
             {
                 "id": "table-001-r1-c1",
                 "text": "SAMPLE-LOT-001",
+                "source": source,
+                "auto_confirmed": True,
+            },
+        ],
+    }
+
+    decision = validate_table_consistency(expected_table, actual_table)
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert decision.requires_review is True
+    assert "risk_gate" in decision.failed_rules
+
+
+def test_table_value_metadata_review_flag_blocks_auto_confirmed_cells() -> None:
+    source = _evidence()
+    expected_table = {
+        "id": "table-001",
+        "fixture_table_id": "table-001",
+        "risk_level": "low",
+        "value_metadata": {"requires_review": True},
+        "cells": [
+            {
+                "id": "table-001-r1-c1",
+                "text": "Reviewed note",
+                "source": source,
+                "requires_review": False,
+                "risk_level": "low",
+            },
+        ],
+    }
+    actual_table = {
+        "id": "table-001",
+        "cells": [
+            {
+                "id": "table-001-r1-c1",
+                "text": "Reviewed note",
                 "source": source,
                 "auto_confirmed": True,
             },
@@ -2753,6 +2858,94 @@ def test_current_head_review_examples_fail_closed() -> None:
                     document_id="doc-001",
                     block_id="block-001",
                 ),
+            ),
+            "risk_gate",
+        ),
+        (
+            "current_thread_table_value_metadata_requires_review",
+            validate_table_consistency(
+                {
+                    "id": "table-001",
+                    "fixture_table_id": "table-001",
+                    "risk_level": "low",
+                    "value_metadata": {"requires_review": True},
+                    "cells": [
+                        {
+                            "id": "table-001-r1-c1",
+                            "text": "Reviewed note",
+                            "source": source,
+                            "requires_review": False,
+                            "risk_level": "low",
+                        },
+                    ],
+                },
+                {
+                    "id": "table-001",
+                    "cells": [
+                        {
+                            "id": "table-001-r1-c1",
+                            "text": "Reviewed note",
+                            "source": source,
+                            "auto_confirmed": True,
+                        },
+                    ],
+                },
+            ),
+            "risk_gate",
+        ),
+        (
+            "current_thread_item_value_metadata_requires_review",
+            validate_extracted_item(
+                expected=_expected_item(
+                    label_id="summary_note",
+                    expected_value="Reviewed note",
+                    risk_level="medium",
+                    requires_review=False,
+                    fixture_id="fixture-001",
+                    document_id="doc-001",
+                    block_id="block-001",
+                ),
+                actual=_actual_item(
+                    label_id="summary_note",
+                    value="Reviewed note",
+                    auto_confirmed=True,
+                    fixture_id="fixture-001",
+                    document_id="doc-001",
+                    block_id="block-001",
+                    value_metadata={"requires_review": True},
+                ),
+            ),
+            "risk_gate",
+        ),
+        (
+            "current_thread_table_level_low_confidence",
+            validate_table_consistency(
+                {
+                    "id": "table-001",
+                    "fixture_table_id": "table-001",
+                    "risk_level": "low",
+                    "cells": [
+                        {
+                            "id": "table-001-r1-c1",
+                            "text": "Reviewed note",
+                            "source": source,
+                            "requires_review": False,
+                            "risk_level": "low",
+                        },
+                    ],
+                },
+                {
+                    "id": "table-001",
+                    "confidence": 0.42,
+                    "cells": [
+                        {
+                            "id": "table-001-r1-c1",
+                            "text": "Reviewed note",
+                            "source": source,
+                            "auto_confirmed": True,
+                        },
+                    ],
+                },
             ),
             "risk_gate",
         ),

@@ -175,7 +175,7 @@ def validate_extracted_item(
         actual
     ):
         failed_rules.append("risk_gate")
-    if not isinstance(expected.get("requires_review"), bool):
+    if not _has_review_flag(expected):
         failed_rules.append("risk_gate")
 
     explicit_review_required = _requires_review(expected) or _requires_review(actual)
@@ -246,6 +246,11 @@ def validate_table_consistency(
     table_category_requires_review = _table_gmp_category_requires_review(
         expected_table
     ) or _table_gmp_category_requires_review(actual_table)
+    table_confidence_requires_review = "confidence" in actual_table and (
+        _confidence_requires_review(actual_table.get("confidence"))
+    )
+    if table_confidence_requires_review:
+        warnings.append("table confidence requires human review")
     table_auto_confirmed = actual_table.get("auto_confirmed", False)
     if not isinstance(table_auto_confirmed, bool):
         failed_rules.append("risk_gate")
@@ -257,6 +262,7 @@ def validate_table_consistency(
         table_explicit_review_required
         or table_high_risk
         or table_category_requires_review
+        or table_confidence_requires_review
     )
     if expected_cells is None or actual_cells is None:
         failed_rules.append("table_consistency")
@@ -296,7 +302,7 @@ def validate_table_consistency(
                 expected_cell
             ) or _has_malformed_explicit_gmp_category(actual_cell):
                 failed_rules.append("risk_gate")
-            if not isinstance(expected_cell.get("requires_review"), bool):
+            if not _has_review_flag(expected_cell):
                 failed_rules.append("risk_gate")
             confidence_requires_review = "confidence" in actual_cell and (
                 _confidence_requires_review(actual_cell.get("confidence"))
@@ -305,6 +311,7 @@ def validate_table_consistency(
                 warnings.append("table cell confidence requires human review")
             explicit_review_required = (
                 table_explicit_review_required
+                or table_confidence_requires_review
                 or _requires_review(expected_cell)
                 or _requires_review(actual_cell)
             )
@@ -498,14 +505,35 @@ def _has_missing_or_malformed_risk_level(record: Mapping[str, Any]) -> bool:
 
 
 def _requires_review(record: Mapping[str, Any]) -> bool:
-    return record.get("requires_review") is True
+    return _review_flag(record) is True
+
+
+def _has_review_flag(record: Mapping[str, Any]) -> bool:
+    return isinstance(_review_flag(record), bool)
+
+
+def _review_flag(record: Mapping[str, Any]) -> object:
+    values = []
+    if "requires_review" in record:
+        values.append(record.get("requires_review"))
+    value_metadata = record.get("value_metadata")
+    if isinstance(value_metadata, Mapping) and "requires_review" in value_metadata:
+        values.append(value_metadata.get("requires_review"))
+    if any(value is True for value in values):
+        return True
+    if any(value is False for value in values):
+        return False
+    return None
 
 
 def _has_malformed_review_flag(record: Mapping[str, Any]) -> bool:
-    if "requires_review" not in record:
-        return False
-    value = record.get("requires_review")
-    return not isinstance(value, bool)
+    values = []
+    if "requires_review" in record:
+        values.append(record.get("requires_review"))
+    value_metadata = record.get("value_metadata")
+    if isinstance(value_metadata, Mapping) and "requires_review" in value_metadata:
+        values.append(value_metadata.get("requires_review"))
+    return any(not isinstance(value, bool) for value in values)
 
 
 def _gmp_category_requires_review(record: Mapping[str, Any]) -> bool:
