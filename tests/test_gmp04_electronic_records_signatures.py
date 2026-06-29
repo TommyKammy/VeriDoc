@@ -41,7 +41,11 @@ class Gmp04ElectronicRecordsSignaturesTest(unittest.TestCase):
             "ROLE_PERMISSIONS",
             "_validate_review_event",
             "_validate_review_workflow_event",
+            "when local auth is enabled",
+            "default unauthenticated PoC mode stores null actor/role fields",
             "`conversion_id` as an optional review-audit scope field",
+            "unchanged approvals do not require an",
+            "existing edit for the same conversion",
             "admin approval events can be accepted by the local PoC API",
             "must not claim conversion-version binding as universal",
         ):

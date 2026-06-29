@@ -76,13 +76,16 @@ workflow.
 
 Audit events should continue to:
 
-- reject missing actor, role, document, block, or required source-position
-  signals at the enforcement boundary;
+- reject missing document, block, or required source-position signals at the
+  enforcement boundary; when local auth is enabled, missing or invalid
+  authentication must be rejected before actor and role can be relied on, while
+  the default unauthenticated PoC mode stores null actor/role fields and is not
+  an authenticated GMP boundary;
 - treat `conversion_id` as an optional review-audit scope field in the current
-  endpoint: when present it must be a non-empty string and approval must stay
-  bound to the matching conversion history, while legacy events without a
-  conversion ID remain constrained by document, block, actor, and latest edited
-  text checks;
+  endpoint: when present it must be a non-empty string and participates in the
+  approval-history conflict checks, but unchanged approvals do not require an
+  existing edit for the same conversion; legacy events without a conversion ID
+  remain constrained by document, block, actor, and latest edited text checks;
 - preserve source context directly linked to the reviewed record;
 - avoid broadening advisory or reconciliation context from sibling records;
 - keep append and projection updates all-or-nothing when persistent storage is
