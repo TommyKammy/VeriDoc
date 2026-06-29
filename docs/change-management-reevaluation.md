@@ -24,10 +24,18 @@ Treat the following changes as controlled re-evaluation triggers:
 | logic | parser, validator, template matching, automatic confirmation, review-state transition | Logic changes can alter authoritative state and must fail closed when provenance or scope is missing. |
 | template | template definition schema, template fingerprinting, version registry, field mapping | Template changes can move field anchors or risk labels and must remain auditable by version. |
 | renderer | OOXML/PDF renderer behavior, cell formatting, exported record shape | Renderer changes can alter operator-facing records and must preserve traceability to the reviewed source. |
+| evaluation gate data | `datasets/gold/high_risk_labels_v0.json`, `datasets/gold/evaluation_cases_v0.json`, `datasets/gold/poc_mode_comparison_v1.json` | Gate data defines the controlled target and expected high-risk outcome, so edits can weaken or move the GMP-01 boundary even without product-code changes. |
 
 If a pull request touches more than one target, apply the strongest gate from
 all affected rows. Do not infer that a neighboring template, prompt, or model is
 covered unless the change record explicitly names it.
+
+Changes to evaluation gate data are controlled changes. A PR that edits a gold
+label set, evaluation case, PoC comparison record, or the fixture manifest it
+depends on must explain why the controlled target changed, identify the
+authoritative source or fixture record that justifies the update, rerun the
+comparison harness, and preserve the GMP-01 high-risk miss target at zero. Do
+not treat gate-data edits as harmless fixture maintenance.
 
 ## Required Re-Evaluation Gates
 
@@ -46,6 +54,15 @@ high-risk comparison harness:
 ```sh
 python3 scripts/evaluate_dataset.py --poc-comparison datasets/gold/poc_mode_comparison_v1.json
 ```
+
+This gate must use fresh public synthetic outputs from the changed branch for
+model, prompt, or logic changes. First regenerate or recapture the affected mode
+outputs in `datasets/gold/poc_mode_comparison_v1.json`, including the captured
+`actual` cells and high-risk item results, then run the comparison harness
+against that updated controlled record. Re-scoring a stale comparison file from
+a previous model, prompt, or logic version does not satisfy the re-evaluation
+gate. If the required inference profile, fixture, or capture path is
+unavailable, the PR must stay blocked and record the missing prerequisite.
 
 The comparison output must keep the GMP-01 high-risk miss gate at zero:
 
@@ -108,9 +125,14 @@ paths in durable docs or PR notes.
 Before requesting review for a controlled change, confirm:
 
 - the PR names the affected target changes: model, prompt, logic, template, or
-  renderer;
+  renderer, or evaluation gate data;
 - the reason, expected behavior difference, approval status, audit record, and
   rollback plan are written down;
+- gate-data edits explain the authoritative source or fixture record that
+  justifies changing the controlled target;
+- model, prompt, or logic changes refresh the affected public synthetic outputs
+  in `datasets/gold/poc_mode_comparison_v1.json` before the comparison harness
+  is run;
 - `python3 scripts/evaluate_dataset.py --poc-comparison datasets/gold/poc_mode_comparison_v1.json`
   was run when automatic confirmation or review recommendation behavior can
   change;
