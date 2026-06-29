@@ -48,7 +48,17 @@ GMP_ACCEPTANCE_PUBLIC_EVIDENCE_ROOTS = (
     Path("tests"),
 )
 GMP_ACCEPTANCE_VERIFICATION_SHELL_CONTROL_CHARS = frozenset(";&|<>()")
-GMP_ACCEPTANCE_VERIFICATION_SHELL_EXPANSION_MARKERS = ("$", "`")
+GMP_ACCEPTANCE_VERIFICATION_SHELL_EXPANSION_MARKERS = (
+    "$",
+    "`",
+    "*",
+    "?",
+    "[",
+    "]",
+    "{",
+    "}",
+    "~",
+)
 EXPECTED_SCOPE_PHASE = "phase0"
 PUBLIC_FIXTURE_ANONYMIZATION_VALUES = {"anonymized", "synthetic"}
 PUBLIC_LLM_STABILITY_SOURCE_KINDS = {"anonymized_text", "synthetic_text"}
@@ -1570,7 +1580,10 @@ def validate_repo_relative_file_refs(
 
 
 def validate_public_gmp_acceptance_evidence_refs(
-    refs: tuple[str, ...], context: str, repo_root: Path
+    refs: tuple[str, ...],
+    context: str,
+    repo_root: Path,
+    declared_fixture_paths: frozenset[Path],
 ) -> None:
     resolved_refs = validate_repo_relative_file_refs(refs, context, repo_root)
     resolved_allowed_roots = tuple(
@@ -1591,6 +1604,19 @@ def validate_public_gmp_acceptance_evidence_refs(
             raise EvaluationCaseError(
                 f"{context}[{index}] must reference public synthetic GMP evidence"
             )
+        resolved_fixture_root = (repo_root / EXPECTED_ALLOWED_FIXTURE_ROOT).resolve()
+        resolved_fixture_manifest = (repo_root / EXPECTED_DATASET_MANIFEST).resolve()
+        lexical_fixture_ref = path.is_relative_to(EXPECTED_ALLOWED_FIXTURE_ROOT)
+        resolved_fixture_ref = resolved_ref.is_relative_to(resolved_fixture_root)
+        if (
+            lexical_fixture_ref
+            or resolved_fixture_ref
+        ) and resolved_ref != resolved_fixture_manifest:
+            if resolved_ref not in declared_fixture_paths:
+                raise EvaluationCaseError(
+                    f"{context}[{index}] must reference manifest-declared "
+                    "public synthetic GMP fixture evidence"
+                )
 
 
 def require_gmp_acceptance_rerun_command(verification_commands: tuple[str, ...]) -> None:
@@ -1623,6 +1649,8 @@ def validate_gmp_acceptance_verification_command_paths(
             ) from exc
 
         candidates: list[tuple[str, bool]] = []
+        executable_seen = False
+        skip_next_module_name = False
         for token in tokens:
             normalized_token = token.strip("\"'")
             if any(
@@ -1645,6 +1673,24 @@ def validate_gmp_acceptance_verification_command_paths(
                 candidates.append(
                     (assignment_value, assignment_name.upper().endswith("PATH"))
                 )
+            if not normalized_token or set(
+                normalized_token
+            ) <= GMP_ACCEPTANCE_VERIFICATION_SHELL_CONTROL_CHARS:
+                continue
+            if normalized_token == "-m":
+                skip_next_module_name = True
+                continue
+            if normalized_token.startswith("-"):
+                continue
+            if "=" in normalized_token:
+                continue
+            if not executable_seen:
+                executable_seen = True
+                continue
+            if skip_next_module_name:
+                skip_next_module_name = False
+                continue
+            candidates.append((normalized_token, True))
         for candidate, _ in candidates:
             if not candidate:
                 continue
@@ -1714,13 +1760,19 @@ def validate_gmp_acceptance_verification_commands(
 
 
 def validate_gmp_acceptance_evidence_refs(
-    criterion: dict[str, Any], context: str, repo_root: Path
+    criterion: dict[str, Any],
+    context: str,
+    repo_root: Path,
+    declared_fixture_paths: frozenset[Path],
 ) -> tuple[str, ...]:
     evidence_refs = validate_text_list(
         criterion.get("evidence_refs"), f"{context}.evidence_refs"
     )
     validate_public_gmp_acceptance_evidence_refs(
-        evidence_refs, f"{context}.evidence_refs", repo_root
+        evidence_refs,
+        f"{context}.evidence_refs",
+        repo_root,
+        declared_fixture_paths,
     )
     return evidence_refs
 
@@ -1762,7 +1814,11 @@ def evaluate_gmp_acceptance(
             f"unsupported GMP acceptance schema_version {data.get('schema_version')!r}"
         )
     root = repo_root or Path.cwd()
-    validate_gmp_acceptance_dataset_manifest(data, root)
+    manifest_path = validate_gmp_acceptance_dataset_manifest(data, root)
+    declared_fixture_paths = frozenset(
+        path.resolve()
+        for path in fixture_paths_from_manifest(load_json(manifest_path), root).values()
+    )
     validate_scope(data)
     poc_path = poc_comparison_path_from_gmp_acceptance(data, root)
     poc_metrics = evaluate_poc_mode_comparison(load_json(poc_path), repo_root=root)
@@ -1797,7 +1853,12 @@ def evaluate_gmp_acceptance(
         status = criterion.get("status")
         if status not in {"pass", "fail"}:
             raise EvaluationCaseError(f"{context}.status must be pass or fail")
-        evidence_refs = validate_gmp_acceptance_evidence_refs(criterion, context, root)
+        evidence_refs = validate_gmp_acceptance_evidence_refs(
+            criterion,
+            context,
+            root,
+            declared_fixture_paths,
+        )
         notes = criterion.get("notes")
         if not isinstance(notes, str) or not normalized_text(notes):
             raise EvaluationCaseError(f"{context}.notes must be a non-empty string")

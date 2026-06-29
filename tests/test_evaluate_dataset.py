@@ -745,6 +745,29 @@ class EvaluateDatasetTest(unittest.TestCase):
                 ):
                     evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=REPO_ROOT)
 
+    def test_gmp_acceptance_rejects_bare_non_public_command_path(self) -> None:
+        commands = (
+            "python3 private_runner",
+            "pytest private",
+        )
+        for command in commands:
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as temp_dir:
+                temp_root = Path(temp_dir)
+                self.prepare_gmp_acceptance_repo(temp_root)
+                (temp_root / "private").mkdir()
+                (temp_root / "private_runner").write_text(
+                    "not public verification evidence",
+                    encoding="utf-8",
+                )
+                data = self.valid_gmp_acceptance_data()
+                data["verification_commands"].append(command)
+
+                with self.assertRaisesRegex(
+                    evaluate_dataset.EvaluationCaseError,
+                    r"verification_commands\[\d+\] must reference public repository files",
+                ):
+                    evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=temp_root)
+
     def test_gmp_acceptance_rejects_shell_control_verification_command(self) -> None:
         commands = (
             "python3 scripts/evaluate_dataset.py;/" + "private/recompute.py",
@@ -767,6 +790,9 @@ class EvaluateDatasetTest(unittest.TestCase):
             "python3 $PRIVATE_RECOMPUTE",
             "PYTHONPATH=$PRIVATE_LIB python3 scripts/evaluate_dataset.py",
             "python3 $(pwd)/scripts/evaluate_dataset.py",
+            "pytest *",
+            "python3 ~",
+            "python3 scripts/*.py",
         )
         for command in commands:
             with self.subTest(command=command):
@@ -841,6 +867,26 @@ class EvaluateDatasetTest(unittest.TestCase):
             with self.assertRaisesRegex(
                 evaluate_dataset.EvaluationCaseError,
                 r"criteria\[0\]\.evidence_refs\[0\] must reference public synthetic GMP evidence",
+            ):
+                evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=temp_root)
+
+    def test_gmp_acceptance_rejects_unmanifested_fixture_evidence_ref(self) -> None:
+        data = self.valid_gmp_acceptance_data()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            self.prepare_gmp_acceptance_repo(temp_root)
+            undeclared_evidence = Path("datasets/fixtures/raw-record.pdf")
+            (temp_root / undeclared_evidence).write_text(
+                "not manifest-declared synthetic fixture evidence",
+                encoding="utf-8",
+            )
+            data["criteria"][0]["evidence_refs"] = [undeclared_evidence.as_posix()]
+
+            with self.assertRaisesRegex(
+                evaluate_dataset.EvaluationCaseError,
+                r"criteria\[0\]\.evidence_refs\[0\] must reference manifest-declared "
+                "public synthetic GMP fixture evidence",
             ):
                 evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=temp_root)
 
