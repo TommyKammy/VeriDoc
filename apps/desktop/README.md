@@ -39,9 +39,11 @@ Tauri v2 scaffold here, but it should preserve these constraints:
 ## API Authentication Boundary
 
 `apps.desktop.api_client` keeps endpoint configuration separate from API
-credentials. `DesktopApiClientConfig` stores only the local API base URL and
-timeout; bearer tokens are read through `ApiCredentialStore`, which should be
-wired to the OS credential store by the desktop shell.
+credentials. `DesktopApiClientConfig` stores only a loopback/localhost API base
+URL and timeout; bearer tokens are read through `ApiCredentialStore`, which
+should be wired to the OS credential store by the desktop shell. Endpoint
+configuration rejects embedded URL credentials and non-local hosts before any
+token is read or attached to a request.
 
 The client fails closed before network dispatch when no token is available or
 when the configured value is an obvious placeholder such as `<viewer-token>` or

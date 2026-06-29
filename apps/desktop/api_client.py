@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import ipaddress
 import json
 from typing import Any, Callable, Protocol
 from urllib.error import HTTPError
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 from urllib.request import Request, urlopen
 
 
@@ -54,8 +55,13 @@ class DesktopApiClientConfig:
         normalized = self.base_url.strip()
         if not normalized:
             raise ValueError("base_url is required")
-        if not normalized.startswith(("http://", "https://")):
+        parsed = urlsplit(normalized)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError("base_url must be an HTTP(S) URL")
+        if parsed.username or parsed.password:
+            raise ValueError("base_url must not include embedded credentials")
+        if not _is_local_api_host(parsed.hostname):
+            raise ValueError("base_url must point to a local API endpoint")
         object.__setattr__(self, "base_url", normalized.rstrip("/") + "/")
 
 
@@ -72,7 +78,7 @@ class DesktopApiClient:
     ) -> None:
         self.config = config
         self._credential_store = credential_store
-        self._transport = transport or urlopen
+        self._transport = transport or _urlopen_transport
 
     def list_jobs(self) -> dict[str, Any]:
         return self._request_json("GET", "api/jobs")
@@ -99,6 +105,21 @@ class DesktopApiClient:
             if exc.code in {401, 403}:
                 raise PermissionError("API authentication failed") from exc
             raise DesktopApiError(f"API request failed with HTTP {exc.code}") from exc
+
+
+def _urlopen_transport(request: Request, timeout: float) -> Any:
+    return urlopen(request, timeout=timeout)
+
+
+def _is_local_api_host(hostname: str | None) -> bool:
+    if hostname is None:
+        return False
+    if hostname.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
 
 
 def _looks_like_placeholder_token(token: str) -> bool:

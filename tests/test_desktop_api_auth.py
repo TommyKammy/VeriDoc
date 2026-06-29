@@ -18,10 +18,12 @@ from apps.desktop.api_client import (
 class RecordingTransport:
     def __init__(self, *, payload: dict[str, object] | None = None) -> None:
         self.requests: list[Request] = []
+        self.timeouts: list[float] = []
         self.payload = payload or {"jobs": []}
 
     def __call__(self, request: Request, timeout: float):
         self.requests.append(request)
+        self.timeouts.append(timeout)
         return JsonResponse(self.payload)
 
 
@@ -53,6 +55,7 @@ def test_desktop_api_client_attaches_bearer_token_from_credential_store() -> Non
     request = transport.requests[0]
     assert request.full_url == "http://127.0.0.1:8765/api/jobs"
     assert request.get_header("Authorization") == "Bearer reviewer-token"
+    assert transport.timeouts == [10.0]
     assert "reviewer-token" not in repr(client.config)
 
 
@@ -104,3 +107,49 @@ def test_desktop_api_client_maps_unauthorized_api_response_fail_closed() -> None
 
     with pytest.raises(PermissionError, match="API authentication failed"):
         client.list_jobs()
+
+
+def test_desktop_api_client_default_transport_passes_timeout_as_keyword(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_urlopen(request: Request, data: object | None = None, *, timeout: float | None = None):
+        calls.append({"request": request, "data": data, "timeout": timeout})
+        return JsonResponse({"jobs": []})
+
+    monkeypatch.setattr("apps.desktop.api_client.urlopen", fake_urlopen)
+    client = DesktopApiClient(
+        DesktopApiClientConfig(base_url="http://127.0.0.1:8765", timeout_seconds=2.5),
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+    )
+
+    assert client.list_jobs() == {"jobs": []}
+    assert len(calls) == 1
+    assert calls[0]["data"] is None
+    assert calls[0]["timeout"] == 2.5
+    request = calls[0]["request"]
+    assert isinstance(request, Request)
+    assert request.get_header("Authorization") == "Bearer reviewer-token"
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "https://example.com",
+        "http://127.0.0.1.example.com:8765",
+    ],
+)
+def test_desktop_api_client_config_rejects_non_local_api_endpoints(base_url: str) -> None:
+    with pytest.raises(ValueError, match="local API endpoint"):
+        DesktopApiClientConfig(base_url=base_url)
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://token@127.0.0.1:8788",
+        "http://viewer:secret@localhost:8788",
+    ],
+)
+def test_desktop_api_client_config_rejects_embedded_url_credentials(base_url: str) -> None:
+    with pytest.raises(ValueError, match="embedded credentials"):
+        DesktopApiClientConfig(base_url=base_url)
