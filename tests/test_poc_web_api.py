@@ -914,6 +914,37 @@ def test_poc_http_api_scopes_review_actions_by_conversion_role() -> None:
     assert approver_body["available_review_actions"] == ["edit", "approve"]
 
 
+def test_poc_http_api_excludes_no_auth_approval_action(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(poc_web.LOCAL_AUTH_TOKENS_ENV, raising=False)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = json.dumps(
+            {
+                "filename": "upload.txt",
+                "content": "Unstructured OCR fallback text",
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/convert",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 200
+    assert body["available_review_actions"] == ["edit"]
+
+
 def test_poc_http_api_accepts_review_action_audit_event() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     thread = Thread(target=server.serve_forever, daemon=True)

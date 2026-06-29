@@ -1921,7 +1921,7 @@ def _review_source_bbox(bbox: Any, page: Any) -> dict[str, Any] | None:
 
 def _review_actions(role: str | None) -> list[str]:
     permissions = (
-        {"review_events:approve", "review_events:edit"}
+        {"review_events:edit"}
         if role is None
         else ROLE_PERMISSIONS[role]
     )
