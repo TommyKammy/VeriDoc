@@ -21,7 +21,7 @@ class RecordingTransport:
         self.timeouts: list[float] = []
         self.payload = payload or {"jobs": []}
 
-    def __call__(self, request: Request, timeout: float):
+    def __call__(self, request: Request, *, timeout: float):
         self.requests.append(request)
         self.timeouts.append(timeout)
         return JsonResponse(self.payload)
@@ -90,7 +90,7 @@ def test_desktop_api_client_rejects_placeholder_tokens(token: str) -> None:
 
 
 def test_desktop_api_client_maps_unauthorized_api_response_fail_closed() -> None:
-    def unauthorized_transport(request: Request, timeout: float):
+    def unauthorized_transport(request: Request, *, timeout: float):
         raise HTTPError(
             request.full_url,
             401,

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import ipaddress
 import json
-from typing import Any, Callable, Protocol
+from typing import Any, Protocol
 from urllib.error import HTTPError
 from urllib.parse import urljoin, urlsplit
 from urllib.request import Request, urlopen
@@ -65,7 +65,9 @@ class DesktopApiClientConfig:
         object.__setattr__(self, "base_url", normalized.rstrip("/") + "/")
 
 
-Transport = Callable[[Request, float], Any]
+class Transport(Protocol):
+    def __call__(self, request: Request, *, timeout: float) -> Any:
+        ...
 
 
 class DesktopApiClient:
@@ -99,7 +101,7 @@ class DesktopApiClient:
             request.add_header("Content-Type", "application/json")
 
         try:
-            with self._transport(request, self.config.timeout_seconds) as response:
+            with self._transport(request, timeout=self.config.timeout_seconds) as response:
                 return json.loads(response.read().decode("utf-8"))
         except HTTPError as exc:
             if exc.code in {401, 403}:
@@ -107,7 +109,7 @@ class DesktopApiClient:
             raise DesktopApiError(f"API request failed with HTTP {exc.code}") from exc
 
 
-def _urlopen_transport(request: Request, timeout: float) -> Any:
+def _urlopen_transport(request: Request, *, timeout: float) -> Any:
     return urlopen(request, timeout=timeout)
 
 
