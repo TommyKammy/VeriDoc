@@ -691,6 +691,9 @@ class EvaluateDatasetTest(unittest.TestCase):
     def test_gmp_acceptance_rejects_absolute_path_verification_command(self) -> None:
         commands = (
             f"python3 {'/' + 'private' + '/recompute.py'}",
+            evaluate_dataset.EXPECTED_GMP_ACCEPTANCE_COMMAND
+            + " && "
+            + f"python3 {'/' + 'private' + '/recompute.py'}",
             "PYTHONPATH="
             + "D:"
             + "\\private "
