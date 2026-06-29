@@ -12,7 +12,9 @@ responsible for:
 
 - preserving source provenance next to extracted or reconstructed content;
 - producing audit-ready events for review edits, approvals, template changes,
-  job actions, and related operator decisions;
+  explicit job-event submissions, and related operator decisions on enforced
+  event paths; direct result downloads are protected by job-read authorization
+  but are not yet recorded as job-action audit events;
 - keeping reviewer, approver, and admin actions tied to the authenticated local
   actor context when local auth is enabled;
 - failing closed when required provenance, actor, role, or target binding is
@@ -96,7 +98,8 @@ Audit events should continue to:
   endpoint: when present it must be a non-empty string and participates in the
   approval-history conflict checks, but unchanged approvals do not require an
   existing edit for the same conversion; legacy events without a conversion ID
-  remain constrained by document, block, actor, and latest edited text checks;
+  remain constrained by document, block, and latest edited text checks, with
+  same-actor separation enforced only when authenticated actor IDs exist;
 - preserve source context directly linked to the reviewed record;
 - avoid broadening advisory or reconciliation context from sibling records;
 - keep append and projection updates all-or-nothing when persistent storage is

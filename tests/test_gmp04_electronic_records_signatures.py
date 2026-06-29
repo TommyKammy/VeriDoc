@@ -34,6 +34,9 @@ class Gmp04ElectronicRecordsSignaturesTest(unittest.TestCase):
             "external validated signature service",
             "segregation of duties",
             "audit-ready events",
+            "explicit job-event submissions",
+            "direct result downloads are protected by job-read authorization",
+            "not yet recorded as job-action audit events",
             "no legal or regulatory compliance conclusion",
             "fail closed",
             "GMP-03",
@@ -52,6 +55,7 @@ class Gmp04ElectronicRecordsSignaturesTest(unittest.TestCase):
             "`conversion_id` as an optional review-audit scope field",
             "unchanged approvals do not require an",
             "existing edit for the same conversion",
+            "same-actor separation enforced only when authenticated actor IDs exist",
             "admin approval events can be accepted by the local PoC API",
             "must not claim conversion-version binding as universal",
         ):
@@ -61,6 +65,8 @@ class Gmp04ElectronicRecordsSignaturesTest(unittest.TestCase):
         for fragment in forbidden_fragments:
             self.assertNotIn(fragment, docs)
         self.assertNotIn("GMP-03 established the role", docs)
+        self.assertNotIn("job actions, and related operator decisions", docs)
+        self.assertNotIn("document, block, actor, and latest edited text", docs)
 
 
 if __name__ == "__main__":
