@@ -688,6 +688,17 @@ class EvaluateDatasetTest(unittest.TestCase):
         ):
             evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=REPO_ROOT)
 
+    def test_gmp_acceptance_rejects_absolute_path_verification_command(self) -> None:
+        data = self.valid_gmp_acceptance_data()
+        private_script = "/" + "home" + "/alice/private/recompute.py"
+        data["verification_commands"].append(f"python3 {private_script}")
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError,
+            r"verification_commands\[\d+\] must not contain absolute paths",
+        ):
+            evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=REPO_ROOT)
+
     def test_gmp_acceptance_rejects_missing_criterion_evidence_ref(self) -> None:
         data = self.valid_gmp_acceptance_data()
         data["criteria"][0]["evidence_refs"] = ["datasets/gold/deleted-evidence.json"]

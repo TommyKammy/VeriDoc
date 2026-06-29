@@ -7,9 +7,10 @@ import argparse
 from collections import Counter
 import json
 import math
+import shlex
 import sys
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -1586,6 +1587,34 @@ def require_gmp_acceptance_rerun_command(verification_commands: tuple[str, ...])
         )
 
 
+def validate_gmp_acceptance_verification_command_paths(
+    verification_commands: tuple[str, ...],
+) -> None:
+    for index, command in enumerate(verification_commands):
+        try:
+            tokens = shlex.split(command, posix=False)
+        except ValueError as exc:
+            raise EvaluationCaseError(
+                f"verification_commands[{index}] must be shell-tokenizable"
+            ) from exc
+
+        candidates: list[str] = []
+        for token in tokens:
+            normalized_token = token.strip("\"'")
+            candidates.append(normalized_token)
+            if "=" in normalized_token:
+                candidates.append(normalized_token.split("=", 1)[1])
+        if any(
+            Path(candidate).is_absolute()
+            or PureWindowsPath(candidate).is_absolute()
+            for candidate in candidates
+            if candidate
+        ):
+            raise EvaluationCaseError(
+                f"verification_commands[{index}] must not contain absolute paths"
+            )
+
+
 def validate_gmp_acceptance_dataset_manifest(
     data: dict[str, Any], repo_root: Path
 ) -> Path:
@@ -1601,6 +1630,7 @@ def validate_gmp_acceptance_verification_commands(
     verification_commands = validate_text_list(
         data.get("verification_commands"), "verification_commands"
     )
+    validate_gmp_acceptance_verification_command_paths(verification_commands)
     require_gmp_acceptance_rerun_command(verification_commands)
     return verification_commands
 
