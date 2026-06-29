@@ -298,8 +298,8 @@ def validate_table_consistency(
                 failed_rules.append("risk_gate")
             if not isinstance(expected_cell.get("requires_review"), bool):
                 failed_rules.append("risk_gate")
-            confidence_requires_review = _confidence_requires_review(
-                actual_cell.get("confidence")
+            confidence_requires_review = "confidence" in actual_cell and (
+                _confidence_requires_review(actual_cell.get("confidence"))
             )
             if confidence_requires_review:
                 warnings.append("table cell confidence requires human review")

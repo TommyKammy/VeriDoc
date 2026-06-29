@@ -1213,6 +1213,80 @@ def test_table_cells_apply_gmp_condition_gates() -> None:
     )
 
 
+def test_absent_table_cell_confidence_does_not_block_low_risk_match() -> None:
+    source = _evidence()
+    expected_table = {
+        "id": "table-001",
+        "fixture_table_id": "table-001",
+        "risk_level": "low",
+        "cells": [
+            {
+                "id": "table-001-r1-c1",
+                "text": "Reviewed note",
+                "source": source,
+                "requires_review": False,
+                "risk_level": "low",
+            },
+        ],
+    }
+    actual_table = {
+        "id": "table-001",
+        "cells": [
+            {
+                "id": "table-001-r1-c1",
+                "text": "Reviewed note",
+                "source": source,
+                "auto_confirmed": True,
+            },
+        ],
+    }
+
+    decision = validate_table_consistency(expected_table, actual_table)
+
+    assert decision.auto_confirm_allowed is True
+    assert decision.status is ValidationStatus.PASS
+    assert decision.requires_review is False
+    assert "table cell confidence requires human review" not in decision.warnings
+
+
+def test_low_table_cell_confidence_blocks_auto_confirm() -> None:
+    source = _evidence()
+    expected_table = {
+        "id": "table-001",
+        "fixture_table_id": "table-001",
+        "risk_level": "low",
+        "cells": [
+            {
+                "id": "table-001-r1-c1",
+                "text": "Reviewed note",
+                "source": source,
+                "requires_review": False,
+                "risk_level": "low",
+            },
+        ],
+    }
+    actual_table = {
+        "id": "table-001",
+        "cells": [
+            {
+                "id": "table-001-r1-c1",
+                "text": "Reviewed note",
+                "source": source,
+                "confidence": 0.42,
+                "auto_confirmed": True,
+            },
+        ],
+    }
+
+    decision = validate_table_consistency(expected_table, actual_table)
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert decision.requires_review is True
+    assert "risk_gate" in decision.failed_rules
+    assert "table cell confidence requires human review" in decision.warnings
+
+
 def test_table_level_metadata_applies_gmp_condition_gates_to_cells() -> None:
     source = _evidence()
     expected_table = {
