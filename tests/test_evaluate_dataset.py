@@ -710,6 +710,23 @@ class EvaluateDatasetTest(unittest.TestCase):
                 ):
                     evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=REPO_ROOT)
 
+    def test_gmp_acceptance_rejects_non_public_verification_command_path(self) -> None:
+        commands = (
+            "python3 private/recompute.py",
+            evaluate_dataset.EXPECTED_GMP_ACCEPTANCE_COMMAND
+            + " && python3 private/recompute.py",
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                data = self.valid_gmp_acceptance_data()
+                data["verification_commands"].append(command)
+
+                with self.assertRaisesRegex(
+                    evaluate_dataset.EvaluationCaseError,
+                    r"verification_commands\[\d+\] must reference public repository files",
+                ):
+                    evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=REPO_ROOT)
+
     def test_gmp_acceptance_rejects_missing_criterion_evidence_ref(self) -> None:
         data = self.valid_gmp_acceptance_data()
         data["criteria"][0]["evidence_refs"] = ["datasets/gold/deleted-evidence.json"]
@@ -870,6 +887,17 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertFalse(metrics.target_met)
         self.assertEqual(1, metrics.failed_criterion_count)
         self.assertEqual("audit_trail", metrics.failed_criteria[0]["id"])
+
+    def test_change_management_requires_gmp_acceptance_gate(self) -> None:
+        docs = (
+            REPO_ROOT / "docs" / "change-management-reevaluation.md"
+        ).read_text(encoding="utf-8")
+        command = evaluate_dataset.EXPECTED_GMP_ACCEPTANCE_COMMAND
+        gate_start = docs.index("### GMP Acceptance Gate")
+        checklist_start = docs.index("## PR Checklist")
+
+        self.assertIn(command, docs[gate_start:checklist_start])
+        self.assertIn(command, docs[checklist_start:])
 
     def test_llm_stability_agreement_rates_do_not_depend_on_run_order(self) -> None:
         data = self.valid_llm_stability_data()

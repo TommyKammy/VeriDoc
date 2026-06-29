@@ -1601,7 +1601,14 @@ def require_gmp_acceptance_rerun_command(verification_commands: tuple[str, ...])
 
 def validate_gmp_acceptance_verification_command_paths(
     verification_commands: tuple[str, ...],
+    repo_root: Path,
 ) -> None:
+    resolved_root = repo_root.resolve()
+    resolved_allowed_roots = tuple(
+        (repo_root / allowed_root).resolve()
+        for allowed_root in GMP_ACCEPTANCE_PUBLIC_EVIDENCE_ROOTS
+    )
+    lexical_allowed_roots = tuple(str(path) for path in GMP_ACCEPTANCE_PUBLIC_EVIDENCE_ROOTS)
     for index, command in enumerate(verification_commands):
         try:
             tokens = shlex.split(command, posix=False)
@@ -1616,15 +1623,46 @@ def validate_gmp_acceptance_verification_command_paths(
             candidates.append(normalized_token)
             if "=" in normalized_token:
                 candidates.append(normalized_token.split("=", 1)[1])
-        if any(
-            Path(candidate).is_absolute()
-            or PureWindowsPath(candidate).is_absolute()
-            for candidate in candidates
-            if candidate
-        ):
-            raise EvaluationCaseError(
-                f"verification_commands[{index}] must not contain absolute paths"
+        for candidate in candidates:
+            if not candidate:
+                continue
+            candidate_path = Path(candidate)
+            if candidate_path.is_absolute() or PureWindowsPath(candidate).is_absolute():
+                raise EvaluationCaseError(
+                    f"verification_commands[{index}] must not contain absolute paths"
+                )
+        for candidate in candidates:
+            if not candidate:
+                continue
+            candidate_path = Path(candidate)
+
+            path_like = (
+                "/" in candidate
+                or "\\" in candidate
+                or candidate.startswith(".")
+                or candidate_path.suffix
+                or candidate in lexical_allowed_roots
             )
+            if not path_like:
+                continue
+            if ".." in candidate_path.parts:
+                raise EvaluationCaseError(
+                    f"verification_commands[{index}] must not contain parent paths"
+                )
+            resolved_candidate = (repo_root / candidate_path).resolve()
+            if not resolved_candidate.is_relative_to(resolved_root):
+                raise EvaluationCaseError(
+                    f"verification_commands[{index}] must stay inside the repository"
+                )
+            public_path = any(
+                resolved_candidate == allowed_root
+                or resolved_candidate.is_relative_to(allowed_root)
+                for allowed_root in resolved_allowed_roots
+            )
+            if not public_path:
+                raise EvaluationCaseError(
+                    f"verification_commands[{index}] must reference public repository files"
+                )
 
 
 def validate_gmp_acceptance_dataset_manifest(
@@ -1638,11 +1676,12 @@ def validate_gmp_acceptance_dataset_manifest(
 
 def validate_gmp_acceptance_verification_commands(
     data: dict[str, Any],
+    repo_root: Path,
 ) -> tuple[str, ...]:
     verification_commands = validate_text_list(
         data.get("verification_commands"), "verification_commands"
     )
-    validate_gmp_acceptance_verification_command_paths(verification_commands)
+    validate_gmp_acceptance_verification_command_paths(verification_commands, repo_root)
     require_gmp_acceptance_rerun_command(verification_commands)
     return verification_commands
 
@@ -1702,7 +1741,7 @@ def evaluate_gmp_acceptance(
     poc_metrics = evaluate_poc_mode_comparison(load_json(poc_path), repo_root=root)
     high_quality_metrics = high_quality_poc_mode_metrics(poc_metrics)
 
-    verification_commands = validate_gmp_acceptance_verification_commands(data)
+    verification_commands = validate_gmp_acceptance_verification_commands(data, root)
     criteria = data.get("criteria")
     if not isinstance(criteria, list):
         raise EvaluationCaseError("GMP acceptance criteria must be a list")
