@@ -324,6 +324,50 @@ def test_gmp_review_required_categories_are_explicit_and_not_auto_confirmed() ->
         assert "risk_gate" in decision.failed_rules, category
 
 
+def test_suffixed_gmp_category_aliases_are_not_auto_confirmed() -> None:
+    cases = (
+        ("release_status_1", "Approved"),
+        ("Batch No. 1", "SAMPLE-LOT-001"),
+        ("prepared_by_2", "Alex Reviewer"),
+    )
+
+    for label_id, value in cases:
+        decision = validate_extracted_item(
+            expected=_expected_item(
+                label_id=label_id,
+                expected_value=value,
+                risk_level="medium",
+                requires_review=False,
+            ),
+            actual=_actual_item(
+                label_id=label_id,
+                value=value,
+                auto_confirmed=True,
+            ),
+        )
+
+        assert decision.auto_confirm_allowed is False, label_id
+        assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM, label_id
+        assert decision.requires_review is True, label_id
+        assert "risk_gate" in decision.failed_rules, label_id
+
+
+def test_invalid_explicit_gmp_category_blocks_auto_confirm() -> None:
+    decision = validate_extracted_item(
+        expected=_expected_item(
+            risk_level="medium",
+            requires_review=False,
+            gmp_review_category="not-a-gmp-category",
+        ),
+        actual=_actual_item(auto_confirmed=True),
+    )
+
+    assert decision.auto_confirm_allowed is False
+    assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert decision.requires_review is True
+    assert "risk_gate" in decision.failed_rules
+
+
 def test_gmp_review_required_conditions_are_not_auto_confirmed() -> None:
     expected = _expected_item(
         risk_level="medium",
@@ -671,6 +715,10 @@ def test_malformed_item_risk_level_blocks_auto_confirm() -> None:
         expected=_expected_item(risk_level="medium", requires_review=False),
         actual=_actual_item(risk_level=True, auto_confirmed=False),
     )
+    actual_unhashable = validate_extracted_item(
+        expected=_expected_item(risk_level="medium", requires_review=False),
+        actual=_actual_item(risk_level=["high"], auto_confirmed=False),
+    )
 
     assert decision.auto_confirm_allowed is False
     assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
@@ -679,6 +727,9 @@ def test_malformed_item_risk_level_blocks_auto_confirm() -> None:
     assert actual_malformed.auto_confirm_allowed is False
     assert actual_malformed.status is ValidationStatus.BLOCK_AUTO_CONFIRM
     assert "risk_gate" in actual_malformed.failed_rules
+    assert actual_unhashable.auto_confirm_allowed is False
+    assert actual_unhashable.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert "risk_gate" in actual_unhashable.failed_rules
 
 
 def test_missing_expected_item_risk_level_blocks_auto_confirm() -> None:
@@ -1094,11 +1145,17 @@ def test_malformed_table_risk_level_blocks_auto_confirm() -> None:
     }
 
     decision = validate_table_consistency(expected_table, actual_table)
+    expected_table["risk_level"] = ["high"]
+    unhashable_decision = validate_table_consistency(expected_table, actual_table)
 
     assert decision.auto_confirm_allowed is False
     assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
     assert decision.requires_review is True
     assert "risk_gate" in decision.failed_rules
+    assert unhashable_decision.auto_confirm_allowed is False
+    assert unhashable_decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert unhashable_decision.requires_review is True
+    assert "risk_gate" in unhashable_decision.failed_rules
 
 
 def test_table_required_columns_require_cell_review() -> None:
@@ -1168,11 +1225,17 @@ def test_malformed_table_required_columns_blocks_auto_confirm() -> None:
     }
 
     decision = validate_table_consistency(expected_table, actual_table)
+    expected_table["required_columns"] = []
+    empty_columns_decision = validate_table_consistency(expected_table, actual_table)
 
     assert decision.auto_confirm_allowed is False
     assert decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
     assert decision.requires_review is True
     assert "risk_gate" in decision.failed_rules
+    assert empty_columns_decision.auto_confirm_allowed is False
+    assert empty_columns_decision.status is ValidationStatus.BLOCK_AUTO_CONFIRM
+    assert empty_columns_decision.requires_review is True
+    assert "risk_gate" in empty_columns_decision.failed_rules
 
 
 def test_table_cell_missing_expected_source_blocks_auto_confirm() -> None:

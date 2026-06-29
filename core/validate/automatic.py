@@ -158,6 +158,10 @@ def validate_extracted_item(
         failed_rules.append("risk_gate")
     if _has_missing_or_malformed_risk_level(expected) or _has_malformed_risk_level(actual):
         failed_rules.append("risk_gate")
+    if _has_malformed_explicit_gmp_category(expected) or _has_malformed_explicit_gmp_category(
+        actual
+    ):
+        failed_rules.append("risk_gate")
     if not isinstance(expected.get("requires_review"), bool):
         failed_rules.append("risk_gate")
 
@@ -215,6 +219,10 @@ def validate_table_consistency(
     if _has_missing_or_malformed_risk_level(expected_table) or _has_malformed_risk_level(
         actual_table
     ):
+        failed_rules.append("risk_gate")
+    if _has_malformed_explicit_gmp_category(
+        expected_table
+    ) or _has_malformed_explicit_gmp_category(actual_table):
         failed_rules.append("risk_gate")
     table_explicit_review_required = _requires_review(expected_table) or _requires_review(
         actual_table
@@ -449,13 +457,15 @@ def _confidence_requires_review(value: object) -> bool:
 
 
 def _is_high_risk(record: Mapping[str, Any]) -> bool:
-    return record.get("risk_level") in REVIEW_REQUIRED_RISK_LEVELS
+    risk_level = record.get("risk_level")
+    return isinstance(risk_level, str) and risk_level in REVIEW_REQUIRED_RISK_LEVELS
 
 
 def _has_malformed_risk_level(record: Mapping[str, Any]) -> bool:
     if "risk_level" not in record:
         return False
-    return record.get("risk_level") not in SUPPORTED_RISK_LEVELS
+    risk_level = record.get("risk_level")
+    return not isinstance(risk_level, str) or risk_level not in SUPPORTED_RISK_LEVELS
 
 
 def _has_missing_or_malformed_risk_level(record: Mapping[str, Any]) -> bool:
@@ -486,6 +496,15 @@ def _gmp_category_requires_review(record: Mapping[str, Any]) -> bool:
     return any(category in GMP_REVIEW_REQUIRED_CATEGORIES for category in categories)
 
 
+def _has_malformed_explicit_gmp_category(record: Mapping[str, Any]) -> bool:
+    for key in ("gmp_review_category", "field_category"):
+        if key not in record:
+            continue
+        if _normalized_category(record.get(key)) not in GMP_REVIEW_REQUIRED_CATEGORIES:
+            return True
+    return False
+
+
 def _table_gmp_category_requires_review(table: Mapping[str, Any]) -> bool:
     if _gmp_category_requires_review(table):
         return True
@@ -502,8 +521,13 @@ def _has_malformed_required_columns(record: Mapping[str, Any]) -> bool:
     if "required_columns" not in record:
         return False
     required_columns = record.get("required_columns")
-    return not isinstance(required_columns, list) or any(
-        not isinstance(column, str) for column in required_columns
+    return (
+        not isinstance(required_columns, list)
+        or not required_columns
+        or any(
+            not isinstance(column, str) or not column.strip()
+            for column in required_columns
+        )
     )
 
 
@@ -516,6 +540,15 @@ def _normalized_category(value: object) -> str:
     alias = GMP_REVIEW_CATEGORY_ALIASES.get(normalized)
     if alias:
         return alias
+    if normalized in GMP_REVIEW_REQUIRED_CATEGORIES:
+        return normalized
+    for known_category in sorted(
+        GMP_REVIEW_REQUIRED_CATEGORIES | frozenset(GMP_REVIEW_CATEGORY_ALIASES),
+        key=len,
+        reverse=True,
+    ):
+        if normalized.startswith(f"{known_category}_"):
+            return GMP_REVIEW_CATEGORY_ALIASES.get(known_category, known_category)
     if normalized.endswith(("_date", "_time", "_timestamp", "_datetime")):
         return "date_time"
     return normalized
