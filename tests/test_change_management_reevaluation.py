@@ -16,6 +16,7 @@ class ChangeManagementReevaluationDocsTest(unittest.TestCase):
         )
 
         docs = DOC_PATH.read_text(encoding="utf-8")
+        docs_flat = " ".join(docs.split())
 
         for required_heading in (
             "# Change Management And Re-Evaluation Flow",
@@ -36,7 +37,10 @@ class ChangeManagementReevaluationDocsTest(unittest.TestCase):
             "evaluation gate data",
             "datasets/gold/high_risk_labels_v0.json",
             "datasets/gold/evaluation_cases_v0.json",
+            "datasets/gold/poc_mode_comparison_v1.json",
+            "datasets/gold/llm_stability_runs_v0.json",
             "datasets/gold/template_regression_v0.json",
+            "LLM stability run record",
             "fresh public synthetic outputs",
             "model, prompt, logic, template, or renderer changes",
             "stale comparison",
@@ -59,6 +63,14 @@ class ChangeManagementReevaluationDocsTest(unittest.TestCase):
             "difference explanation",
         ):
             self.assertIn(required_text, docs)
+
+        for required_text in (
+            "two ordered evidence stages",
+            "first capture current-branch public synthetic outputs",
+            "before running the comparison harness",
+            "fresh capture source",
+        ):
+            self.assertIn(required_text, docs_flat)
 
         forbidden_fragments = ("/" + "Users" + "/", "C:" + "\\Users" + "\\")
         for fragment in forbidden_fragments:
