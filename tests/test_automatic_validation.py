@@ -2013,6 +2013,29 @@ def test_current_head_review_examples_fail_closed() -> None:
             "risk_gate",
         ),
         (
+            "current_thread_lot_alias_label_id",
+            validate_extracted_item(
+                expected=_expected_item(
+                    label_id="Batch No.",
+                    expected_value="SAMPLE-LOT-001",
+                    risk_level="medium",
+                    requires_review=False,
+                    fixture_id="fixture-001",
+                    document_id="doc-001",
+                    block_id="block-001",
+                ),
+                actual=_actual_item(
+                    label_id="Batch No.",
+                    value="SAMPLE-LOT-001",
+                    auto_confirmed=True,
+                    fixture_id="fixture-001",
+                    document_id="doc-001",
+                    block_id="block-001",
+                ),
+            ),
+            "risk_gate",
+        ),
+        (
             "current_thread_missing_table_risk_level",
             validate_table_consistency(
                 {
