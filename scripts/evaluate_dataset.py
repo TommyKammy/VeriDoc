@@ -7,6 +7,7 @@ import argparse
 from collections import Counter
 import json
 import math
+import os
 import shlex
 import sys
 from dataclasses import dataclass
@@ -59,6 +60,20 @@ GMP_ACCEPTANCE_VERIFICATION_SHELL_EXPANSION_MARKERS = (
     "}",
     "~",
 )
+GMP_ACCEPTANCE_VERIFICATION_PATH_OPTION_NAMES = frozenset(
+    (
+        "--basetemp",
+        "--cache-dir",
+        "--confcutdir",
+        "--junitxml",
+        "--rootdir",
+    )
+)
+GMP_ACCEPTANCE_VERIFICATION_ALLOWED_PYTHON_MODULES = frozenset(("pytest",))
+EXPECTED_GMP_ACCEPTANCE_SOD_SCOPE = (
+    "review approval flows with authenticated actor identity"
+)
+EXPECTED_GMP_ACCEPTANCE_SOD_NO_AUTH_NOTE = "no-auth approval attempts are forbidden"
 EXPECTED_SCOPE_PHASE = "phase0"
 PUBLIC_FIXTURE_ANONYMIZATION_VALUES = {"anonymized", "synthetic"}
 PUBLIC_LLM_STABILITY_SOURCE_KINDS = {"anonymized_text", "synthetic_text"}
@@ -1627,6 +1642,33 @@ def require_gmp_acceptance_rerun_command(verification_commands: tuple[str, ...])
         )
 
 
+def gmp_acceptance_assignment_path_values(name: str, value: str) -> tuple[str, ...]:
+    if not name:
+        return ()
+    if name.upper().endswith("PATH"):
+        if Path(value).is_absolute() or PureWindowsPath(value).is_absolute():
+            return (value,)
+        separators = tuple(separator for separator in (os.pathsep, ";", ":") if separator)
+        values = [value]
+        for separator in separators:
+            if separator in value:
+                values = [part for item in values for part in item.split(separator)]
+        return tuple(part for part in values if part)
+    if name in GMP_ACCEPTANCE_VERIFICATION_PATH_OPTION_NAMES:
+        return (value,)
+    return ()
+
+
+def gmp_acceptance_python_module_path_candidates(module_name: str) -> tuple[str, ...]:
+    if module_name in GMP_ACCEPTANCE_VERIFICATION_ALLOWED_PYTHON_MODULES:
+        return ()
+    module_parts = tuple(part for part in module_name.split(".") if part)
+    if not module_parts or tuple(module_name.split(".")) != module_parts:
+        return (module_name,)
+    module_path = Path(*module_parts)
+    return (module_path.as_posix(), module_path.with_suffix(".py").as_posix())
+
+
 def validate_gmp_acceptance_verification_command_paths(
     verification_commands: tuple[str, ...],
     repo_root: Path,
@@ -1650,7 +1692,7 @@ def validate_gmp_acceptance_verification_command_paths(
 
         candidates: list[tuple[str, bool]] = []
         executable_seen = False
-        skip_next_module_name = False
+        validate_next_module_name = False
         for token in tokens:
             normalized_token = token.strip("\"'")
             if any(
@@ -1667,18 +1709,26 @@ def validate_gmp_acceptance_verification_command_paths(
                 raise EvaluationCaseError(
                     f"verification_commands[{index}] must not contain shell control operators"
                 )
+            if validate_next_module_name:
+                validate_next_module_name = False
+                for module_candidate in gmp_acceptance_python_module_path_candidates(
+                    normalized_token
+                ):
+                    candidates.append((module_candidate, True))
+                continue
             candidates.append((normalized_token, False))
             if "=" in normalized_token:
                 assignment_name, assignment_value = normalized_token.split("=", 1)
-                candidates.append(
-                    (assignment_value, assignment_name.upper().endswith("PATH"))
-                )
+                for assignment_candidate in gmp_acceptance_assignment_path_values(
+                    assignment_name, assignment_value
+                ):
+                    candidates.append((assignment_candidate, True))
             if not normalized_token or set(
                 normalized_token
             ) <= GMP_ACCEPTANCE_VERIFICATION_SHELL_CONTROL_CHARS:
                 continue
             if normalized_token == "-m":
-                skip_next_module_name = True
+                validate_next_module_name = True
                 continue
             if normalized_token.startswith("-"):
                 continue
@@ -1686,9 +1736,6 @@ def validate_gmp_acceptance_verification_command_paths(
                 continue
             if not executable_seen:
                 executable_seen = True
-                continue
-            if skip_next_module_name:
-                skip_next_module_name = False
                 continue
             candidates.append((normalized_token, True))
         for candidate, _ in candidates:
@@ -1783,6 +1830,23 @@ def validate_gmp_acceptance_source_traceability(
     if high_quality_metrics.source_linkage_rate < 1.0 and status == "pass":
         raise EvaluationCaseError(
             "source_traceability cannot pass when high_quality source linkage is incomplete"
+        )
+
+
+def validate_gmp_acceptance_segregation_of_duties(
+    criterion: dict[str, Any], context: str, status: str
+) -> None:
+    if status != "pass":
+        return
+    if criterion.get("scope") != EXPECTED_GMP_ACCEPTANCE_SOD_SCOPE:
+        raise EvaluationCaseError(
+            f"{context}.scope must qualify segregation_of_duties pass status to "
+            "authenticated actor identity"
+        )
+    notes = criterion.get("notes")
+    if not isinstance(notes, str) or EXPECTED_GMP_ACCEPTANCE_SOD_NO_AUTH_NOTE not in notes:
+        raise EvaluationCaseError(
+            f"{context}.notes must document fail-closed no-auth approval handling"
         )
 
 
@@ -1899,6 +1963,8 @@ def evaluate_gmp_acceptance(
                 high_quality_metrics.source_linkage_rate
             )
             normalized["target"] = 1.0
+        if criterion_id == "segregation_of_duties":
+            validate_gmp_acceptance_segregation_of_duties(criterion, context, status)
 
         normalized_criteria.append(normalized)
         if status == "fail":

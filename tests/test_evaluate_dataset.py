@@ -743,6 +743,18 @@ class EvaluateDatasetTest(unittest.TestCase):
                 ):
                     evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=REPO_ROOT)
 
+    def test_gmp_acceptance_rejects_non_public_path_option_assignment(self) -> None:
+        data = self.valid_gmp_acceptance_data()
+        data["verification_commands"].append(
+            "python3 -m pytest --rootdir=private tests -q"
+        )
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError,
+            r"verification_commands\[\d+\] must reference public repository files",
+        ):
+            evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=REPO_ROOT)
+
     def test_gmp_acceptance_rejects_bare_non_public_command_path(self) -> None:
         commands = (
             "python3 private_runner",
@@ -765,6 +777,16 @@ class EvaluateDatasetTest(unittest.TestCase):
                     r"verification_commands\[\d+\] must reference public repository files",
                 ):
                     evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=temp_root)
+
+    def test_gmp_acceptance_rejects_private_python_module_target(self) -> None:
+        data = self.valid_gmp_acceptance_data()
+        data["verification_commands"].append("python3 -m private_runner")
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError,
+            r"verification_commands\[\d+\] must reference public repository files",
+        ):
+            evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=REPO_ROOT)
 
     def test_gmp_acceptance_rejects_shell_control_verification_command(self) -> None:
         commands = (
@@ -985,6 +1007,16 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertTrue(metrics.target_met)
         self.assertEqual(0, metrics.failed_criterion_count)
         self.assertEqual((), metrics.failed_criteria)
+
+    def test_gmp_acceptance_rejects_unqualified_sod_pass(self) -> None:
+        data = self.valid_gmp_acceptance_data()
+        data["criteria"][7].pop("scope")
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError,
+            r"criteria\[7\]\.scope must qualify segregation_of_duties pass status",
+        ):
+            evaluate_dataset.evaluate_gmp_acceptance(data, repo_root=REPO_ROOT)
 
     def test_gmp_acceptance_fails_when_audit_evidence_is_unmet(self) -> None:
         data = self.valid_gmp_acceptance_data()
