@@ -2242,6 +2242,61 @@ def test_current_head_review_examples_fail_closed() -> None:
             ),
             "risk_gate",
         ),
+        (
+            "current_thread_malformed_table_cell_gmp_category",
+            validate_table_consistency(
+                {
+                    "id": "table-001",
+                    "fixture_table_id": "table-001",
+                    "risk_level": "medium",
+                    "cells": [
+                        {
+                            "id": "table-001-r1-c1",
+                            "text": "Reviewed note",
+                            "source": source,
+                            "requires_review": False,
+                            "risk_level": "low",
+                            "gmp_review_category": "not-a-gmp-category",
+                        },
+                    ],
+                },
+                {
+                    "id": "table-001",
+                    "cells": [
+                        {
+                            "id": "table-001-r1-c1",
+                            "text": "Reviewed note",
+                            "source": source,
+                            "auto_confirmed": False,
+                        },
+                    ],
+                },
+            ),
+            "risk_gate",
+        ),
+        (
+            "current_thread_qualified_lot_alias_label_id",
+            validate_extracted_item(
+                expected=_expected_item(
+                    label_id="qc_lot_number",
+                    expected_value="SAMPLE-LOT-001",
+                    risk_level="medium",
+                    requires_review=False,
+                    fixture_id="fixture-001",
+                    document_id="doc-001",
+                    block_id="block-001",
+                ),
+                actual=_actual_item(
+                    label_id="qc_lot_number",
+                    value="SAMPLE-LOT-001",
+                    auto_confirmed=True,
+                    fixture_id="fixture-001",
+                    document_id="doc-001",
+                    block_id="block-001",
+                ),
+            ),
+            "risk_gate",
+        ),
     ]
 
     for case_name, decision, failed_rule in cases:

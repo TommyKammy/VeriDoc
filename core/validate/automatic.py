@@ -277,6 +277,10 @@ def validate_table_consistency(
                 actual_cell
             ):
                 failed_rules.append("risk_gate")
+            if _has_malformed_explicit_gmp_category(
+                expected_cell
+            ) or _has_malformed_explicit_gmp_category(actual_cell):
+                failed_rules.append("risk_gate")
             if not isinstance(expected_cell.get("requires_review"), bool):
                 failed_rules.append("risk_gate")
             confidence_requires_review = _confidence_requires_review(
@@ -547,7 +551,9 @@ def _normalized_category(value: object) -> str:
         key=len,
         reverse=True,
     ):
-        if normalized.startswith(f"{known_category}_"):
+        if normalized.startswith(f"{known_category}_") or normalized.endswith(
+            f"_{known_category}"
+        ):
             return GMP_REVIEW_CATEGORY_ALIASES.get(known_category, known_category)
     if normalized.endswith(("_date", "_time", "_timestamp", "_datetime")):
         return "date_time"
