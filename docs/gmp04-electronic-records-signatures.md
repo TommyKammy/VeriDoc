@@ -13,12 +13,16 @@ responsible for:
 - preserving source provenance next to extracted or reconstructed content;
 - producing audit-ready events for review edits, approvals, template changes,
   explicit job-event submissions, and related operator decisions on enforced
-  event paths; direct result downloads are protected by job-read authorization
-  but are not yet recorded as job-action audit events;
-- keeping reviewer, approver, and admin actions tied to the authenticated local
-  actor context when local auth is enabled, while the default unauthenticated
-  PoC mode stores null actor and role fields and must not be treated as
-  authenticated GMP evidence;
+  event paths; when local auth is enabled, direct result downloads are
+  protected by job-read authorization, while the default unauthenticated PoC
+  mode permits downloads without making them authenticated GMP evidence;
+  result downloads are not yet recorded as job-action audit events;
+- keeping reviewer, approver, and admin review or explicit job-event actions
+  tied to the authenticated local actor context when local auth is enabled,
+  while default unauthenticated PoC review and job-event submissions store null
+  actor and role fields and must not be treated as authenticated GMP evidence;
+  unauthenticated template mutations use the caller payload instead of storing
+  null actor and role fields;
 - failing closed when required provenance or target binding is missing or
   malformed; when local auth is enabled, missing or invalid actor and role
   authentication also fails closed before those fields can be relied on;
@@ -66,7 +70,10 @@ current local PoC boundary:
 - A witness or QA approval must be represented as an explicit workflow step
   before it can be treated as required evidence.
 - Approval workflow validation must stay tied to the explicit review event:
-  approval text must match the current reviewed text; same-actor rejection
+  when comparable prior-edit evidence exists, approval text must match the
+  latest saved revised text; standalone approvals without a saved edit are
+  validated against caller-supplied original and revised text instead of
+  proving comparison to independent prior reviewed text; same-actor rejection
   applies only to enforced paths where comparable prior-review evidence and
   authenticated actor IDs exist; and `conversion_id`, when present, scopes the
   prior-review search instead of proving universal conversion-version binding.
@@ -95,14 +102,15 @@ Audit events should continue to:
 - reject missing document, block, or required source-position signals at the
   enforcement boundary; when local auth is enabled, missing or invalid
   authentication must be rejected before actor and role can be relied on, while
-  the default unauthenticated PoC mode stores null actor/role fields and is not
-  an authenticated GMP boundary;
+  default unauthenticated PoC review and job-event submissions record null
+  actor/role fields and are not an authenticated GMP boundary;
 - treat `conversion_id` as an optional review-audit scope field in the current
   endpoint: when present it must be a non-empty string and participates in the
   approval-history conflict checks, but unchanged approvals do not require an
   existing edit for the same conversion; legacy events without a conversion ID
-  remain constrained by document, block, and latest edited text checks, with
-  same-actor separation enforced only when authenticated actor IDs exist;
+  remain constrained by document and block, and by latest edited text checks
+  when comparable prior edits exist, with same-actor separation enforced only
+  when authenticated actor IDs exist;
 - preserve caller-supplied source context fields with the review event after
   syntactic validation, without treating direct review-event submissions as
   verified lookup-backed links to a converted document, block, page, or bounding

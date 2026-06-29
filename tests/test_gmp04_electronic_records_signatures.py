@@ -35,7 +35,10 @@ class Gmp04ElectronicRecordsSignaturesTest(unittest.TestCase):
             "segregation of duties",
             "audit-ready events",
             "explicit job-event submissions",
-            "direct result downloads are protected by job-read authorization",
+            "when local auth is enabled, direct result downloads are",
+            "protected by job-read authorization",
+            "default unauthenticated PoC",
+            "permits downloads without making them authenticated GMP evidence",
             "not yet recorded as job-action audit events",
             "no legal or regulatory compliance conclusion",
             "fail closed",
@@ -51,16 +54,27 @@ class Gmp04ElectronicRecordsSignaturesTest(unittest.TestCase):
             "_validate_review_workflow_event",
             "tests/test_poc_web_api.py",
             "when local auth is enabled",
-            "default unauthenticated",
-            "null actor and role fields and must not be treated as",
+            "default unauthenticated PoC review and job-event submissions",
+            "store null",
+            "actor and role fields and must not be treated as",
             "authenticated GMP evidence",
+            "unauthenticated template mutations use the caller payload",
+            "instead of storing",
+            "null actor and role fields",
             "when local auth is enabled, missing or invalid actor and role",
             "authentication also fails closed",
-            "default unauthenticated PoC mode stores null actor/role fields",
+            "review and job-event submissions record null",
             "`conversion_id` as an optional review-audit scope field",
             "unchanged approvals do not require an",
             "existing edit for the same conversion",
-            "same-actor separation enforced only when authenticated actor IDs exist",
+            "when comparable prior-edit evidence exists",
+            "approval text must match the",
+            "latest saved revised text",
+            "standalone approvals without a saved edit",
+            "caller-supplied original and revised text",
+            "independent prior reviewed text",
+            "same-actor separation enforced only",
+            "when authenticated actor IDs exist",
             "same-actor rejection",
             "applies only to enforced paths",
             "comparable prior-review evidence",
@@ -88,6 +102,15 @@ class Gmp04ElectronicRecordsSignaturesTest(unittest.TestCase):
             docs,
         )
         self.assertNotIn("source context directly linked to the reviewed record", docs)
+        self.assertNotIn(
+            "direct result downloads are protected by job-read authorization but",
+            docs,
+        )
+        self.assertNotIn(
+            "default unauthenticated PoC mode stores null actor and role fields",
+            docs,
+        )
+        self.assertNotIn("approval text must match the current reviewed text", docs)
 
 
 if __name__ == "__main__":
