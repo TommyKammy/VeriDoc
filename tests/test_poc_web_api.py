@@ -2761,8 +2761,69 @@ def test_poc_http_api_records_desktop_upload_and_download_audit_events() -> None
     assert events[0]["source_sha256"] == source_sha256
     assert events[0]["filename"] == "batch-record.pdf"
     assert save_event_body["audit_event"] == events[1]
+    assert events[1]["filename"] == "batch-record.pdf"
     assert events[1]["output_sha256"] == hashlib.sha256(b'{"converted": true}').hexdigest()
     assert events[1]["download_filename"] == "batch-record.veridoc-result.json"
+
+
+def test_poc_http_api_accepts_desktop_save_audit_for_hashless_downloadable_result() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue()
+    server.job_event_store = JobAuditEventStore()
+    job = server.job_queue.create_job(
+        idempotency_key="desktop-hashless-result",
+        filename="../legacy-record.pdf",
+        mode="standard",
+    )
+    running = server.job_queue.start_next_job()
+    assert running is not None
+    download_content = b'{"converted": "legacy"}'
+    server.job_queue.mark_succeeded(
+        job.job_id,
+        result={
+            "status": "converted",
+            "download": {
+                "filename": "../legacy-record\r\n.veridoc-result.json",
+                "content_type": "application/json",
+                "content": download_content,
+            },
+        },
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = json.dumps(
+            {
+                "job_id": job.job_id,
+                "action": "desktop_result_download",
+                "audit_event": {
+                    "event_type": "desktop.job_operation",
+                    "job_id": job.job_id,
+                    "action": "desktop_result_download",
+                    "download_filename": "legacy-record.veridoc-result.json",
+                    "output_sha256": hashlib.sha256(download_content).hexdigest(),
+                },
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/job-events",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+        events = server.job_event_store.list_events(filters={"job_id": job.job_id})
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 202
+    assert body["audit_event"] == events[0]
+    assert events[0]["filename"] == "legacy-record.pdf"
+    assert events[0]["download_filename"] == "legacy-record.veridoc-result.json"
+    assert events[0]["output_sha256"] == hashlib.sha256(download_content).hexdigest()
 
 
 def test_poc_http_api_records_one_desktop_upload_audit_for_concurrent_idempotent_uploads() -> None:

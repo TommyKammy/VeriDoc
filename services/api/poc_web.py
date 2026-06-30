@@ -1512,15 +1512,16 @@ def _desktop_upload_audit_event(job: JobRecord) -> dict[str, Any]:
 def _desktop_result_download_audit_event(job: JobRecord) -> dict[str, Any]:
     download = _job_download(job)
     hashes = _job_hashes(job)
+    output_sha256 = hashes["output_sha256"] or hashlib.sha256(download["content"]).hexdigest()
     return {
         "event_type": "desktop.job_operation",
         "job_id": job.job_id,
         "job_status": job.status,
         "action": "desktop_result_download",
-        "filename": job.filename,
+        "filename": _download_filename(job.filename),
         "download_filename": _download_filename(download["filename"]),
         "source_sha256": hashes["source_sha256"],
-        "output_sha256": hashes["output_sha256"],
+        "output_sha256": output_sha256,
     }
 
 

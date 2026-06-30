@@ -381,22 +381,22 @@ class DesktopApiClient:
         body, headers = self._request_bytes("GET", f"/api/jobs/{quote(job_id, safe='')}/result")
         filename = _download_filename_from_headers(headers) or f"{job_id}.veridoc-result.json"
         safe_filename = _sanitize_download_filename(filename)
-        self._record_desktop_result_download(
-            job_id,
-            {
-                "event_type": "desktop.job_operation",
-                "job_id": job_id,
-                "action": "desktop_result_download",
-                "download_filename": filename,
-                "output_sha256": hashlib.sha256(body).hexdigest(),
-            },
-        )
         for _ in range(1000):
             save_path = _available_destination_path(destination, safe_filename)
             try:
                 _write_download_file(save_path, body, safe_filename)
             except FileExistsError:
                 continue
+            self._record_desktop_result_download(
+                job_id,
+                {
+                    "event_type": "desktop.job_operation",
+                    "job_id": job_id,
+                    "action": "desktop_result_download",
+                    "download_filename": filename,
+                    "output_sha256": hashlib.sha256(body).hexdigest(),
+                },
+            )
             return save_path
         raise DesktopApiError("downloaded result filename has too many collisions")
 

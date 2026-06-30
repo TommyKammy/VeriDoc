@@ -492,6 +492,8 @@ def test_desktop_api_client_removes_partial_result_file_after_failed_write(
     with pytest.raises(DesktopApiError, match="downloaded result could not be saved"):
         client.save_job_result("job-complete-1", tmp_path)
 
+    assert len(transport.requests) == 1
+    assert transport.requests[0].full_url == "http://127.0.0.1:8765/api/jobs/job-complete-1/result"
     assert not target_path.exists()
 
 
