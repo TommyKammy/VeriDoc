@@ -2639,6 +2639,76 @@ def test_poc_http_api_stores_uploaded_job_source_before_returning_reference() ->
     }
 
 
+def test_poc_http_api_records_desktop_upload_and_download_audit_events() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue()
+    server.job_event_store = JobAuditEventStore()
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    uploaded_content = b"%PDF-1.7\nqueued source"
+    source_sha256 = hashlib.sha256(uploaded_content).hexdigest()
+    try:
+        payload = json.dumps(
+            {
+                "idempotency_key": "desktop-upload-download",
+                "filename": "batch-record.pdf",
+                "content_type": "application/pdf",
+                "content_base64": base64.b64encode(uploaded_content).decode("ascii"),
+                "size_bytes": len(uploaded_content),
+                "source_sha256": source_sha256,
+                "mode": "standard",
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/jobs",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        create_response = connection.getresponse()
+        create_body = json.loads(create_response.read().decode("utf-8"))
+        job_id = create_body["job"]["job_id"]
+
+        running = server.job_queue.start_next_job()
+        assert running is not None
+        server.job_queue.mark_succeeded(
+            job_id,
+            result={
+                "status": "converted",
+                "hashes": {
+                    "source_sha256": source_sha256,
+                    "output_sha256": hashlib.sha256(b'{"converted": true}').hexdigest(),
+                },
+                "download": {
+                    "filename": "batch-record.veridoc-result.json",
+                    "content_type": "application/json; charset=utf-8",
+                    "content": b'{"converted": true}',
+                },
+            },
+        )
+
+        connection.request("GET", f"/api/jobs/{job_id}/result")
+        download_response = connection.getresponse()
+        download_body = download_response.read()
+        events = server.job_event_store.list_events(filters={"job_id": job_id})
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert create_response.status == 202
+    assert download_response.status == 200
+    assert download_body == b'{"converted": true}'
+    assert [event["action"] for event in events] == [
+        "desktop_upload",
+        "desktop_result_download",
+    ]
+    assert events[0]["source_sha256"] == source_sha256
+    assert events[0]["filename"] == "batch-record.pdf"
+    assert events[1]["output_sha256"] == hashlib.sha256(b'{"converted": true}').hexdigest()
+    assert events[1]["download_filename"] == "batch-record.veridoc-result.json"
+
+
 def test_poc_http_api_rejects_non_string_job_upload_base64_content() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     server.job_queue = JobQueue()

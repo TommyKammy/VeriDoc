@@ -554,9 +554,10 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             self._send_file(WEB_ROOT / "index.html", "text/html; charset=utf-8")
             return
         if path == "/api/jobs":
-            authorized, role = self._authorized_role_for_permission("jobs:read")
+            authorized, auth_context = self._authorized_context_for_permission("jobs:read")
             if not authorized:
                 return
+            role = auth_context["role"] if auth_context is not None else None
             self._handle_list_jobs(parsed_url.query, role=role)
             return
         if path == "/api/review-events":
@@ -580,12 +581,16 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             self._handle_get_template(path.removeprefix("/api/templates/"))
             return
         if path.startswith("/api/jobs/"):
-            authorized, role = self._authorized_role_for_permission("jobs:read")
+            authorized, auth_context = self._authorized_context_for_permission("jobs:read")
             if not authorized:
                 return
+            role = auth_context["role"] if auth_context is not None else None
             job_path = path.removeprefix("/api/jobs/")
             if job_path.endswith("/result"):
-                self._handle_job_result_download(job_path.removesuffix("/result"))
+                self._handle_job_result_download(
+                    job_path.removesuffix("/result"),
+                    auth_context=auth_context,
+                )
                 return
             job_id = job_path
             job_queue = self._job_queue()
@@ -601,10 +606,11 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         path = urlsplit(self.path).path
         if path == "/api/jobs":
-            authorized, role = self._authorized_role_for_permission("jobs:create")
+            authorized, auth_context = self._authorized_context_for_permission("jobs:create")
             if not authorized:
                 return
-            self._handle_create_job(role=role)
+            role = auth_context["role"] if auth_context is not None else None
+            self._handle_create_job(role=role, auth_context=auth_context)
             return
         if path == "/api/job-events":
             self._handle_job_event()
@@ -655,7 +661,12 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:
         return
 
-    def _handle_create_job(self, *, role: str | None = None) -> None:
+    def _handle_create_job(
+        self,
+        *,
+        role: str | None = None,
+        auth_context: dict[str, str | None] | None = None,
+    ) -> None:
         try:
             request = self._read_json_request()
             filename = str(request.get("filename") or "").strip()
@@ -666,6 +677,9 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             source = _job_source_from_request(request, filename=filename)
             requested_template = self._job_template_binding(request.get("template_id"))
             job_queue = self._job_queue()
+            job_event_store = self._job_event_store()
+            if source is not None:
+                job_event_store.require_integrity()
             job = job_queue.get_idempotent_job(
                 idempotency_key=idempotency_key,
                 filename=filename,
@@ -681,6 +695,13 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                     mode=mode,
                     source=source,
                     template=template,
+                )
+            if source is not None:
+                job_event_store.record(
+                    _job_event_with_auth_context(
+                        _desktop_upload_audit_event(job),
+                        auth_context,
+                    )
                 )
         except RuntimeError as exc:
             self._send_json({"error": "job_conflict", "message": str(exc)}, status=409)
@@ -868,12 +889,25 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
         job_events = self._job_event_store().list_events(filters=filters)
         self._send_json({"job_events": job_events})
 
-    def _handle_job_result_download(self, job_id: str) -> None:
+    def _handle_job_result_download(
+        self,
+        job_id: str,
+        *,
+        auth_context: dict[str, str | None] | None = None,
+    ) -> None:
         try:
             job = self._job_queue().get_job(job_id)
+            job_event_store = self._job_event_store()
+            job_event_store.require_integrity()
             download = _job_download(job)
             content_type = _download_content_type(download["content_type"])
             filename = _download_filename(download["filename"])
+            job_event_store.record(
+                _job_event_with_auth_context(
+                    _desktop_result_download_audit_event(job, download),
+                    auth_context,
+                )
+            )
         except KeyError:
             self._send_json({"error": "job_not_found"}, status=404)
             return
@@ -939,12 +973,23 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
         return authorized
 
     def _authorized_role_for_permission(self, permission: str) -> tuple[bool, str | None]:
-        authenticated, role = self._authenticated_role()
-        if not authenticated:
-            return False, None
-        if not self._role_has_permission(role, permission):
+        authorized, auth_context = self._authorized_context_for_permission(permission)
+        role = auth_context["role"] if auth_context is not None else None
+        if not authorized:
             return False, role
         return True, role
+
+    def _authorized_context_for_permission(
+        self,
+        permission: str,
+    ) -> tuple[bool, dict[str, str | None] | None]:
+        authenticated, auth_context = self._authenticated_context()
+        if not authenticated:
+            return False, None
+        role = auth_context["role"] if auth_context is not None else None
+        if not self._role_has_permission(role, permission):
+            return False, auth_context
+        return True, auth_context
 
     def _authenticated_role(self) -> tuple[bool, str | None]:
         authenticated, auth_context = self._authenticated_context()
@@ -1454,6 +1499,38 @@ def _job_audit_event(job: JobRecord, action: str) -> dict[str, Any]:
         "job_id": job.job_id,
         "job_status": job.status,
         "action": action,
+    }
+
+
+def _desktop_upload_audit_event(job: JobRecord) -> dict[str, Any]:
+    source = job.source if isinstance(job.source, dict) else {}
+    return {
+        "event_type": "desktop.job_operation",
+        "job_id": job.job_id,
+        "job_status": job.status,
+        "action": "desktop_upload",
+        "filename": job.filename,
+        "mode": job.mode,
+        "source_sha256": _sha256_value(source.get("sha256")),
+        "size_bytes": source.get("size_bytes") if isinstance(source.get("size_bytes"), int) else None,
+        "content_type": source.get("content_type") if isinstance(source.get("content_type"), str) else None,
+    }
+
+
+def _desktop_result_download_audit_event(
+    job: JobRecord,
+    download: dict[str, Any],
+) -> dict[str, Any]:
+    hashes = _job_hashes(job)
+    return {
+        "event_type": "desktop.job_operation",
+        "job_id": job.job_id,
+        "job_status": job.status,
+        "action": "desktop_result_download",
+        "filename": job.filename,
+        "download_filename": download["filename"],
+        "source_sha256": hashes["source_sha256"],
+        "output_sha256": hashes["output_sha256"],
     }
 
 
