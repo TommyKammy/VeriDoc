@@ -24,6 +24,14 @@ class DesktopApiError(RuntimeError):
     """Raised when the local API returns a non-auth client error."""
 
 
+@dataclass(frozen=True)
+class DesktopConnectionHealthResult:
+    ok: bool
+    status: str
+    message: str
+    base_url: str = ""
+
+
 class TokenReader(Protocol):
     def __call__(self) -> str | None:
         ...
@@ -78,6 +86,36 @@ class DesktopApiClientConfig:
             object.__setattr__(self, "_host_header", _host_header(parsed.hostname.lower(), parsed.port))
             if parsed.scheme == "https":
                 object.__setattr__(self, "_tls_server_name", parsed.hostname.lower())
+
+
+@dataclass(frozen=True)
+class DesktopConnectionSettings:
+    """User-configurable API endpoint settings for the desktop shell."""
+
+    api_base_url: str
+    timeout_seconds: float = 10.0
+    require_https: bool = False
+
+    def to_client_config(self) -> DesktopApiClientConfig:
+        config = DesktopApiClientConfig(
+            base_url=self.api_base_url,
+            timeout_seconds=self.timeout_seconds,
+        )
+        if self.require_https and not config.base_url.startswith("https://"):
+            raise ValueError("HTTPS is required for the configured API endpoint")
+        return config
+
+    def build_client(
+        self,
+        *,
+        credential_store: ApiCredentialStore,
+        transport: Transport | None = None,
+    ) -> "DesktopApiClient":
+        return DesktopApiClient(
+            self.to_client_config(),
+            credential_store=credential_store,
+            transport=transport,
+        )
 
 
 class Transport(Protocol):
@@ -140,6 +178,58 @@ class DesktopApiClient:
             timeout=self.config.timeout_seconds,
             tls_server_name=self.config._tls_server_name,
         )
+
+
+def check_desktop_api_connection(
+    settings: DesktopConnectionSettings,
+    *,
+    credential_store: ApiCredentialStore,
+    transport: Transport | None = None,
+) -> DesktopConnectionHealthResult:
+    try:
+        config = settings.to_client_config()
+    except ValueError as exc:
+        status = "https_required" if "HTTPS is required" in str(exc) else "invalid_url"
+        return DesktopConnectionHealthResult(
+            ok=False,
+            status=status,
+            message=f"API接続先設定エラー: {exc}",
+        )
+
+    client = DesktopApiClient(
+        config,
+        credential_store=credential_store,
+        transport=transport,
+    )
+    try:
+        client.list_jobs()
+    except (MissingApiTokenError, InvalidApiTokenError, PermissionError) as exc:
+        return DesktopConnectionHealthResult(
+            ok=False,
+            status="authentication_failed",
+            message=f"API認証に失敗しました: {exc}",
+            base_url=config.base_url,
+        )
+    except DesktopApiError as exc:
+        return DesktopConnectionHealthResult(
+            ok=False,
+            status="request_failed",
+            message=f"API接続確認に失敗しました: {exc}",
+            base_url=config.base_url,
+        )
+    except (OSError, URLError) as exc:
+        return DesktopConnectionHealthResult(
+            ok=False,
+            status="connection_failed",
+            message=f"API接続に失敗しました: {exc}",
+            base_url=config.base_url,
+        )
+    return DesktopConnectionHealthResult(
+        ok=True,
+        status="connected",
+        message="API接続に成功しました。",
+        base_url=config.base_url,
+    )
 
 
 def _urlopen_transport(request: Request, *, timeout: float, tls_server_name: str | None = None) -> Any:

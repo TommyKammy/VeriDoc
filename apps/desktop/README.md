@@ -50,6 +50,20 @@ when the configured value is an obvious placeholder such as `<viewer-token>` or
 `TODO`. Authenticated requests attach the credential as an `Authorization:
 Bearer ...` header and treat `401`/`403` responses as authentication failures.
 
+## API Connection Settings
+
+`DesktopConnectionSettings` is the desktop setting-layer boundary for the API
+endpoint URL, timeout, and optional HTTPS-required policy. It converts directly
+to `DesktopApiClientConfig`, so later upload, progress, and result-save flows
+can reuse the same validated endpoint configuration instead of duplicating URL
+normalization.
+
+`check_desktop_api_connection` performs an authenticated `/api/jobs` read
+through `DesktopApiClient` and returns a `DesktopConnectionHealthResult` for the
+settings screen. Invalid URLs, non-local endpoints, missing or rejected
+credentials, HTTP errors, and connection failures are reported as status values
+with user-facing messages before the desktop shell proceeds to later API calls.
+
 ## Initial Local Checks
 
 The documentation-only boundary introduced by P5-01 is verified with:
