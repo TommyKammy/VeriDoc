@@ -2590,6 +2590,92 @@ def test_poc_http_api_creates_idempotent_conversion_job() -> None:
     assert status["job"]["mode"] == "standard"
 
 
+def test_poc_http_api_stores_uploaded_job_source_before_returning_reference() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue()
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    uploaded_content = b"%PDF-1.7\nqueued source"
+    source_sha256 = hashlib.sha256(uploaded_content).hexdigest()
+    try:
+        payload = json.dumps(
+            {
+                "idempotency_key": "upload-with-source",
+                "filename": "batch-record.pdf",
+                "content_type": "application/pdf",
+                "content_base64": base64.b64encode(uploaded_content).decode("ascii"),
+                "size_bytes": len(uploaded_content),
+                "source_sha256": source_sha256,
+                "mode": "standard",
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/jobs",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+        job = server.job_queue.get_job(body["job"]["job_id"])
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 202
+    assert body["job"]["hashes"]["source_sha256"] == source_sha256
+    assert body["job"]["hash_verification"]["source"] == {
+        "status": "recorded",
+        "sha256": source_sha256,
+    }
+    assert "source" not in body["job"]
+    assert job.source == {
+        "filename": "batch-record.pdf",
+        "content_type": "application/pdf",
+        "size_bytes": len(uploaded_content),
+        "sha256": source_sha256,
+        "content": uploaded_content,
+    }
+
+
+def test_poc_http_api_rejects_non_string_job_upload_base64_content() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue()
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = json.dumps(
+            {
+                "idempotency_key": "upload-non-string-base64",
+                "filename": "batch-record.pdf",
+                "content_type": "application/pdf",
+                "content_base64": 1234,
+                "mode": "standard",
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/jobs",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+        jobs = server.job_queue.list_jobs()
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 400
+    assert body == {
+        "error": "invalid_job_request",
+        "message": "content_base64 must be a string",
+    }
+    assert jobs == []
+
+
 def test_template_store_accepts_schema_only_mapping_without_legacy_content() -> None:
     store = poc_web.TemplateStore()
     mapping = {
@@ -3849,6 +3935,84 @@ def test_poc_http_api_detects_output_hash_mismatch_and_blocks_redownload() -> No
     assert download_body == {
         "error": "job_result_integrity_mismatch",
         "message": "job result output hash does not match stored content",
+    }
+
+
+def test_poc_http_api_detects_source_hash_mismatch_and_blocks_redownload() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue()
+    uploaded_content = b"%PDF-1.7\noriginal source"
+    uploaded_sha256 = hashlib.sha256(uploaded_content).hexdigest()
+    created = server.job_queue.create_job(
+        idempotency_key="converted-source-mismatch-1",
+        filename="converted-record.pdf",
+        mode="standard",
+        source={
+            "filename": "converted-record.pdf",
+            "content_type": "application/pdf",
+            "size_bytes": len(uploaded_content),
+            "sha256": uploaded_sha256,
+            "content": uploaded_content,
+        },
+    )
+    running = server.job_queue.start_next_job()
+    assert running is not None
+    download_content = b'{"converted": true}'
+    worker_source_sha256 = hashlib.sha256(b"different source").hexdigest()
+    output_sha256 = hashlib.sha256(download_content).hexdigest()
+    server.job_queue.mark_succeeded(
+        created.job_id,
+        result={
+            "status": "converted",
+            "hashes": {
+                "source_sha256": worker_source_sha256,
+                "output_sha256": output_sha256,
+            },
+            "download": {
+                "filename": "converted-record.veridoc-result.json",
+                "content_type": "application/json; charset=utf-8",
+                "content": download_content,
+            },
+        },
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request("GET", "/api/jobs")
+        list_response = connection.getresponse()
+        list_body = json.loads(list_response.read().decode("utf-8"))
+        connection.request("GET", f"/api/jobs/{created.job_id}")
+        detail_response = connection.getresponse()
+        detail_body = json.loads(detail_response.read().decode("utf-8"))
+        connection.request("GET", f"/api/jobs/{created.job_id}/result")
+        download_response = connection.getresponse()
+        download_body = json.loads(download_response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    list_job = list_body["jobs"][0]
+    detail_job = detail_body["job"]
+    assert list_response.status == 200
+    assert detail_response.status == 200
+    assert list_job["has_result"] is False
+    assert detail_job["has_result"] is False
+    assert list_job["hash_verification"]["source"] == {
+        "status": "mismatch",
+        "expected_sha256": uploaded_sha256,
+        "actual_sha256": worker_source_sha256,
+    }
+    assert list_job["hashes"]["source_sha256"] == uploaded_sha256
+    assert detail_job["hashes"]["source_sha256"] == uploaded_sha256
+    assert detail_job["hash_verification"]["output"]["status"] == "match"
+    assert [action["action"] for action in detail_job["available_actions"]] == [
+        "open_detail"
+    ]
+    assert download_response.status == 409
+    assert download_body == {
+        "error": "job_result_integrity_mismatch",
+        "message": "job result source hash does not match uploaded source",
     }
 
 

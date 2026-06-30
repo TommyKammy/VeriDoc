@@ -663,12 +663,14 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             idempotency_key = str(
                 request.get("idempotency_key") or self.headers.get("Idempotency-Key") or ""
             )
+            source = _job_source_from_request(request, filename=filename)
             requested_template = self._job_template_binding(request.get("template_id"))
             job_queue = self._job_queue()
             job = job_queue.get_idempotent_job(
                 idempotency_key=idempotency_key,
                 filename=filename,
                 mode=mode,
+                source=source,
                 template=requested_template,
             )
             if job is None:
@@ -677,6 +679,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                     idempotency_key=idempotency_key,
                     filename=filename,
                     mode=mode,
+                    source=source,
                     template=template,
                 )
         except RuntimeError as exc:
@@ -1681,6 +1684,8 @@ def _job_download(job: JobRecord) -> dict[str, Any]:
     if not filename or not isinstance(content, bytes):
         raise ValueError("job result download is invalid")
     verification = _job_hash_verification(job)
+    if verification["source"]["status"] == "mismatch":
+        raise RuntimeError("job result source hash does not match uploaded source")
     if verification["output"]["status"] == "mismatch":
         raise RuntimeError("job result output hash does not match stored content")
     return {
@@ -1694,8 +1699,10 @@ def _job_hashes(job: JobRecord) -> dict[str, str | None]:
     result = job.result if isinstance(job.result, dict) else {}
     raw_hashes = result.get("hashes") if isinstance(result, dict) else None
     hashes = raw_hashes if isinstance(raw_hashes, dict) else {}
+    source = job.source if isinstance(job.source, dict) else {}
     return {
-        "source_sha256": _sha256_value(hashes.get("source_sha256")),
+        "source_sha256": _sha256_value(source.get("sha256"))
+        or _sha256_value(hashes.get("source_sha256")),
         "output_sha256": _sha256_value(hashes.get("output_sha256")),
     }
 
@@ -1703,15 +1710,39 @@ def _job_hashes(job: JobRecord) -> dict[str, str | None]:
 def _job_hash_verification(job: JobRecord) -> dict[str, Any]:
     hashes = _job_hashes(job)
     return {
-        "source": _source_hash_verification(hashes["source_sha256"]),
+        "source": _source_hash_verification(job),
         "output": _output_hash_verification(job, hashes["output_sha256"]),
     }
 
 
-def _source_hash_verification(source_sha256: str | None) -> dict[str, Any]:
-    if source_sha256 is None:
-        return {"status": "missing"}
-    return {"status": "recorded", "sha256": source_sha256}
+def _source_hash_verification(job: JobRecord) -> dict[str, Any]:
+    result = job.result if isinstance(job.result, dict) else {}
+    raw_hashes = result.get("hashes") if isinstance(result, dict) else None
+    hashes = raw_hashes if isinstance(raw_hashes, dict) else {}
+    has_result_source_hash = "source_sha256" in hashes
+    result_source_sha256 = (
+        _sha256_value(hashes.get("source_sha256")) if has_result_source_hash else None
+    )
+    source = job.source if isinstance(job.source, dict) else {}
+    uploaded_sha256 = _sha256_value(source.get("sha256"))
+    if uploaded_sha256 is None:
+        if result_source_sha256 is None:
+            return {"status": "missing"}
+        return {"status": "recorded", "sha256": result_source_sha256}
+    if not has_result_source_hash or result_source_sha256 == uploaded_sha256:
+        return {"status": "recorded", "sha256": uploaded_sha256}
+    return {
+        "status": "mismatch",
+        "expected_sha256": uploaded_sha256,
+        "actual_sha256": result_source_sha256,
+    }
+
+
+def _request_string_field(request: dict[str, Any], field_name: str) -> str:
+    value = request[field_name]
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a string")
+    return value
 
 
 def _output_hash_verification(job: JobRecord, expected_sha256: str | None) -> dict[str, Any]:
@@ -1948,13 +1979,47 @@ def _http_result(result: dict[str, Any], *, role: str | None = None) -> dict[str
 
 def _decode_request_content(request: dict[str, Any]) -> bytes:
     if "content_base64" in request:
+        encoded = _request_string_field(request, "content_base64")
         try:
-            return base64.b64decode(str(request["content_base64"]), validate=True)
+            return base64.b64decode(encoded, validate=True)
         except binascii.Error as exc:
             raise ValueError("content_base64 must be valid base64") from exc
     if "content" in request:
-        return str(request["content"]).encode("utf-8")
+        return _request_string_field(request, "content").encode("utf-8")
     raise ValueError("content or content_base64 is required")
+
+
+def _job_source_from_request(request: dict[str, Any], *, filename: str) -> dict[str, Any] | None:
+    if "content_base64" not in request and "content" not in request:
+        return None
+    content = _decode_request_content(request)
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise ValueError("upload_too_large")
+    declared_size = request.get("size_bytes")
+    if declared_size is not None:
+        if isinstance(declared_size, bool) or not isinstance(declared_size, int):
+            raise ValueError("size_bytes must be an integer")
+        if declared_size != len(content):
+            raise ValueError("size_bytes does not match uploaded content")
+    actual_sha256 = _sha256_hex(content)
+    declared_sha256 = _sha256_value(request.get("source_sha256"))
+    if request.get("source_sha256") is not None and declared_sha256 is None:
+        raise ValueError("source_sha256 must be a lowercase sha256 hex digest")
+    if declared_sha256 is not None and declared_sha256 != actual_sha256:
+        raise ValueError("source_sha256 does not match uploaded content")
+    content_type = str(request.get("content_type") or "").strip()
+    if content_type and (
+        any(ord(char) < 0x20 or ord(char) == 0x7F for char in content_type)
+        or not HTTP_CONTENT_TYPE.fullmatch(content_type)
+    ):
+        raise ValueError("content_type is invalid")
+    return {
+        "filename": _safe_filename(filename),
+        "content_type": content_type or None,
+        "size_bytes": len(content),
+        "sha256": actual_sha256,
+        "content": content,
+    }
 
 
 def _source_type(filename: str, parser_output: dict[str, Any] | None = None) -> str:
