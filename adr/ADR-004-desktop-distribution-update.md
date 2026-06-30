@@ -27,6 +27,7 @@ Selected distribution path: Tauri v2 NSIS installer with Tauri updater.
 The minimum build/package command is:
 
 ```bash
+# Run only after the updater-ready gates below pass.
 npm --prefix apps/desktop run tauri -- build --bundles nsis
 ```
 
@@ -63,8 +64,8 @@ match the selected Tauri v2 desktop technology.
 
 1. Keep `apps/desktop` as the desktop app root.
 2. Add the Tauri v2 scaffold and package manager metadata under `apps/desktop`.
-3. Add the `tauri-plugin-updater` dependency and initialize it in `lib.rs` before
-   treating any build as auto-update capable.
+3. Add the `tauri-plugin-updater` dependency and initialize it in `lib.rs`, then
+   keep the build blocked until the runtime `check()` flow is also wired.
 4. Configure Tauri bundling for an NSIS Windows installer and set
    `bundle.createUpdaterArtifacts` to `true`; without that exact config gate,
    the package path is not updater-ready even if the NSIS installer builds.
@@ -91,7 +92,8 @@ match the selected Tauri v2 desktop technology.
   unresolved.
 - Tauri update signing keys must be generated and exposed only through trusted
   CI secrets, using `TAURI_SIGNING_PRIVATE_KEY` and
-  `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
+  `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`; these artifact-signing secrets do not
+  replace the required `plugins.updater.pubkey` validation gate.
 - The Tauri updater public key must be configured in `plugins.updater.pubkey`
   from an authoritative release key source before updater-ready packaging is
   allowed; signed artifacts without this validation key do not satisfy the gate.
