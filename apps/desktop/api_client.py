@@ -9,6 +9,7 @@ import json
 import math
 import mimetypes
 from numbers import Real
+import os
 from pathlib import Path
 import re
 import socket
@@ -670,7 +671,7 @@ def _available_destination_path(destination_dir: Path, filename: str) -> Path:
     for index in range(1000):
         candidate_name = filename if index == 0 else _fit_download_filename(filename, insertion=f" ({index})")
         candidate = destination_dir / candidate_name
-        if not candidate.exists():
+        if not os.path.lexists(candidate):
             return candidate
     raise DesktopApiError("downloaded result filename has too many collisions")
 

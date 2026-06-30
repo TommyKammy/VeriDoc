@@ -394,6 +394,32 @@ def test_desktop_api_client_clamps_long_result_download_names(tmp_path) -> None:
     assert second_path.read_bytes() == b'{"document_ir":{}}'
 
 
+def test_desktop_api_client_treats_dangling_symlink_as_result_filename_collision(tmp_path) -> None:
+    dangling_symlink = tmp_path / "result.json"
+    try:
+        dangling_symlink.symlink_to(tmp_path / "missing-target")
+    except OSError as exc:
+        pytest.skip(f"symlink unavailable: {exc}")
+
+    def download_transport(request: Request, *, timeout: float):
+        return RawResponse(
+            b'{"document_ir":{}}',
+            headers={"Content-Disposition": 'attachment; filename="result.json"'},
+        )
+
+    client = DesktopApiClient(
+        DesktopApiClientConfig(base_url="http://127.0.0.1:8765"),
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=download_transport,
+    )
+
+    saved_path = client.save_job_result("job-complete-1", tmp_path)
+
+    assert saved_path == tmp_path / "result (1).json"
+    assert saved_path.read_bytes() == b'{"document_ir":{}}'
+    assert dangling_symlink.is_symlink()
+
+
 def test_desktop_api_client_removes_partial_result_file_after_failed_write(
     tmp_path,
     monkeypatch,
