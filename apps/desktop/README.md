@@ -111,7 +111,14 @@ python3 scripts/desktop_package_dry_run.py --dry-run
 ```
 
 Production packaging must source signing material from trusted CI secrets, not
-from checked-in files or placeholder values. The unresolved release gates are
+from checked-in files or placeholder values. The Tauri scaffold cannot replace
+the dry-run until it adds the `tauri-plugin-updater` dependency, initializes the
+plugin in `lib.rs`, sets `bundle.createUpdaterArtifacts` to `true`, and wires
+updater metadata to an authoritative endpoint and public key. Windows installer
+code signing is a separate gate from updater artifact signing and must use a
+trusted certificate plus `bundle.windows.signCommand` or equivalent signer
+configuration. The Windows installer code-signing certificate remains an
+unresolved release gate. Other unresolved release gates are
 `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, an HTTPS
 `VERIDOC_DESKTOP_UPDATE_ENDPOINT`, rollback policy, and managed endpoint
 distribution for Windows 10 22H2 or later and Windows 11 devices.

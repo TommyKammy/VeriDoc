@@ -22,6 +22,11 @@ REQUIRED_TERMS = {
         "TAURI_SIGNING_PRIVATE_KEY",
         "TAURI_SIGNING_PRIVATE_KEY_PASSWORD",
         "VERIDOC_DESKTOP_UPDATE_ENDPOINT",
+        "tauri-plugin-updater",
+        "lib.rs",
+        "bundle.createUpdaterArtifacts",
+        "bundle.windows.signCommand",
+        "Windows installer code-signing certificate",
         "Windows 10 22H2 or later",
         "rollback",
         "managed endpoint distribution",
@@ -33,7 +38,13 @@ REQUIRED_TERMS = {
         "Tauri updater",
         "scripts/desktop_package_dry_run.py --dry-run",
         "TAURI_SIGNING_PRIVATE_KEY",
+        "TAURI_SIGNING_PRIVATE_KEY_PASSWORD",
         "VERIDOC_DESKTOP_UPDATE_ENDPOINT",
+        "tauri-plugin-updater",
+        "lib.rs",
+        "bundle.createUpdaterArtifacts",
+        "bundle.windows.signCommand",
+        "Windows installer code-signing certificate",
     ),
 }
 FORBIDDEN_FRAGMENTS = ("/" + "Users" + "/", "C:" + "\\Users" + "\\")
@@ -76,8 +87,12 @@ def run_dry_run() -> int:
     print(f"Selected updater: Tauri updater")
     print(f"Package command: {PACKAGE_COMMAND}")
     print(
-        "Required production secrets: "
+        "Required updater signing secrets: "
         "TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
+    )
+    print(
+        "Required installer signing: Windows installer code-signing certificate "
+        "and bundle.windows.signCommand or equivalent trusted signer config"
     )
     print("Required update endpoint: VERIDOC_DESKTOP_UPDATE_ENDPOINT")
     return 0

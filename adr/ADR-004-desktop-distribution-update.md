@@ -39,8 +39,10 @@ python3 scripts/desktop_package_dry_run.py --dry-run
 
 The dry-run is intentionally fail-closed: it checks that this ADR and
 `apps/desktop/README.md` record the chosen installer, updater, required signing
-environment variables, target endpoint class, and unresolved release gates
-before reporting the package path as ready to wire into a real Tauri scaffold.
+environment variables, updater plugin setup, updater artifact generation,
+separate Windows installer signing, target endpoint class, and unresolved
+release gates before reporting the package path as ready to wire into a real
+Tauri scaffold.
 
 ## Non-Selected Options
 
@@ -59,18 +61,27 @@ match the selected Tauri v2 desktop technology.
 
 1. Keep `apps/desktop` as the desktop app root.
 2. Add the Tauri v2 scaffold and package manager metadata under `apps/desktop`.
-3. Configure Tauri bundling for an NSIS Windows installer.
-4. Configure Tauri updater metadata only after the update endpoint and signing
+3. Add the `tauri-plugin-updater` dependency and initialize it in `lib.rs` before
+   treating any build as auto-update capable.
+4. Configure Tauri bundling for an NSIS Windows installer and set
+   `bundle.createUpdaterArtifacts` to `true` so the Windows updater signature is
+   generated with the installer.
+5. Configure Tauri updater metadata only after the update endpoint and signing
    key storage are authoritative.
-5. Run `python3 scripts/desktop_package_dry_run.py --dry-run` in local CI until
+6. Configure Windows installer code signing separately from updater artifact
+   signing, using `bundle.windows.signCommand` or an equivalent trusted signer
+   configuration backed by CI secrets.
+7. Run `python3 scripts/desktop_package_dry_run.py --dry-run` in local CI until
    the scaffold exists.
-6. Replace or supplement the dry-run with
+8. Replace or supplement the dry-run with
    `npm --prefix apps/desktop run tauri -- build --bundles nsis` on a Windows
    packaging runner once prerequisites are committed.
 
 ## Open Release Gates
 
-- Production code-signing certificate procurement and storage remain unresolved.
+- Production Windows installer code-signing certificate procurement, storage, and
+  `bundle.windows.signCommand` or equivalent signer configuration remain
+  unresolved.
 - Tauri update signing keys must be generated and exposed only through trusted
   CI secrets, using `TAURI_SIGNING_PRIVATE_KEY` and
   `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.

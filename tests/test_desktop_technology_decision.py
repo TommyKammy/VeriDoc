@@ -118,6 +118,11 @@ class DesktopTechnologyDecisionDocsTest(unittest.TestCase):
             "scripts/desktop_package_dry_run.py --dry-run",
             "code-signing certificate",
             "update signing keys",
+            "tauri-plugin-updater",
+            "lib.rs",
+            "bundle.createUpdaterArtifacts",
+            "bundle.windows.signCommand",
+            "Windows installer code-signing certificate",
             "rollback",
             "managed endpoint distribution",
         ):
@@ -147,6 +152,11 @@ class DesktopTechnologyDecisionDocsTest(unittest.TestCase):
             "TAURI_SIGNING_PRIVATE_KEY",
             "TAURI_SIGNING_PRIVATE_KEY_PASSWORD",
             "VERIDOC_DESKTOP_UPDATE_ENDPOINT",
+            "tauri-plugin-updater",
+            "lib.rs",
+            "bundle.createUpdaterArtifacts",
+            "bundle.windows.signCommand",
+            "Windows installer code-signing certificate",
             "apps/desktop",
             "dry-run",
         ):
