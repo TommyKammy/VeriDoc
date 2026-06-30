@@ -51,6 +51,7 @@ MAX_DESKTOP_UPLOAD_BYTES = 2 * 1024 * 1024
 MAX_DOWNLOAD_FILENAME_BYTES = 255
 DOWNLOAD_FILENAME_FALLBACK = "veridoc-result.json"
 DESKTOP_TEMP_WORK_DIR = "work"
+DESKTOP_TEMP_TOKEN_BYTES = 16
 WINDOWS_RESERVED_DOWNLOAD_STEMS = {
     "CON",
     "PRN",
@@ -191,7 +192,7 @@ class DesktopTemporaryFileManager:
         self._explicit_artifacts: set[Path] = set()
         self._closed = False
         self.root.mkdir(parents=True, exist_ok=True)
-        self._work_dir.mkdir(parents=True, exist_ok=True)
+        self._ensure_work_dir()
 
     def __enter__(self) -> "DesktopTemporaryFileManager":
         return self
@@ -213,12 +214,17 @@ class DesktopTemporaryFileManager:
             raise RuntimeError("temporary file manager is already closed")
         if not isinstance(content, bytes):
             raise TypeError("content must be bytes")
-        safe_filename = _sanitize_download_filename(filename)
-        path = self._work_dir / f"tmp-{secrets.token_hex(16)}-{safe_filename}"
-        _require_path_inside_root(path, self.root)
+        token = secrets.token_hex(DESKTOP_TEMP_TOKEN_BYTES)
+        prefix = f"tmp-{token}-"
+        safe_filename = _sanitize_download_filename(
+            filename,
+            max_bytes=MAX_DOWNLOAD_FILENAME_BYTES - len(prefix.encode("utf-8")),
+        )
+        path = self._work_dir / f"{prefix}{safe_filename}"
+        self._require_owned_staging_path(path)
+        self._owned_paths.append(path)
         with path.open("xb") as output:
             output.write(content)
-        self._owned_paths.append(path)
         return path
 
     def register_explicit_artifact(self, path: str | Path) -> Path:
@@ -232,21 +238,40 @@ class DesktopTemporaryFileManager:
     def cleanup(self) -> None:
         failures: list[Path] = []
         for path in reversed(self._owned_paths):
-            resolved_path = path.resolve(strict=False)
-            if resolved_path in self._explicit_artifacts:
+            if self._is_explicit_artifact(path):
                 continue
             try:
-                _require_path_inside_root(resolved_path, self.root)
-                resolved_path.unlink()
+                self._require_owned_staging_path(path)
+                path.unlink()
             except FileNotFoundError:
                 continue
-            except OSError as exc:
-                LOGGER.error("temporary cleanup failed for %s: %s", resolved_path, exc)
-                failures.append(resolved_path)
+            except (OSError, ValueError) as exc:
+                LOGGER.error("temporary cleanup failed for %s: %s", path, exc)
+                failures.append(path)
         self._closed = True
         if failures:
             raise DesktopTemporaryCleanupError(tuple(failures))
         self._prune_empty_work_dir()
+
+    def _ensure_work_dir(self) -> None:
+        work_dir = self._work_dir
+        if os.path.lexists(work_dir) and work_dir.is_symlink():
+            raise ValueError("temporary work directory must not be a symlink")
+        work_dir.mkdir(parents=True, exist_ok=True)
+        if work_dir.is_symlink():
+            raise ValueError("temporary work directory must not be a symlink")
+        _require_path_inside_root(work_dir.resolve(strict=True), self.root)
+
+    def _require_owned_staging_path(self, path: Path) -> None:
+        _require_path_inside_root(path, self.root)
+        if path.parent != self._work_dir:
+            raise ValueError("temporary path escapes storage root")
+        if self._work_dir.is_symlink():
+            raise ValueError("temporary work directory must not be a symlink")
+        _require_path_inside_root(self._work_dir.resolve(strict=True), self.root)
+
+    def _is_explicit_artifact(self, path: Path) -> bool:
+        return path in self._explicit_artifacts
 
     def _prune_empty_work_dir(self) -> None:
         try:
@@ -725,14 +750,14 @@ def _download_filename_from_headers(headers: dict[str, str]) -> str | None:
     return None
 
 
-def _sanitize_download_filename(filename: str) -> str:
+def _sanitize_download_filename(filename: str, *, max_bytes: int = MAX_DOWNLOAD_FILENAME_BYTES) -> str:
     leaf = filename.replace("\\", "/").rsplit("/", maxsplit=1)[-1].strip()
     sanitized = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "-", leaf)
     sanitized = re.sub(r"\s+", " ", sanitized).strip(" .-")
     if not sanitized:
         return DOWNLOAD_FILENAME_FALLBACK
     sanitized = _avoid_windows_reserved_download_filename(sanitized)
-    return _fit_download_filename(sanitized)
+    return _fit_download_filename(sanitized, max_bytes=max_bytes)
 
 
 def _write_download_file(save_path: Path, body: bytes, safe_filename: str) -> None:
@@ -784,16 +809,21 @@ def _split_collision_suffix(filename: str) -> tuple[str, str]:
     return filename, ""
 
 
-def _fit_download_filename(filename: str, *, insertion: str = "") -> str:
+def _fit_download_filename(
+    filename: str,
+    *,
+    insertion: str = "",
+    max_bytes: int = MAX_DOWNLOAD_FILENAME_BYTES,
+) -> str:
     stem, suffix = _split_collision_suffix(filename)
     reserved = f"{insertion}{suffix}"
-    available_stem_bytes = MAX_DOWNLOAD_FILENAME_BYTES - len(reserved.encode("utf-8"))
+    available_stem_bytes = max_bytes - len(reserved.encode("utf-8"))
     if available_stem_bytes > 0:
         fitted_stem = _truncate_utf8_bytes(stem, available_stem_bytes).strip(" .-")
         if fitted_stem:
             return f"{fitted_stem}{reserved}"
 
-    fitted = _truncate_utf8_bytes(f"{stem}{insertion}{suffix}", MAX_DOWNLOAD_FILENAME_BYTES).strip(" .-")
+    fitted = _truncate_utf8_bytes(f"{stem}{insertion}{suffix}", max_bytes).strip(" .-")
     return fitted or DOWNLOAD_FILENAME_FALLBACK
 
 
