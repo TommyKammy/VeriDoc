@@ -41,10 +41,10 @@ The dry-run is intentionally fail-closed: it checks that this ADR,
 `apps/desktop/README.md`, and the CI workflow record the chosen installer,
 updater, required signing environment variables, updater plugin setup, updater
 capability permission, `bundle.createUpdaterArtifacts` updater artifact
-generation, `plugins.updater.pubkey` validation, runtime `check()` update flow,
-separate Windows installer signing, target endpoint class, and unresolved
-release gates before reporting the package path as ready to wire into a real
-Tauri scaffold.
+generation, `plugins.updater.endpoints` endpoint configuration,
+`plugins.updater.pubkey` validation, runtime `check()` update flow, separate
+Windows installer signing, target endpoint class, and unresolved release gates
+before reporting the package path as ready to wire into a real Tauri scaffold.
 
 ## Non-Selected Options
 
@@ -69,7 +69,8 @@ match the selected Tauri v2 desktop technology.
    `bundle.createUpdaterArtifacts` to `true`; without that exact config gate,
    the package path is not updater-ready even if the NSIS installer builds.
 5. Configure Tauri updater metadata only after the update endpoint, signing key
-   storage, and `plugins.updater.pubkey` are authoritative.
+   storage, `plugins.updater.endpoints`, and `plugins.updater.pubkey` are
+   authoritative.
 6. Enable updater command permissions in `src-tauri/capabilities/default.json`
    with `updater:default` before wiring any webview/UI-triggered update check.
 7. Add a runtime update flow that calls `check()` and handles download/install
@@ -93,12 +94,14 @@ match the selected Tauri v2 desktop technology.
   CI secrets, using `TAURI_SIGNING_PRIVATE_KEY` and
   `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`; these artifact-signing secrets do not
   replace the required `plugins.updater.pubkey` validation gate.
+- The Tauri updater endpoint must be configured in
+  `plugins.updater.endpoints` from an authoritative
+  `VERIDOC_DESKTOP_UPDATE_ENDPOINT` HTTPS update manifest controlled by the
+  release process; placeholder or localhost values are not valid for production
+  updates.
 - The Tauri updater public key must be configured in `plugins.updater.pubkey`
   from an authoritative release key source before updater-ready packaging is
   allowed; signed artifacts without this validation key do not satisfy the gate.
-- `VERIDOC_DESKTOP_UPDATE_ENDPOINT` must point to an HTTPS update manifest
-  controlled by the release process; placeholder or localhost values are not
-  valid for production updates.
 - Runtime update behavior is not finalized. The desktop scaffold must enable
   `updater:default` in `src-tauri/capabilities/default.json` and wire a
   `check()` path plus download/install handling to a startup policy or UI

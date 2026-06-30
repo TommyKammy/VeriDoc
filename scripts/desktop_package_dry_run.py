@@ -27,6 +27,7 @@ REQUIRED_TERMS = {
         "tauri-plugin-updater",
         "lib.rs",
         "bundle.createUpdaterArtifacts",
+        "plugins.updater.endpoints",
         "plugins.updater.pubkey",
         "src-tauri/capabilities/default.json",
         "updater:default",
@@ -50,6 +51,7 @@ REQUIRED_TERMS = {
         "tauri-plugin-updater",
         "lib.rs",
         "bundle.createUpdaterArtifacts",
+        "plugins.updater.endpoints",
         "plugins.updater.pubkey",
         "src-tauri/capabilities/default.json",
         "updater:default",
@@ -70,6 +72,7 @@ EXACT_MARKER_TERMS = {
     "tauri-plugin-updater",
     "lib.rs",
     "bundle.createUpdaterArtifacts",
+    "plugins.updater.endpoints",
     "plugins.updater.pubkey",
     "src-tauri/capabilities/default.json",
     "updater:default",
@@ -145,6 +148,7 @@ def run_dry_run() -> int:
         "and bundle.windows.signCommand or equivalent trusted signer config"
     )
     print("Required update endpoint: VERIDOC_DESKTOP_UPDATE_ENDPOINT")
+    print("Required updater endpoint config: plugins.updater.endpoints")
     print("Required updater public key: plugins.updater.pubkey")
     print(
         "Required updater capability: updater:default in "

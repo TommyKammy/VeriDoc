@@ -134,6 +134,7 @@ class DesktopTechnologyDecisionDocsTest(unittest.TestCase):
             "tauri-plugin-updater",
             "lib.rs",
             "bundle.createUpdaterArtifacts",
+            "plugins.updater.endpoints",
             "plugins.updater.pubkey",
             "src-tauri/capabilities/default.json",
             "updater:default",
@@ -173,6 +174,7 @@ class DesktopTechnologyDecisionDocsTest(unittest.TestCase):
             "tauri-plugin-updater",
             "lib.rs",
             "bundle.createUpdaterArtifacts",
+            "plugins.updater.endpoints",
             "plugins.updater.pubkey",
             "src-tauri/capabilities/default.json",
             "updater:default",
@@ -254,6 +256,7 @@ class DesktopTechnologyDecisionDocsTest(unittest.TestCase):
             doc_path = Path(tmp_dir) / "package-gates.md"
             doc_path.write_text(
                 "bundle.createUpdaterArtifactsExtra\n"
+                "plugins.updater.endpointsExtra\n"
                 "plugins.updater.pubkeyExtra\n"
                 "check()Extra\n",
                 encoding="utf-8",
@@ -263,6 +266,7 @@ class DesktopTechnologyDecisionDocsTest(unittest.TestCase):
                 doc_path,
                 (
                     "bundle.createUpdaterArtifacts",
+                    "plugins.updater.endpoints",
                     "plugins.updater.pubkey",
                     "check()",
                 ),
@@ -272,6 +276,7 @@ class DesktopTechnologyDecisionDocsTest(unittest.TestCase):
             failures,
             [
                 f"{doc_path} missing term: bundle.createUpdaterArtifacts",
+                f"{doc_path} missing term: plugins.updater.endpoints",
                 f"{doc_path} missing term: plugins.updater.pubkey",
                 f"{doc_path} missing term: check()",
             ],
