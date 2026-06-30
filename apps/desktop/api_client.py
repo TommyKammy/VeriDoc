@@ -69,6 +69,8 @@ class DesktopApiClientConfig:
 
     def __post_init__(self) -> None:
         timeout_seconds = _validate_timeout_seconds(self.timeout_seconds)
+        if not isinstance(self.base_url, str):
+            raise ValueError("base_url must be a string")
         normalized = self.base_url.strip()
         if not normalized:
             raise ValueError("base_url is required")
@@ -171,6 +173,8 @@ class DesktopApiClient:
                 raise DesktopApiError(f"API request failed with HTTP {exc.code}") from exc
             except (json.JSONDecodeError, UnicodeDecodeError) as exc:
                 raise DesktopApiError("API response must be valid JSON") from exc
+            except http.client.IncompleteRead as exc:
+                raise DesktopApiError("API response body was incomplete") from exc
             except URLError as exc:
                 last_url_error = exc
                 if index + 1 < len(request_urls):

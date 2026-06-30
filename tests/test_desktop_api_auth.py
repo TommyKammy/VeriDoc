@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import http.client
 import json
 import socket
 from urllib.error import HTTPError, URLError
@@ -56,6 +57,17 @@ class RawResponse:
 
     def read(self) -> bytes:
         return self.body
+
+
+class IncompleteResponse:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        return None
+
+    def read(self) -> bytes:
+        raise http.client.IncompleteRead(partial=b"{", expected=128)
 
 
 def test_desktop_api_client_attaches_bearer_token_from_credential_store() -> None:
@@ -133,6 +145,23 @@ def test_desktop_connection_health_check_reports_invalid_url_without_network_dis
     assert result.ok is False
     assert result.status == status
     assert message in result.message
+    assert transport.requests == []
+
+
+@pytest.mark.parametrize("base_url", [None, 123, True, {"url": "http://127.0.0.1:8765"}])
+def test_desktop_connection_health_check_rejects_non_string_url_without_network_dispatch(
+    base_url: object,
+) -> None:
+    transport = RecordingTransport()
+    result = check_desktop_api_connection(
+        DesktopConnectionSettings(api_base_url=base_url),  # type: ignore[arg-type]
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=transport,
+    )
+
+    assert result.ok is False
+    assert result.status == "invalid_url"
+    assert "base_url" in result.message
     assert transport.requests == []
 
 
@@ -227,6 +256,21 @@ def test_desktop_connection_health_check_reports_malformed_api_response(
     assert result.ok is False
     assert result.status == "request_failed"
     assert message in result.message
+
+
+def test_desktop_connection_health_check_reports_incomplete_api_response() -> None:
+    def incomplete_transport(request: Request, *, timeout: float):
+        return IncompleteResponse()
+
+    result = check_desktop_api_connection(
+        DesktopConnectionSettings(api_base_url="http://127.0.0.1:8765"),
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=incomplete_transport,
+    )
+
+    assert result.ok is False
+    assert result.status == "request_failed"
+    assert "incomplete" in result.message
 
 
 def test_desktop_connection_health_check_rejects_wrong_shape_job_list_response() -> None:
