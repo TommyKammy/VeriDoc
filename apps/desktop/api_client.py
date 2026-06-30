@@ -378,10 +378,19 @@ class DesktopApiClient:
         destination = Path(destination_dir)
         if not destination.is_dir():
             raise ValueError("destination_dir must be an existing directory")
-        self._record_desktop_result_download(job_id)
         body, headers = self._request_bytes("GET", f"/api/jobs/{quote(job_id, safe='')}/result")
         filename = _download_filename_from_headers(headers) or f"{job_id}.veridoc-result.json"
         safe_filename = _sanitize_download_filename(filename)
+        self._record_desktop_result_download(
+            job_id,
+            {
+                "event_type": "desktop.job_operation",
+                "job_id": job_id,
+                "action": "desktop_result_download",
+                "download_filename": filename,
+                "output_sha256": hashlib.sha256(body).hexdigest(),
+            },
+        )
         for _ in range(1000):
             save_path = _available_destination_path(destination, safe_filename)
             try:
@@ -391,13 +400,14 @@ class DesktopApiClient:
             return save_path
         raise DesktopApiError("downloaded result filename has too many collisions")
 
-    def _record_desktop_result_download(self, job_id: str) -> None:
+    def _record_desktop_result_download(self, job_id: str, audit_event: dict[str, Any]) -> None:
         payload = self._request_json(
             "POST",
             "/api/job-events",
             {
                 "job_id": job_id,
                 "action": "desktop_result_download",
+                "audit_event": audit_event,
             },
         )
         audit_event = payload.get("audit_event")

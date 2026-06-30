@@ -2651,7 +2651,7 @@ def test_poc_http_api_records_desktop_upload_and_download_audit_events() -> None
         payload = json.dumps(
             {
                 "idempotency_key": "desktop-upload-download",
-                "filename": "batch-record.pdf",
+                "filename": "../batch-record.pdf",
                 "content_type": "application/pdf",
                 "content_base64": base64.b64encode(uploaded_content).decode("ascii"),
                 "size_bytes": len(uploaded_content),
@@ -2700,11 +2700,35 @@ def test_poc_http_api_records_desktop_upload_and_download_audit_events() -> None
         download_response = connection.getresponse()
         download_body = download_response.read()
         browser_download_events = server.job_event_store.list_events(filters={"job_id": job_id})
+        rejected_event_payload = json.dumps(
+            {
+                "job_id": job_id,
+                "action": "desktop_result_download",
+            }
+        ).encode("utf-8")
+        connection.request(
+            "POST",
+            "/api/job-events",
+            body=rejected_event_payload,
+            headers={
+                "Content-Type": "application/json",
+                "Content-Length": str(len(rejected_event_payload)),
+            },
+        )
+        rejected_event_response = connection.getresponse()
+        rejected_event_body = json.loads(rejected_event_response.read().decode("utf-8"))
+        rejected_events = server.job_event_store.list_events(filters={"job_id": job_id})
         event_payload = json.dumps(
             {
                 "job_id": job_id,
                 "action": "desktop_result_download",
-                "audit_event": {"action": "client_supplied_event_is_ignored"},
+                "audit_event": {
+                    "event_type": "desktop.job_operation",
+                    "job_id": job_id,
+                    "action": "desktop_result_download",
+                    "download_filename": "batch-record.veridoc-result.json",
+                    "output_sha256": hashlib.sha256(b'{"converted": true}').hexdigest(),
+                },
             }
         ).encode("utf-8")
         connection.request(
@@ -2726,6 +2750,9 @@ def test_poc_http_api_records_desktop_upload_and_download_audit_events() -> None
     assert download_response.status == 200
     assert download_body == b'{"converted": true}'
     assert [event["action"] for event in browser_download_events] == ["desktop_upload"]
+    assert rejected_event_response.status == 400
+    assert rejected_event_body["error"] == "invalid_job_event"
+    assert [event["action"] for event in rejected_events] == ["desktop_upload"]
     assert save_event_response.status == 202
     assert [event["action"] for event in events] == [
         "desktop_upload",

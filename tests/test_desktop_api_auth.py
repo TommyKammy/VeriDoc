@@ -360,7 +360,7 @@ def test_desktop_api_client_saves_completed_job_result_to_selected_folder_with_s
     assert existing.read_text(encoding="utf-8") == "existing result"
 
 
-def test_desktop_api_client_result_save_records_audit_event_before_authenticated_download(
+def test_desktop_api_client_result_save_records_audit_event_after_authenticated_download(
     tmp_path,
 ) -> None:
     transport = ResultSaveTransport(
@@ -377,8 +377,12 @@ def test_desktop_api_client_result_save_records_audit_event_before_authenticated
     assert client.save_job_result("job-complete-1", tmp_path) == tmp_path / "result.json"
 
     assert len(transport.requests) == 2
-    audit_request = transport.requests[0]
-    download_request = transport.requests[1]
+    download_request = transport.requests[0]
+    audit_request = transport.requests[1]
+    assert download_request.full_url == "http://127.0.0.1:8765/api/jobs/job-complete-1/result"
+    assert download_request.get_method() == "GET"
+    assert download_request.get_header("Authorization") == "Bearer reviewer-token"
+    assert download_request.get_header("Accept") == "application/octet-stream"
     assert audit_request.full_url == "http://127.0.0.1:8765/api/job-events"
     assert audit_request.get_method() == "POST"
     assert audit_request.get_header("Authorization") == "Bearer reviewer-token"
@@ -386,11 +390,14 @@ def test_desktop_api_client_result_save_records_audit_event_before_authenticated
     assert json.loads(audit_request.data.decode("utf-8")) == {
         "job_id": "job-complete-1",
         "action": "desktop_result_download",
+        "audit_event": {
+            "event_type": "desktop.job_operation",
+            "job_id": "job-complete-1",
+            "action": "desktop_result_download",
+            "download_filename": "result.json",
+            "output_sha256": hashlib.sha256(b"{}").hexdigest(),
+        },
     }
-    assert download_request.full_url == "http://127.0.0.1:8765/api/jobs/job-complete-1/result"
-    assert download_request.get_method() == "GET"
-    assert download_request.get_header("Authorization") == "Bearer reviewer-token"
-    assert download_request.get_header("Accept") == "application/octet-stream"
 
 
 def test_desktop_api_client_clamps_long_result_download_names(tmp_path) -> None:
@@ -1195,20 +1202,31 @@ def test_desktop_api_client_preserves_pinned_https_result_download_headers(
     assert captured["connect_host"] == "127.0.0.1"
     assert captured["tls_server_name"] == "localhost"
     requests = captured["requests"]
-    assert requests[0]["method"] == "POST"
-    assert requests[0]["path"] == "/api/job-events"
+    assert requests[0]["method"] == "GET"
+    assert requests[0]["path"] == "/api/jobs/job-complete-1/result"
     assert requests[0]["headers"] == {
+        "Accept": "application/octet-stream",
+        "Authorization": "Bearer reviewer-token",
+        "Host": "localhost:8765",
+    }
+    assert requests[1]["method"] == "POST"
+    assert requests[1]["path"] == "/api/job-events"
+    assert requests[1]["headers"] == {
         "Accept": "application/json",
         "Authorization": "Bearer reviewer-token",
         "Content-type": "application/json",
         "Host": "localhost:8765",
     }
-    assert requests[1]["method"] == "GET"
-    assert requests[1]["path"] == "/api/jobs/job-complete-1/result"
-    assert requests[1]["headers"] == {
-        "Accept": "application/octet-stream",
-        "Authorization": "Bearer reviewer-token",
-        "Host": "localhost:8765",
+    assert json.loads(requests[1]["body"].decode("utf-8")) == {
+        "job_id": "job-complete-1",
+        "action": "desktop_result_download",
+        "audit_event": {
+            "event_type": "desktop.job_operation",
+            "job_id": "job-complete-1",
+            "action": "desktop_result_download",
+            "download_filename": "pinned-result.json",
+            "output_sha256": hashlib.sha256(b'{"document_ir":{}}').hexdigest(),
+        },
     }
     assert captured["closed"] is True
 

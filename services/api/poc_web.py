@@ -780,7 +780,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             updated_job = job
             if action == "desktop_result_download":
                 job_event_store.require_integrity()
-                accepted_event = _desktop_result_download_audit_event(job)
+                accepted_event = _validate_desktop_result_download_audit_event(job, audit_event)
             else:
                 accepted_event = _validate_job_event(job, action, audit_event, job_queue)
             if action == "retry_conversion":
@@ -1494,12 +1494,14 @@ def _job_audit_event(job: JobRecord, action: str) -> dict[str, Any]:
 
 def _desktop_upload_audit_event(job: JobRecord) -> dict[str, Any]:
     source = job.source if isinstance(job.source, dict) else {}
+    source_filename = source.get("filename")
+    filename = source_filename if isinstance(source_filename, str) and source_filename else _safe_filename(job.filename)
     return {
         "event_type": "desktop.job_operation",
         "job_id": job.job_id,
         "job_status": job.status,
         "action": "desktop_upload",
-        "filename": job.filename,
+        "filename": filename,
         "mode": job.mode,
         "source_sha256": _sha256_value(source.get("sha256")),
         "size_bytes": source.get("size_bytes") if isinstance(source.get("size_bytes"), int) else None,
@@ -1537,6 +1539,19 @@ def _validate_job_event(
         raise ValueError("audit_event is required")
     if audit_event != expected_event:
         raise ValueError("audit_event does not match job action")
+    return expected_event
+
+
+def _validate_desktop_result_download_audit_event(
+    job: JobRecord,
+    audit_event: Any,
+) -> dict[str, Any]:
+    expected_event = _desktop_result_download_audit_event(job)
+    if not isinstance(audit_event, dict):
+        raise ValueError("audit_event is required")
+    for field_name in ("event_type", "job_id", "action", "download_filename", "output_sha256"):
+        if audit_event.get(field_name) != expected_event.get(field_name):
+            raise ValueError(f"audit_event.{field_name} does not match downloaded result")
     return expected_event
 
 
