@@ -4003,6 +4003,8 @@ def test_poc_http_api_detects_source_hash_mismatch_and_blocks_redownload() -> No
         "expected_sha256": uploaded_sha256,
         "actual_sha256": worker_source_sha256,
     }
+    assert list_job["hashes"]["source_sha256"] == uploaded_sha256
+    assert detail_job["hashes"]["source_sha256"] == uploaded_sha256
     assert detail_job["hash_verification"]["output"]["status"] == "match"
     assert [action["action"] for action in detail_job["available_actions"]] == [
         "open_detail"

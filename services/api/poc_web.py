@@ -1701,8 +1701,8 @@ def _job_hashes(job: JobRecord) -> dict[str, str | None]:
     hashes = raw_hashes if isinstance(raw_hashes, dict) else {}
     source = job.source if isinstance(job.source, dict) else {}
     return {
-        "source_sha256": _sha256_value(hashes.get("source_sha256"))
-        or _sha256_value(source.get("sha256")),
+        "source_sha256": _sha256_value(source.get("sha256"))
+        or _sha256_value(hashes.get("source_sha256")),
         "output_sha256": _sha256_value(hashes.get("output_sha256")),
     }
 
