@@ -16,6 +16,7 @@ from apps.desktop.api_client import (
     DesktopConnectionSettings,
     DesktopApiClient,
     DesktopApiClientConfig,
+    DesktopJobDisplayState,
     DesktopUploadValidationError,
     InvalidApiTokenError,
     MAX_DESKTOP_UPLOAD_BYTES,
@@ -299,6 +300,78 @@ def test_desktop_api_client_upload_maps_unauthorized_api_response_fail_closed(tm
 
     with pytest.raises(PermissionError, match="API authentication failed"):
         client.upload_document_file(selected_file)
+
+
+def test_desktop_api_client_fetches_job_progress_display_state() -> None:
+    transport = RecordingTransport(
+        payload={
+            "job": {
+                "job_id": "job-progress-1",
+                "status": "succeeded",
+                "display_status": "review_required",
+                "progress_percent": 100,
+                "warning_count": 2,
+                "error": None,
+            }
+        }
+    )
+    client = DesktopApiClient(
+        DesktopApiClientConfig(base_url="http://127.0.0.1:8765"),
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=transport,
+    )
+
+    state = client.get_job_progress("job-progress-1")
+
+    assert state == DesktopJobDisplayState(
+        job_id="job-progress-1",
+        api_status="succeeded",
+        display_status="review_required",
+        progress_percent=100,
+        warning_count=2,
+        error_message=None,
+        is_terminal=True,
+    )
+    assert len(transport.requests) == 1
+    assert transport.requests[0].full_url == "http://127.0.0.1:8765/api/jobs/job-progress-1"
+
+
+@pytest.mark.parametrize(
+    ("api_status", "display_status", "error_message", "is_terminal"),
+    [
+        ("queued", "queued", None, False),
+        ("running", "running", None, False),
+        ("succeeded", "completed", None, True),
+        ("failed", "failed", "parser unavailable", True),
+    ],
+)
+def test_desktop_api_client_derives_job_terminal_state_without_display_hint(
+    api_status: str,
+    display_status: str,
+    error_message: str | None,
+    is_terminal: bool,
+) -> None:
+    transport = RecordingTransport(
+        payload={
+            "job": {
+                "job_id": "job-progress-1",
+                "status": api_status,
+                "error": error_message,
+            }
+        }
+    )
+    client = DesktopApiClient(
+        DesktopApiClientConfig(base_url="http://127.0.0.1:8765"),
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=transport,
+    )
+
+    state = client.get_job_progress("job-progress-1")
+
+    assert state.display_status == display_status
+    assert state.error_message == error_message
+    assert state.is_terminal is is_terminal
+    assert state.progress_percent == (100 if is_terminal else {"queued": 0, "running": 50}[api_status])
 
 
 def test_desktop_connection_settings_feed_later_api_client_config() -> None:

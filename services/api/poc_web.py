@@ -1344,6 +1344,9 @@ def _job_response(
         "filename": job.filename,
         "mode": job.mode,
         "status": job.status,
+        "display_status": _job_display_status(job),
+        "progress_percent": _job_progress_percent(job),
+        "warning_count": _job_warning_count(job),
         "attempts": job.attempts,
         "error": job.error,
         "created_at": job.created_at,
@@ -1382,6 +1385,41 @@ def _job_has_download(job: JobRecord) -> bool:
     except (RuntimeError, ValueError):
         return False
     return True
+
+
+def _job_display_status(job: JobRecord) -> str:
+    if job.status == "succeeded":
+        result_status = _job_result_status(job)
+        if result_status == "requires_review":
+            return "review_required"
+        return "completed"
+    return job.status
+
+
+def _job_progress_percent(job: JobRecord) -> int:
+    if job.status == "queued":
+        return 0
+    if job.status == "running":
+        return 50
+    return 100
+
+
+def _job_warning_count(job: JobRecord) -> int:
+    if not isinstance(job.result, dict):
+        return 0
+    warnings = job.result.get("warnings", [])
+    if not isinstance(warnings, list):
+        return 0
+    return len(warnings)
+
+
+def _job_result_status(job: JobRecord) -> str | None:
+    if not isinstance(job.result, dict):
+        return None
+    status = job.result.get("status")
+    if not isinstance(status, str):
+        return None
+    return status
 
 
 def _retry_blocked_by_active_high_quality(
