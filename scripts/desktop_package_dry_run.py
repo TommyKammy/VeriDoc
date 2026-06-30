@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -25,6 +26,8 @@ REQUIRED_TERMS = {
         "tauri-plugin-updater",
         "lib.rs",
         "bundle.createUpdaterArtifacts",
+        "plugins.updater.pubkey",
+        "check()",
         "bundle.windows.signCommand",
         "Windows installer code-signing certificate",
         "Windows 10 22H2 or later",
@@ -43,26 +46,59 @@ REQUIRED_TERMS = {
         "tauri-plugin-updater",
         "lib.rs",
         "bundle.createUpdaterArtifacts",
+        "plugins.updater.pubkey",
+        "check()",
         "bundle.windows.signCommand",
         "Windows installer code-signing certificate",
     ),
 }
+EXACT_MARKER_TERMS = {
+    "TAURI_SIGNING_PRIVATE_KEY",
+    "TAURI_SIGNING_PRIVATE_KEY_PASSWORD",
+    "VERIDOC_DESKTOP_UPDATE_ENDPOINT",
+    "tauri-plugin-updater",
+    "lib.rs",
+    "bundle.createUpdaterArtifacts",
+    "plugins.updater.pubkey",
+    "check()",
+    "bundle.windows.signCommand",
+}
 FORBIDDEN_FRAGMENTS = ("/" + "Users" + "/", "C:" + "\\Users" + "\\")
+MARKER_BOUNDARY_PATTERN = r"[A-Za-z0-9_.-]"
+
+
+def display_path(path: Path) -> str:
+    try:
+        return str(path.relative_to(REPO_ROOT))
+    except ValueError:
+        return str(path)
+
+
+def has_required_term(text: str, term: str) -> bool:
+    if term not in EXACT_MARKER_TERMS:
+        return term in text
+
+    pattern = (
+        rf"(?<!{MARKER_BOUNDARY_PATTERN})"
+        rf"{re.escape(term)}"
+        rf"(?!{MARKER_BOUNDARY_PATTERN})"
+    )
+    return re.search(pattern, text) is not None
 
 
 def validate_document(path: Path, required_terms: tuple[str, ...]) -> list[str]:
     failures: list[str] = []
     if not path.is_file():
-        return [f"missing file: {path.relative_to(REPO_ROOT)}"]
+        return [f"missing file: {display_path(path)}"]
 
     text = path.read_text(encoding="utf-8")
     for term in required_terms:
-        if term not in text:
-            failures.append(f"{path.relative_to(REPO_ROOT)} missing term: {term}")
+        if not has_required_term(text, term):
+            failures.append(f"{display_path(path)} missing term: {term}")
     for fragment in FORBIDDEN_FRAGMENTS:
         if fragment in text:
             failures.append(
-                f"{path.relative_to(REPO_ROOT)} contains workstation-local path fragment"
+                f"{display_path(path)} contains workstation-local path fragment"
             )
     return failures
 
@@ -95,6 +131,8 @@ def run_dry_run() -> int:
         "and bundle.windows.signCommand or equivalent trusted signer config"
     )
     print("Required update endpoint: VERIDOC_DESKTOP_UPDATE_ENDPOINT")
+    print("Required updater public key: plugins.updater.pubkey")
+    print("Required runtime updater flow: check() plus download/install handling")
     return 0
 
 

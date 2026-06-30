@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import importlib.util
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -12,6 +14,15 @@ INSTALLER_ADR_PATH = REPO_ROOT / "adr" / "ADR-004-desktop-distribution-update.md
 DESKTOP_PATH = REPO_ROOT / "apps" / "desktop" / "README.md"
 PACKAGE_DRY_RUN_PATH = REPO_ROOT / "scripts" / "desktop_package_dry_run.py"
 CI_WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+
+spec = importlib.util.spec_from_file_location(
+    "desktop_package_dry_run",
+    PACKAGE_DRY_RUN_PATH,
+)
+assert spec is not None
+desktop_package_dry_run = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(desktop_package_dry_run)
 
 
 class DesktopTechnologyDecisionDocsTest(unittest.TestCase):
@@ -123,6 +134,8 @@ class DesktopTechnologyDecisionDocsTest(unittest.TestCase):
             "tauri-plugin-updater",
             "lib.rs",
             "bundle.createUpdaterArtifacts",
+            "plugins.updater.pubkey",
+            "check()",
             "bundle.windows.signCommand",
             "Windows installer code-signing certificate",
             "rollback",
@@ -157,6 +170,8 @@ class DesktopTechnologyDecisionDocsTest(unittest.TestCase):
             "tauri-plugin-updater",
             "lib.rs",
             "bundle.createUpdaterArtifacts",
+            "plugins.updater.pubkey",
+            "check()",
             "bundle.windows.signCommand",
             "Windows installer code-signing certificate",
             "apps/desktop",
@@ -197,6 +212,29 @@ class DesktopTechnologyDecisionDocsTest(unittest.TestCase):
             proc.returncode,
             0,
             msg=proc.stdout + proc.stderr,
+        )
+
+    def test_desktop_package_dry_run_matches_required_markers_exactly(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            doc_path = Path(tmp_dir) / "package-gates.md"
+            doc_path.write_text(
+                "TAURI_SIGNING_PRIVATE_KEY_PASSWORD\n"
+                "VERIDOC_DESKTOP_UPDATE_ENDPOINT\n",
+                encoding="utf-8",
+            )
+
+            failures = desktop_package_dry_run.validate_document(
+                doc_path,
+                (
+                    "TAURI_SIGNING_PRIVATE_KEY",
+                    "TAURI_SIGNING_PRIVATE_KEY_PASSWORD",
+                    "VERIDOC_DESKTOP_UPDATE_ENDPOINT",
+                ),
+            )
+
+        self.assertEqual(
+            failures,
+            [f"{doc_path} missing term: TAURI_SIGNING_PRIVATE_KEY"],
         )
 
 
