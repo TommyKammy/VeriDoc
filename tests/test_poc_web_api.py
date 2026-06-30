@@ -3916,6 +3916,52 @@ def test_poc_http_api_summarizes_job_progress_without_exposing_result_payload() 
     assert "hidden review payload" not in json.dumps(detail_body)
 
 
+def test_poc_http_api_preserves_blocked_conversion_job_display_status() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue()
+    created = server.job_queue.create_job(
+        idempotency_key="blocked-summary-1",
+        filename="blocked-record.pdf",
+        mode="standard",
+    )
+    running = server.job_queue.start_next_job()
+    assert running is not None
+    server.job_queue.mark_succeeded(
+        created.job_id,
+        result={
+            "status": "blocked",
+            "document_ir": {"document": {"title": "hidden blocked payload"}},
+            "warnings": ["unsupported block type"],
+        },
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request("GET", "/api/jobs")
+        list_response = connection.getresponse()
+        list_body = json.loads(list_response.read().decode("utf-8"))
+        connection.request("GET", f"/api/jobs/{created.job_id}")
+        detail_response = connection.getresponse()
+        detail_body = json.loads(detail_response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    list_job = list_body["jobs"][0]
+    detail_job = detail_body["job"]
+    assert list_response.status == 200
+    assert detail_response.status == 200
+    assert list_job["display_status"] == "blocked"
+    assert detail_job["display_status"] == "blocked"
+    assert detail_job["progress_percent"] == 100
+    assert detail_job["warning_count"] == 1
+    assert "result" not in list_job
+    assert "result" not in detail_job
+    assert "hidden blocked payload" not in json.dumps(list_body)
+    assert "hidden blocked payload" not in json.dumps(detail_body)
+
+
 def test_poc_http_api_detects_output_hash_mismatch_and_blocks_redownload() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     server.job_queue = JobQueue()

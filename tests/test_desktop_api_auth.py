@@ -336,6 +336,38 @@ def test_desktop_api_client_fetches_job_progress_display_state() -> None:
     assert transport.requests[0].full_url == "http://127.0.0.1:8765/api/jobs/job-progress-1"
 
 
+def test_desktop_api_client_accepts_blocked_job_progress_display_state() -> None:
+    transport = RecordingTransport(
+        payload={
+            "job": {
+                "job_id": "job-blocked-1",
+                "status": "succeeded",
+                "display_status": "blocked",
+                "progress_percent": 100,
+                "warning_count": 1,
+                "error": None,
+            }
+        }
+    )
+    client = DesktopApiClient(
+        DesktopApiClientConfig(base_url="http://127.0.0.1:8765"),
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=transport,
+    )
+
+    state = client.get_job_progress("job-blocked-1")
+
+    assert state == DesktopJobDisplayState(
+        job_id="job-blocked-1",
+        api_status="succeeded",
+        display_status="blocked",
+        progress_percent=100,
+        warning_count=1,
+        error_message=None,
+        is_terminal=True,
+    )
+
+
 @pytest.mark.parametrize(
     ("api_status", "display_status", "error_message", "is_terminal"),
     [

@@ -1392,6 +1392,8 @@ def _job_display_status(job: JobRecord) -> str:
         result_status = _job_result_status(job)
         if result_status == "requires_review":
             return "review_required"
+        if result_status == "blocked":
+            return "blocked"
         return "completed"
     return job.status
 

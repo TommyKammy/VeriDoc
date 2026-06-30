@@ -390,7 +390,7 @@ def _job_display_state(job: dict[str, Any]) -> DesktopJobDisplayState:
         progress_percent=_progress_percent(job, api_status),
         warning_count=_warning_count(job),
         error_message=_optional_string(job.get("error")),
-        is_terminal=display_status in {"review_required", "completed", "failed"},
+        is_terminal=display_status in {"review_required", "completed", "failed", "blocked"},
     )
 
 
@@ -404,7 +404,7 @@ def _job_display_status(job: dict[str, Any], api_status: str) -> str:
         display_status = api_status
     if display_status == "requires_review":
         display_status = "review_required"
-    if display_status not in {"queued", "running", "review_required", "completed", "failed"}:
+    if display_status not in {"queued", "running", "review_required", "completed", "failed", "blocked"}:
         raise DesktopApiError("API job response includes an unsupported display status")
     return display_status
 
