@@ -3,6 +3,7 @@ from __future__ import annotations
 import http.client
 import json
 import socket
+import threading
 from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, Request
 
@@ -286,6 +287,42 @@ def test_desktop_connection_health_check_reports_http_protocol_error() -> None:
     assert result.ok is False
     assert result.status == "request_failed"
     assert "transport" in result.message
+
+
+def test_desktop_connection_health_check_reports_real_truncated_http_response() -> None:
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    port = server.getsockname()[1]
+
+    def serve_truncated_response() -> None:
+        with server:
+            connection, _address = server.accept()
+            with connection:
+                connection.recv(4096)
+                connection.sendall(
+                    b"HTTP/1.1 200 OK\r\n"
+                    b"Content-Type: application/json\r\n"
+                    b"Content-Length: 128\r\n"
+                    b"Connection: close\r\n"
+                    b"\r\n"
+                    b"{"
+                )
+
+    thread = threading.Thread(target=serve_truncated_response)
+    thread.start()
+    try:
+        result = check_desktop_api_connection(
+            DesktopConnectionSettings(api_base_url=f"http://127.0.0.1:{port}", timeout_seconds=1.0),
+            credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        )
+    finally:
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+
+    assert result.ok is False
+    assert result.status == "request_failed"
+    assert "incomplete" in result.message
 
 
 def test_desktop_connection_health_check_rejects_wrong_shape_job_list_response() -> None:

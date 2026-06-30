@@ -239,6 +239,13 @@ def check_desktop_api_connection(
             message=f"API接続確認に失敗しました: {exc}",
             base_url=config.base_url,
         )
+    except http.client.HTTPException as exc:
+        return DesktopConnectionHealthResult(
+            ok=False,
+            status="request_failed",
+            message=f"API接続確認に失敗しました: {exc}",
+            base_url=config.base_url,
+        )
     except (OSError, URLError) as exc:
         return DesktopConnectionHealthResult(
             ok=False,
