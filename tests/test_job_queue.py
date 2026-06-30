@@ -89,6 +89,36 @@ def test_job_queue_idempotent_retry_rejects_different_template_binding() -> None
         )
 
 
+def test_job_queue_idempotent_retry_rejects_different_uploaded_source() -> None:
+    queue = JobQueue()
+    queue.create_job(
+        idempotency_key="upload-with-source",
+        filename="batch-record.pdf",
+        mode="standard",
+        source={
+            "filename": "batch-record.pdf",
+            "content_type": "application/pdf",
+            "size_bytes": 10,
+            "sha256": "0" * 64,
+            "content": b"first file",
+        },
+    )
+
+    with pytest.raises(ValueError, match="idempotency_key already bound"):
+        queue.create_job(
+            idempotency_key="upload-with-source",
+            filename="batch-record.pdf",
+            mode="standard",
+            source={
+                "filename": "batch-record.pdf",
+                "content_type": "application/pdf",
+                "size_bytes": 11,
+                "sha256": "1" * 64,
+                "content": b"second file",
+            },
+        )
+
+
 def test_job_queue_retries_failed_job_with_bounded_attempts() -> None:
     queue = JobQueue(max_attempts=2)
     created = queue.create_job(

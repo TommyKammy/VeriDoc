@@ -133,13 +133,24 @@ def test_desktop_api_client_uploads_selected_pdf_and_returns_job_reference(tmp_p
     assert request.get_header("Content-type") == "application/json"
     body = json.loads(request.data.decode("utf-8"))
     source_sha256 = hashlib.sha256(b"%PDF-1.7\nfocused upload").hexdigest()
+    idempotency_material = {
+        "content_type": "application/pdf",
+        "filename": "batch-record.pdf",
+        "mode": "standard",
+        "size_bytes": selected_file.stat().st_size,
+        "source_sha256": source_sha256,
+        "template_id": None,
+    }
+    idempotency_digest = hashlib.sha256(
+        json.dumps(idempotency_material, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
     assert body == {
         "filename": "batch-record.pdf",
         "content_type": "application/pdf",
         "content_base64": base64.b64encode(b"%PDF-1.7\nfocused upload").decode("ascii"),
         "size_bytes": selected_file.stat().st_size,
         "source_sha256": source_sha256,
-        "idempotency_key": f"upload:{source_sha256}",
+        "idempotency_key": f"upload:{idempotency_digest}",
         "mode": "standard",
     }
 
@@ -169,6 +180,54 @@ def test_desktop_api_client_uploads_multiple_selected_files_in_order(tmp_path) -
         "batch-record.pdf",
         "batch-metrics.xlsx",
     ]
+
+
+def test_desktop_api_client_upload_key_includes_job_parameters(tmp_path) -> None:
+    selected_file = tmp_path / "batch-record.pdf"
+    selected_file.write_bytes(b"%PDF-1.7\nfocused upload")
+    transport = SequenceTransport(
+        [
+            {"job": {"job_id": "job-standard", "status": "queued", "filename": selected_file.name}},
+            {"job": {"job_id": "job-template", "status": "queued", "filename": selected_file.name}},
+        ]
+    )
+    client = DesktopApiClient(
+        DesktopApiClientConfig(base_url="http://127.0.0.1:8765"),
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=transport,
+    )
+
+    client.upload_document_file(selected_file, mode="standard")
+    client.upload_document_file(selected_file, mode="high_quality", template_id="batch-record")
+
+    first_body = json.loads(transport.requests[0].data.decode("utf-8"))
+    second_body = json.loads(transport.requests[1].data.decode("utf-8"))
+    assert first_body["source_sha256"] == second_body["source_sha256"]
+    assert first_body["idempotency_key"] != second_body["idempotency_key"]
+    assert second_body["mode"] == "high_quality"
+    assert second_body["template_id"] == "batch-record"
+
+
+def test_desktop_api_client_validates_full_batch_before_dispatch(tmp_path) -> None:
+    pdf_file = tmp_path / "batch-record.pdf"
+    txt_file = tmp_path / "notes.txt"
+    pdf_file.write_bytes(b"%PDF-1.7\nfocused upload")
+    txt_file.write_text("not an accepted desktop upload")
+    transport = SequenceTransport(
+        [
+            {"job": {"job_id": "job-pdf", "status": "queued", "filename": pdf_file.name}},
+        ]
+    )
+    client = DesktopApiClient(
+        DesktopApiClientConfig(base_url="http://127.0.0.1:8765"),
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=transport,
+    )
+
+    with pytest.raises(DesktopUploadValidationError, match="unsupported file type"):
+        client.upload_document_files([pdf_file, txt_file])
+
+    assert transport.requests == []
 
 
 def test_desktop_api_client_rejects_unsupported_upload_type_before_dispatch(tmp_path) -> None:

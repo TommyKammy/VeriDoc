@@ -2590,6 +2590,55 @@ def test_poc_http_api_creates_idempotent_conversion_job() -> None:
     assert status["job"]["mode"] == "standard"
 
 
+def test_poc_http_api_stores_uploaded_job_source_before_returning_reference() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue()
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    uploaded_content = b"%PDF-1.7\nqueued source"
+    source_sha256 = hashlib.sha256(uploaded_content).hexdigest()
+    try:
+        payload = json.dumps(
+            {
+                "idempotency_key": "upload-with-source",
+                "filename": "batch-record.pdf",
+                "content_type": "application/pdf",
+                "content_base64": base64.b64encode(uploaded_content).decode("ascii"),
+                "size_bytes": len(uploaded_content),
+                "source_sha256": source_sha256,
+                "mode": "standard",
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/jobs",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+        job = server.job_queue.get_job(body["job"]["job_id"])
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 202
+    assert body["job"]["hashes"]["source_sha256"] == source_sha256
+    assert body["job"]["hash_verification"]["source"] == {
+        "status": "recorded",
+        "sha256": source_sha256,
+    }
+    assert "source" not in body["job"]
+    assert job.source == {
+        "filename": "batch-record.pdf",
+        "content_type": "application/pdf",
+        "size_bytes": len(uploaded_content),
+        "sha256": source_sha256,
+        "content": uploaded_content,
+    }
+
+
 def test_template_store_accepts_schema_only_mapping_without_legacy_content() -> None:
     store = poc_web.TemplateStore()
     mapping = {

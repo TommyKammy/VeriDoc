@@ -191,16 +191,19 @@ class DesktopApiClient:
             raise DesktopUploadValidationError("at least one file is required")
         if content_types is not None and len(content_types) != len(file_paths):
             raise DesktopUploadValidationError("content_types length must match file_paths")
-        job_refs: list[dict[str, Any]] = []
-        for index, file_path in enumerate(file_paths):
-            job_refs.append(
-                self.upload_document_file(
-                    file_path,
-                    content_type=None if content_types is None else content_types[index],
-                    mode=mode,
-                    template_id=template_id,
-                )
+        requests = [
+            _upload_request_from_file(
+                file_path,
+                content_type=None if content_types is None else content_types[index],
+                mode=mode,
+                template_id=template_id,
             )
+            for index, file_path in enumerate(file_paths)
+        ]
+        job_refs: list[dict[str, Any]] = []
+        for request in requests:
+            payload = self._request_json("POST", "/api/jobs", request)
+            job_refs.append(_validate_job_response(payload))
         return job_refs
 
     def _request_json(self, method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -382,12 +385,42 @@ def _upload_request_from_file(
         "content_base64": base64.b64encode(content).decode("ascii"),
         "size_bytes": size_bytes,
         "source_sha256": content_sha256,
-        "idempotency_key": f"upload:{content_sha256}",
+        "idempotency_key": _upload_idempotency_key(
+            source_sha256=content_sha256,
+            filename=filename,
+            content_type=resolved_content_type,
+            size_bytes=size_bytes,
+            mode=mode,
+            template_id=template_id,
+        ),
         "mode": mode,
     }
     if template_id is not None:
         request["template_id"] = template_id
     return request
+
+
+def _upload_idempotency_key(
+    *,
+    source_sha256: str,
+    filename: str,
+    content_type: str,
+    size_bytes: int,
+    mode: str,
+    template_id: str | None,
+) -> str:
+    key_material = {
+        "content_type": content_type,
+        "filename": filename,
+        "mode": mode,
+        "size_bytes": size_bytes,
+        "source_sha256": source_sha256,
+        "template_id": template_id,
+    }
+    digest = hashlib.sha256(
+        json.dumps(key_material, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return f"upload:{digest}"
 
 
 def _expected_upload_content_type(path: Path) -> str:

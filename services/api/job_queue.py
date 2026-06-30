@@ -20,6 +20,7 @@ class JobRecord:
     filename: str
     mode: str
     status: JobStatus
+    source: dict[str, Any] | None = None
     template: dict[str, Any] | None = None
     attempts: int = 0
     result: dict[str, Any] | None = None
@@ -47,6 +48,7 @@ class JobQueue:
         idempotency_key: str,
         filename: str,
         mode: str,
+        source: dict[str, Any] | None = None,
         template: dict[str, Any] | None = None,
     ) -> JobRecord:
         key, filename, mode = _normalize_job_request(
@@ -62,6 +64,7 @@ class JobQueue:
                 if (
                     existing.filename != filename
                     or existing.mode != mode
+                    or not _same_source_binding(existing.source, source)
                     or not _same_template_binding(existing.template, template)
                 ):
                     raise ValueError("idempotency_key already bound to different job parameters")
@@ -74,6 +77,7 @@ class JobQueue:
                 filename=filename,
                 mode=mode,
                 status="queued",
+                source=deepcopy(source),
                 template=deepcopy(template),
             )
             self._jobs[job.job_id] = job
@@ -87,6 +91,7 @@ class JobQueue:
         idempotency_key: str,
         filename: str,
         mode: str,
+        source: dict[str, Any] | None = None,
         template: dict[str, Any] | None = None,
     ) -> JobRecord | None:
         key, filename, mode = _normalize_job_request(
@@ -102,6 +107,7 @@ class JobQueue:
             if (
                 existing.filename != filename
                 or existing.mode != mode
+                or not _same_source_binding(existing.source, source)
                 or not _same_template_binding(existing.template, template)
             ):
                 raise ValueError("idempotency_key already bound to different job parameters")
@@ -215,6 +221,20 @@ def _normalize_job_request(
     if mode not in {"standard", "high_quality"}:
         raise ValueError("unsupported job mode")
     return key, filename, mode
+
+
+def _same_source_binding(
+    existing_source: dict[str, Any] | None,
+    requested_source: dict[str, Any] | None,
+) -> bool:
+    if existing_source is None or requested_source is None:
+        return existing_source is requested_source
+    return (
+        existing_source.get("sha256") == requested_source.get("sha256")
+        and existing_source.get("size_bytes") == requested_source.get("size_bytes")
+        and existing_source.get("content_type") == requested_source.get("content_type")
+        and existing_source.get("content") == requested_source.get("content")
+    )
 
 
 def _same_template_binding(
