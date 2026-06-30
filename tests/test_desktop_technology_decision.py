@@ -9,6 +9,7 @@ ADR_PATH = REPO_ROOT / "adr" / "ADR-003-windows-desktop-technology.md"
 INSTALLER_ADR_PATH = REPO_ROOT / "adr" / "ADR-004-desktop-distribution-update.md"
 DESKTOP_PATH = REPO_ROOT / "apps" / "desktop" / "README.md"
 PACKAGE_DRY_RUN_PATH = REPO_ROOT / "scripts" / "desktop_package_dry_run.py"
+CI_WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 
 
 class DesktopTechnologyDecisionDocsTest(unittest.TestCase):
@@ -154,6 +155,21 @@ class DesktopTechnologyDecisionDocsTest(unittest.TestCase):
         forbidden_fragments = ("/" + "Users" + "/", "C:" + "\\Users" + "\\")
         for fragment in forbidden_fragments:
             self.assertNotIn(fragment, script)
+
+    def test_ci_runs_desktop_package_dry_run(self) -> None:
+        self.assertTrue(
+            CI_WORKFLOW_PATH.is_file(),
+            msg=f"missing CI workflow: {CI_WORKFLOW_PATH.relative_to(REPO_ROOT)}",
+        )
+
+        workflow = CI_WORKFLOW_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("Run desktop package dry-run", workflow)
+        self.assertIn("python3 scripts/desktop_package_dry_run.py --dry-run", workflow)
+
+        forbidden_fragments = ("/" + "Users" + "/", "C:" + "\\Users" + "\\")
+        for fragment in forbidden_fragments:
+            self.assertNotIn(fragment, workflow)
 
 
 if __name__ == "__main__":

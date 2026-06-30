@@ -20,6 +20,9 @@ jobs:
       - name: Run repository hygiene checks
         run: python3 scripts/ci/repo_hygiene.py
 
+      - name: Run desktop package dry-run
+        run: python3 scripts/desktop_package_dry_run.py --dry-run
+
       - name: Set up Python
         if: ${{ hashFiles('pyproject.toml', 'requirements*.txt', 'tests/**/*.py') != '' }}
         uses: actions/setup-python@v5
