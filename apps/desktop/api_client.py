@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 import http.client
 import ipaddress
 import json
+import math
 import socket
 import ssl
 from typing import Any, Protocol
@@ -66,6 +67,8 @@ class DesktopApiClientConfig:
     _tls_server_name: str | None = field(init=False, repr=False, default=None)
 
     def __post_init__(self) -> None:
+        if not math.isfinite(self.timeout_seconds) or self.timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be finite and greater than 0")
         normalized = self.base_url.strip()
         if not normalized:
             raise ValueError("base_url is required")
@@ -156,11 +159,16 @@ class DesktopApiClient:
 
             try:
                 with self._open(request) as response:
-                    return json.loads(response.read().decode("utf-8"))
+                    decoded = json.loads(response.read().decode("utf-8"))
+                    if not isinstance(decoded, dict):
+                        raise DesktopApiError("API response must be a JSON object")
+                    return decoded
             except HTTPError as exc:
                 if exc.code in {401, 403}:
                     raise PermissionError("API authentication failed") from exc
                 raise DesktopApiError(f"API request failed with HTTP {exc.code}") from exc
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                raise DesktopApiError("API response must be valid JSON") from exc
             except URLError as exc:
                 last_url_error = exc
                 if index + 1 < len(request_urls):
@@ -189,7 +197,13 @@ def check_desktop_api_connection(
     try:
         config = settings.to_client_config()
     except ValueError as exc:
-        status = "https_required" if "HTTPS is required" in str(exc) else "invalid_url"
+        message = str(exc)
+        if "HTTPS is required" in message:
+            status = "https_required"
+        elif "timeout_seconds" in message:
+            status = "invalid_timeout"
+        else:
+            status = "invalid_url"
         return DesktopConnectionHealthResult(
             ok=False,
             status=status,

@@ -44,6 +44,20 @@ class JsonResponse:
         return json.dumps(self.payload).encode("utf-8")
 
 
+class RawResponse:
+    def __init__(self, body: bytes) -> None:
+        self.body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return self.body
+
+
 def test_desktop_api_client_attaches_bearer_token_from_credential_store() -> None:
     transport = RecordingTransport()
     client = DesktopApiClient(
@@ -152,6 +166,49 @@ def test_desktop_connection_health_check_reports_connection_failure() -> None:
     assert result.ok is False
     assert result.status == "connection_failed"
     assert "connection refused" in result.message
+
+
+@pytest.mark.parametrize("timeout_seconds", [0.0, -1.0, float("nan"), float("inf"), float("-inf")])
+def test_desktop_connection_health_check_rejects_invalid_timeout_without_network_dispatch(
+    timeout_seconds: float,
+) -> None:
+    transport = RecordingTransport()
+
+    result = check_desktop_api_connection(
+        DesktopConnectionSettings(api_base_url="http://127.0.0.1:8765", timeout_seconds=timeout_seconds),
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=transport,
+    )
+
+    assert result.ok is False
+    assert result.status == "invalid_timeout"
+    assert "timeout_seconds" in result.message
+    assert transport.requests == []
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        (b"not json", "valid JSON"),
+        (b"[]", "JSON object"),
+    ],
+)
+def test_desktop_connection_health_check_reports_malformed_api_response(
+    body: bytes,
+    message: str,
+) -> None:
+    def malformed_transport(request: Request, *, timeout: float):
+        return RawResponse(body)
+
+    result = check_desktop_api_connection(
+        DesktopConnectionSettings(api_base_url="http://127.0.0.1:8765"),
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=malformed_transport,
+    )
+
+    assert result.ok is False
+    assert result.status == "request_failed"
+    assert message in result.message
 
 
 @pytest.mark.parametrize("token", [None, "", "   "])
