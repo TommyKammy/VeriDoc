@@ -4,6 +4,7 @@ import base64
 import hashlib
 import http.client
 import json
+from pathlib import Path
 import socket
 import threading
 from urllib.error import HTTPError, URLError
@@ -14,6 +15,7 @@ import pytest
 from apps.desktop.api_client import (
     ApiCredentialStore,
     DesktopConnectionSettings,
+    DesktopApiError,
     DesktopApiClient,
     DesktopApiClientConfig,
     DesktopJobDisplayState,
@@ -390,6 +392,81 @@ def test_desktop_api_client_clamps_long_result_download_names(tmp_path) -> None:
     assert len(second_path.name.encode("utf-8")) <= MAX_DOWNLOAD_FILENAME_BYTES
     assert first_path.read_bytes() == b'{"document_ir":{}}'
     assert second_path.read_bytes() == b'{"document_ir":{}}'
+
+
+def test_desktop_api_client_removes_partial_result_file_after_failed_write(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    target_path = tmp_path / "partial-result.json"
+
+    def download_transport(request: Request, *, timeout: float):
+        return RawResponse(
+            b'{"document_ir":{"document_id":"job-result"}}',
+            headers={"Content-Disposition": 'attachment; filename="partial-result.json"'},
+        )
+
+    client = DesktopApiClient(
+        DesktopApiClientConfig(base_url="http://127.0.0.1:8765"),
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=download_transport,
+    )
+    original_open = Path.open
+
+    class FailingDownloadFile:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback) -> None:
+            return None
+
+        def write(self, body: bytes) -> int:
+            with original_open(target_path, "wb") as partial:
+                partial.write(body[:8])
+            raise OSError("simulated full drive")
+
+    def failing_open(path: Path, mode: str = "r", *args, **kwargs):
+        if path == target_path and mode == "xb":
+            return FailingDownloadFile()
+        return original_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", failing_open)
+
+    with pytest.raises(DesktopApiError, match="downloaded result could not be saved"):
+        client.save_job_result("job-complete-1", tmp_path)
+
+    assert not target_path.exists()
+
+
+@pytest.mark.parametrize(
+    ("server_filename", "saved_filename"),
+    [
+        ("CON.veridoc-result.json", "CON_.veridoc-result.json"),
+        ("nul.json", "nul_.json"),
+        ("LPT1", "LPT1_"),
+    ],
+)
+def test_desktop_api_client_avoids_windows_reserved_result_filenames(
+    tmp_path,
+    server_filename: str,
+    saved_filename: str,
+) -> None:
+    def download_transport(request: Request, *, timeout: float):
+        return RawResponse(
+            b'{"document_ir":{}}',
+            headers={"Content-Disposition": f'attachment; filename="{server_filename}"'},
+        )
+
+    client = DesktopApiClient(
+        DesktopApiClientConfig(base_url="http://127.0.0.1:8765"),
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=download_transport,
+    )
+
+    saved_path = client.save_job_result("job-complete-1", tmp_path)
+
+    assert saved_path == tmp_path / saved_filename
+    assert saved_path.read_bytes() == b'{"document_ir":{}}'
 
 
 def test_desktop_api_client_fetches_job_progress_display_state() -> None:

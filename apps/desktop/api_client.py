@@ -39,6 +39,14 @@ class DesktopUploadValidationError(ValueError):
 MAX_DESKTOP_UPLOAD_BYTES = 2 * 1024 * 1024
 MAX_DOWNLOAD_FILENAME_BYTES = 255
 DOWNLOAD_FILENAME_FALLBACK = "veridoc-result.json"
+WINDOWS_RESERVED_DOWNLOAD_STEMS = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{index}" for index in range(1, 10)),
+    *(f"LPT{index}" for index in range(1, 10)),
+}
 ALLOWED_UPLOAD_CONTENT_TYPES = {
     ".pdf": "application/pdf",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -234,17 +242,14 @@ class DesktopApiClient:
         body, headers = self._request_bytes("GET", f"/api/jobs/{quote(job_id, safe='')}/result")
         filename = _download_filename_from_headers(headers) or f"{job_id}.veridoc-result.json"
         safe_filename = _sanitize_download_filename(filename)
-        save_path = _available_destination_path(destination, safe_filename)
-        try:
-            with save_path.open("xb") as output:
-                output.write(body)
-        except FileExistsError:
+        for _ in range(1000):
             save_path = _available_destination_path(destination, safe_filename)
-            with save_path.open("xb") as output:
-                output.write(body)
-        except OSError as exc:
-            raise DesktopApiError(f"downloaded result could not be saved: {safe_filename}") from exc
-        return save_path
+            try:
+                _write_download_file(save_path, body, safe_filename)
+            except FileExistsError:
+                continue
+            return save_path
+        raise DesktopApiError("downloaded result filename has too many collisions")
 
     def _request_json(self, method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
         token = self._credential_store.require_token()
@@ -634,7 +639,31 @@ def _sanitize_download_filename(filename: str) -> str:
     sanitized = re.sub(r"\s+", " ", sanitized).strip(" .-")
     if not sanitized:
         return DOWNLOAD_FILENAME_FALLBACK
+    sanitized = _avoid_windows_reserved_download_filename(sanitized)
     return _fit_download_filename(sanitized)
+
+
+def _write_download_file(save_path: Path, body: bytes, safe_filename: str) -> None:
+    try:
+        with save_path.open("xb") as output:
+            output.write(body)
+    except FileExistsError:
+        raise
+    except OSError as exc:
+        try:
+            save_path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+        raise DesktopApiError(f"downloaded result could not be saved: {safe_filename}") from exc
+
+
+def _avoid_windows_reserved_download_filename(filename: str) -> str:
+    first_segment, separator, remainder = filename.partition(".")
+    if first_segment.rstrip(" .").upper() not in WINDOWS_RESERVED_DOWNLOAD_STEMS:
+        return filename
+    return f"{first_segment.rstrip(' .')}_{separator}{remainder}"
 
 
 def _available_destination_path(destination_dir: Path, filename: str) -> Path:
