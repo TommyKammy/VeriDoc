@@ -273,6 +273,21 @@ def test_desktop_connection_health_check_reports_incomplete_api_response() -> No
     assert "incomplete" in result.message
 
 
+def test_desktop_connection_health_check_reports_http_protocol_error() -> None:
+    def malformed_transport(request: Request, *, timeout: float):
+        raise http.client.BadStatusLine("not-http")
+
+    result = check_desktop_api_connection(
+        DesktopConnectionSettings(api_base_url="http://127.0.0.1:8765"),
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=malformed_transport,
+    )
+
+    assert result.ok is False
+    assert result.status == "request_failed"
+    assert "transport" in result.message
+
+
 def test_desktop_connection_health_check_rejects_wrong_shape_job_list_response() -> None:
     result = check_desktop_api_connection(
         DesktopConnectionSettings(api_base_url="http://127.0.0.1:8765"),

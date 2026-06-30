@@ -175,6 +175,8 @@ class DesktopApiClient:
                 raise DesktopApiError("API response must be valid JSON") from exc
             except http.client.IncompleteRead as exc:
                 raise DesktopApiError("API response body was incomplete") from exc
+            except http.client.HTTPException as exc:
+                raise DesktopApiError("API response transport failed") from exc
             except URLError as exc:
                 last_url_error = exc
                 if index + 1 < len(request_urls):
