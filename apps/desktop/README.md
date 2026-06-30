@@ -64,6 +64,33 @@ settings screen. Invalid URLs, non-local endpoints, missing or rejected
 credentials, HTTP errors, and connection failures are reported as status values
 with user-facing messages before the desktop shell proceeds to later API calls.
 
+## Local Temporary File Cleanup
+
+Desktop-owned upload, download, and intermediate staging files must be created
+through `DesktopTemporaryFileManager`. The manager stores files under the
+configured desktop temp root's `work/` subdirectory and removes those owned
+files when the operation exits normally, fails with an exception, or is
+cancelled through `cancel()`.
+
+The manager keeps the desktop temp root and shared `work/` directory available
+for concurrent operation-scoped managers. On POSIX platforms it applies private
+`0700` directory permissions and `0600` staging-file permissions; on Windows it
+removes existing ACL access rules and grants the current user full control
+before writing staging content. If privacy hardening fails, staging creation
+fails closed.
+
+Files written to a user-selected final save location are explicit artifacts, not
+temporary files. Register those paths with `register_explicit_artifact()` if they
+are handled in the same workflow; cleanup skips explicit artifacts, removes only
+manager-owned staging paths under the temp root, and leaves the shared `work/`
+directory in place.
+
+If a staging file cannot be removed, cleanup logs an error through
+`apps.desktop.api_client` and raises `DesktopTemporaryCleanupError` when cleanup
+is the primary operation. When another workflow error is already being raised,
+the cleanup failure is still logged so the desktop shell can surface or collect
+it without masking the original failure.
+
 ## Initial Local Checks
 
 The documentation-only boundary introduced by P5-01 is verified with:

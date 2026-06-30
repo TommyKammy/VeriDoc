@@ -6,14 +6,18 @@ import hashlib
 import http.client
 import ipaddress
 import json
+import logging
 import math
 import mimetypes
 from numbers import Real
 import os
 from pathlib import Path
 import re
+import secrets
 import socket
 import ssl
+import subprocess
+import sys
 import threading
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
@@ -37,9 +41,21 @@ class DesktopUploadValidationError(ValueError):
     """Raised when a selected or dropped file cannot be uploaded."""
 
 
+class DesktopTemporaryCleanupError(RuntimeError):
+    """Raised when one or more desktop-owned temporary files cannot be removed."""
+
+    def __init__(self, failures: tuple[Path, ...]) -> None:
+        self.failures = failures
+        super().__init__(f"temporary cleanup failed for {len(failures)} file(s)")
+
+
 MAX_DESKTOP_UPLOAD_BYTES = 2 * 1024 * 1024
 MAX_DOWNLOAD_FILENAME_BYTES = 255
 DOWNLOAD_FILENAME_FALLBACK = "veridoc-result.json"
+DESKTOP_TEMP_WORK_DIR = "work"
+DESKTOP_TEMP_TOKEN_BYTES = 16
+DESKTOP_TEMP_DIR_MODE = 0o700
+DESKTOP_TEMP_FILE_MODE = 0o600
 WINDOWS_RESERVED_DOWNLOAD_STEMS = {
     "CON",
     "PRN",
@@ -48,6 +64,8 @@ WINDOWS_RESERVED_DOWNLOAD_STEMS = {
     *(f"COM{index}" for index in range(1, 10)),
     *(f"LPT{index}" for index in range(1, 10)),
 }
+
+LOGGER = logging.getLogger(__name__)
 ALLOWED_UPLOAD_CONTENT_TYPES = {
     ".pdf": "application/pdf",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -162,6 +180,126 @@ class DesktopConnectionSettings:
             credential_store=credential_store,
             transport=transport,
         )
+
+
+class DesktopTemporaryFileManager:
+    """Owns desktop-local staging files and removes them at operation end.
+
+    Use this for upload/download/intermediate files created by the thin client.
+    Files explicitly selected as final save targets should be registered with
+    `register_explicit_artifact` and are not cleanup candidates.
+    """
+
+    def __init__(self, root: str | Path) -> None:
+        self.root = Path(root).expanduser().resolve()
+        self._owned_paths: list[Path] = []
+        self._explicit_artifacts: set[Path] = set()
+        self._closed = False
+        self.root.mkdir(parents=True, exist_ok=True, mode=DESKTOP_TEMP_DIR_MODE)
+        _harden_private_path(self.root, DESKTOP_TEMP_DIR_MODE)
+        self._ensure_work_dir()
+
+    def __enter__(self) -> "DesktopTemporaryFileManager":
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> bool:
+        try:
+            self.cleanup()
+        except DesktopTemporaryCleanupError:
+            if exc_type is None:
+                raise
+        return False
+
+    @property
+    def _work_dir(self) -> Path:
+        return self.root / DESKTOP_TEMP_WORK_DIR
+
+    def create_staging_file(self, filename: str, content: bytes = b"") -> Path:
+        if self._closed:
+            raise RuntimeError("temporary file manager is already closed")
+        if not isinstance(content, bytes):
+            raise TypeError("content must be bytes")
+        token = secrets.token_hex(DESKTOP_TEMP_TOKEN_BYTES)
+        prefix = f"tmp-{token}-"
+        safe_filename = _sanitize_download_filename(
+            filename,
+            max_bytes=MAX_DOWNLOAD_FILENAME_BYTES - len(prefix.encode("utf-8")),
+        )
+        path = self._work_dir / f"{prefix}{safe_filename}"
+        self._require_owned_staging_path(path)
+        fd = -1
+        created_path = False
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, DESKTOP_TEMP_FILE_MODE)
+            created_path = True
+            _harden_private_path(path, DESKTOP_TEMP_FILE_MODE)
+            self._owned_paths.append(path)
+            output = os.fdopen(fd, "wb")
+            fd = -1
+            with output:
+                output.write(content)
+        except Exception:
+            if fd != -1:
+                os.close(fd)
+                fd = -1
+            if created_path and path not in self._owned_paths:
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
+                except OSError as exc:
+                    LOGGER.error("temporary cleanup failed for %s: %s", path, exc)
+            raise
+        finally:
+            if fd != -1:
+                os.close(fd)
+        return path
+
+    def register_explicit_artifact(self, path: str | Path) -> Path:
+        explicit_path = Path(path).expanduser().resolve()
+        self._explicit_artifacts.add(explicit_path)
+        return explicit_path
+
+    def cancel(self) -> None:
+        self.cleanup()
+
+    def cleanup(self) -> None:
+        failures: list[Path] = []
+        for path in reversed(self._owned_paths):
+            if self._is_explicit_artifact(path):
+                continue
+            try:
+                self._require_owned_staging_path(path)
+                path.unlink()
+            except FileNotFoundError:
+                continue
+            except (OSError, ValueError) as exc:
+                LOGGER.error("temporary cleanup failed for %s: %s", path, exc)
+                failures.append(path)
+        self._closed = True
+        if failures:
+            raise DesktopTemporaryCleanupError(tuple(failures))
+
+    def _ensure_work_dir(self) -> None:
+        work_dir = self._work_dir
+        if os.path.lexists(work_dir) and work_dir.is_symlink():
+            raise ValueError("temporary work directory must not be a symlink")
+        work_dir.mkdir(parents=True, exist_ok=True, mode=DESKTOP_TEMP_DIR_MODE)
+        if work_dir.is_symlink():
+            raise ValueError("temporary work directory must not be a symlink")
+        _require_path_inside_root(work_dir.resolve(strict=True), self.root)
+        _harden_private_path(work_dir, DESKTOP_TEMP_DIR_MODE)
+
+    def _require_owned_staging_path(self, path: Path) -> None:
+        _require_path_inside_root(path, self.root)
+        if path.parent != self._work_dir:
+            raise ValueError("temporary path escapes storage root")
+        if self._work_dir.is_symlink():
+            raise ValueError("temporary work directory must not be a symlink")
+        _require_path_inside_root(self._work_dir.resolve(strict=True), self.root)
+
+    def _is_explicit_artifact(self, path: Path) -> bool:
+        return path in self._explicit_artifacts
 
 
 class Transport(Protocol):
@@ -634,14 +772,14 @@ def _download_filename_from_headers(headers: dict[str, str]) -> str | None:
     return None
 
 
-def _sanitize_download_filename(filename: str) -> str:
+def _sanitize_download_filename(filename: str, *, max_bytes: int = MAX_DOWNLOAD_FILENAME_BYTES) -> str:
     leaf = filename.replace("\\", "/").rsplit("/", maxsplit=1)[-1].strip()
     sanitized = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "-", leaf)
     sanitized = re.sub(r"\s+", " ", sanitized).strip(" .-")
     if not sanitized:
         return DOWNLOAD_FILENAME_FALLBACK
     sanitized = _avoid_windows_reserved_download_filename(sanitized)
-    return _fit_download_filename(sanitized)
+    return _fit_download_filename(sanitized, max_bytes=max_bytes)
 
 
 def _write_download_file(save_path: Path, body: bytes, safe_filename: str) -> None:
@@ -658,6 +796,61 @@ def _write_download_file(save_path: Path, body: bytes, safe_filename: str) -> No
         except OSError:
             pass
         raise DesktopApiError(f"downloaded result could not be saved: {safe_filename}") from exc
+
+
+def _require_path_inside_root(path: Path, root: Path) -> None:
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("temporary path escapes storage root") from exc
+
+
+def _harden_private_path(path: Path, posix_mode: int) -> None:
+    if sys.platform == "win32":
+        _harden_windows_private_acl(path)
+        return
+    path.chmod(posix_mode)
+
+
+def _harden_windows_private_acl(path: Path) -> None:
+    script = r"""
+$ErrorActionPreference = 'Stop'
+$target = Get-Item -LiteralPath $env:VERIDOC_PRIVATE_ACL_PATH -Force
+$acl = Get-Acl -LiteralPath $target.FullName
+$acl.SetAccessRuleProtection($true, $false)
+foreach ($rule in @($acl.Access)) {
+    [void] $acl.RemoveAccessRuleAll($rule)
+}
+$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+$accessRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+    $identity,
+    [System.Security.AccessControl.FileSystemRights]::FullControl,
+    [System.Security.AccessControl.AccessControlType]::Allow
+)
+$acl.SetAccessRule($accessRule)
+Set-Acl -LiteralPath $target.FullName -AclObject $acl
+"""
+    env = os.environ.copy()
+    env["VERIDOC_PRIVATE_ACL_PATH"] = os.fspath(path)
+    try:
+        subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                script,
+            ],
+            check=True,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise OSError(f"failed to secure Windows temporary path ACL: {path}") from exc
 
 
 def _avoid_windows_reserved_download_filename(filename: str) -> str:
@@ -686,16 +879,21 @@ def _split_collision_suffix(filename: str) -> tuple[str, str]:
     return filename, ""
 
 
-def _fit_download_filename(filename: str, *, insertion: str = "") -> str:
+def _fit_download_filename(
+    filename: str,
+    *,
+    insertion: str = "",
+    max_bytes: int = MAX_DOWNLOAD_FILENAME_BYTES,
+) -> str:
     stem, suffix = _split_collision_suffix(filename)
     reserved = f"{insertion}{suffix}"
-    available_stem_bytes = MAX_DOWNLOAD_FILENAME_BYTES - len(reserved.encode("utf-8"))
+    available_stem_bytes = max_bytes - len(reserved.encode("utf-8"))
     if available_stem_bytes > 0:
         fitted_stem = _truncate_utf8_bytes(stem, available_stem_bytes).strip(" .-")
         if fitted_stem:
             return f"{fitted_stem}{reserved}"
 
-    fitted = _truncate_utf8_bytes(f"{stem}{insertion}{suffix}", MAX_DOWNLOAD_FILENAME_BYTES).strip(" .-")
+    fitted = _truncate_utf8_bytes(f"{stem}{insertion}{suffix}", max_bytes).strip(" .-")
     return fitted or DOWNLOAD_FILENAME_FALLBACK
 
 
