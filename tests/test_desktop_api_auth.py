@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import socket
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, Request
 
 import pytest
@@ -158,7 +158,7 @@ def test_desktop_api_client_config_accepts_localhost_resolved_to_loopback(
 ) -> None:
     def fake_getaddrinfo(host: str, port: object, *, type: int):
         assert host == "localhost"
-        assert port is None
+        assert port == 8765
         assert type == socket.SOCK_STREAM
         return [
             (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", 0)),
@@ -177,7 +177,7 @@ def test_desktop_api_client_pins_validated_localhost_before_sending_bearer_token
 ) -> None:
     def trusted_getaddrinfo(host: str, port: object, *, type: int):
         assert host == "localhost"
-        assert port is None
+        assert port == 8765
         assert type == socket.SOCK_STREAM
         return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", 0))]
 
@@ -200,8 +200,128 @@ def test_desktop_api_client_pins_validated_localhost_before_sending_bearer_token
     assert len(transport.requests) == 1
     request = transport.requests[0]
     assert request.full_url == "http://127.0.0.1:8765/api/jobs"
-    assert request.host == "127.0.0.1:8765"
+    assert request.get_header("Host") == "localhost:8765"
     assert request.get_header("Authorization") == "Bearer reviewer-token"
+
+
+def test_desktop_api_client_tries_all_validated_localhost_addresses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_getaddrinfo(host: str, port: object, *, type: int):
+        assert host == "localhost"
+        assert port == 8765
+        assert type == socket.SOCK_STREAM
+        return [
+            (socket.AF_INET6, socket.SOCK_STREAM, 0, "", ("::1", 0, 0, 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", 0)),
+        ]
+
+    requests: list[Request] = []
+
+    def transport(request: Request, *, timeout: float):
+        requests.append(request)
+        if len(requests) == 1:
+            raise URLError("connection refused")
+        return JsonResponse({"jobs": []})
+
+    monkeypatch.setattr("apps.desktop.api_client.socket.getaddrinfo", fake_getaddrinfo)
+    client = DesktopApiClient(
+        DesktopApiClientConfig(base_url="http://localhost:8765"),
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=transport,
+    )
+
+    assert client.list_jobs() == {"jobs": []}
+
+    assert [request.full_url for request in requests] == [
+        "http://[::1]:8765/api/jobs",
+        "http://127.0.0.1:8765/api/jobs",
+    ]
+    assert [request.get_header("Host") for request in requests] == [
+        "localhost:8765",
+        "localhost:8765",
+    ]
+    assert all(request.get_header("Authorization") == "Bearer reviewer-token" for request in requests)
+
+
+def test_desktop_api_client_preserves_https_localhost_tls_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_getaddrinfo(host: str, port: object, *, type: int):
+        assert host == "localhost"
+        assert port == 8765
+        assert type == socket.SOCK_STREAM
+        return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", 0))]
+
+    class FakePinnedHTTPSConnection:
+        def __init__(self, connect_host: str, port: int, tls_server_name: str, timeout: float) -> None:
+            captured["connect_host"] = connect_host
+            captured["port"] = port
+            captured["tls_server_name"] = tls_server_name
+            captured["timeout"] = timeout
+
+        def request(self, method: str, path: str, body: bytes | None, headers: dict[str, str]) -> None:
+            captured["method"] = method
+            captured["path"] = path
+            captured["body"] = body
+            captured["headers"] = headers
+
+        def getresponse(self):
+            class FakeResponse:
+                status = 200
+                reason = "OK"
+                msg: dict[str, str] = {}
+
+                def read(self) -> bytes:
+                    return json.dumps({"jobs": []}).encode("utf-8")
+
+            return FakeResponse()
+
+        def close(self) -> None:
+            captured["closed"] = True
+
+    monkeypatch.setattr("apps.desktop.api_client.socket.getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr("apps.desktop.api_client._PinnedHTTPSConnection", FakePinnedHTTPSConnection)
+    client = DesktopApiClient(
+        DesktopApiClientConfig(base_url="https://localhost:8765", timeout_seconds=2.5),
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+    )
+
+    assert client.list_jobs() == {"jobs": []}
+
+    assert captured["connect_host"] == "127.0.0.1"
+    assert captured["port"] == 8765
+    assert captured["tls_server_name"] == "localhost"
+    assert captured["timeout"] == 2.5
+    assert captured["method"] == "GET"
+    assert captured["path"] == "/api/jobs"
+    assert captured["headers"] == {
+        "Accept": "application/json",
+        "Authorization": "Bearer reviewer-token",
+        "Host": "localhost:8765",
+    }
+    assert captured["closed"] is True
+
+
+def test_desktop_api_client_uses_single_api_path_for_api_root_base_url() -> None:
+    transport = RecordingTransport()
+    client = DesktopApiClient(
+        DesktopApiClientConfig(base_url="http://127.0.0.1:8765/api"),
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=transport,
+    )
+
+    assert client.list_jobs() == {"jobs": []}
+
+    assert len(transport.requests) == 1
+    assert transport.requests[0].full_url == "http://127.0.0.1:8765/api/jobs"
+
+
+def test_desktop_api_client_config_rejects_unexpected_base_url_paths() -> None:
+    with pytest.raises(ValueError, match="empty or /api"):
+        DesktopApiClientConfig(base_url="http://127.0.0.1:8765/app")
 
 
 @pytest.mark.parametrize(

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import http.client
 import ipaddress
 import json
 import socket
+import ssl
 from typing import Any, Protocol
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import SplitResult, urljoin, urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
@@ -51,6 +53,9 @@ class ApiCredentialStore:
 class DesktopApiClientConfig:
     base_url: str
     timeout_seconds: float = 10.0
+    _request_base_urls: tuple[str, ...] = field(init=False, repr=False)
+    _host_header: str | None = field(init=False, repr=False, default=None)
+    _tls_server_name: str | None = field(init=False, repr=False, default=None)
 
     def __post_init__(self) -> None:
         normalized = self.base_url.strip()
@@ -61,11 +66,18 @@ class DesktopApiClientConfig:
             raise ValueError("base_url must be an HTTP(S) URL")
         if parsed.username or parsed.password:
             raise ValueError("base_url must not include embedded credentials")
-        local_host = _validated_local_api_host(parsed.hostname)
-        if local_host is None:
+        parsed = _normalize_api_base_path(parsed)
+        local_hosts = _validated_local_api_hosts(parsed.hostname, parsed.port)
+        if local_hosts is None:
             raise ValueError("base_url must point to a local API endpoint")
-        base_url = _replace_url_host(parsed, local_host).geturl().rstrip("/") + "/"
+        request_base_urls = tuple(_replace_url_host(parsed, host).geturl().rstrip("/") + "/" for host in local_hosts)
+        base_url = request_base_urls[0]
         object.__setattr__(self, "base_url", base_url)
+        object.__setattr__(self, "_request_base_urls", request_base_urls)
+        if parsed.hostname and parsed.hostname.lower() == "localhost":
+            object.__setattr__(self, "_host_header", _host_header(parsed.hostname.lower(), parsed.port))
+            if parsed.scheme == "https":
+                object.__setattr__(self, "_tls_server_name", parsed.hostname.lower())
 
 
 class Transport(Protocol):
@@ -83,36 +95,56 @@ class DesktopApiClient:
     ) -> None:
         self.config = config
         self._credential_store = credential_store
-        self._transport = transport or _urlopen_transport
+        self._transport = transport
 
     def list_jobs(self) -> dict[str, Any]:
-        return self._request_json("GET", "api/jobs")
+        return self._request_json("GET", "/api/jobs")
 
     def _request_json(self, method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
         token = self._credential_store.require_token()
         payload = None if body is None else json.dumps(body).encode("utf-8")
-        request = Request(
-            urljoin(self.config.base_url, path),
-            data=payload,
-            method=method,
-            headers={
+        request_urls = tuple(urljoin(base_url, path) for base_url in self.config._request_base_urls)
+        last_url_error: URLError | None = None
+        for index, request_url in enumerate(request_urls):
+            request_headers = {
                 "Accept": "application/json",
                 "Authorization": f"Bearer {token}",
-            },
+            }
+            if self.config._host_header:
+                request_headers["Host"] = self.config._host_header
+            request = Request(request_url, data=payload, method=method, headers=request_headers)
+            if payload is not None:
+                request.add_header("Content-Type", "application/json")
+
+            try:
+                with self._open(request) as response:
+                    return json.loads(response.read().decode("utf-8"))
+            except HTTPError as exc:
+                if exc.code in {401, 403}:
+                    raise PermissionError("API authentication failed") from exc
+                raise DesktopApiError(f"API request failed with HTTP {exc.code}") from exc
+            except URLError as exc:
+                last_url_error = exc
+                if index + 1 < len(request_urls):
+                    continue
+                raise
+
+        assert last_url_error is not None
+        raise last_url_error
+
+    def _open(self, request: Request) -> Any:
+        if self._transport is not None:
+            return self._transport(request, timeout=self.config.timeout_seconds)
+        return _urlopen_transport(
+            request,
+            timeout=self.config.timeout_seconds,
+            tls_server_name=self.config._tls_server_name,
         )
-        if payload is not None:
-            request.add_header("Content-Type", "application/json")
-
-        try:
-            with self._transport(request, timeout=self.config.timeout_seconds) as response:
-                return json.loads(response.read().decode("utf-8"))
-        except HTTPError as exc:
-            if exc.code in {401, 403}:
-                raise PermissionError("API authentication failed") from exc
-            raise DesktopApiError(f"API request failed with HTTP {exc.code}") from exc
 
 
-def _urlopen_transport(request: Request, *, timeout: float) -> Any:
+def _urlopen_transport(request: Request, *, timeout: float, tls_server_name: str | None = None) -> Any:
+    if tls_server_name is not None:
+        return _pinned_https_transport(request, timeout=timeout, tls_server_name=tls_server_name)
     opener = build_opener(ProxyHandler({}), _NoRedirectHandler())
     return opener.open(request, timeout=timeout)
 
@@ -124,6 +156,17 @@ def _split_valid_base_url(base_url: str) -> SplitResult:
     except ValueError as exc:
         raise ValueError("base_url port must be a valid TCP port") from exc
     return parsed
+
+
+def _normalize_api_base_path(parsed: SplitResult) -> SplitResult:
+    if parsed.query or parsed.fragment:
+        raise ValueError("base_url must not include query or fragment")
+    path = parsed.path or "/"
+    if path in {"", "/"}:
+        return parsed._replace(path="/")
+    if path in {"/api", "/api/"}:
+        return parsed._replace(path="/api/")
+    raise ValueError("base_url path must be empty or /api")
 
 
 class _NoRedirectHandler(HTTPRedirectHandler):
@@ -143,6 +186,10 @@ def _replace_url_host(parsed: SplitResult, hostname: str) -> SplitResult:
     return parsed._replace(netloc=netloc)
 
 
+def _host_header(hostname: str, port: int | None) -> str:
+    return hostname if port is None else f"{hostname}:{port}"
+
+
 def _format_url_host(hostname: str) -> str:
     try:
         address = ipaddress.ip_address(hostname)
@@ -153,34 +200,111 @@ def _format_url_host(hostname: str) -> str:
     return address.compressed
 
 
-def _validated_local_api_host(hostname: str | None) -> str | None:
+def _validated_local_api_hosts(hostname: str | None, port: int | None) -> tuple[str, ...] | None:
     if hostname is None:
         return None
     try:
         address = ipaddress.ip_address(hostname)
-        return address.compressed if address.is_loopback else None
+        return (address.compressed,) if address.is_loopback else None
     except ValueError:
         pass
     if hostname.lower() != "localhost":
         return None
     try:
-        results = socket.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
+        results = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
     except socket.gaierror:
         return None
     if not results:
         return None
-    pinned_address: str | None = None
+    loopback_addresses: list[str] = []
+    seen_addresses: set[str] = set()
     for result in results:
-        address = result[4][0]
+        address = str(result[4][0]).split("%", maxsplit=1)[0]
         try:
             parsed_address = ipaddress.ip_address(address)
             if not parsed_address.is_loopback:
                 return None
-            if pinned_address is None:
-                pinned_address = parsed_address.compressed
+            compressed = parsed_address.compressed
+            if compressed not in seen_addresses:
+                loopback_addresses.append(compressed)
+                seen_addresses.add(compressed)
         except ValueError:
             return None
-    return pinned_address
+    if not loopback_addresses:
+        return None
+    return tuple(loopback_addresses)
+
+
+def _pinned_https_transport(request: Request, *, timeout: float, tls_server_name: str) -> Any:
+    parsed = urlsplit(request.full_url)
+    if parsed.scheme != "https" or parsed.hostname is None:
+        raise ValueError("TLS server name pinning requires an HTTPS request URL")
+    path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+
+    connection = _PinnedHTTPSConnection(
+        connect_host=parsed.hostname,
+        port=parsed.port or 443,
+        tls_server_name=tls_server_name,
+        timeout=timeout,
+    )
+    try:
+        connection.request(
+            request.get_method(),
+            path,
+            body=request.data,
+            headers=dict(request.header_items()),
+        )
+        response = connection.getresponse()
+        if 300 <= response.status < 400:
+            raise HTTPError(
+                request.full_url,
+                response.status,
+                f"local API redirects are disabled: {response.reason}",
+                response.msg,
+                response,
+            )
+        if response.status >= 400:
+            raise HTTPError(request.full_url, response.status, response.reason, response.msg, response)
+        return _PinnedHTTPSResponse(connection, response)
+    except HTTPError:
+        connection.close()
+        raise
+    except (OSError, http.client.HTTPException) as exc:
+        connection.close()
+        raise URLError(exc) from exc
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, connect_host: str, port: int, tls_server_name: str, timeout: float) -> None:
+        super().__init__(
+            tls_server_name,
+            port=port,
+            timeout=timeout,
+            context=ssl.create_default_context(),
+        )
+        self._connect_host = connect_host
+        self._tls_server_name = tls_server_name
+
+    def connect(self) -> None:
+        sock = socket.create_connection((self._connect_host, self.port), self.timeout, self.source_address)
+        self.sock = self._context.wrap_socket(sock, server_hostname=self._tls_server_name)
+
+
+class _PinnedHTTPSResponse:
+    def __init__(self, connection: _PinnedHTTPSConnection, response: http.client.HTTPResponse) -> None:
+        self._connection = connection
+        self._response = response
+
+    def __enter__(self) -> _PinnedHTTPSResponse:
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        self._connection.close()
+
+    def read(self) -> bytes:
+        return self._response.read()
 
 
 def _looks_like_placeholder_token(token: str) -> bool:
