@@ -344,7 +344,9 @@ class DesktopApiClient:
             template_id=template_id,
         )
         payload = self._request_json("POST", "/api/jobs", request)
-        return _validate_job_response(payload)
+        job_ref = _validate_job_response(payload)
+        self._record_desktop_upload(job_ref, request)
+        return job_ref
 
     def upload_document_files(
         self,
@@ -370,7 +372,9 @@ class DesktopApiClient:
         job_refs: list[dict[str, Any]] = []
         for request in requests:
             payload = self._request_json("POST", "/api/jobs", request)
-            job_refs.append(_validate_job_response(payload))
+            job_ref = _validate_job_response(payload)
+            self._record_desktop_upload(job_ref, request)
+            job_refs.append(job_ref)
         return job_refs
 
     def save_job_result(self, job_id: str, destination_dir: str | Path) -> Path:
@@ -387,18 +391,50 @@ class DesktopApiClient:
                 _write_download_file(save_path, body, safe_filename)
             except FileExistsError:
                 continue
-            self._record_desktop_result_download(
-                job_id,
-                {
-                    "event_type": "desktop.job_operation",
-                    "job_id": job_id,
-                    "action": "desktop_result_download",
-                    "download_filename": filename,
-                    "output_sha256": hashlib.sha256(body).hexdigest(),
-                },
-            )
+            try:
+                self._record_desktop_result_download(
+                    job_id,
+                    {
+                        "event_type": "desktop.job_operation",
+                        "job_id": job_id,
+                        "action": "desktop_result_download",
+                        "download_filename": filename,
+                        "output_sha256": hashlib.sha256(body).hexdigest(),
+                    },
+                )
+            except Exception:
+                _remove_download_file(save_path)
+                raise
             return save_path
         raise DesktopApiError("downloaded result filename has too many collisions")
+
+    def _record_desktop_upload(self, job_ref: dict[str, Any], request: dict[str, Any]) -> None:
+        job_id = str(job_ref["job_id"])
+        audit_event = {
+            "event_type": "desktop.job_operation",
+            "job_id": job_id,
+            "job_status": job_ref.get("status"),
+            "action": "desktop_upload",
+            "filename": request["filename"],
+            "mode": request["mode"],
+            "source_sha256": request["source_sha256"],
+            "size_bytes": request["size_bytes"],
+            "content_type": request["content_type"],
+        }
+        payload = self._request_json(
+            "POST",
+            "/api/job-events",
+            {
+                "job_id": job_id,
+                "action": "desktop_upload",
+                "audit_event": audit_event,
+            },
+        )
+        audit_event = payload.get("audit_event")
+        if payload.get("accepted") is not True or not isinstance(audit_event, dict):
+            raise DesktopApiError("API did not accept the desktop upload audit event")
+        if audit_event.get("job_id") != job_id or audit_event.get("action") != "desktop_upload":
+            raise DesktopApiError("API accepted a mismatched desktop upload audit event")
 
     def _record_desktop_result_download(self, job_id: str, audit_event: dict[str, Any]) -> None:
         payload = self._request_json(
@@ -822,6 +858,15 @@ def _write_download_file(save_path: Path, body: bytes, safe_filename: str) -> No
         except OSError:
             pass
         raise DesktopApiError(f"downloaded result could not be saved: {safe_filename}") from exc
+
+
+def _remove_download_file(save_path: Path) -> None:
+    try:
+        save_path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise DesktopApiError("downloaded result audit failed and saved file could not be removed") from exc
 
 
 def _require_path_inside_root(path: Path, root: Path) -> None:

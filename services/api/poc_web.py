@@ -185,6 +185,26 @@ class JobAuditEventStore:
             self._integrity_checkpoint = _audit_event_integrity_checkpoint(self._events)
         return deepcopy(event)
 
+    def record_once(
+        self,
+        audit_event: dict[str, Any],
+        *,
+        dedupe: dict[str, Any],
+    ) -> dict[str, Any]:
+        with self._lock:
+            self._require_integrity_locked()
+            for event in self._events:
+                if all(event.get(name) == value for name, value in dedupe.items()):
+                    return deepcopy(event)
+            event = _audit_event_with_integrity(
+                audit_event,
+                previous_events=self._events,
+                checkpoint=self._integrity_checkpoint,
+            )
+            self._events.append(event)
+            self._integrity_checkpoint = _audit_event_integrity_checkpoint(self._events)
+        return deepcopy(event)
+
     def require_integrity(self) -> None:
         with self._lock:
             self._require_integrity_locked()
@@ -677,9 +697,6 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             source = _job_source_from_request(request, filename=filename)
             requested_template = self._job_template_binding(request.get("template_id"))
             job_queue = self._job_queue()
-            job_event_store = self._job_event_store()
-            if source is not None:
-                job_event_store.require_integrity()
             job, created_job = job_queue.get_or_create_job(
                 idempotency_key=idempotency_key,
                 filename=filename,
@@ -688,13 +705,6 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 template=requested_template,
                 create_template=lambda: self._job_template_snapshot(request.get("template_id")),
             )
-            if created_job and source is not None:
-                job_event_store.record(
-                    _job_event_with_auth_context(
-                        _desktop_upload_audit_event(job),
-                        auth_context,
-                    )
-                )
         except RuntimeError as exc:
             self._send_json({"error": "job_conflict", "message": str(exc)}, status=409)
             return
@@ -781,14 +791,22 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             if action == "desktop_result_download":
                 job_event_store.require_integrity()
                 accepted_event = _validate_desktop_result_download_audit_event(job, audit_event)
+            elif action == "desktop_upload":
+                job_event_store.require_integrity()
+                accepted_event = _validate_desktop_upload_audit_event(job, audit_event)
             else:
                 accepted_event = _validate_job_event(job, action, audit_event, job_queue)
             if action == "retry_conversion":
                 job_event_store.require_integrity()
                 updated_job = job_queue.retry_failed_job(job_id)
-            stored_event = job_event_store.record(
-                _job_event_with_auth_context(accepted_event, auth_context)
-            )
+            event = _job_event_with_auth_context(accepted_event, auth_context)
+            if action == "desktop_upload":
+                stored_event = job_event_store.record_once(
+                    event,
+                    dedupe={"job_id": job.job_id, "action": "desktop_upload"},
+                )
+            else:
+                stored_event = job_event_store.record(event)
         except KeyError:
             self._send_json({"error": "job_not_found"}, status=404)
             return
@@ -1553,6 +1571,30 @@ def _validate_desktop_result_download_audit_event(
     for field_name in ("event_type", "job_id", "action", "download_filename", "output_sha256"):
         if audit_event.get(field_name) != expected_event.get(field_name):
             raise ValueError(f"audit_event.{field_name} does not match downloaded result")
+    return expected_event
+
+
+def _validate_desktop_upload_audit_event(
+    job: JobRecord,
+    audit_event: Any,
+) -> dict[str, Any]:
+    if not isinstance(job.source, dict):
+        raise ValueError("desktop_upload requires stored job source")
+    expected_event = _desktop_upload_audit_event(job)
+    if not isinstance(audit_event, dict):
+        raise ValueError("audit_event is required")
+    for field_name in (
+        "event_type",
+        "job_id",
+        "action",
+        "filename",
+        "mode",
+        "source_sha256",
+        "size_bytes",
+        "content_type",
+    ):
+        if audit_event.get(field_name) != expected_event.get(field_name):
+            raise ValueError(f"audit_event.{field_name} does not match uploaded source")
     return expected_event
 
 

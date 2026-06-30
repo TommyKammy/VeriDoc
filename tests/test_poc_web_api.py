@@ -2593,6 +2593,7 @@ def test_poc_http_api_creates_idempotent_conversion_job() -> None:
 def test_poc_http_api_stores_uploaded_job_source_before_returning_reference() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     server.job_queue = JobQueue()
+    server.job_event_store = JobAuditEventStore()
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
     uploaded_content = b"%PDF-1.7\nqueued source"
@@ -2637,6 +2638,7 @@ def test_poc_http_api_stores_uploaded_job_source_before_returning_reference() ->
         "sha256": source_sha256,
         "content": uploaded_content,
     }
+    assert server.job_event_store.list_events(filters={"job_id": job.job_id}) == []
 
 
 def test_poc_http_api_records_desktop_upload_and_download_audit_events() -> None:
@@ -2669,6 +2671,34 @@ def test_poc_http_api_records_desktop_upload_and_download_audit_events() -> None
         create_response = connection.getresponse()
         create_body = json.loads(create_response.read().decode("utf-8"))
         job_id = create_body["job"]["job_id"]
+        upload_event_payload = json.dumps(
+            {
+                "job_id": job_id,
+                "action": "desktop_upload",
+                "audit_event": {
+                    "event_type": "desktop.job_operation",
+                    "job_id": job_id,
+                    "job_status": "queued",
+                    "action": "desktop_upload",
+                    "filename": "batch-record.pdf",
+                    "mode": "standard",
+                    "source_sha256": source_sha256,
+                    "size_bytes": len(uploaded_content),
+                    "content_type": "application/pdf",
+                },
+            }
+        ).encode("utf-8")
+        connection.request(
+            "POST",
+            "/api/job-events",
+            body=upload_event_payload,
+            headers={
+                "Content-Type": "application/json",
+                "Content-Length": str(len(upload_event_payload)),
+            },
+        )
+        upload_event_response = connection.getresponse()
+        upload_event_body = json.loads(upload_event_response.read().decode("utf-8"))
 
         running = server.job_queue.start_next_job()
         assert running is not None
@@ -2745,6 +2775,8 @@ def test_poc_http_api_records_desktop_upload_and_download_audit_events() -> None
         thread.join(timeout=5)
 
     assert create_response.status == 202
+    assert upload_event_response.status == 202
+    assert upload_event_body["audit_event"]["action"] == "desktop_upload"
     assert replay_response.status == 202
     assert replay_body["job"]["job_id"] == job_id
     assert download_response.status == 200
@@ -2866,6 +2898,9 @@ def test_poc_http_api_records_one_desktop_upload_audit_for_concurrent_idempotent
     headers = {"Content-Type": "application/json", "Content-Length": str(len(payload))}
     responses: list[tuple[int, dict[str, object]]] = []
     errors: list[BaseException] = []
+    audit_responses: list[tuple[int, dict[str, object]]] = []
+    audit_errors: list[BaseException] = []
+    events: list[dict[str, object]] = []
 
     def post_upload() -> None:
         connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
@@ -2884,6 +2919,56 @@ def test_poc_http_api_records_one_desktop_upload_audit_for_concurrent_idempotent
             worker.start()
         for worker in workers:
             worker.join(timeout=10)
+        if len(responses) == 2:
+            job_ids = {body["job"]["job_id"] for _status, body in responses}
+            if len(job_ids) == 1:
+                job_id = str(job_ids.pop())
+                audit_payload = json.dumps(
+                    {
+                        "job_id": job_id,
+                        "action": "desktop_upload",
+                        "audit_event": {
+                            "event_type": "desktop.job_operation",
+                            "job_id": job_id,
+                            "job_status": "queued",
+                            "action": "desktop_upload",
+                            "filename": "batch-record.pdf",
+                            "mode": "standard",
+                            "source_sha256": source_sha256,
+                            "size_bytes": len(uploaded_content),
+                            "content_type": "application/pdf",
+                        },
+                    }
+                ).encode("utf-8")
+                audit_headers = {
+                    "Content-Type": "application/json",
+                    "Content-Length": str(len(audit_payload)),
+                }
+
+                def post_upload_audit() -> None:
+                    connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+                    try:
+                        connection.request(
+                            "POST",
+                            "/api/job-events",
+                            body=audit_payload,
+                            headers=audit_headers,
+                        )
+                        response = connection.getresponse()
+                        audit_responses.append(
+                            (response.status, json.loads(response.read().decode("utf-8")))
+                        )
+                    except BaseException as exc:  # pragma: no cover - assertion below preserves failure.
+                        audit_errors.append(exc)
+                    finally:
+                        connection.close()
+
+                audit_workers = [Thread(target=post_upload_audit), Thread(target=post_upload_audit)]
+                for worker in audit_workers:
+                    worker.start()
+                for worker in audit_workers:
+                    worker.join(timeout=10)
+                events = server.job_event_store.list_events(filters={"job_id": job_id})
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -2894,10 +2979,14 @@ def test_poc_http_api_records_one_desktop_upload_audit_for_concurrent_idempotent
     assert sorted(created_flags) == [False, True]
     job_ids = {body["job"]["job_id"] for _status, body in responses}
     assert len(job_ids) == 1
-    job_id = job_ids.pop()
-    events = server.job_event_store.list_events(filters={"job_id": job_id})
+    assert audit_errors == []
+    assert len(audit_responses) == 2
+    assert [status for status, _body in audit_responses] == [202, 202]
     assert [event["action"] for event in events] == ["desktop_upload"]
     assert events[0]["source_sha256"] == source_sha256
+    assert {body["audit_event"]["event_hash"] for _status, body in audit_responses} == {
+        events[0]["event_hash"]
+    }
 
 
 def test_poc_http_api_rejects_non_string_job_upload_base64_content() -> None:

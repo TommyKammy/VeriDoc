@@ -37,6 +37,17 @@ class RecordingTransport:
     def __call__(self, request: Request, *, timeout: float):
         self.requests.append(request)
         self.timeouts.append(timeout)
+        if request.full_url.endswith("/api/job-events"):
+            body = json.loads(request.data.decode("utf-8"))
+            return JsonResponse(
+                {
+                    "accepted": True,
+                    "audit_event": {
+                        "job_id": body["job_id"],
+                        "action": body["action"],
+                    },
+                }
+            )
         return JsonResponse(self.payload)
 
 
@@ -111,6 +122,17 @@ class SequenceTransport:
 
     def __call__(self, request: Request, *, timeout: float):
         self.requests.append(request)
+        if request.full_url.endswith("/api/job-events"):
+            body = json.loads(request.data.decode("utf-8"))
+            return JsonResponse(
+                {
+                    "accepted": True,
+                    "audit_event": {
+                        "job_id": body["job_id"],
+                        "action": body["action"],
+                    },
+                }
+            )
         return JsonResponse(self.payloads.pop(0))
 
 
@@ -154,8 +176,9 @@ def test_desktop_api_client_uploads_selected_pdf_and_returns_job_reference(tmp_p
 
     assert job_ref["job_id"] == "job-upload-1"
     assert job_ref["status"] == "queued"
-    assert len(transport.requests) == 1
+    assert len(transport.requests) == 2
     request = transport.requests[0]
+    audit_request = transport.requests[1]
     assert request.full_url == "http://127.0.0.1:8765/api/jobs"
     assert request.get_method() == "POST"
     assert request.get_header("Authorization") == "Bearer reviewer-token"
@@ -182,6 +205,24 @@ def test_desktop_api_client_uploads_selected_pdf_and_returns_job_reference(tmp_p
         "idempotency_key": f"upload:{idempotency_digest}",
         "mode": "standard",
     }
+    assert audit_request.full_url == "http://127.0.0.1:8765/api/job-events"
+    assert audit_request.get_method() == "POST"
+    assert audit_request.get_header("Authorization") == "Bearer reviewer-token"
+    assert json.loads(audit_request.data.decode("utf-8")) == {
+        "job_id": "job-upload-1",
+        "action": "desktop_upload",
+        "audit_event": {
+            "event_type": "desktop.job_operation",
+            "job_id": "job-upload-1",
+            "job_status": "queued",
+            "action": "desktop_upload",
+            "filename": "batch-record.pdf",
+            "mode": "standard",
+            "source_sha256": source_sha256,
+            "size_bytes": selected_file.stat().st_size,
+            "content_type": "application/pdf",
+        },
+    }
 
 
 def test_desktop_api_client_uploads_multiple_selected_files_in_order(tmp_path) -> None:
@@ -204,10 +245,22 @@ def test_desktop_api_client_uploads_multiple_selected_files_in_order(tmp_path) -
     job_refs = client.upload_document_files([pdf_file, xlsx_file])
 
     assert [job_ref["job_id"] for job_ref in job_refs] == ["job-pdf", "job-xlsx"]
-    assert len(transport.requests) == 2
-    assert [json.loads(request.data.decode("utf-8"))["filename"] for request in transport.requests] == [
+    assert len(transport.requests) == 4
+    job_requests = [
+        request for request in transport.requests if request.full_url == "http://127.0.0.1:8765/api/jobs"
+    ]
+    audit_requests = [
+        request
+        for request in transport.requests
+        if request.full_url == "http://127.0.0.1:8765/api/job-events"
+    ]
+    assert [json.loads(request.data.decode("utf-8"))["filename"] for request in job_requests] == [
         "batch-record.pdf",
         "batch-metrics.xlsx",
+    ]
+    assert [json.loads(request.data.decode("utf-8"))["action"] for request in audit_requests] == [
+        "desktop_upload",
+        "desktop_upload",
     ]
 
 
@@ -229,8 +282,11 @@ def test_desktop_api_client_upload_key_includes_job_parameters(tmp_path) -> None
     client.upload_document_file(selected_file, mode="standard")
     client.upload_document_file(selected_file, mode="high_quality", template_id="batch-record")
 
-    first_body = json.loads(transport.requests[0].data.decode("utf-8"))
-    second_body = json.loads(transport.requests[1].data.decode("utf-8"))
+    job_requests = [
+        request for request in transport.requests if request.full_url == "http://127.0.0.1:8765/api/jobs"
+    ]
+    first_body = json.loads(job_requests[0].data.decode("utf-8"))
+    second_body = json.loads(job_requests[1].data.decode("utf-8"))
     assert first_body["source_sha256"] == second_body["source_sha256"]
     assert first_body["idempotency_key"] != second_body["idempotency_key"]
     assert second_body["mode"] == "high_quality"
@@ -398,6 +454,34 @@ def test_desktop_api_client_result_save_records_audit_event_after_authenticated_
             "output_sha256": hashlib.sha256(b"{}").hexdigest(),
         },
     }
+
+
+def test_desktop_api_client_removes_saved_result_when_audit_is_rejected(tmp_path) -> None:
+    class RejectingAuditTransport(ResultSaveTransport):
+        def __call__(self, request: Request, *, timeout: float):
+            self.requests.append(request)
+            if request.full_url.endswith("/api/job-events"):
+                return JsonResponse({"accepted": False, "audit_event": {}})
+            return RawResponse(self.body, headers=self.headers)
+
+    transport = RejectingAuditTransport(
+        b'{"document_ir":{}}',
+        headers={"Content-Disposition": 'attachment; filename="result.json"'},
+    )
+    client = DesktopApiClient(
+        DesktopApiClientConfig(base_url="http://127.0.0.1:8765"),
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=transport,
+    )
+
+    with pytest.raises(
+        DesktopApiError,
+        match="API did not accept the desktop result download audit event",
+    ):
+        client.save_job_result("job-complete-1", tmp_path)
+
+    assert len(transport.requests) == 2
+    assert not (tmp_path / "result.json").exists()
 
 
 def test_desktop_api_client_clamps_long_result_download_names(tmp_path) -> None:
