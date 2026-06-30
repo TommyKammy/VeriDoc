@@ -4,6 +4,7 @@ import base64
 import hashlib
 import http.client
 import json
+from pathlib import Path
 import socket
 import threading
 from urllib.error import HTTPError, URLError
@@ -14,11 +15,13 @@ import pytest
 from apps.desktop.api_client import (
     ApiCredentialStore,
     DesktopConnectionSettings,
+    DesktopApiError,
     DesktopApiClient,
     DesktopApiClientConfig,
     DesktopJobDisplayState,
     DesktopUploadValidationError,
     InvalidApiTokenError,
+    MAX_DOWNLOAD_FILENAME_BYTES,
     MAX_DESKTOP_UPLOAD_BYTES,
     MissingApiTokenError,
     check_desktop_api_connection,
@@ -52,8 +55,9 @@ class JsonResponse:
 
 
 class RawResponse:
-    def __init__(self, body: bytes) -> None:
+    def __init__(self, body: bytes, *, headers: dict[str, str] | None = None) -> None:
         self.body = body
+        self.headers = headers or {}
 
     def __enter__(self):
         return self
@@ -63,6 +67,9 @@ class RawResponse:
 
     def read(self) -> bytes:
         return self.body
+
+    def getheader(self, name: str, default: str | None = None) -> str | None:
+        return self.headers.get(name, default)
 
 
 class IncompleteResponse:
@@ -300,6 +307,192 @@ def test_desktop_api_client_upload_maps_unauthorized_api_response_fail_closed(tm
 
     with pytest.raises(PermissionError, match="API authentication failed"):
         client.upload_document_file(selected_file)
+
+
+def test_desktop_api_client_saves_completed_job_result_to_selected_folder_with_sanitized_collision_name(
+    tmp_path,
+) -> None:
+    destination_dir = tmp_path / "selected-output"
+    destination_dir.mkdir()
+    existing = destination_dir / "unsafe-name.veridoc-result.json"
+    existing.write_text("existing result", encoding="utf-8")
+    download_body = b'{"document_ir":{"document_id":"job-result"}}'
+
+    def download_transport(request: Request, *, timeout: float):
+        return RawResponse(
+            download_body,
+            headers={
+                "Content-Disposition": 'attachment; filename="../unsafe:name.veridoc-result.json"',
+                "Content-Type": "application/json",
+            },
+        )
+
+    client = DesktopApiClient(
+        DesktopApiClientConfig(base_url="http://127.0.0.1:8765"),
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=download_transport,
+    )
+
+    saved_path = client.save_job_result("job-complete-1", destination_dir)
+
+    assert saved_path == destination_dir / "unsafe-name (1).veridoc-result.json"
+    assert saved_path.read_bytes() == download_body
+    assert existing.read_text(encoding="utf-8") == "existing result"
+
+
+def test_desktop_api_client_result_save_uses_authenticated_download_api(tmp_path) -> None:
+    requests: list[Request] = []
+
+    def download_transport(request: Request, *, timeout: float):
+        requests.append(request)
+        return RawResponse(
+            b"{}",
+            headers={"Content-Disposition": 'attachment; filename="result.json"'},
+        )
+
+    client = DesktopApiClient(
+        DesktopApiClientConfig(base_url="http://127.0.0.1:8765"),
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=download_transport,
+    )
+
+    assert client.save_job_result("job-complete-1", tmp_path) == tmp_path / "result.json"
+
+    assert len(requests) == 1
+    request = requests[0]
+    assert request.full_url == "http://127.0.0.1:8765/api/jobs/job-complete-1/result"
+    assert request.get_method() == "GET"
+    assert request.get_header("Authorization") == "Bearer reviewer-token"
+    assert request.get_header("Accept") == "application/octet-stream"
+
+
+def test_desktop_api_client_clamps_long_result_download_names(tmp_path) -> None:
+    long_filename = f"{'a' * 300}.veridoc-result.json"
+
+    def download_transport(request: Request, *, timeout: float):
+        return RawResponse(
+            b'{"document_ir":{}}',
+            headers={"Content-Disposition": f'attachment; filename="{long_filename}"'},
+        )
+
+    client = DesktopApiClient(
+        DesktopApiClientConfig(base_url="http://127.0.0.1:8765"),
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=download_transport,
+    )
+
+    first_path = client.save_job_result("job-complete-1", tmp_path)
+    second_path = client.save_job_result("job-complete-1", tmp_path)
+
+    assert first_path.name.endswith(".veridoc-result.json")
+    assert second_path.name.endswith(".veridoc-result.json")
+    assert " (1)" in second_path.name
+    assert first_path != second_path
+    assert len(first_path.name.encode("utf-8")) <= MAX_DOWNLOAD_FILENAME_BYTES
+    assert len(second_path.name.encode("utf-8")) <= MAX_DOWNLOAD_FILENAME_BYTES
+    assert first_path.read_bytes() == b'{"document_ir":{}}'
+    assert second_path.read_bytes() == b'{"document_ir":{}}'
+
+
+def test_desktop_api_client_treats_dangling_symlink_as_result_filename_collision(tmp_path) -> None:
+    dangling_symlink = tmp_path / "result.json"
+    try:
+        dangling_symlink.symlink_to(tmp_path / "missing-target")
+    except OSError as exc:
+        pytest.skip(f"symlink unavailable: {exc}")
+
+    def download_transport(request: Request, *, timeout: float):
+        return RawResponse(
+            b'{"document_ir":{}}',
+            headers={"Content-Disposition": 'attachment; filename="result.json"'},
+        )
+
+    client = DesktopApiClient(
+        DesktopApiClientConfig(base_url="http://127.0.0.1:8765"),
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=download_transport,
+    )
+
+    saved_path = client.save_job_result("job-complete-1", tmp_path)
+
+    assert saved_path == tmp_path / "result (1).json"
+    assert saved_path.read_bytes() == b'{"document_ir":{}}'
+    assert dangling_symlink.is_symlink()
+
+
+def test_desktop_api_client_removes_partial_result_file_after_failed_write(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    target_path = tmp_path / "partial-result.json"
+
+    def download_transport(request: Request, *, timeout: float):
+        return RawResponse(
+            b'{"document_ir":{"document_id":"job-result"}}',
+            headers={"Content-Disposition": 'attachment; filename="partial-result.json"'},
+        )
+
+    client = DesktopApiClient(
+        DesktopApiClientConfig(base_url="http://127.0.0.1:8765"),
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=download_transport,
+    )
+    original_open = Path.open
+
+    class FailingDownloadFile:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback) -> None:
+            return None
+
+        def write(self, body: bytes) -> int:
+            with original_open(target_path, "wb") as partial:
+                partial.write(body[:8])
+            raise OSError("simulated full drive")
+
+    def failing_open(path: Path, mode: str = "r", *args, **kwargs):
+        if path == target_path and mode == "xb":
+            return FailingDownloadFile()
+        return original_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", failing_open)
+
+    with pytest.raises(DesktopApiError, match="downloaded result could not be saved"):
+        client.save_job_result("job-complete-1", tmp_path)
+
+    assert not target_path.exists()
+
+
+@pytest.mark.parametrize(
+    ("server_filename", "saved_filename"),
+    [
+        ("CON.veridoc-result.json", "CON_.veridoc-result.json"),
+        ("nul.json", "nul_.json"),
+        ("LPT1", "LPT1_"),
+    ],
+)
+def test_desktop_api_client_avoids_windows_reserved_result_filenames(
+    tmp_path,
+    server_filename: str,
+    saved_filename: str,
+) -> None:
+    def download_transport(request: Request, *, timeout: float):
+        return RawResponse(
+            b'{"document_ir":{}}',
+            headers={"Content-Disposition": f'attachment; filename="{server_filename}"'},
+        )
+
+    client = DesktopApiClient(
+        DesktopApiClientConfig(base_url="http://127.0.0.1:8765"),
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=download_transport,
+    )
+
+    saved_path = client.save_job_result("job-complete-1", tmp_path)
+
+    assert saved_path == tmp_path / saved_filename
+    assert saved_path.read_bytes() == b'{"document_ir":{}}'
 
 
 def test_desktop_api_client_fetches_job_progress_display_state() -> None:
@@ -893,6 +1086,73 @@ def test_desktop_api_client_preserves_https_localhost_tls_name(
     assert captured["path"] == "/api/jobs"
     assert captured["headers"] == {
         "Accept": "application/json",
+        "Authorization": "Bearer reviewer-token",
+        "Host": "localhost:8765",
+    }
+    assert captured["closed"] is True
+
+
+def test_desktop_api_client_preserves_pinned_https_result_download_headers(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_getaddrinfo(host: str, port: object, *, type: int):
+        assert host == "localhost"
+        assert port == 8765
+        assert type == socket.SOCK_STREAM
+        return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", 0))]
+
+    class FakePinnedHTTPSConnection:
+        def __init__(self, connect_host: str, port: int, tls_server_name: str, timeout: float) -> None:
+            captured["connect_host"] = connect_host
+            captured["port"] = port
+            captured["tls_server_name"] = tls_server_name
+            captured["timeout"] = timeout
+
+        def request(self, method: str, path: str, body: bytes | None, headers: dict[str, str]) -> None:
+            captured["method"] = method
+            captured["path"] = path
+            captured["body"] = body
+            captured["headers"] = headers
+
+        def getresponse(self):
+            class FakeResponse:
+                status = 200
+                reason = "OK"
+                msg = {
+                    "Content-Disposition": 'attachment; filename="pinned-result.json"',
+                    "Content-Type": "application/json",
+                }
+
+                def read(self) -> bytes:
+                    return b'{"document_ir":{}}'
+
+                def getheader(self, name: str, default: str | None = None) -> str | None:
+                    return self.msg.get(name, default)
+
+            return FakeResponse()
+
+        def close(self) -> None:
+            captured["closed"] = True
+
+    monkeypatch.setattr("apps.desktop.api_client.socket.getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr("apps.desktop.api_client._PinnedHTTPSConnection", FakePinnedHTTPSConnection)
+    client = DesktopApiClient(
+        DesktopApiClientConfig(base_url="https://localhost:8765", timeout_seconds=2.5),
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+    )
+
+    saved_path = client.save_job_result("job-complete-1", tmp_path)
+
+    assert saved_path == tmp_path / "pinned-result.json"
+    assert saved_path.read_bytes() == b'{"document_ir":{}}'
+    assert captured["connect_host"] == "127.0.0.1"
+    assert captured["tls_server_name"] == "localhost"
+    assert captured["path"] == "/api/jobs/job-complete-1/result"
+    assert captured["headers"] == {
+        "Accept": "application/octet-stream",
         "Authorization": "Bearer reviewer-token",
         "Host": "localhost:8765",
     }

@@ -9,13 +9,15 @@ import json
 import math
 import mimetypes
 from numbers import Real
+import os
 from pathlib import Path
+import re
 import socket
 import ssl
 import threading
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
-from urllib.parse import SplitResult, quote, urljoin, urlsplit
+from urllib.parse import SplitResult, quote, unquote, urljoin, urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 
@@ -36,6 +38,16 @@ class DesktopUploadValidationError(ValueError):
 
 
 MAX_DESKTOP_UPLOAD_BYTES = 2 * 1024 * 1024
+MAX_DOWNLOAD_FILENAME_BYTES = 255
+DOWNLOAD_FILENAME_FALLBACK = "veridoc-result.json"
+WINDOWS_RESERVED_DOWNLOAD_STEMS = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{index}" for index in range(1, 10)),
+    *(f"LPT{index}" for index in range(1, 10)),
+}
 ALLOWED_UPLOAD_CONTENT_TYPES = {
     ".pdf": "application/pdf",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -223,6 +235,23 @@ class DesktopApiClient:
             job_refs.append(_validate_job_response(payload))
         return job_refs
 
+    def save_job_result(self, job_id: str, destination_dir: str | Path) -> Path:
+        job_id = _validate_job_id(job_id)
+        destination = Path(destination_dir)
+        if not destination.is_dir():
+            raise ValueError("destination_dir must be an existing directory")
+        body, headers = self._request_bytes("GET", f"/api/jobs/{quote(job_id, safe='')}/result")
+        filename = _download_filename_from_headers(headers) or f"{job_id}.veridoc-result.json"
+        safe_filename = _sanitize_download_filename(filename)
+        for _ in range(1000):
+            save_path = _available_destination_path(destination, safe_filename)
+            try:
+                _write_download_file(save_path, body, safe_filename)
+            except FileExistsError:
+                continue
+            return save_path
+        raise DesktopApiError("downloaded result filename has too many collisions")
+
     def _request_json(self, method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
         token = self._credential_store.require_token()
         payload = None if body is None else json.dumps(body).encode("utf-8")
@@ -251,6 +280,39 @@ class DesktopApiClient:
                 raise DesktopApiError(f"API request failed with HTTP {exc.code}") from exc
             except (json.JSONDecodeError, UnicodeDecodeError) as exc:
                 raise DesktopApiError("API response must be valid JSON") from exc
+            except http.client.IncompleteRead as exc:
+                raise DesktopApiError("API response body was incomplete") from exc
+            except http.client.HTTPException as exc:
+                raise DesktopApiError("API response transport failed") from exc
+            except URLError as exc:
+                last_url_error = exc
+                if index + 1 < len(request_urls):
+                    continue
+                raise
+
+        assert last_url_error is not None
+        raise last_url_error
+
+    def _request_bytes(self, method: str, path: str) -> tuple[bytes, dict[str, str]]:
+        token = self._credential_store.require_token()
+        request_urls = tuple(urljoin(base_url, path) for base_url in self.config._request_base_urls)
+        last_url_error: URLError | None = None
+        for index, request_url in enumerate(request_urls):
+            request_headers = {
+                "Accept": "application/octet-stream",
+                "Authorization": f"Bearer {token}",
+            }
+            if self.config._host_header:
+                request_headers["Host"] = self.config._host_header
+            request = Request(request_url, method=method, headers=request_headers)
+
+            try:
+                with self._open(request) as response:
+                    return response.read(), _response_headers(response)
+            except HTTPError as exc:
+                if exc.code in {401, 403}:
+                    raise PermissionError("API authentication failed") from exc
+                raise DesktopApiError(f"API request failed with HTTP {exc.code}") from exc
             except http.client.IncompleteRead as exc:
                 raise DesktopApiError("API response body was incomplete") from exc
             except http.client.HTTPException as exc:
@@ -542,6 +604,110 @@ def _validated_upload_content_type(
     return normalized
 
 
+def _response_headers(response: Any) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    raw_headers = getattr(response, "headers", None)
+    if raw_headers is not None:
+        for name in ("Content-Disposition", "Content-Type"):
+            value = raw_headers.get(name)
+            if isinstance(value, str):
+                headers[name.lower()] = value
+    for name in ("Content-Disposition", "Content-Type"):
+        getheader = getattr(response, "getheader", None)
+        if callable(getheader):
+            value = getheader(name)
+            if isinstance(value, str):
+                headers[name.lower()] = value
+    return headers
+
+
+def _download_filename_from_headers(headers: dict[str, str]) -> str | None:
+    content_disposition = headers.get("content-disposition", "")
+    if not content_disposition:
+        return None
+    filename_star = re.search(r"filename\*=UTF-8''([^;]+)", content_disposition, flags=re.IGNORECASE)
+    if filename_star:
+        return unquote(filename_star.group(1).strip().strip('"'))
+    filename = re.search(r'filename="([^"]+)"|filename=([^;]+)', content_disposition, flags=re.IGNORECASE)
+    if filename:
+        return (filename.group(1) or filename.group(2) or "").strip()
+    return None
+
+
+def _sanitize_download_filename(filename: str) -> str:
+    leaf = filename.replace("\\", "/").rsplit("/", maxsplit=1)[-1].strip()
+    sanitized = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "-", leaf)
+    sanitized = re.sub(r"\s+", " ", sanitized).strip(" .-")
+    if not sanitized:
+        return DOWNLOAD_FILENAME_FALLBACK
+    sanitized = _avoid_windows_reserved_download_filename(sanitized)
+    return _fit_download_filename(sanitized)
+
+
+def _write_download_file(save_path: Path, body: bytes, safe_filename: str) -> None:
+    try:
+        with save_path.open("xb") as output:
+            output.write(body)
+    except FileExistsError:
+        raise
+    except OSError as exc:
+        try:
+            save_path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+        raise DesktopApiError(f"downloaded result could not be saved: {safe_filename}") from exc
+
+
+def _avoid_windows_reserved_download_filename(filename: str) -> str:
+    first_segment, separator, remainder = filename.partition(".")
+    if first_segment.rstrip(" .").upper() not in WINDOWS_RESERVED_DOWNLOAD_STEMS:
+        return filename
+    return f"{first_segment.rstrip(' .')}_{separator}{remainder}"
+
+
+def _available_destination_path(destination_dir: Path, filename: str) -> Path:
+    for index in range(1000):
+        candidate_name = filename if index == 0 else _fit_download_filename(filename, insertion=f" ({index})")
+        candidate = destination_dir / candidate_name
+        if not os.path.lexists(candidate):
+            return candidate
+    raise DesktopApiError("downloaded result filename has too many collisions")
+
+
+def _split_collision_suffix(filename: str) -> tuple[str, str]:
+    compound_suffix = ".veridoc-result.json"
+    if filename.lower().endswith(compound_suffix):
+        return filename[: -len(compound_suffix)], filename[-len(compound_suffix) :]
+    path = Path(filename)
+    if path.suffix:
+        return filename[: -len(path.suffix)], path.suffix
+    return filename, ""
+
+
+def _fit_download_filename(filename: str, *, insertion: str = "") -> str:
+    stem, suffix = _split_collision_suffix(filename)
+    reserved = f"{insertion}{suffix}"
+    available_stem_bytes = MAX_DOWNLOAD_FILENAME_BYTES - len(reserved.encode("utf-8"))
+    if available_stem_bytes > 0:
+        fitted_stem = _truncate_utf8_bytes(stem, available_stem_bytes).strip(" .-")
+        if fitted_stem:
+            return f"{fitted_stem}{reserved}"
+
+    fitted = _truncate_utf8_bytes(f"{stem}{insertion}{suffix}", MAX_DOWNLOAD_FILENAME_BYTES).strip(" .-")
+    return fitted or DOWNLOAD_FILENAME_FALLBACK
+
+
+def _truncate_utf8_bytes(value: str, max_bytes: int) -> str:
+    if max_bytes <= 0:
+        return ""
+    encoded = value.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return value
+    return encoded[:max_bytes].decode("utf-8", errors="ignore")
+
+
 def _urlopen_transport(request: Request, *, timeout: float, tls_server_name: str | None = None) -> Any:
     if tls_server_name is not None:
         return _pinned_https_transport(request, timeout=timeout, tls_server_name=tls_server_name)
@@ -705,6 +871,13 @@ class _PinnedHTTPSResponse:
 
     def read(self) -> bytes:
         return self._response.read()
+
+    def getheader(self, name: str, default: str | None = None) -> str | None:
+        return self._response.getheader(name, default)
+
+    @property
+    def headers(self) -> Any:
+        return self._response.msg
 
 
 def _looks_like_placeholder_token(token: str) -> bool:
