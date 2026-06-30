@@ -2742,6 +2742,10 @@ def test_poc_http_api_records_one_desktop_upload_audit_for_concurrent_idempotent
     lookup_barrier = Barrier(2)
 
     class RaceAmplifyingJobQueue(JobQueue):
+        def get_or_create_job(self, **kwargs):
+            lookup_barrier.wait(timeout=5)
+            return super().get_or_create_job(**kwargs)
+
         def get_idempotent_job(self, **kwargs):
             existing = super().get_idempotent_job(**kwargs)
             if existing is None:
