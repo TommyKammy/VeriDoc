@@ -72,6 +72,27 @@ class RawResponse:
         return self.headers.get(name, default)
 
 
+class ResultSaveTransport:
+    def __init__(self, body: bytes, *, headers: dict[str, str] | None = None) -> None:
+        self.requests: list[Request] = []
+        self.body = body
+        self.headers = headers or {}
+
+    def __call__(self, request: Request, *, timeout: float):
+        self.requests.append(request)
+        if request.full_url.endswith("/api/job-events"):
+            return JsonResponse(
+                {
+                    "accepted": True,
+                    "audit_event": {
+                        "job_id": "job-complete-1",
+                        "action": "desktop_result_download",
+                    },
+                }
+            )
+        return RawResponse(self.body, headers=self.headers)
+
+
 class IncompleteResponse:
     def __enter__(self):
         return self
@@ -318,19 +339,18 @@ def test_desktop_api_client_saves_completed_job_result_to_selected_folder_with_s
     existing.write_text("existing result", encoding="utf-8")
     download_body = b'{"document_ir":{"document_id":"job-result"}}'
 
-    def download_transport(request: Request, *, timeout: float):
-        return RawResponse(
-            download_body,
-            headers={
-                "Content-Disposition": 'attachment; filename="../unsafe:name.veridoc-result.json"',
-                "Content-Type": "application/json",
-            },
-        )
+    transport = ResultSaveTransport(
+        download_body,
+        headers={
+            "Content-Disposition": 'attachment; filename="../unsafe:name.veridoc-result.json"',
+            "Content-Type": "application/json",
+        },
+    )
 
     client = DesktopApiClient(
         DesktopApiClientConfig(base_url="http://127.0.0.1:8765"),
         credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
-        transport=download_transport,
+        transport=transport,
     )
 
     saved_path = client.save_job_result("job-complete-1", destination_dir)
@@ -340,45 +360,51 @@ def test_desktop_api_client_saves_completed_job_result_to_selected_folder_with_s
     assert existing.read_text(encoding="utf-8") == "existing result"
 
 
-def test_desktop_api_client_result_save_uses_authenticated_download_api(tmp_path) -> None:
-    requests: list[Request] = []
-
-    def download_transport(request: Request, *, timeout: float):
-        requests.append(request)
-        return RawResponse(
-            b"{}",
-            headers={"Content-Disposition": 'attachment; filename="result.json"'},
-        )
+def test_desktop_api_client_result_save_records_audit_event_before_authenticated_download(
+    tmp_path,
+) -> None:
+    transport = ResultSaveTransport(
+        b"{}",
+        headers={"Content-Disposition": 'attachment; filename="result.json"'},
+    )
 
     client = DesktopApiClient(
         DesktopApiClientConfig(base_url="http://127.0.0.1:8765"),
         credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
-        transport=download_transport,
+        transport=transport,
     )
 
     assert client.save_job_result("job-complete-1", tmp_path) == tmp_path / "result.json"
 
-    assert len(requests) == 1
-    request = requests[0]
-    assert request.full_url == "http://127.0.0.1:8765/api/jobs/job-complete-1/result"
-    assert request.get_method() == "GET"
-    assert request.get_header("Authorization") == "Bearer reviewer-token"
-    assert request.get_header("Accept") == "application/octet-stream"
+    assert len(transport.requests) == 2
+    audit_request = transport.requests[0]
+    download_request = transport.requests[1]
+    assert audit_request.full_url == "http://127.0.0.1:8765/api/job-events"
+    assert audit_request.get_method() == "POST"
+    assert audit_request.get_header("Authorization") == "Bearer reviewer-token"
+    assert audit_request.get_header("Accept") == "application/json"
+    assert json.loads(audit_request.data.decode("utf-8")) == {
+        "job_id": "job-complete-1",
+        "action": "desktop_result_download",
+    }
+    assert download_request.full_url == "http://127.0.0.1:8765/api/jobs/job-complete-1/result"
+    assert download_request.get_method() == "GET"
+    assert download_request.get_header("Authorization") == "Bearer reviewer-token"
+    assert download_request.get_header("Accept") == "application/octet-stream"
 
 
 def test_desktop_api_client_clamps_long_result_download_names(tmp_path) -> None:
     long_filename = f"{'a' * 300}.veridoc-result.json"
 
-    def download_transport(request: Request, *, timeout: float):
-        return RawResponse(
-            b'{"document_ir":{}}',
-            headers={"Content-Disposition": f'attachment; filename="{long_filename}"'},
-        )
+    transport = ResultSaveTransport(
+        b'{"document_ir":{}}',
+        headers={"Content-Disposition": f'attachment; filename="{long_filename}"'},
+    )
 
     client = DesktopApiClient(
         DesktopApiClientConfig(base_url="http://127.0.0.1:8765"),
         credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
-        transport=download_transport,
+        transport=transport,
     )
 
     first_path = client.save_job_result("job-complete-1", tmp_path)
@@ -401,16 +427,15 @@ def test_desktop_api_client_treats_dangling_symlink_as_result_filename_collision
     except OSError as exc:
         pytest.skip(f"symlink unavailable: {exc}")
 
-    def download_transport(request: Request, *, timeout: float):
-        return RawResponse(
-            b'{"document_ir":{}}',
-            headers={"Content-Disposition": 'attachment; filename="result.json"'},
-        )
+    transport = ResultSaveTransport(
+        b'{"document_ir":{}}',
+        headers={"Content-Disposition": 'attachment; filename="result.json"'},
+    )
 
     client = DesktopApiClient(
         DesktopApiClientConfig(base_url="http://127.0.0.1:8765"),
         credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
-        transport=download_transport,
+        transport=transport,
     )
 
     saved_path = client.save_job_result("job-complete-1", tmp_path)
@@ -426,16 +451,15 @@ def test_desktop_api_client_removes_partial_result_file_after_failed_write(
 ) -> None:
     target_path = tmp_path / "partial-result.json"
 
-    def download_transport(request: Request, *, timeout: float):
-        return RawResponse(
-            b'{"document_ir":{"document_id":"job-result"}}',
-            headers={"Content-Disposition": 'attachment; filename="partial-result.json"'},
-        )
+    transport = ResultSaveTransport(
+        b'{"document_ir":{"document_id":"job-result"}}',
+        headers={"Content-Disposition": 'attachment; filename="partial-result.json"'},
+    )
 
     client = DesktopApiClient(
         DesktopApiClientConfig(base_url="http://127.0.0.1:8765"),
         credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
-        transport=download_transport,
+        transport=transport,
     )
     original_open = Path.open
 
@@ -477,16 +501,15 @@ def test_desktop_api_client_avoids_windows_reserved_result_filenames(
     server_filename: str,
     saved_filename: str,
 ) -> None:
-    def download_transport(request: Request, *, timeout: float):
-        return RawResponse(
-            b'{"document_ir":{}}',
-            headers={"Content-Disposition": f'attachment; filename="{server_filename}"'},
-        )
+    transport = ResultSaveTransport(
+        b'{"document_ir":{}}',
+        headers={"Content-Disposition": f'attachment; filename="{server_filename}"'},
+    )
 
     client = DesktopApiClient(
         DesktopApiClientConfig(base_url="http://127.0.0.1:8765"),
         credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
-        transport=download_transport,
+        transport=transport,
     )
 
     saved_path = client.save_job_result("job-complete-1", tmp_path)
@@ -1096,7 +1119,7 @@ def test_desktop_api_client_preserves_pinned_https_result_download_headers(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
-    captured: dict[str, object] = {}
+    captured: dict[str, object] = {"requests": []}
 
     def fake_getaddrinfo(host: str, port: object, *, type: int):
         assert host == "localhost"
@@ -1112,21 +1135,42 @@ def test_desktop_api_client_preserves_pinned_https_result_download_headers(
             captured["timeout"] = timeout
 
         def request(self, method: str, path: str, body: bytes | None, headers: dict[str, str]) -> None:
-            captured["method"] = method
-            captured["path"] = path
-            captured["body"] = body
-            captured["headers"] = headers
+            captured["requests"].append(  # type: ignore[union-attr]
+                {
+                    "method": method,
+                    "path": path,
+                    "body": body,
+                    "headers": headers,
+                }
+            )
 
         def getresponse(self):
+            requests = captured["requests"]  # type: ignore[assignment]
+            path = requests[-1]["path"]
+
             class FakeResponse:
                 status = 200
                 reason = "OK"
-                msg = {
-                    "Content-Disposition": 'attachment; filename="pinned-result.json"',
-                    "Content-Type": "application/json",
-                }
+                msg = (
+                    {}
+                    if path == "/api/job-events"
+                    else {
+                        "Content-Disposition": 'attachment; filename="pinned-result.json"',
+                        "Content-Type": "application/json",
+                    }
+                )
 
                 def read(self) -> bytes:
+                    if path == "/api/job-events":
+                        return json.dumps(
+                            {
+                                "accepted": True,
+                                "audit_event": {
+                                    "job_id": "job-complete-1",
+                                    "action": "desktop_result_download",
+                                },
+                            }
+                        ).encode("utf-8")
                     return b'{"document_ir":{}}'
 
                 def getheader(self, name: str, default: str | None = None) -> str | None:
@@ -1150,8 +1194,18 @@ def test_desktop_api_client_preserves_pinned_https_result_download_headers(
     assert saved_path.read_bytes() == b'{"document_ir":{}}'
     assert captured["connect_host"] == "127.0.0.1"
     assert captured["tls_server_name"] == "localhost"
-    assert captured["path"] == "/api/jobs/job-complete-1/result"
-    assert captured["headers"] == {
+    requests = captured["requests"]
+    assert requests[0]["method"] == "POST"
+    assert requests[0]["path"] == "/api/job-events"
+    assert requests[0]["headers"] == {
+        "Accept": "application/json",
+        "Authorization": "Bearer reviewer-token",
+        "Content-type": "application/json",
+        "Host": "localhost:8765",
+    }
+    assert requests[1]["method"] == "GET"
+    assert requests[1]["path"] == "/api/jobs/job-complete-1/result"
+    assert requests[1]["headers"] == {
         "Accept": "application/octet-stream",
         "Authorization": "Bearer reviewer-token",
         "Host": "localhost:8765",

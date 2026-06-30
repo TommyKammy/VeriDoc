@@ -378,6 +378,7 @@ class DesktopApiClient:
         destination = Path(destination_dir)
         if not destination.is_dir():
             raise ValueError("destination_dir must be an existing directory")
+        self._record_desktop_result_download(job_id)
         body, headers = self._request_bytes("GET", f"/api/jobs/{quote(job_id, safe='')}/result")
         filename = _download_filename_from_headers(headers) or f"{job_id}.veridoc-result.json"
         safe_filename = _sanitize_download_filename(filename)
@@ -389,6 +390,21 @@ class DesktopApiClient:
                 continue
             return save_path
         raise DesktopApiError("downloaded result filename has too many collisions")
+
+    def _record_desktop_result_download(self, job_id: str) -> None:
+        payload = self._request_json(
+            "POST",
+            "/api/job-events",
+            {
+                "job_id": job_id,
+                "action": "desktop_result_download",
+            },
+        )
+        audit_event = payload.get("audit_event")
+        if payload.get("accepted") is not True or not isinstance(audit_event, dict):
+            raise DesktopApiError("API did not accept the desktop result download audit event")
+        if audit_event.get("job_id") != job_id or audit_event.get("action") != "desktop_result_download":
+            raise DesktopApiError("API accepted a mismatched desktop result download audit event")
 
     def _request_json(self, method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
         token = self._credential_store.require_token()

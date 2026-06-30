@@ -50,15 +50,17 @@ the API enforcement boundary:
 
 - Desktop upload: successful `POST /api/jobs` requests with uploaded source
   content append a `desktop.job_operation` event with action `desktop_upload`.
-- Desktop result download/save: successful `GET /api/jobs/<job-id>/result`
-  requests append a `desktop.job_operation` event with action
-  `desktop_result_download`.
+- Desktop result download/save: the desktop client first submits
+  `POST /api/job-events` with action `desktop_result_download`; the server
+  derives the accepted audit event from the stored job result before the client
+  fetches `GET /api/jobs/<job-id>/result` bytes.
 - Review edit/approval and retry operations continue to use the existing
   validated server-side audit event flow.
 
 These events are server-derived from validated job/source/result state and the
 authenticated context. The desktop client does not supply trusted audit payloads
-for upload or result download events.
+for upload or result save events, and ordinary browser result fetches are not
+classified as desktop saves.
 
 The focused regression test is:
 

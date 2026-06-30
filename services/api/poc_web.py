@@ -687,7 +687,8 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 source=source,
                 template=requested_template,
             )
-            if job is None:
+            created_job = job is None
+            if created_job:
                 template = self._job_template_snapshot(request.get("template_id"))
                 job = job_queue.create_job(
                     idempotency_key=idempotency_key,
@@ -696,7 +697,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                     source=source,
                     template=template,
                 )
-            if source is not None:
+            if created_job and source is not None:
                 job_event_store.record(
                     _job_event_with_auth_context(
                         _desktop_upload_audit_event(job),
@@ -784,9 +785,13 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             audit_event = request.get("audit_event")
             job_queue = self._job_queue()
             job = job_queue.get_job(job_id)
-            accepted_event = _validate_job_event(job, action, audit_event, job_queue)
             job_event_store = self._job_event_store()
             updated_job = job
+            if action == "desktop_result_download":
+                job_event_store.require_integrity()
+                accepted_event = _desktop_result_download_audit_event(job)
+            else:
+                accepted_event = _validate_job_event(job, action, audit_event, job_queue)
             if action == "retry_conversion":
                 job_event_store.require_integrity()
                 updated_job = job_queue.retry_failed_job(job_id)
@@ -902,12 +907,6 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             download = _job_download(job)
             content_type = _download_content_type(download["content_type"])
             filename = _download_filename(download["filename"])
-            job_event_store.record(
-                _job_event_with_auth_context(
-                    _desktop_result_download_audit_event(job, download),
-                    auth_context,
-                )
-            )
         except KeyError:
             self._send_json({"error": "job_not_found"}, status=404)
             return
@@ -1517,10 +1516,8 @@ def _desktop_upload_audit_event(job: JobRecord) -> dict[str, Any]:
     }
 
 
-def _desktop_result_download_audit_event(
-    job: JobRecord,
-    download: dict[str, Any],
-) -> dict[str, Any]:
+def _desktop_result_download_audit_event(job: JobRecord) -> dict[str, Any]:
+    download = _job_download(job)
     hashes = _job_hashes(job)
     return {
         "event_type": "desktop.job_operation",
@@ -1528,7 +1525,7 @@ def _desktop_result_download_audit_event(
         "job_status": job.status,
         "action": "desktop_result_download",
         "filename": job.filename,
-        "download_filename": download["filename"],
+        "download_filename": _download_filename(download["filename"]),
         "source_sha256": hashes["source_sha256"],
         "output_sha256": hashes["output_sha256"],
     }

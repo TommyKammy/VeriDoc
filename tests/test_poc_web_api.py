@@ -2681,30 +2681,59 @@ def test_poc_http_api_records_desktop_upload_and_download_audit_events() -> None
                     "output_sha256": hashlib.sha256(b'{"converted": true}').hexdigest(),
                 },
                 "download": {
-                    "filename": "batch-record.veridoc-result.json",
+                    "filename": "../batch-record\r\n.veridoc-result.json",
                     "content_type": "application/json; charset=utf-8",
                     "content": b'{"converted": true}',
                 },
             },
         )
 
+        connection.request(
+            "POST",
+            "/api/jobs",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        replay_response = connection.getresponse()
+        replay_body = json.loads(replay_response.read().decode("utf-8"))
         connection.request("GET", f"/api/jobs/{job_id}/result")
         download_response = connection.getresponse()
         download_body = download_response.read()
+        browser_download_events = server.job_event_store.list_events(filters={"job_id": job_id})
+        event_payload = json.dumps(
+            {
+                "job_id": job_id,
+                "action": "desktop_result_download",
+                "audit_event": {"action": "client_supplied_event_is_ignored"},
+            }
+        ).encode("utf-8")
+        connection.request(
+            "POST",
+            "/api/job-events",
+            body=event_payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(event_payload))},
+        )
+        save_event_response = connection.getresponse()
+        save_event_body = json.loads(save_event_response.read().decode("utf-8"))
         events = server.job_event_store.list_events(filters={"job_id": job_id})
     finally:
         server.shutdown()
         thread.join(timeout=5)
 
     assert create_response.status == 202
+    assert replay_response.status == 202
+    assert replay_body["job"]["job_id"] == job_id
     assert download_response.status == 200
     assert download_body == b'{"converted": true}'
+    assert [event["action"] for event in browser_download_events] == ["desktop_upload"]
+    assert save_event_response.status == 202
     assert [event["action"] for event in events] == [
         "desktop_upload",
         "desktop_result_download",
     ]
     assert events[0]["source_sha256"] == source_sha256
     assert events[0]["filename"] == "batch-record.pdf"
+    assert save_event_body["audit_event"] == events[1]
     assert events[1]["output_sha256"] == hashlib.sha256(b'{"converted": true}').hexdigest()
     assert events[1]["download_filename"] == "batch-record.veridoc-result.json"
 
