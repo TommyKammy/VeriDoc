@@ -72,6 +72,11 @@ configured desktop temp root's `work/` subdirectory and removes those owned
 files when the operation exits normally, fails with an exception, or is
 cancelled through `cancel()`.
 
+The manager creates the desktop temp root and `work/` directory with private
+`0700` permissions when it owns their creation, keeps `work/` at `0700`, and
+creates staging files with `0600` permissions so shared or traversable parent
+locations do not expose document contents or sanitized source filenames.
+
 Files written to a user-selected final save location are explicit artifacts, not
 temporary files. Register those paths with `register_explicit_artifact()` if they
 are handled in the same workflow; cleanup skips explicit artifacts and only

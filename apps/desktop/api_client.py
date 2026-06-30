@@ -52,6 +52,8 @@ MAX_DOWNLOAD_FILENAME_BYTES = 255
 DOWNLOAD_FILENAME_FALLBACK = "veridoc-result.json"
 DESKTOP_TEMP_WORK_DIR = "work"
 DESKTOP_TEMP_TOKEN_BYTES = 16
+DESKTOP_TEMP_DIR_MODE = 0o700
+DESKTOP_TEMP_FILE_MODE = 0o600
 WINDOWS_RESERVED_DOWNLOAD_STEMS = {
     "CON",
     "PRN",
@@ -191,7 +193,7 @@ class DesktopTemporaryFileManager:
         self._owned_paths: list[Path] = []
         self._explicit_artifacts: set[Path] = set()
         self._closed = False
-        self.root.mkdir(parents=True, exist_ok=True)
+        self.root.mkdir(parents=True, exist_ok=True, mode=DESKTOP_TEMP_DIR_MODE)
         self._ensure_work_dir()
 
     def __enter__(self) -> "DesktopTemporaryFileManager":
@@ -222,9 +224,16 @@ class DesktopTemporaryFileManager:
         )
         path = self._work_dir / f"{prefix}{safe_filename}"
         self._require_owned_staging_path(path)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, DESKTOP_TEMP_FILE_MODE)
         self._owned_paths.append(path)
-        with path.open("xb") as output:
-            output.write(content)
+        try:
+            output = os.fdopen(fd, "wb")
+            fd = -1
+            with output:
+                output.write(content)
+        finally:
+            if fd != -1:
+                os.close(fd)
         return path
 
     def register_explicit_artifact(self, path: str | Path) -> Path:
@@ -257,10 +266,11 @@ class DesktopTemporaryFileManager:
         work_dir = self._work_dir
         if os.path.lexists(work_dir) and work_dir.is_symlink():
             raise ValueError("temporary work directory must not be a symlink")
-        work_dir.mkdir(parents=True, exist_ok=True)
+        work_dir.mkdir(parents=True, exist_ok=True, mode=DESKTOP_TEMP_DIR_MODE)
         if work_dir.is_symlink():
             raise ValueError("temporary work directory must not be a symlink")
         _require_path_inside_root(work_dir.resolve(strict=True), self.root)
+        work_dir.chmod(DESKTOP_TEMP_DIR_MODE)
 
     def _require_owned_staging_path(self, path: Path) -> None:
         _require_path_inside_root(path, self.root)

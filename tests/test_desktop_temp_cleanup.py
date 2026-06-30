@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -74,41 +75,50 @@ def test_desktop_staging_filename_reserves_temp_prefix_bytes(tmp_path) -> None:
     assert len(temp_file.name.encode("utf-8")) <= 255
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits are not stable on Windows")
+def test_desktop_temporary_files_and_work_dir_are_private_with_common_umask(tmp_path) -> None:
+    temp_root = tmp_path / "desktop-temp"
+    old_umask = os.umask(0o022)
+    try:
+        manager = DesktopTemporaryFileManager(temp_root)
+        temp_file = manager.create_staging_file("source document.pdf", b"source")
+    finally:
+        os.umask(old_umask)
+
+    assert stat.S_IMODE(temp_root.stat().st_mode) == 0o700
+    assert stat.S_IMODE((temp_root / "work").stat().st_mode) == 0o700
+    assert stat.S_IMODE(temp_file.stat().st_mode) == 0o600
+
+
 def test_desktop_tracks_staging_file_before_write_failure(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     temp_root = tmp_path / "desktop-temp"
     manager = DesktopTemporaryFileManager(temp_root)
-    original_open = Path.open
+    original_fdopen = os.fdopen
 
     class FailingWriter:
-        def __init__(self, path: Path, mode: str, args: tuple[object, ...], kwargs: dict[str, object]) -> None:
-            self._path = path
-            self._mode = mode
-            self._args = args
-            self._kwargs = kwargs
-            self._file = None
+        def __init__(self, file_obj) -> None:
+            self._file = file_obj
 
         def __enter__(self) -> "FailingWriter":
-            self._file = original_open(self._path, self._mode, *self._args, **self._kwargs)
             return self
 
         def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
-            if self._file is not None:
-                self._file.close()
+            self._file.close()
 
         def write(self, content: bytes) -> None:
-            assert self._file is not None
             self._file.write(content[:1])
             raise OSError("simulated partial write failure")
 
-    def failing_open(path: Path, mode: str = "r", *args: object, **kwargs: object):
-        if mode == "xb" and path.parent == temp_root / "work":
-            return FailingWriter(path, mode, args, kwargs)
-        return original_open(path, mode, *args, **kwargs)
+    def failing_fdopen(fd: int, mode: str = "r", *args: object, **kwargs: object):
+        file_obj = original_fdopen(fd, mode, *args, **kwargs)
+        if mode == "wb":
+            return FailingWriter(file_obj)
+        return file_obj
 
-    monkeypatch.setattr(Path, "open", failing_open)
+    monkeypatch.setattr(os, "fdopen", failing_fdopen)
 
     with pytest.raises(OSError, match="simulated partial write failure"):
         manager.create_staging_file("partial.json", b"source")
