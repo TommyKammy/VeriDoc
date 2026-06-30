@@ -19,6 +19,7 @@ from apps.desktop.api_client import (
     DesktopJobDisplayState,
     DesktopUploadValidationError,
     InvalidApiTokenError,
+    MAX_DOWNLOAD_FILENAME_BYTES,
     MAX_DESKTOP_UPLOAD_BYTES,
     MissingApiTokenError,
     check_desktop_api_connection,
@@ -361,6 +362,34 @@ def test_desktop_api_client_result_save_uses_authenticated_download_api(tmp_path
     assert request.get_method() == "GET"
     assert request.get_header("Authorization") == "Bearer reviewer-token"
     assert request.get_header("Accept") == "application/octet-stream"
+
+
+def test_desktop_api_client_clamps_long_result_download_names(tmp_path) -> None:
+    long_filename = f"{'a' * 300}.veridoc-result.json"
+
+    def download_transport(request: Request, *, timeout: float):
+        return RawResponse(
+            b'{"document_ir":{}}',
+            headers={"Content-Disposition": f'attachment; filename="{long_filename}"'},
+        )
+
+    client = DesktopApiClient(
+        DesktopApiClientConfig(base_url="http://127.0.0.1:8765"),
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=download_transport,
+    )
+
+    first_path = client.save_job_result("job-complete-1", tmp_path)
+    second_path = client.save_job_result("job-complete-1", tmp_path)
+
+    assert first_path.name.endswith(".veridoc-result.json")
+    assert second_path.name.endswith(".veridoc-result.json")
+    assert " (1)" in second_path.name
+    assert first_path != second_path
+    assert len(first_path.name.encode("utf-8")) <= MAX_DOWNLOAD_FILENAME_BYTES
+    assert len(second_path.name.encode("utf-8")) <= MAX_DOWNLOAD_FILENAME_BYTES
+    assert first_path.read_bytes() == b'{"document_ir":{}}'
+    assert second_path.read_bytes() == b'{"document_ir":{}}'
 
 
 def test_desktop_api_client_fetches_job_progress_display_state() -> None:
@@ -954,6 +983,73 @@ def test_desktop_api_client_preserves_https_localhost_tls_name(
     assert captured["path"] == "/api/jobs"
     assert captured["headers"] == {
         "Accept": "application/json",
+        "Authorization": "Bearer reviewer-token",
+        "Host": "localhost:8765",
+    }
+    assert captured["closed"] is True
+
+
+def test_desktop_api_client_preserves_pinned_https_result_download_headers(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_getaddrinfo(host: str, port: object, *, type: int):
+        assert host == "localhost"
+        assert port == 8765
+        assert type == socket.SOCK_STREAM
+        return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", 0))]
+
+    class FakePinnedHTTPSConnection:
+        def __init__(self, connect_host: str, port: int, tls_server_name: str, timeout: float) -> None:
+            captured["connect_host"] = connect_host
+            captured["port"] = port
+            captured["tls_server_name"] = tls_server_name
+            captured["timeout"] = timeout
+
+        def request(self, method: str, path: str, body: bytes | None, headers: dict[str, str]) -> None:
+            captured["method"] = method
+            captured["path"] = path
+            captured["body"] = body
+            captured["headers"] = headers
+
+        def getresponse(self):
+            class FakeResponse:
+                status = 200
+                reason = "OK"
+                msg = {
+                    "Content-Disposition": 'attachment; filename="pinned-result.json"',
+                    "Content-Type": "application/json",
+                }
+
+                def read(self) -> bytes:
+                    return b'{"document_ir":{}}'
+
+                def getheader(self, name: str, default: str | None = None) -> str | None:
+                    return self.msg.get(name, default)
+
+            return FakeResponse()
+
+        def close(self) -> None:
+            captured["closed"] = True
+
+    monkeypatch.setattr("apps.desktop.api_client.socket.getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr("apps.desktop.api_client._PinnedHTTPSConnection", FakePinnedHTTPSConnection)
+    client = DesktopApiClient(
+        DesktopApiClientConfig(base_url="https://localhost:8765", timeout_seconds=2.5),
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+    )
+
+    saved_path = client.save_job_result("job-complete-1", tmp_path)
+
+    assert saved_path == tmp_path / "pinned-result.json"
+    assert saved_path.read_bytes() == b'{"document_ir":{}}'
+    assert captured["connect_host"] == "127.0.0.1"
+    assert captured["tls_server_name"] == "localhost"
+    assert captured["path"] == "/api/jobs/job-complete-1/result"
+    assert captured["headers"] == {
+        "Accept": "application/octet-stream",
         "Authorization": "Bearer reviewer-token",
         "Host": "localhost:8765",
     }

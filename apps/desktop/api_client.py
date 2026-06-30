@@ -37,6 +37,8 @@ class DesktopUploadValidationError(ValueError):
 
 
 MAX_DESKTOP_UPLOAD_BYTES = 2 * 1024 * 1024
+MAX_DOWNLOAD_FILENAME_BYTES = 255
+DOWNLOAD_FILENAME_FALLBACK = "veridoc-result.json"
 ALLOWED_UPLOAD_CONTENT_TYPES = {
     ".pdf": "application/pdf",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -631,14 +633,13 @@ def _sanitize_download_filename(filename: str) -> str:
     sanitized = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "-", leaf)
     sanitized = re.sub(r"\s+", " ", sanitized).strip(" .-")
     if not sanitized:
-        return "veridoc-result.json"
-    return sanitized
+        return DOWNLOAD_FILENAME_FALLBACK
+    return _fit_download_filename(sanitized)
 
 
 def _available_destination_path(destination_dir: Path, filename: str) -> Path:
-    stem, suffix = _split_collision_suffix(filename)
     for index in range(1000):
-        candidate_name = filename if index == 0 else f"{stem} ({index}){suffix}"
+        candidate_name = filename if index == 0 else _fit_download_filename(filename, insertion=f" ({index})")
         candidate = destination_dir / candidate_name
         if not candidate.exists():
             return candidate
@@ -653,6 +654,28 @@ def _split_collision_suffix(filename: str) -> tuple[str, str]:
     if path.suffix:
         return filename[: -len(path.suffix)], path.suffix
     return filename, ""
+
+
+def _fit_download_filename(filename: str, *, insertion: str = "") -> str:
+    stem, suffix = _split_collision_suffix(filename)
+    reserved = f"{insertion}{suffix}"
+    available_stem_bytes = MAX_DOWNLOAD_FILENAME_BYTES - len(reserved.encode("utf-8"))
+    if available_stem_bytes > 0:
+        fitted_stem = _truncate_utf8_bytes(stem, available_stem_bytes).strip(" .-")
+        if fitted_stem:
+            return f"{fitted_stem}{reserved}"
+
+    fitted = _truncate_utf8_bytes(f"{stem}{insertion}{suffix}", MAX_DOWNLOAD_FILENAME_BYTES).strip(" .-")
+    return fitted or DOWNLOAD_FILENAME_FALLBACK
+
+
+def _truncate_utf8_bytes(value: str, max_bytes: int) -> str:
+    if max_bytes <= 0:
+        return ""
+    encoded = value.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return value
+    return encoded[:max_bytes].decode("utf-8", errors="ignore")
 
 
 def _urlopen_transport(request: Request, *, timeout: float, tls_server_name: str | None = None) -> Any:
@@ -818,6 +841,13 @@ class _PinnedHTTPSResponse:
 
     def read(self) -> bytes:
         return self._response.read()
+
+    def getheader(self, name: str, default: str | None = None) -> str | None:
+        return self._response.getheader(name, default)
+
+    @property
+    def headers(self) -> Any:
+        return self._response.msg
 
 
 def _looks_like_placeholder_token(token: str) -> bool:
