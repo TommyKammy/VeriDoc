@@ -23,7 +23,9 @@ inside the configured storage root before reading artifact bytes.
 Desktop callers provide a configured desktop temp root to
 `DesktopTemporaryFileManager`. The manager writes owned staging files below that
 root's `work/` subdirectory and rejects cleanup paths that escape the configured
-root. Documentation and tests use placeholders such as `<desktop-temp-root>`
+root. The shared `work/` directory is retained for concurrent desktop
+operations; cleanup removes owned staging files, not the operation directory
+itself. Documentation and tests use placeholders such as `<desktop-temp-root>`
 instead of workstation-local absolute paths.
 
 ## Retention And Deletion
@@ -46,6 +48,12 @@ removes owned staging files on normal completion, on workflow failure, and when
 the workflow calls `cancel()`. Paths registered with
 `register_explicit_artifact()` represent user-selected final outputs and are
 left in place.
+
+Desktop staging privacy is enforced before content is written. POSIX platforms
+use private permission bits for the temp root, `work/`, and staging files;
+Windows uses ACL hardening that removes existing access rules and grants the
+current user full control. If that hardening step fails, staging creation fails
+closed and no untracked staging file is retained.
 
 Desktop cleanup failures are detectable: failed removals are logged through
 `apps.desktop.api_client` and `DesktopTemporaryCleanupError` is raised when

@@ -3,10 +3,12 @@ from __future__ import annotations
 import logging
 import os
 import stat
+import subprocess
 from pathlib import Path
 
 import pytest
 
+from apps.desktop import api_client
 from apps.desktop.api_client import (
     DesktopTemporaryCleanupError,
     DesktopTemporaryFileManager,
@@ -88,6 +90,86 @@ def test_desktop_temporary_files_and_work_dir_are_private_with_common_umask(tmp_
     assert stat.S_IMODE(temp_root.stat().st_mode) == 0o700
     assert stat.S_IMODE((temp_root / "work").stat().st_mode) == 0o700
     assert stat.S_IMODE(temp_file.stat().st_mode) == 0o600
+
+
+def test_desktop_windows_acl_hardening_runs_for_private_temp_paths(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    temp_root = tmp_path / "desktop-temp"
+    calls: list[tuple[list[str], dict[str, str]]] = []
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append((command, kwargs["env"]))  # type: ignore[arg-type]
+        assert kwargs["check"] is True
+        assert kwargs["stdout"] is subprocess.PIPE
+        assert kwargs["stderr"] is subprocess.PIPE
+        assert kwargs["text"] is True
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(api_client.sys, "platform", "win32")
+    monkeypatch.setattr(api_client.subprocess, "run", fake_run)
+
+    manager = DesktopTemporaryFileManager(temp_root)
+    temp_file = manager.create_staging_file("source document.pdf", b"source")
+
+    assert [Path(env["VERIDOC_PRIVATE_ACL_PATH"]) for _, env in calls] == [
+        temp_root,
+        temp_root / "work",
+        temp_file,
+    ]
+    for command, _ in calls:
+        assert command[:5] == [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+        ]
+        assert "SetAccessRuleProtection($true, $false)" in command[-1]
+        assert "RemoveAccessRuleAll" in command[-1]
+    assert temp_file.read_bytes() == b"source"
+
+
+def test_desktop_windows_acl_failure_removes_untracked_staging_file(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    temp_root = tmp_path / "desktop-temp"
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        secured_path = Path(kwargs["env"]["VERIDOC_PRIVATE_ACL_PATH"])  # type: ignore[index]
+        if secured_path.name.startswith("tmp-"):
+            raise subprocess.CalledProcessError(1, command, stderr="denied")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(api_client.sys, "platform", "win32")
+    monkeypatch.setattr(api_client.subprocess, "run", fake_run)
+
+    manager = DesktopTemporaryFileManager(temp_root)
+    with pytest.raises(OSError, match="failed to secure Windows temporary path ACL"):
+        manager.create_staging_file("source document.pdf", b"source")
+
+    assert list((temp_root / "work").iterdir()) == []
+
+
+def test_desktop_cleanup_keeps_shared_work_dir_available(tmp_path) -> None:
+    temp_root = tmp_path / "desktop-temp"
+    first = DesktopTemporaryFileManager(temp_root)
+    second = DesktopTemporaryFileManager(temp_root)
+
+    first_temp = first.create_staging_file("first.json", b"first")
+    first.cleanup()
+    second_temp = second.create_staging_file("second.json", b"second")
+
+    assert not first_temp.exists()
+    assert second_temp.read_bytes() == b"second"
+    assert (temp_root / "work").is_dir()
+
+    second.cleanup()
+
+    assert not second_temp.exists()
+    assert (temp_root / "work").is_dir()
 
 
 def test_desktop_tracks_staging_file_before_write_failure(

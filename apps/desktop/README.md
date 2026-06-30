@@ -72,15 +72,18 @@ configured desktop temp root's `work/` subdirectory and removes those owned
 files when the operation exits normally, fails with an exception, or is
 cancelled through `cancel()`.
 
-The manager creates the desktop temp root and `work/` directory with private
-`0700` permissions when it owns their creation, keeps `work/` at `0700`, and
-creates staging files with `0600` permissions so shared or traversable parent
-locations do not expose document contents or sanitized source filenames.
+The manager keeps the desktop temp root and shared `work/` directory available
+for concurrent operation-scoped managers. On POSIX platforms it applies private
+`0700` directory permissions and `0600` staging-file permissions; on Windows it
+removes existing ACL access rules and grants the current user full control
+before writing staging content. If privacy hardening fails, staging creation
+fails closed.
 
 Files written to a user-selected final save location are explicit artifacts, not
 temporary files. Register those paths with `register_explicit_artifact()` if they
-are handled in the same workflow; cleanup skips explicit artifacts and only
-targets manager-owned staging paths under the temp root.
+are handled in the same workflow; cleanup skips explicit artifacts, removes only
+manager-owned staging paths under the temp root, and leaves the shared `work/`
+directory in place.
 
 If a staging file cannot be removed, cleanup logs an error through
 `apps.desktop.api_client` and raises `DesktopTemporaryCleanupError` when cleanup

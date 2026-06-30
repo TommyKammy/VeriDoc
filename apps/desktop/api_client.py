@@ -16,6 +16,8 @@ import re
 import secrets
 import socket
 import ssl
+import subprocess
+import sys
 import threading
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
@@ -194,6 +196,7 @@ class DesktopTemporaryFileManager:
         self._explicit_artifacts: set[Path] = set()
         self._closed = False
         self.root.mkdir(parents=True, exist_ok=True, mode=DESKTOP_TEMP_DIR_MODE)
+        _harden_private_path(self.root, DESKTOP_TEMP_DIR_MODE)
         self._ensure_work_dir()
 
     def __enter__(self) -> "DesktopTemporaryFileManager":
@@ -224,13 +227,29 @@ class DesktopTemporaryFileManager:
         )
         path = self._work_dir / f"{prefix}{safe_filename}"
         self._require_owned_staging_path(path)
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, DESKTOP_TEMP_FILE_MODE)
-        self._owned_paths.append(path)
+        fd = -1
+        created_path = False
         try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, DESKTOP_TEMP_FILE_MODE)
+            created_path = True
+            _harden_private_path(path, DESKTOP_TEMP_FILE_MODE)
+            self._owned_paths.append(path)
             output = os.fdopen(fd, "wb")
             fd = -1
             with output:
                 output.write(content)
+        except Exception:
+            if fd != -1:
+                os.close(fd)
+                fd = -1
+            if created_path and path not in self._owned_paths:
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
+                except OSError as exc:
+                    LOGGER.error("temporary cleanup failed for %s: %s", path, exc)
+            raise
         finally:
             if fd != -1:
                 os.close(fd)
@@ -260,7 +279,6 @@ class DesktopTemporaryFileManager:
         self._closed = True
         if failures:
             raise DesktopTemporaryCleanupError(tuple(failures))
-        self._prune_empty_work_dir()
 
     def _ensure_work_dir(self) -> None:
         work_dir = self._work_dir
@@ -270,7 +288,7 @@ class DesktopTemporaryFileManager:
         if work_dir.is_symlink():
             raise ValueError("temporary work directory must not be a symlink")
         _require_path_inside_root(work_dir.resolve(strict=True), self.root)
-        work_dir.chmod(DESKTOP_TEMP_DIR_MODE)
+        _harden_private_path(work_dir, DESKTOP_TEMP_DIR_MODE)
 
     def _require_owned_staging_path(self, path: Path) -> None:
         _require_path_inside_root(path, self.root)
@@ -282,12 +300,6 @@ class DesktopTemporaryFileManager:
 
     def _is_explicit_artifact(self, path: Path) -> bool:
         return path in self._explicit_artifacts
-
-    def _prune_empty_work_dir(self) -> None:
-        try:
-            self._work_dir.rmdir()
-        except OSError:
-            pass
 
 
 class Transport(Protocol):
@@ -791,6 +803,54 @@ def _require_path_inside_root(path: Path, root: Path) -> None:
         path.relative_to(root)
     except ValueError as exc:
         raise ValueError("temporary path escapes storage root") from exc
+
+
+def _harden_private_path(path: Path, posix_mode: int) -> None:
+    if sys.platform == "win32":
+        _harden_windows_private_acl(path)
+        return
+    path.chmod(posix_mode)
+
+
+def _harden_windows_private_acl(path: Path) -> None:
+    script = r"""
+$ErrorActionPreference = 'Stop'
+$target = Get-Item -LiteralPath $env:VERIDOC_PRIVATE_ACL_PATH -Force
+$acl = Get-Acl -LiteralPath $target.FullName
+$acl.SetAccessRuleProtection($true, $false)
+foreach ($rule in @($acl.Access)) {
+    [void] $acl.RemoveAccessRuleAll($rule)
+}
+$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+$accessRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+    $identity,
+    [System.Security.AccessControl.FileSystemRights]::FullControl,
+    [System.Security.AccessControl.AccessControlType]::Allow
+)
+$acl.SetAccessRule($accessRule)
+Set-Acl -LiteralPath $target.FullName -AclObject $acl
+"""
+    env = os.environ.copy()
+    env["VERIDOC_PRIVATE_ACL_PATH"] = os.fspath(path)
+    try:
+        subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                script,
+            ],
+            check=True,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise OSError(f"failed to secure Windows temporary path ACL: {path}") from exc
 
 
 def _avoid_windows_reserved_download_filename(filename: str) -> str:
