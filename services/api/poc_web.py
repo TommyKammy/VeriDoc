@@ -680,23 +680,14 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             job_event_store = self._job_event_store()
             if source is not None:
                 job_event_store.require_integrity()
-            job = job_queue.get_idempotent_job(
+            job, created_job = job_queue.get_or_create_job(
                 idempotency_key=idempotency_key,
                 filename=filename,
                 mode=mode,
                 source=source,
                 template=requested_template,
+                create_template=lambda: self._job_template_snapshot(request.get("template_id")),
             )
-            created_job = job is None
-            if created_job:
-                template = self._job_template_snapshot(request.get("template_id"))
-                job = job_queue.create_job(
-                    idempotency_key=idempotency_key,
-                    filename=filename,
-                    mode=mode,
-                    source=source,
-                    template=template,
-                )
             if created_job and source is not None:
                 job_event_store.record(
                     _job_event_with_auth_context(

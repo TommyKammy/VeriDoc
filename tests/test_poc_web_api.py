@@ -7,7 +7,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 import subprocess
 import sys
-from threading import Event, Thread
+from threading import Barrier, Event, Thread
 from typing import Optional
 from zipfile import ZIP_DEFLATED, ZipFile
 
@@ -2736,6 +2736,70 @@ def test_poc_http_api_records_desktop_upload_and_download_audit_events() -> None
     assert save_event_body["audit_event"] == events[1]
     assert events[1]["output_sha256"] == hashlib.sha256(b'{"converted": true}').hexdigest()
     assert events[1]["download_filename"] == "batch-record.veridoc-result.json"
+
+
+def test_poc_http_api_records_one_desktop_upload_audit_for_concurrent_idempotent_uploads() -> None:
+    lookup_barrier = Barrier(2)
+
+    class RaceAmplifyingJobQueue(JobQueue):
+        def get_idempotent_job(self, **kwargs):
+            existing = super().get_idempotent_job(**kwargs)
+            if existing is None:
+                lookup_barrier.wait(timeout=5)
+            return existing
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = RaceAmplifyingJobQueue()
+    server.job_event_store = JobAuditEventStore()
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    uploaded_content = b"%PDF-1.7\nqueued source"
+    source_sha256 = hashlib.sha256(uploaded_content).hexdigest()
+    payload = json.dumps(
+        {
+            "idempotency_key": "concurrent-desktop-upload",
+            "filename": "batch-record.pdf",
+            "content_type": "application/pdf",
+            "content_base64": base64.b64encode(uploaded_content).decode("ascii"),
+            "size_bytes": len(uploaded_content),
+            "source_sha256": source_sha256,
+            "mode": "standard",
+        }
+    ).encode("utf-8")
+    headers = {"Content-Type": "application/json", "Content-Length": str(len(payload))}
+    responses: list[tuple[int, dict[str, object]]] = []
+    errors: list[BaseException] = []
+
+    def post_upload() -> None:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        try:
+            connection.request("POST", "/api/jobs", body=payload, headers=headers)
+            response = connection.getresponse()
+            responses.append((response.status, json.loads(response.read().decode("utf-8"))))
+        except BaseException as exc:  # pragma: no cover - assertion below preserves the failure.
+            errors.append(exc)
+        finally:
+            connection.close()
+
+    try:
+        workers = [Thread(target=post_upload), Thread(target=post_upload)]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=10)
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert errors == []
+    assert len(responses) == 2
+    assert [status for status, _body in responses] == [202, 202]
+    job_ids = {body["job"]["job_id"] for _status, body in responses}
+    assert len(job_ids) == 1
+    job_id = job_ids.pop()
+    events = server.job_event_store.list_events(filters={"job_id": job_id})
+    assert [event["action"] for event in events] == ["desktop_upload"]
+    assert events[0]["source_sha256"] == source_sha256
 
 
 def test_poc_http_api_rejects_non_string_job_upload_base64_content() -> None:
