@@ -6,12 +6,14 @@ import hashlib
 import http.client
 import ipaddress
 import json
+import logging
 import math
 import mimetypes
 from numbers import Real
 import os
 from pathlib import Path
 import re
+import secrets
 import socket
 import ssl
 import threading
@@ -37,9 +39,18 @@ class DesktopUploadValidationError(ValueError):
     """Raised when a selected or dropped file cannot be uploaded."""
 
 
+class DesktopTemporaryCleanupError(RuntimeError):
+    """Raised when one or more desktop-owned temporary files cannot be removed."""
+
+    def __init__(self, failures: tuple[Path, ...]) -> None:
+        self.failures = failures
+        super().__init__(f"temporary cleanup failed for {len(failures)} file(s)")
+
+
 MAX_DESKTOP_UPLOAD_BYTES = 2 * 1024 * 1024
 MAX_DOWNLOAD_FILENAME_BYTES = 255
 DOWNLOAD_FILENAME_FALLBACK = "veridoc-result.json"
+DESKTOP_TEMP_WORK_DIR = "work"
 WINDOWS_RESERVED_DOWNLOAD_STEMS = {
     "CON",
     "PRN",
@@ -48,6 +59,8 @@ WINDOWS_RESERVED_DOWNLOAD_STEMS = {
     *(f"COM{index}" for index in range(1, 10)),
     *(f"LPT{index}" for index in range(1, 10)),
 }
+
+LOGGER = logging.getLogger(__name__)
 ALLOWED_UPLOAD_CONTENT_TYPES = {
     ".pdf": "application/pdf",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -162,6 +175,84 @@ class DesktopConnectionSettings:
             credential_store=credential_store,
             transport=transport,
         )
+
+
+class DesktopTemporaryFileManager:
+    """Owns desktop-local staging files and removes them at operation end.
+
+    Use this for upload/download/intermediate files created by the thin client.
+    Files explicitly selected as final save targets should be registered with
+    `register_explicit_artifact` and are not cleanup candidates.
+    """
+
+    def __init__(self, root: str | Path) -> None:
+        self.root = Path(root).expanduser().resolve()
+        self._owned_paths: list[Path] = []
+        self._explicit_artifacts: set[Path] = set()
+        self._closed = False
+        self.root.mkdir(parents=True, exist_ok=True)
+        self._work_dir.mkdir(parents=True, exist_ok=True)
+
+    def __enter__(self) -> "DesktopTemporaryFileManager":
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> bool:
+        try:
+            self.cleanup()
+        except DesktopTemporaryCleanupError:
+            if exc_type is None:
+                raise
+        return False
+
+    @property
+    def _work_dir(self) -> Path:
+        return self.root / DESKTOP_TEMP_WORK_DIR
+
+    def create_staging_file(self, filename: str, content: bytes = b"") -> Path:
+        if self._closed:
+            raise RuntimeError("temporary file manager is already closed")
+        if not isinstance(content, bytes):
+            raise TypeError("content must be bytes")
+        safe_filename = _sanitize_download_filename(filename)
+        path = self._work_dir / f"tmp-{secrets.token_hex(16)}-{safe_filename}"
+        _require_path_inside_root(path, self.root)
+        with path.open("xb") as output:
+            output.write(content)
+        self._owned_paths.append(path)
+        return path
+
+    def register_explicit_artifact(self, path: str | Path) -> Path:
+        explicit_path = Path(path).expanduser().resolve()
+        self._explicit_artifacts.add(explicit_path)
+        return explicit_path
+
+    def cancel(self) -> None:
+        self.cleanup()
+
+    def cleanup(self) -> None:
+        failures: list[Path] = []
+        for path in reversed(self._owned_paths):
+            resolved_path = path.resolve(strict=False)
+            if resolved_path in self._explicit_artifacts:
+                continue
+            try:
+                _require_path_inside_root(resolved_path, self.root)
+                resolved_path.unlink()
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                LOGGER.error("temporary cleanup failed for %s: %s", resolved_path, exc)
+                failures.append(resolved_path)
+        self._closed = True
+        if failures:
+            raise DesktopTemporaryCleanupError(tuple(failures))
+        self._prune_empty_work_dir()
+
+    def _prune_empty_work_dir(self) -> None:
+        try:
+            self._work_dir.rmdir()
+        except OSError:
+            pass
 
 
 class Transport(Protocol):
@@ -658,6 +749,13 @@ def _write_download_file(save_path: Path, body: bytes, safe_filename: str) -> No
         except OSError:
             pass
         raise DesktopApiError(f"downloaded result could not be saved: {safe_filename}") from exc
+
+
+def _require_path_inside_root(path: Path, root: Path) -> None:
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("temporary path escapes storage root") from exc
 
 
 def _avoid_windows_reserved_download_filename(filename: str) -> str:
