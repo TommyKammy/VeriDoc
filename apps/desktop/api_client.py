@@ -8,6 +8,7 @@ import math
 from numbers import Real
 import socket
 import ssl
+import threading
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import SplitResult, urljoin, urlsplit
@@ -270,6 +271,8 @@ def _validate_timeout_seconds(timeout_seconds: object) -> float:
         raise ValueError("timeout_seconds must be a finite positive number") from exc
     if not math.isfinite(value) or value <= 0:
         raise ValueError("timeout_seconds must be finite and greater than 0")
+    if value > threading.TIMEOUT_MAX:
+        raise ValueError("timeout_seconds must not exceed the platform timeout maximum")
     return value
 
 
