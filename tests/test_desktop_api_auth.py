@@ -52,8 +52,9 @@ class JsonResponse:
 
 
 class RawResponse:
-    def __init__(self, body: bytes) -> None:
+    def __init__(self, body: bytes, *, headers: dict[str, str] | None = None) -> None:
         self.body = body
+        self.headers = headers or {}
 
     def __enter__(self):
         return self
@@ -63,6 +64,9 @@ class RawResponse:
 
     def read(self) -> bytes:
         return self.body
+
+    def getheader(self, name: str, default: str | None = None) -> str | None:
+        return self.headers.get(name, default)
 
 
 class IncompleteResponse:
@@ -300,6 +304,63 @@ def test_desktop_api_client_upload_maps_unauthorized_api_response_fail_closed(tm
 
     with pytest.raises(PermissionError, match="API authentication failed"):
         client.upload_document_file(selected_file)
+
+
+def test_desktop_api_client_saves_completed_job_result_to_selected_folder_with_sanitized_collision_name(
+    tmp_path,
+) -> None:
+    destination_dir = tmp_path / "selected-output"
+    destination_dir.mkdir()
+    existing = destination_dir / "unsafe-name.veridoc-result.json"
+    existing.write_text("existing result", encoding="utf-8")
+    download_body = b'{"document_ir":{"document_id":"job-result"}}'
+
+    def download_transport(request: Request, *, timeout: float):
+        return RawResponse(
+            download_body,
+            headers={
+                "Content-Disposition": 'attachment; filename="../unsafe:name.veridoc-result.json"',
+                "Content-Type": "application/json",
+            },
+        )
+
+    client = DesktopApiClient(
+        DesktopApiClientConfig(base_url="http://127.0.0.1:8765"),
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=download_transport,
+    )
+
+    saved_path = client.save_job_result("job-complete-1", destination_dir)
+
+    assert saved_path == destination_dir / "unsafe-name (1).veridoc-result.json"
+    assert saved_path.read_bytes() == download_body
+    assert existing.read_text(encoding="utf-8") == "existing result"
+
+
+def test_desktop_api_client_result_save_uses_authenticated_download_api(tmp_path) -> None:
+    requests: list[Request] = []
+
+    def download_transport(request: Request, *, timeout: float):
+        requests.append(request)
+        return RawResponse(
+            b"{}",
+            headers={"Content-Disposition": 'attachment; filename="result.json"'},
+        )
+
+    client = DesktopApiClient(
+        DesktopApiClientConfig(base_url="http://127.0.0.1:8765"),
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=download_transport,
+    )
+
+    assert client.save_job_result("job-complete-1", tmp_path) == tmp_path / "result.json"
+
+    assert len(requests) == 1
+    request = requests[0]
+    assert request.full_url == "http://127.0.0.1:8765/api/jobs/job-complete-1/result"
+    assert request.get_method() == "GET"
+    assert request.get_header("Authorization") == "Bearer reviewer-token"
+    assert request.get_header("Accept") == "application/octet-stream"
 
 
 def test_desktop_api_client_fetches_job_progress_display_state() -> None:
