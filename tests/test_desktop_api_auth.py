@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import http.client
 import json
 import socket
+import threading
 from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, Request
 
@@ -9,10 +11,12 @@ import pytest
 
 from apps.desktop.api_client import (
     ApiCredentialStore,
+    DesktopConnectionSettings,
     DesktopApiClient,
     DesktopApiClientConfig,
     InvalidApiTokenError,
     MissingApiTokenError,
+    check_desktop_api_connection,
 )
 
 
@@ -42,6 +46,31 @@ class JsonResponse:
         return json.dumps(self.payload).encode("utf-8")
 
 
+class RawResponse:
+    def __init__(self, body: bytes) -> None:
+        self.body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return self.body
+
+
+class IncompleteResponse:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        return None
+
+    def read(self) -> bytes:
+        raise http.client.IncompleteRead(partial=b"{", expected=128)
+
+
 def test_desktop_api_client_attaches_bearer_token_from_credential_store() -> None:
     transport = RecordingTransport()
     client = DesktopApiClient(
@@ -58,6 +87,254 @@ def test_desktop_api_client_attaches_bearer_token_from_credential_store() -> Non
     assert request.get_header("Authorization") == "Bearer reviewer-token"
     assert transport.timeouts == [10.0]
     assert "reviewer-token" not in repr(client.config)
+
+
+def test_desktop_connection_settings_feed_later_api_client_config() -> None:
+    settings = DesktopConnectionSettings(
+        api_base_url="http://127.0.0.1:8765/api",
+        timeout_seconds=2.5,
+    )
+
+    config = settings.to_client_config()
+    client = settings.build_client(
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=RecordingTransport(),
+    )
+
+    assert config.base_url == "http://127.0.0.1:8765/api/"
+    assert config.timeout_seconds == 2.5
+    assert client.config == config
+
+
+def test_desktop_connection_health_check_reports_success() -> None:
+    transport = RecordingTransport(payload={"jobs": [{"job_id": "job-1"}]})
+    settings = DesktopConnectionSettings(api_base_url="http://127.0.0.1:8765")
+
+    result = check_desktop_api_connection(
+        settings,
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=transport,
+    )
+
+    assert result.ok is True
+    assert result.status == "connected"
+    assert result.base_url == "http://127.0.0.1:8765/"
+    assert "接続" in result.message
+    assert len(transport.requests) == 1
+    assert transport.requests[0].full_url == "http://127.0.0.1:8765/api/jobs"
+
+
+@pytest.mark.parametrize(
+    ("base_url", "status", "message"),
+    [
+        ("not a url", "invalid_url", "HTTP(S) URL"),
+        ("http://203.0.113.10:8765", "invalid_url", "local API endpoint"),
+    ],
+)
+def test_desktop_connection_health_check_reports_invalid_url_without_network_dispatch(
+    base_url: str,
+    status: str,
+    message: str,
+) -> None:
+    transport = RecordingTransport()
+    result = check_desktop_api_connection(
+        DesktopConnectionSettings(api_base_url=base_url),
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=transport,
+    )
+
+    assert result.ok is False
+    assert result.status == status
+    assert message in result.message
+    assert transport.requests == []
+
+
+@pytest.mark.parametrize("base_url", [None, 123, True, {"url": "http://127.0.0.1:8765"}])
+def test_desktop_connection_health_check_rejects_non_string_url_without_network_dispatch(
+    base_url: object,
+) -> None:
+    transport = RecordingTransport()
+    result = check_desktop_api_connection(
+        DesktopConnectionSettings(api_base_url=base_url),  # type: ignore[arg-type]
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=transport,
+    )
+
+    assert result.ok is False
+    assert result.status == "invalid_url"
+    assert "base_url" in result.message
+    assert transport.requests == []
+
+
+def test_desktop_connection_settings_can_require_https() -> None:
+    settings = DesktopConnectionSettings(
+        api_base_url="http://127.0.0.1:8765",
+        require_https=True,
+    )
+
+    result = check_desktop_api_connection(
+        settings,
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=RecordingTransport(),
+    )
+
+    assert result.ok is False
+    assert result.status == "https_required"
+    assert "HTTPS" in result.message
+
+
+def test_desktop_connection_health_check_reports_connection_failure() -> None:
+    def failing_transport(request: Request, *, timeout: float):
+        raise URLError("connection refused")
+
+    result = check_desktop_api_connection(
+        DesktopConnectionSettings(api_base_url="http://127.0.0.1:8765"),
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=failing_transport,
+    )
+
+    assert result.ok is False
+    assert result.status == "connection_failed"
+    assert "connection refused" in result.message
+
+
+@pytest.mark.parametrize("timeout_seconds", [0.0, -1.0, 10**400, 1e308, float("nan"), float("inf"), float("-inf")])
+def test_desktop_connection_health_check_rejects_invalid_timeout_without_network_dispatch(
+    timeout_seconds: float,
+) -> None:
+    transport = RecordingTransport()
+
+    result = check_desktop_api_connection(
+        DesktopConnectionSettings(api_base_url="http://127.0.0.1:8765", timeout_seconds=timeout_seconds),
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=transport,
+    )
+
+    assert result.ok is False
+    assert result.status == "invalid_timeout"
+    assert "timeout_seconds" in result.message
+    assert transport.requests == []
+
+
+@pytest.mark.parametrize("timeout_seconds", ["", "5 seconds", None, True])
+def test_desktop_connection_health_check_rejects_nonnumeric_timeout_without_network_dispatch(
+    timeout_seconds: object,
+) -> None:
+    transport = RecordingTransport()
+
+    result = check_desktop_api_connection(
+        DesktopConnectionSettings(api_base_url="http://127.0.0.1:8765", timeout_seconds=timeout_seconds),  # type: ignore[arg-type]
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=transport,
+    )
+
+    assert result.ok is False
+    assert result.status == "invalid_timeout"
+    assert "timeout_seconds" in result.message
+    assert transport.requests == []
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        (b"not json", "valid JSON"),
+        (b"[]", "JSON object"),
+    ],
+)
+def test_desktop_connection_health_check_reports_malformed_api_response(
+    body: bytes,
+    message: str,
+) -> None:
+    def malformed_transport(request: Request, *, timeout: float):
+        return RawResponse(body)
+
+    result = check_desktop_api_connection(
+        DesktopConnectionSettings(api_base_url="http://127.0.0.1:8765"),
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=malformed_transport,
+    )
+
+    assert result.ok is False
+    assert result.status == "request_failed"
+    assert message in result.message
+
+
+def test_desktop_connection_health_check_reports_incomplete_api_response() -> None:
+    def incomplete_transport(request: Request, *, timeout: float):
+        return IncompleteResponse()
+
+    result = check_desktop_api_connection(
+        DesktopConnectionSettings(api_base_url="http://127.0.0.1:8765"),
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=incomplete_transport,
+    )
+
+    assert result.ok is False
+    assert result.status == "request_failed"
+    assert "incomplete" in result.message
+
+
+def test_desktop_connection_health_check_reports_http_protocol_error() -> None:
+    def malformed_transport(request: Request, *, timeout: float):
+        raise http.client.BadStatusLine("not-http")
+
+    result = check_desktop_api_connection(
+        DesktopConnectionSettings(api_base_url="http://127.0.0.1:8765"),
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=malformed_transport,
+    )
+
+    assert result.ok is False
+    assert result.status == "request_failed"
+    assert "transport" in result.message
+
+
+def test_desktop_connection_health_check_reports_real_truncated_http_response() -> None:
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    port = server.getsockname()[1]
+
+    def serve_truncated_response() -> None:
+        with server:
+            connection, _address = server.accept()
+            with connection:
+                connection.recv(4096)
+                connection.sendall(
+                    b"HTTP/1.1 200 OK\r\n"
+                    b"Content-Type: application/json\r\n"
+                    b"Content-Length: 128\r\n"
+                    b"Connection: close\r\n"
+                    b"\r\n"
+                    b"{"
+                )
+
+    thread = threading.Thread(target=serve_truncated_response)
+    thread.start()
+    try:
+        result = check_desktop_api_connection(
+            DesktopConnectionSettings(api_base_url=f"http://127.0.0.1:{port}", timeout_seconds=1.0),
+            credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        )
+    finally:
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+
+    assert result.ok is False
+    assert result.status == "request_failed"
+    assert "incomplete" in result.message
+
+
+def test_desktop_connection_health_check_rejects_wrong_shape_job_list_response() -> None:
+    result = check_desktop_api_connection(
+        DesktopConnectionSettings(api_base_url="http://127.0.0.1:8765"),
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=RecordingTransport(payload={"ok": True}),
+    )
+
+    assert result.ok is False
+    assert result.status == "request_failed"
+    assert "jobs" in result.message
 
 
 @pytest.mark.parametrize("token", [None, "", "   "])

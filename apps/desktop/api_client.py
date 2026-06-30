@@ -4,8 +4,11 @@ from dataclasses import dataclass, field
 import http.client
 import ipaddress
 import json
+import math
+from numbers import Real
 import socket
 import ssl
+import threading
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import SplitResult, urljoin, urlsplit
@@ -22,6 +25,14 @@ class InvalidApiTokenError(RuntimeError):
 
 class DesktopApiError(RuntimeError):
     """Raised when the local API returns a non-auth client error."""
+
+
+@dataclass(frozen=True)
+class DesktopConnectionHealthResult:
+    ok: bool
+    status: str
+    message: str
+    base_url: str = ""
 
 
 class TokenReader(Protocol):
@@ -58,6 +69,9 @@ class DesktopApiClientConfig:
     _tls_server_name: str | None = field(init=False, repr=False, default=None)
 
     def __post_init__(self) -> None:
+        timeout_seconds = _validate_timeout_seconds(self.timeout_seconds)
+        if not isinstance(self.base_url, str):
+            raise ValueError("base_url must be a string")
         normalized = self.base_url.strip()
         if not normalized:
             raise ValueError("base_url is required")
@@ -73,11 +87,42 @@ class DesktopApiClientConfig:
         request_base_urls = tuple(_replace_url_host(parsed, host).geturl().rstrip("/") + "/" for host in local_hosts)
         base_url = request_base_urls[0]
         object.__setattr__(self, "base_url", base_url)
+        object.__setattr__(self, "timeout_seconds", timeout_seconds)
         object.__setattr__(self, "_request_base_urls", request_base_urls)
         if parsed.hostname and parsed.hostname.lower() == "localhost":
             object.__setattr__(self, "_host_header", _host_header(parsed.hostname.lower(), parsed.port))
             if parsed.scheme == "https":
                 object.__setattr__(self, "_tls_server_name", parsed.hostname.lower())
+
+
+@dataclass(frozen=True)
+class DesktopConnectionSettings:
+    """User-configurable API endpoint settings for the desktop shell."""
+
+    api_base_url: str
+    timeout_seconds: float = 10.0
+    require_https: bool = False
+
+    def to_client_config(self) -> DesktopApiClientConfig:
+        config = DesktopApiClientConfig(
+            base_url=self.api_base_url,
+            timeout_seconds=self.timeout_seconds,
+        )
+        if self.require_https and not config.base_url.startswith("https://"):
+            raise ValueError("HTTPS is required for the configured API endpoint")
+        return config
+
+    def build_client(
+        self,
+        *,
+        credential_store: ApiCredentialStore,
+        transport: Transport | None = None,
+    ) -> "DesktopApiClient":
+        return DesktopApiClient(
+            self.to_client_config(),
+            credential_store=credential_store,
+            transport=transport,
+        )
 
 
 class Transport(Protocol):
@@ -98,7 +143,8 @@ class DesktopApiClient:
         self._transport = transport
 
     def list_jobs(self) -> dict[str, Any]:
-        return self._request_json("GET", "/api/jobs")
+        payload = self._request_json("GET", "/api/jobs")
+        return _validate_jobs_response(payload)
 
     def _request_json(self, method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
         token = self._credential_store.require_token()
@@ -118,11 +164,20 @@ class DesktopApiClient:
 
             try:
                 with self._open(request) as response:
-                    return json.loads(response.read().decode("utf-8"))
+                    decoded = json.loads(response.read().decode("utf-8"))
+                    if not isinstance(decoded, dict):
+                        raise DesktopApiError("API response must be a JSON object")
+                    return decoded
             except HTTPError as exc:
                 if exc.code in {401, 403}:
                     raise PermissionError("API authentication failed") from exc
                 raise DesktopApiError(f"API request failed with HTTP {exc.code}") from exc
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                raise DesktopApiError("API response must be valid JSON") from exc
+            except http.client.IncompleteRead as exc:
+                raise DesktopApiError("API response body was incomplete") from exc
+            except http.client.HTTPException as exc:
+                raise DesktopApiError("API response transport failed") from exc
             except URLError as exc:
                 last_url_error = exc
                 if index + 1 < len(request_urls):
@@ -140,6 +195,91 @@ class DesktopApiClient:
             timeout=self.config.timeout_seconds,
             tls_server_name=self.config._tls_server_name,
         )
+
+
+def check_desktop_api_connection(
+    settings: DesktopConnectionSettings,
+    *,
+    credential_store: ApiCredentialStore,
+    transport: Transport | None = None,
+) -> DesktopConnectionHealthResult:
+    try:
+        config = settings.to_client_config()
+    except ValueError as exc:
+        message = str(exc)
+        if "HTTPS is required" in message:
+            status = "https_required"
+        elif "timeout_seconds" in message:
+            status = "invalid_timeout"
+        else:
+            status = "invalid_url"
+        return DesktopConnectionHealthResult(
+            ok=False,
+            status=status,
+            message=f"API接続先設定エラー: {exc}",
+        )
+
+    client = DesktopApiClient(
+        config,
+        credential_store=credential_store,
+        transport=transport,
+    )
+    try:
+        client.list_jobs()
+    except (MissingApiTokenError, InvalidApiTokenError, PermissionError) as exc:
+        return DesktopConnectionHealthResult(
+            ok=False,
+            status="authentication_failed",
+            message=f"API認証に失敗しました: {exc}",
+            base_url=config.base_url,
+        )
+    except DesktopApiError as exc:
+        return DesktopConnectionHealthResult(
+            ok=False,
+            status="request_failed",
+            message=f"API接続確認に失敗しました: {exc}",
+            base_url=config.base_url,
+        )
+    except http.client.HTTPException as exc:
+        return DesktopConnectionHealthResult(
+            ok=False,
+            status="request_failed",
+            message=f"API接続確認に失敗しました: {exc}",
+            base_url=config.base_url,
+        )
+    except (OSError, URLError) as exc:
+        return DesktopConnectionHealthResult(
+            ok=False,
+            status="connection_failed",
+            message=f"API接続に失敗しました: {exc}",
+            base_url=config.base_url,
+        )
+    return DesktopConnectionHealthResult(
+        ok=True,
+        status="connected",
+        message="API接続に成功しました。",
+        base_url=config.base_url,
+    )
+
+
+def _validate_timeout_seconds(timeout_seconds: object) -> float:
+    if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, Real):
+        raise ValueError("timeout_seconds must be a finite positive number")
+    try:
+        value = float(timeout_seconds)
+    except (OverflowError, ValueError) as exc:
+        raise ValueError("timeout_seconds must be a finite positive number") from exc
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError("timeout_seconds must be finite and greater than 0")
+    if value > threading.TIMEOUT_MAX:
+        raise ValueError("timeout_seconds must not exceed the platform timeout maximum")
+    return value
+
+
+def _validate_jobs_response(payload: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(payload.get("jobs"), list):
+        raise DesktopApiError("API jobs response must include a jobs array")
+    return payload
 
 
 def _urlopen_transport(request: Request, *, timeout: float, tls_server_name: str | None = None) -> Any:
