@@ -6,7 +6,9 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ADR_PATH = REPO_ROOT / "adr" / "ADR-003-windows-desktop-technology.md"
+INSTALLER_ADR_PATH = REPO_ROOT / "adr" / "ADR-004-desktop-distribution-update.md"
 DESKTOP_PATH = REPO_ROOT / "apps" / "desktop" / "README.md"
+PACKAGE_DRY_RUN_PATH = REPO_ROOT / "scripts" / "desktop_package_dry_run.py"
 
 
 class DesktopTechnologyDecisionDocsTest(unittest.TestCase):
@@ -81,6 +83,77 @@ class DesktopTechnologyDecisionDocsTest(unittest.TestCase):
         forbidden_fragments = ("/" + "Users" + "/", "C:" + "\\Users" + "\\")
         for fragment in forbidden_fragments:
             self.assertNotIn(fragment, readme)
+
+    def test_desktop_distribution_and_update_decision_is_recorded(self) -> None:
+        self.assertTrue(
+            INSTALLER_ADR_PATH.is_file(),
+            msg=(
+                "missing desktop distribution/update ADR: "
+                f"{INSTALLER_ADR_PATH.relative_to(REPO_ROOT)}"
+            ),
+        )
+
+        adr = INSTALLER_ADR_PATH.read_text(encoding="utf-8")
+        adr_flat = " ".join(adr.split())
+
+        for required_heading in (
+            "# ADR-004: Desktop Distribution and Update",
+            "## Candidate Comparison",
+            "## Decision",
+            "## Non-Selected Options",
+            "## Minimum Package Procedure",
+            "## Open Release Gates",
+            "## Verification",
+        ):
+            self.assertIn(required_heading, adr)
+
+        for required_text in (
+            "Tauri v2 NSIS installer",
+            "Tauri updater",
+            "MSIX",
+            "MSI",
+            "ClickOnce",
+            "Windows 10 22H2 or later",
+            "scripts/desktop_package_dry_run.py --dry-run",
+            "code-signing certificate",
+            "update signing keys",
+            "rollback",
+            "managed endpoint distribution",
+        ):
+            self.assertIn(required_text, adr)
+
+        for required_text in (
+            "MSIX is not selected",
+            "MSI is not selected",
+            "ClickOnce is not selected",
+        ):
+            self.assertIn(required_text, adr_flat)
+
+        forbidden_fragments = ("/" + "Users" + "/", "C:" + "\\Users" + "\\")
+        for fragment in forbidden_fragments:
+            self.assertNotIn(fragment, adr)
+
+    def test_desktop_package_dry_run_script_documents_minimal_package_path(self) -> None:
+        self.assertTrue(
+            PACKAGE_DRY_RUN_PATH.is_file(),
+            msg=f"missing package dry-run script: {PACKAGE_DRY_RUN_PATH.relative_to(REPO_ROOT)}",
+        )
+
+        script = PACKAGE_DRY_RUN_PATH.read_text(encoding="utf-8")
+
+        for required_text in (
+            "tauri build --bundles nsis",
+            "TAURI_SIGNING_PRIVATE_KEY",
+            "TAURI_SIGNING_PRIVATE_KEY_PASSWORD",
+            "VERIDOC_DESKTOP_UPDATE_ENDPOINT",
+            "apps/desktop",
+            "dry-run",
+        ):
+            self.assertIn(required_text, script)
+
+        forbidden_fragments = ("/" + "Users" + "/", "C:" + "\\Users" + "\\")
+        for fragment in forbidden_fragments:
+            self.assertNotIn(fragment, script)
 
 
 if __name__ == "__main__":

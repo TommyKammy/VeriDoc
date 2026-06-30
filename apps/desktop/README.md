@@ -91,11 +91,37 @@ is the primary operation. When another workflow error is already being raised,
 the cleanup failure is still logged so the desktop shell can surface or collect
 it without masking the original failure.
 
+## Distribution and Update
+
+ADR-004 selects a Tauri v2 NSIS installer with Tauri updater as the Phase5
+distribution and update direction. MSIX, MSI, and ClickOnce are not selected for
+the initial desktop thin client.
+
+The real package command is expected to be:
+
+```bash
+npm --prefix apps/desktop run tauri -- build --bundles nsis
+```
+
+Until the Tauri scaffold and Windows packaging runner are committed, local CI
+uses the dry-run verifier:
+
+```bash
+python3 scripts/desktop_package_dry_run.py --dry-run
+```
+
+Production packaging must source signing material from trusted CI secrets, not
+from checked-in files or placeholder values. The unresolved release gates are
+`TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, an HTTPS
+`VERIDOC_DESKTOP_UPDATE_ENDPOINT`, rollback policy, and managed endpoint
+distribution for Windows 10 22H2 or later and Windows 11 devices.
+
 ## Initial Local Checks
 
 The documentation-only boundary introduced by P5-01 is verified with:
 
 ```bash
 python3 -m unittest tests.test_desktop_technology_decision
+python3 scripts/desktop_package_dry_run.py --dry-run
 python3 scripts/ci/repo_hygiene.py
 ```
