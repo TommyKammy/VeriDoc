@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass, field
+import hashlib
 import http.client
 import ipaddress
 import json
 import math
+import mimetypes
 from numbers import Real
+from pathlib import Path
 import socket
 import ssl
 import threading
@@ -25,6 +29,18 @@ class InvalidApiTokenError(RuntimeError):
 
 class DesktopApiError(RuntimeError):
     """Raised when the local API returns a non-auth client error."""
+
+
+class DesktopUploadValidationError(ValueError):
+    """Raised when a selected or dropped file cannot be uploaded."""
+
+
+MAX_DESKTOP_UPLOAD_BYTES = 2 * 1024 * 1024
+ALLOWED_UPLOAD_CONTENT_TYPES = {
+    ".pdf": "application/pdf",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+}
 
 
 @dataclass(frozen=True)
@@ -145,6 +161,47 @@ class DesktopApiClient:
     def list_jobs(self) -> dict[str, Any]:
         payload = self._request_json("GET", "/api/jobs")
         return _validate_jobs_response(payload)
+
+    def upload_document_file(
+        self,
+        file_path: str | Path,
+        *,
+        content_type: str | None = None,
+        mode: str = "standard",
+        template_id: str | None = None,
+    ) -> dict[str, Any]:
+        request = _upload_request_from_file(
+            file_path,
+            content_type=content_type,
+            mode=mode,
+            template_id=template_id,
+        )
+        payload = self._request_json("POST", "/api/jobs", request)
+        return _validate_job_response(payload)
+
+    def upload_document_files(
+        self,
+        file_paths: list[str | Path] | tuple[str | Path, ...],
+        *,
+        content_types: list[str | None] | tuple[str | None, ...] | None = None,
+        mode: str = "standard",
+        template_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if not file_paths:
+            raise DesktopUploadValidationError("at least one file is required")
+        if content_types is not None and len(content_types) != len(file_paths):
+            raise DesktopUploadValidationError("content_types length must match file_paths")
+        job_refs: list[dict[str, Any]] = []
+        for index, file_path in enumerate(file_paths):
+            job_refs.append(
+                self.upload_document_file(
+                    file_path,
+                    content_type=None if content_types is None else content_types[index],
+                    mode=mode,
+                    template_id=template_id,
+                )
+            )
+        return job_refs
 
     def _request_json(self, method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
         token = self._credential_store.require_token()
@@ -280,6 +337,83 @@ def _validate_jobs_response(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(payload.get("jobs"), list):
         raise DesktopApiError("API jobs response must include a jobs array")
     return payload
+
+
+def _validate_job_response(payload: dict[str, Any]) -> dict[str, Any]:
+    job = payload.get("job")
+    if not isinstance(job, dict):
+        raise DesktopApiError("API job response must include a job object")
+    if not isinstance(job.get("job_id"), str) or not job["job_id"].strip():
+        raise DesktopApiError("API job response must include a job_id")
+    return job
+
+
+def _upload_request_from_file(
+    file_path: str | Path,
+    *,
+    content_type: str | None,
+    mode: str,
+    template_id: str | None,
+) -> dict[str, Any]:
+    path = Path(file_path)
+    filename = path.name
+    if not filename:
+        raise DesktopUploadValidationError("filename is required")
+    expected_content_type = _expected_upload_content_type(path)
+    resolved_content_type = _validated_upload_content_type(
+        filename=filename,
+        expected_content_type=expected_content_type,
+        supplied_content_type=content_type,
+    )
+    try:
+        size_bytes = path.stat().st_size
+    except OSError as exc:
+        raise DesktopUploadValidationError(f"selected file cannot be read: {filename}") from exc
+    if size_bytes > MAX_DESKTOP_UPLOAD_BYTES:
+        raise DesktopUploadValidationError("selected file exceeds the upload size limit")
+    try:
+        content = path.read_bytes()
+    except OSError as exc:
+        raise DesktopUploadValidationError(f"selected file cannot be read: {filename}") from exc
+    content_sha256 = hashlib.sha256(content).hexdigest()
+    request: dict[str, Any] = {
+        "filename": filename,
+        "content_type": resolved_content_type,
+        "content_base64": base64.b64encode(content).decode("ascii"),
+        "size_bytes": size_bytes,
+        "source_sha256": content_sha256,
+        "idempotency_key": f"upload:{content_sha256}",
+        "mode": mode,
+    }
+    if template_id is not None:
+        request["template_id"] = template_id
+    return request
+
+
+def _expected_upload_content_type(path: Path) -> str:
+    suffix = path.suffix.lower()
+    expected = ALLOWED_UPLOAD_CONTENT_TYPES.get(suffix)
+    if expected is None:
+        allowed = ", ".join(sorted(ALLOWED_UPLOAD_CONTENT_TYPES))
+        raise DesktopUploadValidationError(f"unsupported file type; allowed extensions: {allowed}")
+    guessed, _encoding = mimetypes.guess_type(path.name)
+    if guessed is not None and guessed != expected:
+        raise DesktopUploadValidationError("selected file MIME type does not match its extension")
+    return expected
+
+
+def _validated_upload_content_type(
+    *,
+    filename: str,
+    expected_content_type: str,
+    supplied_content_type: str | None,
+) -> str:
+    if supplied_content_type is None or not supplied_content_type.strip():
+        return expected_content_type
+    normalized = supplied_content_type.split(";", 1)[0].strip().lower()
+    if normalized != expected_content_type:
+        raise DesktopUploadValidationError(f"selected file MIME type is not allowed: {filename}")
+    return normalized
 
 
 def _urlopen_transport(request: Request, *, timeout: float, tls_server_name: str | None = None) -> Any:

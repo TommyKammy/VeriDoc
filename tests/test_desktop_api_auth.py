@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import http.client
 import json
 import socket
@@ -14,7 +16,9 @@ from apps.desktop.api_client import (
     DesktopConnectionSettings,
     DesktopApiClient,
     DesktopApiClientConfig,
+    DesktopUploadValidationError,
     InvalidApiTokenError,
+    MAX_DESKTOP_UPLOAD_BYTES,
     MissingApiTokenError,
     check_desktop_api_connection,
 )
@@ -71,6 +75,16 @@ class IncompleteResponse:
         raise http.client.IncompleteRead(partial=b"{", expected=128)
 
 
+class SequenceTransport:
+    def __init__(self, payloads: list[dict[str, object]]) -> None:
+        self.requests: list[Request] = []
+        self.payloads = list(payloads)
+
+    def __call__(self, request: Request, *, timeout: float):
+        self.requests.append(request)
+        return JsonResponse(self.payloads.pop(0))
+
+
 def test_desktop_api_client_attaches_bearer_token_from_credential_store() -> None:
     transport = RecordingTransport()
     client = DesktopApiClient(
@@ -87,6 +101,145 @@ def test_desktop_api_client_attaches_bearer_token_from_credential_store() -> Non
     assert request.get_header("Authorization") == "Bearer reviewer-token"
     assert transport.timeouts == [10.0]
     assert "reviewer-token" not in repr(client.config)
+
+
+def test_desktop_api_client_uploads_selected_pdf_and_returns_job_reference(tmp_path) -> None:
+    selected_file = tmp_path / "batch-record.pdf"
+    selected_file.write_bytes(b"%PDF-1.7\nfocused upload")
+    transport = RecordingTransport(
+        payload={
+            "job": {
+                "job_id": "job-upload-1",
+                "status": "queued",
+                "filename": "batch-record.pdf",
+            }
+        }
+    )
+    client = DesktopApiClient(
+        DesktopApiClientConfig(base_url="http://127.0.0.1:8765"),
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=transport,
+    )
+
+    job_ref = client.upload_document_file(selected_file)
+
+    assert job_ref["job_id"] == "job-upload-1"
+    assert job_ref["status"] == "queued"
+    assert len(transport.requests) == 1
+    request = transport.requests[0]
+    assert request.full_url == "http://127.0.0.1:8765/api/jobs"
+    assert request.get_method() == "POST"
+    assert request.get_header("Authorization") == "Bearer reviewer-token"
+    assert request.get_header("Content-type") == "application/json"
+    body = json.loads(request.data.decode("utf-8"))
+    source_sha256 = hashlib.sha256(b"%PDF-1.7\nfocused upload").hexdigest()
+    assert body == {
+        "filename": "batch-record.pdf",
+        "content_type": "application/pdf",
+        "content_base64": base64.b64encode(b"%PDF-1.7\nfocused upload").decode("ascii"),
+        "size_bytes": selected_file.stat().st_size,
+        "source_sha256": source_sha256,
+        "idempotency_key": f"upload:{source_sha256}",
+        "mode": "standard",
+    }
+
+
+def test_desktop_api_client_uploads_multiple_selected_files_in_order(tmp_path) -> None:
+    pdf_file = tmp_path / "batch-record.pdf"
+    xlsx_file = tmp_path / "batch-metrics.xlsx"
+    pdf_file.write_bytes(b"%PDF-1.7\nfocused upload")
+    xlsx_file.write_bytes(b"PK\x03\x04xlsx")
+    transport = SequenceTransport(
+        [
+            {"job": {"job_id": "job-pdf", "status": "queued", "filename": pdf_file.name}},
+            {"job": {"job_id": "job-xlsx", "status": "queued", "filename": xlsx_file.name}},
+        ]
+    )
+    client = DesktopApiClient(
+        DesktopApiClientConfig(base_url="http://127.0.0.1:8765"),
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=transport,
+    )
+
+    job_refs = client.upload_document_files([pdf_file, xlsx_file])
+
+    assert [job_ref["job_id"] for job_ref in job_refs] == ["job-pdf", "job-xlsx"]
+    assert len(transport.requests) == 2
+    assert [json.loads(request.data.decode("utf-8"))["filename"] for request in transport.requests] == [
+        "batch-record.pdf",
+        "batch-metrics.xlsx",
+    ]
+
+
+def test_desktop_api_client_rejects_unsupported_upload_type_before_dispatch(tmp_path) -> None:
+    selected_file = tmp_path / "notes.txt"
+    selected_file.write_text("not an accepted desktop upload")
+    transport = RecordingTransport()
+    client = DesktopApiClient(
+        DesktopApiClientConfig(base_url="http://127.0.0.1:8765"),
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=transport,
+    )
+
+    with pytest.raises(DesktopUploadValidationError, match="unsupported file type"):
+        client.upload_document_file(selected_file)
+
+    assert transport.requests == []
+
+
+def test_desktop_api_client_rejects_mismatched_upload_mime_before_dispatch(tmp_path) -> None:
+    selected_file = tmp_path / "batch-record.pdf"
+    selected_file.write_bytes(b"%PDF-1.7\nfocused upload")
+    transport = RecordingTransport()
+    client = DesktopApiClient(
+        DesktopApiClientConfig(base_url="http://127.0.0.1:8765"),
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=transport,
+    )
+
+    with pytest.raises(DesktopUploadValidationError, match="MIME"):
+        client.upload_document_file(selected_file, content_type="text/plain")
+
+    assert transport.requests == []
+
+
+def test_desktop_api_client_rejects_oversized_upload_before_dispatch(tmp_path) -> None:
+    selected_file = tmp_path / "large-record.pdf"
+    selected_file.write_bytes(b"0" * (MAX_DESKTOP_UPLOAD_BYTES + 1))
+    transport = RecordingTransport()
+    client = DesktopApiClient(
+        DesktopApiClientConfig(base_url="http://127.0.0.1:8765"),
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=transport,
+    )
+
+    with pytest.raises(DesktopUploadValidationError, match="size limit"):
+        client.upload_document_file(selected_file)
+
+    assert transport.requests == []
+
+
+def test_desktop_api_client_upload_maps_unauthorized_api_response_fail_closed(tmp_path) -> None:
+    selected_file = tmp_path / "batch-record.pdf"
+    selected_file.write_bytes(b"%PDF-1.7\nfocused upload")
+
+    def unauthorized_transport(request: Request, *, timeout: float):
+        raise HTTPError(
+            request.full_url,
+            401,
+            "Unauthorized",
+            hdrs=None,
+            fp=None,
+        )
+
+    client = DesktopApiClient(
+        DesktopApiClientConfig(base_url="http://127.0.0.1:8765"),
+        credential_store=ApiCredentialStore(read_token=lambda: "wrong-token"),
+        transport=unauthorized_transport,
+    )
+
+    with pytest.raises(PermissionError, match="API authentication failed"):
+        client.upload_document_file(selected_file)
 
 
 def test_desktop_connection_settings_feed_later_api_client_config() -> None:
