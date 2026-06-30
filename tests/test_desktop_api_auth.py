@@ -198,7 +198,7 @@ def test_desktop_connection_health_check_reports_connection_failure() -> None:
     assert "connection refused" in result.message
 
 
-@pytest.mark.parametrize("timeout_seconds", [0.0, -1.0, float("nan"), float("inf"), float("-inf")])
+@pytest.mark.parametrize("timeout_seconds", [0.0, -1.0, 10**400, float("nan"), float("inf"), float("-inf")])
 def test_desktop_connection_health_check_rejects_invalid_timeout_without_network_dispatch(
     timeout_seconds: float,
 ) -> None:

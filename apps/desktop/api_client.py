@@ -264,7 +264,10 @@ def check_desktop_api_connection(
 def _validate_timeout_seconds(timeout_seconds: object) -> float:
     if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, Real):
         raise ValueError("timeout_seconds must be a finite positive number")
-    value = float(timeout_seconds)
+    try:
+        value = float(timeout_seconds)
+    except (OverflowError, ValueError) as exc:
+        raise ValueError("timeout_seconds must be a finite positive number") from exc
     if not math.isfinite(value) or value <= 0:
         raise ValueError("timeout_seconds must be finite and greater than 0")
     return value
