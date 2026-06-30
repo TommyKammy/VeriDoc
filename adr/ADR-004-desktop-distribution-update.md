@@ -27,8 +27,7 @@ Selected distribution path: Tauri v2 NSIS installer with Tauri updater.
 The minimum build/package command is:
 
 ```bash
-# Run only after the updater-ready gates below pass.
-npm --prefix apps/desktop run tauri -- build --bundles nsis
+npm --prefix apps/desktop run tauri -- build --bundles nsis # after updater-ready gates pass
 ```
 
 Until the Tauri scaffold and package manager are committed, local and GitHub CI
