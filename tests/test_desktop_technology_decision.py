@@ -1,12 +1,28 @@
 from __future__ import annotations
 
+import importlib.util
+import subprocess
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ADR_PATH = REPO_ROOT / "adr" / "ADR-003-windows-desktop-technology.md"
+INSTALLER_ADR_PATH = REPO_ROOT / "adr" / "ADR-004-desktop-distribution-update.md"
 DESKTOP_PATH = REPO_ROOT / "apps" / "desktop" / "README.md"
+PACKAGE_DRY_RUN_PATH = REPO_ROOT / "scripts" / "desktop_package_dry_run.py"
+CI_WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+
+spec = importlib.util.spec_from_file_location(
+    "desktop_package_dry_run",
+    PACKAGE_DRY_RUN_PATH,
+)
+assert spec is not None
+desktop_package_dry_run = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(desktop_package_dry_run)
 
 
 class DesktopTechnologyDecisionDocsTest(unittest.TestCase):
@@ -81,6 +97,190 @@ class DesktopTechnologyDecisionDocsTest(unittest.TestCase):
         forbidden_fragments = ("/" + "Users" + "/", "C:" + "\\Users" + "\\")
         for fragment in forbidden_fragments:
             self.assertNotIn(fragment, readme)
+
+    def test_desktop_distribution_and_update_decision_is_recorded(self) -> None:
+        self.assertTrue(
+            INSTALLER_ADR_PATH.is_file(),
+            msg=(
+                "missing desktop distribution/update ADR: "
+                f"{INSTALLER_ADR_PATH.relative_to(REPO_ROOT)}"
+            ),
+        )
+
+        adr = INSTALLER_ADR_PATH.read_text(encoding="utf-8")
+        adr_flat = " ".join(adr.split())
+
+        for required_heading in (
+            "# ADR-004: Desktop Distribution and Update",
+            "## Candidate Comparison",
+            "## Decision",
+            "## Non-Selected Options",
+            "## Minimum Package Procedure",
+            "## Open Release Gates",
+            "## Verification",
+        ):
+            self.assertIn(required_heading, adr)
+
+        for required_text in (
+            "Tauri v2 NSIS installer",
+            "Tauri updater",
+            "MSIX",
+            "MSI",
+            "ClickOnce",
+            "Windows 10 22H2 or later",
+            "scripts/desktop_package_dry_run.py --dry-run",
+            "code-signing certificate",
+            "update signing keys",
+            "tauri-plugin-updater",
+            "lib.rs",
+            "bundle.createUpdaterArtifacts",
+            "plugins.updater.endpoints",
+            "plugins.updater.pubkey",
+            "src-tauri/capabilities/default.json",
+            "updater:default",
+            "check()",
+            "bundle.windows.signCommand",
+            "Windows installer code-signing certificate",
+            "rollback",
+            "version_comparator",
+            "managed endpoint distribution",
+        ):
+            self.assertIn(required_text, adr)
+
+        for required_text in (
+            "MSIX is not selected",
+            "MSI is not selected",
+            "ClickOnce is not selected",
+        ):
+            self.assertIn(required_text, adr_flat)
+
+        forbidden_fragments = ("/" + "Users" + "/", "C:" + "\\Users" + "\\")
+        for fragment in forbidden_fragments:
+            self.assertNotIn(fragment, adr)
+
+    def test_desktop_package_dry_run_script_documents_minimal_package_path(self) -> None:
+        self.assertTrue(
+            PACKAGE_DRY_RUN_PATH.is_file(),
+            msg=f"missing package dry-run script: {PACKAGE_DRY_RUN_PATH.relative_to(REPO_ROOT)}",
+        )
+
+        script = PACKAGE_DRY_RUN_PATH.read_text(encoding="utf-8")
+
+        for required_text in (
+            "tauri build --bundles nsis",
+            "TAURI_SIGNING_PRIVATE_KEY",
+            "TAURI_SIGNING_PRIVATE_KEY_PASSWORD",
+            "VERIDOC_DESKTOP_UPDATE_ENDPOINT",
+            "tauri-plugin-updater",
+            "lib.rs",
+            "bundle.createUpdaterArtifacts",
+            "plugins.updater.endpoints",
+            "plugins.updater.pubkey",
+            "src-tauri/capabilities/default.json",
+            "updater:default",
+            "check()",
+            "bundle.windows.signCommand",
+            "Windows installer code-signing certificate",
+            "version_comparator",
+            "apps/desktop",
+            "dry-run",
+        ):
+            self.assertIn(required_text, script)
+
+        forbidden_fragments = ("/" + "Users" + "/", "C:" + "\\Users" + "\\")
+        for fragment in forbidden_fragments:
+            self.assertNotIn(fragment, script)
+
+    def test_ci_runs_desktop_package_dry_run(self) -> None:
+        self.assertTrue(
+            CI_WORKFLOW_PATH.is_file(),
+            msg=f"missing CI workflow: {CI_WORKFLOW_PATH.relative_to(REPO_ROOT)}",
+        )
+
+        workflow = CI_WORKFLOW_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("Run desktop package dry-run", workflow)
+        self.assertIn("python3 scripts/desktop_package_dry_run.py --dry-run", workflow)
+        self.assertLess(
+            workflow.index("python3 scripts/desktop_package_dry_run.py --dry-run"),
+            workflow.index("python -m pytest"),
+        )
+
+        forbidden_fragments = ("/" + "Users" + "/", "C:" + "\\Users" + "\\")
+        for fragment in forbidden_fragments:
+            self.assertNotIn(fragment, workflow)
+
+    def test_desktop_package_dry_run_executes_under_python_checks(self) -> None:
+        proc = subprocess.run(
+            [sys.executable, "scripts/desktop_package_dry_run.py", "--dry-run"],
+            cwd=REPO_ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+        self.assertEqual(
+            proc.returncode,
+            0,
+            msg=proc.stdout + proc.stderr,
+        )
+
+    def test_desktop_package_dry_run_matches_required_markers_exactly(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            doc_path = Path(tmp_dir) / "package-gates.md"
+            doc_path.write_text(
+                "TAURI_SIGNING_PRIVATE_KEY_PASSWORD\n"
+                "VERIDOC_DESKTOP_UPDATE_ENDPOINT\n",
+                encoding="utf-8",
+            )
+
+            failures = desktop_package_dry_run.validate_document(
+                doc_path,
+                (
+                    "TAURI_SIGNING_PRIVATE_KEY",
+                    "TAURI_SIGNING_PRIVATE_KEY_PASSWORD",
+                    "VERIDOC_DESKTOP_UPDATE_ENDPOINT",
+                ),
+            )
+
+        self.assertEqual(
+            failures,
+            [f"{doc_path} missing term: TAURI_SIGNING_PRIVATE_KEY"],
+        )
+
+    def test_desktop_package_dry_run_rejects_missing_updater_package_gates(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            doc_path = Path(tmp_dir) / "package-gates.md"
+            doc_path.write_text(
+                "bundle.createUpdaterArtifactsExtra\n"
+                "plugins.updater.endpointsExtra\n"
+                "plugins.updater.pubkeyExtra\n"
+                "check()Extra\n",
+                encoding="utf-8",
+            )
+
+            failures = desktop_package_dry_run.validate_document(
+                doc_path,
+                (
+                    "bundle.createUpdaterArtifacts",
+                    "plugins.updater.endpoints",
+                    "plugins.updater.pubkey",
+                    "check()",
+                ),
+            )
+
+        self.assertEqual(
+            failures,
+            [
+                f"{doc_path} missing term: bundle.createUpdaterArtifacts",
+                f"{doc_path} missing term: plugins.updater.endpoints",
+                f"{doc_path} missing term: plugins.updater.pubkey",
+                f"{doc_path} missing term: check()",
+            ],
+        )
 
 
 if __name__ == "__main__":
