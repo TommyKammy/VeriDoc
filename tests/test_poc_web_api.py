@@ -7,7 +7,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 import subprocess
 import sys
-from threading import Barrier, Event, Thread
+from threading import Barrier, Event, Lock, Thread
 from typing import Optional
 from zipfile import ZIP_DEFLATED, ZipFile
 
@@ -2767,11 +2767,16 @@ def test_poc_http_api_records_desktop_upload_and_download_audit_events() -> None
 
 def test_poc_http_api_records_one_desktop_upload_audit_for_concurrent_idempotent_uploads() -> None:
     lookup_barrier = Barrier(2)
+    created_flags: list[bool] = []
+    created_flags_lock = Lock()
 
     class RaceAmplifyingJobQueue(JobQueue):
         def get_or_create_job(self, **kwargs):
             lookup_barrier.wait(timeout=5)
-            return super().get_or_create_job(**kwargs)
+            job, created = super().get_or_create_job(**kwargs)
+            with created_flags_lock:
+                created_flags.append(created)
+            return job, created
 
         def get_idempotent_job(self, **kwargs):
             existing = super().get_idempotent_job(**kwargs)
@@ -2825,6 +2830,7 @@ def test_poc_http_api_records_one_desktop_upload_audit_for_concurrent_idempotent
     assert errors == []
     assert len(responses) == 2
     assert [status for status, _body in responses] == [202, 202]
+    assert sorted(created_flags) == [False, True]
     job_ids = {body["job"]["job_id"] for _status, body in responses}
     assert len(job_ids) == 1
     job_id = job_ids.pop()
