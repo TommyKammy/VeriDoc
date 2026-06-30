@@ -15,7 +15,7 @@ import ssl
 import threading
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
-from urllib.parse import SplitResult, urljoin, urlsplit
+from urllib.parse import SplitResult, quote, urljoin, urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 
@@ -49,6 +49,17 @@ class DesktopConnectionHealthResult:
     status: str
     message: str
     base_url: str = ""
+
+
+@dataclass(frozen=True)
+class DesktopJobDisplayState:
+    job_id: str
+    api_status: str
+    display_status: str
+    progress_percent: int
+    warning_count: int
+    error_message: str | None
+    is_terminal: bool
 
 
 class TokenReader(Protocol):
@@ -161,6 +172,12 @@ class DesktopApiClient:
     def list_jobs(self) -> dict[str, Any]:
         payload = self._request_json("GET", "/api/jobs")
         return _validate_jobs_response(payload)
+
+    def get_job_progress(self, job_id: str) -> DesktopJobDisplayState:
+        job_id = _validate_job_id(job_id)
+        payload = self._request_json("GET", f"/api/jobs/{quote(job_id, safe='')}")
+        job = _validate_job_response(payload)
+        return _job_display_state(job)
 
     def upload_document_file(
         self,
@@ -349,6 +366,82 @@ def _validate_job_response(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(job.get("job_id"), str) or not job["job_id"].strip():
         raise DesktopApiError("API job response must include a job_id")
     return job
+
+
+def _validate_job_id(job_id: str) -> str:
+    if not isinstance(job_id, str):
+        raise ValueError("job_id must be a string")
+    normalized = job_id.strip()
+    if not normalized:
+        raise ValueError("job_id is required")
+    return normalized
+
+
+def _job_display_state(job: dict[str, Any]) -> DesktopJobDisplayState:
+    job_id = _validate_job_id(job["job_id"])
+    api_status = _string_field(job, "status")
+    if api_status not in {"queued", "running", "succeeded", "failed"}:
+        raise DesktopApiError("API job response includes an unsupported job status")
+    display_status = _job_display_status(job, api_status)
+    return DesktopJobDisplayState(
+        job_id=job_id,
+        api_status=api_status,
+        display_status=display_status,
+        progress_percent=_progress_percent(job, api_status),
+        warning_count=_warning_count(job),
+        error_message=_optional_string(job.get("error")),
+        is_terminal=display_status in {"review_required", "completed", "failed", "blocked"},
+    )
+
+
+def _job_display_status(job: dict[str, Any], api_status: str) -> str:
+    raw_display_status = job.get("display_status")
+    if isinstance(raw_display_status, str) and raw_display_status.strip():
+        display_status = raw_display_status.strip()
+    elif api_status == "succeeded":
+        display_status = "completed"
+    else:
+        display_status = api_status
+    if display_status == "requires_review":
+        display_status = "review_required"
+    if display_status not in {"queued", "running", "review_required", "completed", "failed", "blocked"}:
+        raise DesktopApiError("API job response includes an unsupported display status")
+    return display_status
+
+
+def _progress_percent(job: dict[str, Any], api_status: str) -> int:
+    raw_progress = job.get("progress_percent")
+    if raw_progress is None:
+        return {"queued": 0, "running": 50, "succeeded": 100, "failed": 100}.get(api_status, 0)
+    if isinstance(raw_progress, bool) or not isinstance(raw_progress, int):
+        raise DesktopApiError("API job response progress_percent must be an integer")
+    if raw_progress < 0 or raw_progress > 100:
+        raise DesktopApiError("API job response progress_percent must be between 0 and 100")
+    return raw_progress
+
+
+def _warning_count(job: dict[str, Any]) -> int:
+    raw_warning_count = job.get("warning_count", 0)
+    if isinstance(raw_warning_count, bool) or not isinstance(raw_warning_count, int):
+        raise DesktopApiError("API job response warning_count must be an integer")
+    if raw_warning_count < 0:
+        raise DesktopApiError("API job response warning_count must not be negative")
+    return raw_warning_count
+
+
+def _string_field(mapping: dict[str, Any], field_name: str) -> str:
+    value = mapping.get(field_name)
+    if not isinstance(value, str) or not value.strip():
+        raise DesktopApiError(f"API job response must include {field_name}")
+    return value.strip()
+
+
+def _optional_string(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise DesktopApiError("API job response error must be a string or null")
+    return value
 
 
 def _upload_request_from_file(
