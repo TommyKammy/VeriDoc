@@ -186,6 +186,24 @@ def test_desktop_connection_health_check_rejects_invalid_timeout_without_network
     assert transport.requests == []
 
 
+@pytest.mark.parametrize("timeout_seconds", ["", "5 seconds", None, True])
+def test_desktop_connection_health_check_rejects_nonnumeric_timeout_without_network_dispatch(
+    timeout_seconds: object,
+) -> None:
+    transport = RecordingTransport()
+
+    result = check_desktop_api_connection(
+        DesktopConnectionSettings(api_base_url="http://127.0.0.1:8765", timeout_seconds=timeout_seconds),  # type: ignore[arg-type]
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=transport,
+    )
+
+    assert result.ok is False
+    assert result.status == "invalid_timeout"
+    assert "timeout_seconds" in result.message
+    assert transport.requests == []
+
+
 @pytest.mark.parametrize(
     ("body", "message"),
     [
@@ -209,6 +227,18 @@ def test_desktop_connection_health_check_reports_malformed_api_response(
     assert result.ok is False
     assert result.status == "request_failed"
     assert message in result.message
+
+
+def test_desktop_connection_health_check_rejects_wrong_shape_job_list_response() -> None:
+    result = check_desktop_api_connection(
+        DesktopConnectionSettings(api_base_url="http://127.0.0.1:8765"),
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=RecordingTransport(payload={"ok": True}),
+    )
+
+    assert result.ok is False
+    assert result.status == "request_failed"
+    assert "jobs" in result.message
 
 
 @pytest.mark.parametrize("token", [None, "", "   "])

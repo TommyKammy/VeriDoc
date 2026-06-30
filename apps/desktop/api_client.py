@@ -5,6 +5,7 @@ import http.client
 import ipaddress
 import json
 import math
+from numbers import Real
 import socket
 import ssl
 from typing import Any, Protocol
@@ -67,8 +68,7 @@ class DesktopApiClientConfig:
     _tls_server_name: str | None = field(init=False, repr=False, default=None)
 
     def __post_init__(self) -> None:
-        if not math.isfinite(self.timeout_seconds) or self.timeout_seconds <= 0:
-            raise ValueError("timeout_seconds must be finite and greater than 0")
+        timeout_seconds = _validate_timeout_seconds(self.timeout_seconds)
         normalized = self.base_url.strip()
         if not normalized:
             raise ValueError("base_url is required")
@@ -84,6 +84,7 @@ class DesktopApiClientConfig:
         request_base_urls = tuple(_replace_url_host(parsed, host).geturl().rstrip("/") + "/" for host in local_hosts)
         base_url = request_base_urls[0]
         object.__setattr__(self, "base_url", base_url)
+        object.__setattr__(self, "timeout_seconds", timeout_seconds)
         object.__setattr__(self, "_request_base_urls", request_base_urls)
         if parsed.hostname and parsed.hostname.lower() == "localhost":
             object.__setattr__(self, "_host_header", _host_header(parsed.hostname.lower(), parsed.port))
@@ -139,7 +140,8 @@ class DesktopApiClient:
         self._transport = transport
 
     def list_jobs(self) -> dict[str, Any]:
-        return self._request_json("GET", "/api/jobs")
+        payload = self._request_json("GET", "/api/jobs")
+        return _validate_jobs_response(payload)
 
     def _request_json(self, method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
         token = self._credential_store.require_token()
@@ -244,6 +246,21 @@ def check_desktop_api_connection(
         message="API接続に成功しました。",
         base_url=config.base_url,
     )
+
+
+def _validate_timeout_seconds(timeout_seconds: object) -> float:
+    if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, Real):
+        raise ValueError("timeout_seconds must be a finite positive number")
+    value = float(timeout_seconds)
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError("timeout_seconds must be finite and greater than 0")
+    return value
+
+
+def _validate_jobs_response(payload: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(payload.get("jobs"), list):
+        raise DesktopApiError("API jobs response must include a jobs array")
+    return payload
 
 
 def _urlopen_transport(request: Request, *, timeout: float, tls_server_name: str | None = None) -> Any:
