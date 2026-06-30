@@ -199,6 +199,10 @@ class DesktopTechnologyDecisionDocsTest(unittest.TestCase):
 
         self.assertIn("Run desktop package dry-run", workflow)
         self.assertIn("python3 scripts/desktop_package_dry_run.py --dry-run", workflow)
+        self.assertLess(
+            workflow.index("python3 scripts/desktop_package_dry_run.py --dry-run"),
+            workflow.index("python -m pytest"),
+        )
 
         forbidden_fragments = ("/" + "Users" + "/", "C:" + "\\Users" + "\\")
         for fragment in forbidden_fragments:
@@ -241,6 +245,36 @@ class DesktopTechnologyDecisionDocsTest(unittest.TestCase):
         self.assertEqual(
             failures,
             [f"{doc_path} missing term: TAURI_SIGNING_PRIVATE_KEY"],
+        )
+
+    def test_desktop_package_dry_run_rejects_missing_updater_package_gates(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            doc_path = Path(tmp_dir) / "package-gates.md"
+            doc_path.write_text(
+                "bundle.createUpdaterArtifactsExtra\n"
+                "plugins.updater.pubkeyExtra\n"
+                "check()Extra\n",
+                encoding="utf-8",
+            )
+
+            failures = desktop_package_dry_run.validate_document(
+                doc_path,
+                (
+                    "bundle.createUpdaterArtifacts",
+                    "plugins.updater.pubkey",
+                    "check()",
+                ),
+            )
+
+        self.assertEqual(
+            failures,
+            [
+                f"{doc_path} missing term: bundle.createUpdaterArtifacts",
+                f"{doc_path} missing term: plugins.updater.pubkey",
+                f"{doc_path} missing term: check()",
+            ],
         )
 
 

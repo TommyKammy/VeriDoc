@@ -103,8 +103,8 @@ The real package command is expected to be:
 npm --prefix apps/desktop run tauri -- build --bundles nsis
 ```
 
-Until the Tauri scaffold and Windows packaging runner are committed, local CI
-uses the dry-run verifier:
+Until the Tauri scaffold and Windows packaging runner are committed, local and
+GitHub CI use the dry-run verifier:
 
 ```bash
 python3 scripts/desktop_package_dry_run.py --dry-run
@@ -112,16 +112,16 @@ python3 scripts/desktop_package_dry_run.py --dry-run
 
 Production packaging must source signing material from trusted CI secrets, not
 from checked-in files or placeholder values. The Tauri scaffold cannot replace
-the dry-run until it adds the `tauri-plugin-updater` dependency, initializes the
-plugin in `lib.rs`, sets `bundle.createUpdaterArtifacts` to `true`, and wires
-updater metadata to an authoritative endpoint and `plugins.updater.pubkey`.
-The scaffold must also enable `updater:default` in
-`src-tauri/capabilities/default.json` and expose a runtime updater `check()`
-path with download/install handling before automatic updates are claimed. Windows
-installer code signing is a separate gate from updater artifact signing and
-must use a trusted certificate plus `bundle.windows.signCommand` or equivalent
-signer configuration. The Windows installer code-signing certificate remains an
-unresolved release gate. Other unresolved release gates are
+the dry-run until CI can prove the updater-ready package gates: add the
+`tauri-plugin-updater` dependency, initialize the plugin in `lib.rs`, set
+`bundle.createUpdaterArtifacts` to `true`, and wire updater metadata to an
+authoritative endpoint and `plugins.updater.pubkey`. The scaffold must also
+enable `updater:default` in `src-tauri/capabilities/default.json` and expose a
+runtime updater `check()` path with download/install handling before automatic
+updates are claimed. Building only the NSIS installer does not satisfy the
+updater gate. Windows installer code signing is a separate gate from updater
+artifact signing and must use a trusted certificate plus
+`bundle.windows.signCommand` or equivalent signer configuration. The Windows installer code-signing certificate remains an unresolved release gate. Other unresolved release gates are
 `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, an HTTPS
 `VERIDOC_DESKTOP_UPDATE_ENDPOINT`, the updater public key, runtime update
 policy, rollback policy including any required `version_comparator` downgrade

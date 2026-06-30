@@ -12,6 +12,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ADR_PATH = REPO_ROOT / "adr" / "ADR-004-desktop-distribution-update.md"
 DESKTOP_README_PATH = REPO_ROOT / "apps" / "desktop" / "README.md"
+CI_WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 DESKTOP_ROOT = REPO_ROOT / "apps" / "desktop"
 
 PACKAGE_COMMAND = "npm --prefix apps/desktop run tauri -- build --bundles nsis"
@@ -56,6 +57,10 @@ REQUIRED_TERMS = {
         "bundle.windows.signCommand",
         "Windows installer code-signing certificate",
         "version_comparator",
+    ),
+    CI_WORKFLOW_PATH: (
+        "Run desktop package dry-run",
+        "python3 scripts/desktop_package_dry_run.py --dry-run",
     ),
 }
 EXACT_MARKER_TERMS = {
@@ -147,6 +152,7 @@ def run_dry_run() -> int:
     )
     print("Required runtime updater flow: check() plus download/install handling")
     print("Required rollback downgrade gate: version_comparator or managed redeploy")
+    print("Required CI gate: python3 scripts/desktop_package_dry_run.py --dry-run")
     return 0
 
 

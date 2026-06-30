@@ -30,17 +30,18 @@ The minimum build/package command is:
 npm --prefix apps/desktop run tauri -- build --bundles nsis
 ```
 
-Until the Tauri scaffold and package manager are committed, local CI verifies
-the intended package path with:
+Until the Tauri scaffold and package manager are committed, local and GitHub CI
+must verify the intended package path with:
 
 ```bash
 python3 scripts/desktop_package_dry_run.py --dry-run
 ```
 
-The dry-run is intentionally fail-closed: it checks that this ADR and
-`apps/desktop/README.md` record the chosen installer, updater, required signing
-environment variables, updater plugin setup, updater capability permission,
-updater artifact generation, updater public key, runtime update check flow,
+The dry-run is intentionally fail-closed: it checks that this ADR,
+`apps/desktop/README.md`, and the CI workflow record the chosen installer,
+updater, required signing environment variables, updater plugin setup, updater
+capability permission, `bundle.createUpdaterArtifacts` updater artifact
+generation, `plugins.updater.pubkey` validation, runtime `check()` update flow,
 separate Windows installer signing, target endpoint class, and unresolved
 release gates before reporting the package path as ready to wire into a real
 Tauri scaffold.
@@ -65,20 +66,20 @@ match the selected Tauri v2 desktop technology.
 3. Add the `tauri-plugin-updater` dependency and initialize it in `lib.rs` before
    treating any build as auto-update capable.
 4. Configure Tauri bundling for an NSIS Windows installer and set
-   `bundle.createUpdaterArtifacts` to `true` so the Windows updater signature is
-   generated with the installer.
+   `bundle.createUpdaterArtifacts` to `true`; without that exact config gate,
+   the package path is not updater-ready even if the NSIS installer builds.
 5. Configure Tauri updater metadata only after the update endpoint, signing key
    storage, and `plugins.updater.pubkey` are authoritative.
 6. Enable updater command permissions in `src-tauri/capabilities/default.json`
    with `updater:default` before wiring any webview/UI-triggered update check.
 7. Add a runtime update flow that calls `check()` and handles download/install
    behavior through an explicit app policy or UI command before claiming
-   automatic updates are active.
+   automatic updates are active; plugin setup alone is not sufficient.
 8. Configure Windows installer code signing separately from updater artifact
    signing, using `bundle.windows.signCommand` or an equivalent trusted signer
    configuration backed by CI secrets.
-9. Run `python3 scripts/desktop_package_dry_run.py --dry-run` in local CI until
-   the scaffold exists.
+9. Run `python3 scripts/desktop_package_dry_run.py --dry-run` in local and
+   GitHub CI until the scaffold exists.
 10. Replace or supplement the dry-run with
    `npm --prefix apps/desktop run tauri -- build --bundles nsis` on a Windows
    packaging runner once prerequisites are committed.
@@ -93,7 +94,7 @@ match the selected Tauri v2 desktop technology.
   `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
 - The Tauri updater public key must be configured in `plugins.updater.pubkey`
   from an authoritative release key source before updater-ready packaging is
-  allowed.
+  allowed; signed artifacts without this validation key do not satisfy the gate.
 - `VERIDOC_DESKTOP_UPDATE_ENDPOINT` must point to an HTTPS update manifest
   controlled by the release process; placeholder or localhost values are not
   valid for production updates.
