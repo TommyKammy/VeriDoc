@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 
@@ -180,6 +182,22 @@ class DesktopTechnologyDecisionDocsTest(unittest.TestCase):
         forbidden_fragments = ("/" + "Users" + "/", "C:" + "\\Users" + "\\")
         for fragment in forbidden_fragments:
             self.assertNotIn(fragment, workflow)
+
+    def test_desktop_package_dry_run_executes_under_python_checks(self) -> None:
+        proc = subprocess.run(
+            [sys.executable, "scripts/desktop_package_dry_run.py", "--dry-run"],
+            cwd=REPO_ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+        self.assertEqual(
+            proc.returncode,
+            0,
+            msg=proc.stdout + proc.stderr,
+        )
 
 
 if __name__ == "__main__":
