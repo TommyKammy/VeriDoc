@@ -39,10 +39,11 @@ python3 scripts/desktop_package_dry_run.py --dry-run
 
 The dry-run is intentionally fail-closed: it checks that this ADR and
 `apps/desktop/README.md` record the chosen installer, updater, required signing
-environment variables, updater plugin setup, updater artifact generation,
-updater public key, runtime update check flow, separate Windows installer
-signing, target endpoint class, and unresolved release gates before reporting
-the package path as ready to wire into a real Tauri scaffold.
+environment variables, updater plugin setup, updater capability permission,
+updater artifact generation, updater public key, runtime update check flow,
+separate Windows installer signing, target endpoint class, and unresolved
+release gates before reporting the package path as ready to wire into a real
+Tauri scaffold.
 
 ## Non-Selected Options
 
@@ -68,15 +69,17 @@ match the selected Tauri v2 desktop technology.
    generated with the installer.
 5. Configure Tauri updater metadata only after the update endpoint, signing key
    storage, and `plugins.updater.pubkey` are authoritative.
-6. Add a runtime update flow that calls `check()` and handles download/install
+6. Enable updater command permissions in `src-tauri/capabilities/default.json`
+   with `updater:default` before wiring any webview/UI-triggered update check.
+7. Add a runtime update flow that calls `check()` and handles download/install
    behavior through an explicit app policy or UI command before claiming
    automatic updates are active.
-7. Configure Windows installer code signing separately from updater artifact
+8. Configure Windows installer code signing separately from updater artifact
    signing, using `bundle.windows.signCommand` or an equivalent trusted signer
    configuration backed by CI secrets.
-8. Run `python3 scripts/desktop_package_dry_run.py --dry-run` in local CI until
+9. Run `python3 scripts/desktop_package_dry_run.py --dry-run` in local CI until
    the scaffold exists.
-9. Replace or supplement the dry-run with
+10. Replace or supplement the dry-run with
    `npm --prefix apps/desktop run tauri -- build --bundles nsis` on a Windows
    packaging runner once prerequisites are committed.
 
@@ -94,12 +97,14 @@ match the selected Tauri v2 desktop technology.
 - `VERIDOC_DESKTOP_UPDATE_ENDPOINT` must point to an HTTPS update manifest
   controlled by the release process; placeholder or localhost values are not
   valid for production updates.
-- Runtime update behavior is not finalized. The desktop scaffold must wire a
+- Runtime update behavior is not finalized. The desktop scaffold must enable
+  `updater:default` in `src-tauri/capabilities/default.json` and wire a
   `check()` path plus download/install handling to a startup policy or UI
   command before automatic updates are claimed.
 - Rollback policy is not finalized. Release tooling must define whether
-  rollback means re-publishing the last known-good updater manifest, shipping a
-  higher-version recovery build, or using managed endpoint distribution.
+  rollback uses a higher-version recovery build, managed endpoint distribution,
+  or re-publishing the last known-good updater manifest only with an explicit
+  Tauri `version_comparator` policy that allows the intended downgrade.
 - Target endpoints are Windows 10 22H2 or later and Windows 11 devices with
   Microsoft Edge WebView2 available. Broader Windows version support is not
   claimed.

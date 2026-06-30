@@ -27,11 +27,14 @@ REQUIRED_TERMS = {
         "lib.rs",
         "bundle.createUpdaterArtifacts",
         "plugins.updater.pubkey",
+        "src-tauri/capabilities/default.json",
+        "updater:default",
         "check()",
         "bundle.windows.signCommand",
         "Windows installer code-signing certificate",
         "Windows 10 22H2 or later",
         "rollback",
+        "version_comparator",
         "managed endpoint distribution",
         PACKAGE_COMMAND,
     ),
@@ -47,9 +50,12 @@ REQUIRED_TERMS = {
         "lib.rs",
         "bundle.createUpdaterArtifacts",
         "plugins.updater.pubkey",
+        "src-tauri/capabilities/default.json",
+        "updater:default",
         "check()",
         "bundle.windows.signCommand",
         "Windows installer code-signing certificate",
+        "version_comparator",
     ),
 }
 EXACT_MARKER_TERMS = {
@@ -60,8 +66,11 @@ EXACT_MARKER_TERMS = {
     "lib.rs",
     "bundle.createUpdaterArtifacts",
     "plugins.updater.pubkey",
+    "src-tauri/capabilities/default.json",
+    "updater:default",
     "check()",
     "bundle.windows.signCommand",
+    "version_comparator",
 }
 FORBIDDEN_FRAGMENTS = ("/" + "Users" + "/", "C:" + "\\Users" + "\\")
 MARKER_BOUNDARY_PATTERN = r"[A-Za-z0-9_.-]"
@@ -132,7 +141,12 @@ def run_dry_run() -> int:
     )
     print("Required update endpoint: VERIDOC_DESKTOP_UPDATE_ENDPOINT")
     print("Required updater public key: plugins.updater.pubkey")
+    print(
+        "Required updater capability: updater:default in "
+        "src-tauri/capabilities/default.json"
+    )
     print("Required runtime updater flow: check() plus download/install handling")
+    print("Required rollback downgrade gate: version_comparator or managed redeploy")
     return 0
 
 

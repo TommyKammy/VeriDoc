@@ -135,10 +135,13 @@ class DesktopTechnologyDecisionDocsTest(unittest.TestCase):
             "lib.rs",
             "bundle.createUpdaterArtifacts",
             "plugins.updater.pubkey",
+            "src-tauri/capabilities/default.json",
+            "updater:default",
             "check()",
             "bundle.windows.signCommand",
             "Windows installer code-signing certificate",
             "rollback",
+            "version_comparator",
             "managed endpoint distribution",
         ):
             self.assertIn(required_text, adr)
@@ -171,9 +174,12 @@ class DesktopTechnologyDecisionDocsTest(unittest.TestCase):
             "lib.rs",
             "bundle.createUpdaterArtifacts",
             "plugins.updater.pubkey",
+            "src-tauri/capabilities/default.json",
+            "updater:default",
             "check()",
             "bundle.windows.signCommand",
             "Windows installer code-signing certificate",
+            "version_comparator",
             "apps/desktop",
             "dry-run",
         ):
