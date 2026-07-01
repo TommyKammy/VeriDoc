@@ -752,9 +752,26 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                     existing_upload_audit = job_event_store.find_once(dedupe=upload_dedupe)
                     if not created_job:
                         if existing_upload_audit is None:
-                            raise ValueError(
-                                "desktop_upload audit cannot be added after idempotent job creation"
+                            existing_job_upload_audit = job_event_store.find_once(
+                                dedupe={
+                                    "job_id": job.job_id,
+                                    "action": "desktop_upload",
+                                }
                             )
+                            if (
+                                existing_job_upload_audit is None
+                                and job_queue.is_unpublished(job.job_id)
+                            ):
+                                published_job = job_queue.wait_until_published(job.job_id)
+                                if published_job is not None:
+                                    job = published_job
+                                    existing_upload_audit = job_event_store.find_once(
+                                        dedupe=upload_dedupe
+                                    )
+                            if existing_upload_audit is None:
+                                raise ValueError(
+                                    "desktop_upload audit cannot be added after idempotent job creation"
+                                )
                         upload_audit_event = existing_upload_audit
                         if job_queue.is_unpublished(job.job_id):
                             job = job_queue.publish_job(job.job_id, enqueue=True)

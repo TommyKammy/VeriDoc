@@ -4,7 +4,8 @@ from collections import deque
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from threading import Lock
+from threading import Condition, Lock
+from time import monotonic
 from typing import Any, Callable, Literal
 from uuid import uuid4
 
@@ -42,6 +43,7 @@ class JobQueue:
         self._pending_job_ids: deque[str] = deque()
         self._unpublished_job_ids: set[str] = set()
         self._lock = Lock()
+        self._condition = Condition(self._lock)
 
     def create_job(
         self,
@@ -131,6 +133,7 @@ class JobQueue:
                 if job.status != "queued":
                     raise RuntimeError("job is already active")
                 self._pending_job_ids.append(job_id)
+            self._condition.notify_all()
             return job
 
     def enqueue_job(self, job_id: str) -> JobRecord:
@@ -144,6 +147,7 @@ class JobQueue:
                 raise RuntimeError("job is already active")
             if job_id not in self._pending_job_ids:
                 self._pending_job_ids.append(job_id)
+            self._condition.notify_all()
             return job
 
     def discard_queued_job(self, job_id: str) -> None:
@@ -161,6 +165,7 @@ class JobQueue:
                 self._pending_job_ids.remove(job_id)
             except ValueError:
                 pass
+            self._condition.notify_all()
 
     def is_pending(self, job_id: str) -> bool:
         with self._lock:
@@ -169,6 +174,20 @@ class JobQueue:
     def is_unpublished(self, job_id: str) -> bool:
         with self._lock:
             return job_id in self._unpublished_job_ids
+
+    def wait_until_published(self, job_id: str, *, timeout: float = 5.0) -> JobRecord | None:
+        deadline = monotonic() + timeout
+        with self._condition:
+            while True:
+                job = self._jobs.get(job_id)
+                if job is None:
+                    return None
+                if job_id not in self._unpublished_job_ids:
+                    return job
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    raise RuntimeError("job creation pending")
+                self._condition.wait(remaining)
 
     def get_idempotent_job(
         self,
