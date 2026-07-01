@@ -568,6 +568,25 @@ def convert_uploaded_document(*, filename: str, content: bytes) -> dict[str, Any
     }
     download_content = _strict_json_bytes(download_payload, indent=2)
     output_sha256 = _sha256_hex(download_content)
+    download_filename = f"{Path(safe_filename).stem}.veridoc-result.json"
+    artifacts = [
+        {
+            "id": "debug-json",
+            "kind": "debug",
+            "format": "json",
+            "filename": download_filename,
+            "content_type": "application/json; charset=utf-8",
+            "size_bytes": len(download_content),
+            "sha256": output_sha256,
+            "metadata": {
+                "role": "debug",
+                "download": {
+                    "available": True,
+                    "field": "download",
+                },
+            },
+        }
+    ]
     return {
         "status": _status(validation.ok, validation.requires_review),
         "conversion_id": conversion_id,
@@ -587,8 +606,14 @@ def convert_uploaded_document(*, filename: str, content: bytes) -> dict[str, Any
             },
         },
         **download_payload,
+        "artifacts": artifacts,
+        "audit": {
+            "conversion_id": conversion_id,
+            "source_filename": safe_filename,
+            "source_sha256": source_sha256,
+        },
         "download": {
-            "filename": f"{Path(safe_filename).stem}.veridoc-result.json",
+            "filename": download_filename,
             "content_type": "application/json; charset=utf-8",
             "content": download_content,
         },
