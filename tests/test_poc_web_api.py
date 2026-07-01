@@ -545,7 +545,200 @@ def test_pdf_to_excel_no_selected_pdf_table_requires_review(
         "PDF table extraction produced no selected table; xlsx artifact requires review",
         "conversion mode pdf_to_excel selected",
     ]
+    assert result["review_items"] == [
+        {
+            "document_id": "sample",
+            "block_id": "pdf-table-extraction",
+            "source_id": "sample:pdf-table-extraction",
+            "source_page": None,
+            "text": "PDF table extraction requires review",
+            "warnings": [
+                "PDF table extraction produced no selected table; xlsx artifact requires review"
+            ],
+        }
+    ]
     assert result["artifacts"][0]["format"] == "xlsx"
+
+
+def test_pdf_to_excel_unavailable_table_comparator_requires_review(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_parse_text_pdf_to_document_ir(
+        pdf_path: Path, *, document_id: str | None = None
+    ) -> dict:
+        return {
+            "schema_version": "document-ir/v0",
+            "document": {
+                "id": document_id or "sample",
+                "title": pdf_path.name,
+                "source_type": "pdf",
+            },
+            "pages": [{"page_number": 1, "width": 320, "height": 240, "unit": "pt"}],
+        }
+
+    table = ExtractedTable(
+        extractor="camelot",
+        flavor="lattice",
+        page_number=1,
+        rows=[["Lot", "Assay"], ["A-001", "12.5"]],
+        cell_bboxes=[
+            [
+                TableBBox(x=10, y=20, width=50, height=12),
+                TableBBox(x=60, y=20, width=60, height=12),
+            ],
+            [
+                TableBBox(x=10, y=32, width=50, height=12),
+                TableBBox(x=60, y=32, width=60, height=12),
+            ],
+        ],
+    )
+    unavailable = TableExtractionCandidate(
+        extractor="pdfplumber",
+        flavor="table",
+        version=None,
+        status="missing_dependency",
+        tables=[],
+        notes="pdfplumber unavailable",
+    )
+    report = TableExtractionReport(
+        source_path="sample.pdf",
+        candidates=[
+            TableExtractionCandidate(
+                extractor="camelot",
+                flavor="lattice",
+                version="test",
+                status="ok",
+                tables=[table],
+                notes="synthetic selected table",
+            ),
+            unavailable,
+        ],
+        mismatches=[],
+        selected_candidate="camelot:lattice",
+        notes="synthetic report",
+    )
+    monkeypatch.setattr(poc_web, "parse_text_pdf_to_document_ir", fake_parse_text_pdf_to_document_ir)
+    monkeypatch.setattr(poc_web, "compare_pdf_table_extractors", lambda _path: report, raising=False)
+
+    result = convert_uploaded_document(
+        filename="sample.pdf",
+        content=b"%PDF-1.4\n%%EOF\n",
+        conversion_mode="pdf_to_excel",
+    )
+
+    assert result["status"] == "requires_review"
+    assert result["warnings"] == [
+        (
+            "PDF table extraction candidate unavailable: pdfplumber:table; "
+            "xlsx artifact requires review"
+        ),
+        "conversion mode pdf_to_excel selected",
+    ]
+    assert result["review_items"] == [
+        {
+            "document_id": "sample",
+            "block_id": "pdf-table-extraction",
+            "source_id": "sample:pdf-table-extraction",
+            "source_page": None,
+            "text": "PDF table extraction requires review",
+            "warnings": [
+                (
+                    "PDF table extraction candidate unavailable: pdfplumber:table; "
+                    "xlsx artifact requires review"
+                )
+            ],
+        }
+    ]
+
+
+def test_pdf_to_excel_does_not_duplicate_parser_table_blocks(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def fake_parse_text_pdf_to_document_ir(
+        pdf_path: Path, *, document_id: str | None = None
+    ) -> dict:
+        return {
+            "schema_version": "document-ir/v0",
+            "document": {
+                "id": document_id or "sample",
+                "title": pdf_path.name,
+                "source_type": "pdf",
+            },
+            "pages": [
+                {
+                    "page_number": 1,
+                    "width": 320,
+                    "height": 240,
+                    "unit": "pt",
+                    "fragments": [
+                        {
+                            "kind": "table",
+                            "text": "Lot\tAssay\nA-001\t12.5",
+                            "bbox": {
+                                "x": 10,
+                                "y": 20,
+                                "width": 110,
+                                "height": 24,
+                                "unit": "pt",
+                            },
+                            "confidence": 0.72,
+                            "requires_review": True,
+                        }
+                    ],
+                }
+            ],
+        }
+
+    table = ExtractedTable(
+        extractor="camelot",
+        flavor="lattice",
+        page_number=1,
+        rows=[["Lot", "Assay"], ["A-001", "12.5"]],
+        cell_bboxes=[
+            [
+                TableBBox(x=10, y=20, width=50, height=12),
+                TableBBox(x=60, y=20, width=60, height=12),
+            ],
+            [
+                TableBBox(x=10, y=32, width=50, height=12),
+                TableBBox(x=60, y=32, width=60, height=12),
+            ],
+        ],
+    )
+    report = TableExtractionReport(
+        source_path="sample.pdf",
+        candidates=[
+            TableExtractionCandidate(
+                extractor="camelot",
+                flavor="lattice",
+                version="test",
+                status="ok",
+                tables=[table],
+                notes="synthetic selected table",
+            )
+        ],
+        mismatches=[],
+        selected_candidate="camelot:lattice",
+        notes="synthetic report",
+    )
+    monkeypatch.setattr(poc_web, "parse_text_pdf_to_document_ir", fake_parse_text_pdf_to_document_ir)
+    monkeypatch.setattr(poc_web, "compare_pdf_table_extractors", lambda _path: report, raising=False)
+
+    result = convert_uploaded_document(
+        filename="sample.pdf",
+        content=b"%PDF-1.4\n%%EOF\n",
+        conversion_mode="pdf_to_excel",
+    )
+
+    primary_path = tmp_path / result["artifacts"][0]["filename"]
+    primary_path.write_bytes(result["artifacts"][0]["content"])
+    xlsx = extract_xlsx_structure(primary_path)
+    values = [cell.value for cell in xlsx.sheets[0].cells]
+    assert values.count("Lot") == 1
+    assert values.count("Assay") == 1
+    assert values.count("A-001") == 1
+    assert values.count("12.5") == 1
 
 
 def test_convert_uploaded_document_passes_xlsx_render_plan_for_table_blocks(

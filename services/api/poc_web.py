@@ -608,6 +608,7 @@ def convert_uploaded_document(
         primary_warning = "primary artifact generation skipped: document IR validation failed"
     if primary_warning is not None:
         warnings.append(primary_warning)
+    review_items.extend(_pdf_table_warning_review_items(document_ir, warnings))
     audit = {
         "conversion_id": conversion_id,
         "source_filename": safe_filename,
@@ -2665,6 +2666,8 @@ def _parser_output_with_pdf_tables(parser_output: dict[str, Any], report: Any) -
             fragments = page.setdefault("fragments", [])
             if not isinstance(fragments, list):
                 continue
+            if _pdf_table_fragment_already_present(fragments, table):
+                continue
             bbox = _pdf_table_bbox(table, page)
             fragment: dict[str, Any] = {
                 "kind": "table",
@@ -2702,7 +2705,9 @@ def _pdf_table_warnings(report: Any) -> list[str]:
         ]
         if unavailable:
             warnings.append(
-                "PDF table extraction candidate unavailable: " + ", ".join(sorted(unavailable))
+                "PDF table extraction candidate unavailable: "
+                + ", ".join(sorted(unavailable))
+                + "; xlsx artifact requires review"
             )
     return warnings
 
@@ -2731,6 +2736,47 @@ def _pdf_table_structured_rows(rows_value: Any) -> list[list[str]]:
             continue
         rows.append(["" if cell is None else str(cell) for cell in row])
     return rows
+
+
+def _pdf_table_fragment_already_present(
+    fragments: list[Any], table: dict[str, Any]
+) -> bool:
+    candidate_key = _pdf_table_rows_key(table.get("rows"))
+    if not candidate_key:
+        return False
+    for fragment in fragments:
+        if not isinstance(fragment, dict) or fragment.get("kind") != "table":
+            continue
+        if _pdf_table_fragment_rows_key(fragment) == candidate_key:
+            return True
+    return False
+
+
+def _pdf_table_fragment_rows_key(fragment: dict[str, Any]) -> tuple[tuple[str, ...], ...]:
+    rows_key = _pdf_table_rows_key(fragment.get("rows"))
+    if rows_key:
+        return rows_key
+    text = fragment.get("text")
+    if not isinstance(text, str):
+        return ()
+    rows: list[list[str]] = []
+    for line in text.splitlines():
+        cells = line.split("\t")
+        rows.append(cells)
+    return _pdf_table_rows_key(rows)
+
+
+def _pdf_table_rows_key(rows_value: Any) -> tuple[tuple[str, ...], ...]:
+    rows = []
+    for row in _pdf_table_structured_rows(rows_value):
+        normalized = tuple(_pdf_table_cell_key(cell) for cell in row)
+        if any(normalized):
+            rows.append(normalized)
+    return tuple(rows)
+
+
+def _pdf_table_cell_key(value: Any) -> str:
+    return re.sub(r"\s+", " ", "" if value is None else str(value)).strip()
 
 
 def _pdf_table_text_cell(value: Any) -> str:
@@ -2859,6 +2905,28 @@ def _review_items(document_ir: DocumentIRV1) -> list[dict[str, Any]]:
             ]
         items.append(item)
     return items
+
+
+def _pdf_table_warning_review_items(
+    document_ir: DocumentIRV1, warnings: list[str]
+) -> list[dict[str, Any]]:
+    review_warnings = [
+        warning
+        for warning in warnings
+        if warning.startswith("PDF table extraction ") and "requires review" in warning
+    ]
+    if not review_warnings:
+        return []
+    return [
+        {
+            "document_id": document_ir.document.id,
+            "block_id": "pdf-table-extraction",
+            "source_id": f"{document_ir.document.id}:pdf-table-extraction",
+            "source_page": None,
+            "text": "PDF table extraction requires review",
+            "warnings": review_warnings,
+        }
+    ]
 
 
 def _block_llm_involved(block: Any) -> bool:
