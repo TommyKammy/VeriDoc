@@ -47,6 +47,17 @@ MAX_UPLOAD_BYTES = 2 * 1024 * 1024
 MAX_UPLOAD_REQUEST_BYTES = (MAX_UPLOAD_BYTES * 4 // 3) + 4096
 MAX_DOWNLOAD_FILENAME_BYTES = 255
 DOWNLOAD_FILENAME_FALLBACK = "veridoc-result.json"
+ARTIFACT_CONTENT_TYPES = {
+    "json": "application/json; charset=utf-8",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+}
+PRIMARY_ARTIFACT_FORMAT_BY_CONVERSION_MODE = {
+    "pdf_to_excel": "xlsx",
+    "pdf_to_word": "docx",
+    "word_to_excel": "xlsx",
+    "excel_to_word": "docx",
+}
 DESKTOP_CLIENT_HEADER = "X-VeriDoc-Desktop-Client"
 DESKTOP_CLIENT_HEADER_VALUE = "VeriDocDesktop"
 DESKTOP_SAVE_PROOF_HEADER = "X-VeriDoc-Desktop-Save-Proof"
@@ -589,25 +600,21 @@ def convert_uploaded_document(
     }
     download_content = _strict_json_bytes(download_payload, indent=2)
     output_sha256 = _sha256_hex(download_content)
-    download_filename = f"{Path(safe_filename).stem}.veridoc-result.json"
-    artifacts = [
-        {
-            "id": "debug-json",
-            "kind": "debug",
-            "format": "json",
-            "filename": download_filename,
-            "content_type": "application/json; charset=utf-8",
-            "size_bytes": len(download_content),
-            "sha256": output_sha256,
-            "metadata": {
-                "role": "debug",
-                "download": {
-                    "available": True,
-                    "field": "download",
-                },
-            },
-        }
-    ]
+    download_filename = _artifact_filename(
+        safe_filename,
+        conversion_mode=selected_conversion_mode,
+        artifact_format="json",
+        role="debug",
+    )
+    download_content_type = ARTIFACT_CONTENT_TYPES["json"]
+    artifacts = _conversion_artifacts(
+        source_filename=safe_filename,
+        conversion_mode=selected_conversion_mode,
+        debug_filename=download_filename,
+        debug_content_type=download_content_type,
+        debug_size_bytes=len(download_content),
+        debug_sha256=output_sha256,
+    )
     return {
         "status": _status(validation.ok, validation.requires_review),
         "conversion_id": conversion_id,
@@ -631,7 +638,7 @@ def convert_uploaded_document(
         "audit": audit,
         "download": {
             "filename": download_filename,
-            "content_type": "application/json; charset=utf-8",
+            "content_type": download_content_type,
             "content": download_content,
         },
     }
@@ -2160,6 +2167,94 @@ def _sha256_hex(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
 
 
+def _conversion_artifacts(
+    *,
+    source_filename: str,
+    conversion_mode: str,
+    debug_filename: str,
+    debug_content_type: str,
+    debug_size_bytes: int,
+    debug_sha256: str,
+) -> list[dict[str, Any]]:
+    artifacts: list[dict[str, Any]] = []
+    primary_format = PRIMARY_ARTIFACT_FORMAT_BY_CONVERSION_MODE.get(conversion_mode)
+    if primary_format is not None:
+        artifacts.append(
+            {
+                "id": f"primary-{primary_format}",
+                "kind": "primary",
+                "format": primary_format,
+                "filename": _artifact_filename(
+                    source_filename,
+                    conversion_mode=conversion_mode,
+                    artifact_format=primary_format,
+                    role="primary",
+                ),
+                "content_type": ARTIFACT_CONTENT_TYPES[primary_format],
+                "metadata": {
+                    "role": "primary",
+                    "conversion_mode": conversion_mode,
+                    "source_filename": source_filename,
+                    "download": {
+                        "available": False,
+                        "reason": "artifact_generation_not_implemented",
+                    },
+                },
+            }
+        )
+    artifacts.append(
+        {
+            "id": "debug-json",
+            "kind": "debug",
+            "format": "json",
+            "filename": debug_filename,
+            "content_type": debug_content_type,
+            "size_bytes": debug_size_bytes,
+            "sha256": debug_sha256,
+            "metadata": {
+                "role": "debug",
+                "conversion_mode": conversion_mode,
+                "source_filename": source_filename,
+                "download": {
+                    "available": True,
+                    "field": "download",
+                },
+            },
+        }
+    )
+    return artifacts
+
+
+def _artifact_filename(
+    source_filename: str,
+    *,
+    conversion_mode: str,
+    artifact_format: str,
+    role: str,
+) -> str:
+    if artifact_format not in ARTIFACT_CONTENT_TYPES:
+        raise ValueError(f"unsupported artifact format: {artifact_format}")
+    safe_source = _saved_download_filename(source_filename)
+    source_stem = _avoid_windows_reserved_download_stem(
+        Path(safe_source).stem.strip(" .-") or "upload"
+    )
+    if role == "debug" and artifact_format == "json":
+        suffix = ".veridoc-result.json"
+    elif role == "primary":
+        mode_slug = conversion_mode.replace("_", "-")
+        suffix = f".veridoc-{mode_slug}.{artifact_format}"
+    else:
+        suffix = f".veridoc-{role}.{artifact_format}"
+    max_stem_bytes = MAX_DOWNLOAD_FILENAME_BYTES - len(suffix.encode("utf-8"))
+    if max_stem_bytes <= 0:
+        return _fit_download_filename(suffix.lstrip("."))
+    fitted_stem = _truncate_utf8_bytes(source_stem, max_stem_bytes).strip(" .-")
+    safe_stem = (
+        _avoid_windows_reserved_download_stem(fitted_stem) if fitted_stem else "upload"
+    )
+    return _fit_download_filename(f"{safe_stem}{suffix}")
+
+
 def _download_content_type(content_type: str) -> str:
     if (
         not content_type
@@ -2189,9 +2284,17 @@ def _saved_download_filename(filename: str) -> str:
 
 def _avoid_windows_reserved_download_filename(filename: str) -> str:
     first_segment, separator, remainder = filename.partition(".")
-    if first_segment.rstrip(" .").upper() not in WINDOWS_RESERVED_DOWNLOAD_STEMS:
+    safe_first_segment = _avoid_windows_reserved_download_stem(first_segment)
+    if safe_first_segment == first_segment:
         return filename
-    return f"{first_segment.rstrip(' .')}_{separator}{remainder}"
+    return f"{safe_first_segment}{separator}{remainder}"
+
+
+def _avoid_windows_reserved_download_stem(stem: str) -> str:
+    trimmed = stem.rstrip(" .")
+    if trimmed.upper() not in WINDOWS_RESERVED_DOWNLOAD_STEMS:
+        return stem
+    return f"{trimmed}_"
 
 
 def _fit_download_filename(

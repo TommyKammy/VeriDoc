@@ -156,6 +156,8 @@ def test_convert_uploaded_document_returns_artifact_manifest_contract() -> None:
             "sha256": result["hashes"]["output_sha256"],
             "metadata": {
                 "role": "debug",
+                "conversion_mode": "auto",
+                "source_filename": "phase0-output.json",
                 "download": {
                     "available": True,
                     "field": "download",
@@ -163,6 +165,201 @@ def test_convert_uploaded_document_returns_artifact_manifest_contract() -> None:
             },
         }
     ]
+
+
+@pytest.mark.parametrize(
+    ("conversion_mode", "artifact_format", "artifact_content_type"),
+    (
+        (
+            "pdf_to_word",
+            "docx",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ),
+        (
+            "pdf_to_excel",
+            "xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ),
+    ),
+)
+def test_convert_uploaded_document_manifest_names_mode_artifacts_safely(
+    conversion_mode: str,
+    artifact_format: str,
+    artifact_content_type: str,
+) -> None:
+    parser_output = {
+        "source_type": "pdf",
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 320,
+                "height": 240,
+                "unit": "pt",
+                "fragments": [{"text": "PDF text", "confidence": 0.95}],
+            }
+        ],
+    }
+
+    result = convert_uploaded_document(
+        filename="nested/CON\x00 report:name.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+        conversion_mode=conversion_mode,
+    )
+
+    assert result["download"]["filename"] == "CON report-name.veridoc-result.json"
+    assert result["download"]["content_type"] == "application/json; charset=utf-8"
+    assert result["artifacts"] == [
+        {
+            "id": f"primary-{artifact_format}",
+            "kind": "primary",
+            "format": artifact_format,
+            "filename": f"CON report-name.veridoc-{conversion_mode.replace('_', '-')}.{artifact_format}",
+            "content_type": artifact_content_type,
+            "metadata": {
+                "role": "primary",
+                "conversion_mode": conversion_mode,
+                "source_filename": "CON report:name.json",
+                "download": {
+                    "available": False,
+                        "reason": "artifact_generation_not_implemented",
+                },
+            },
+        },
+        {
+            "id": "debug-json",
+            "kind": "debug",
+            "format": "json",
+            "filename": "CON report-name.veridoc-result.json",
+            "content_type": "application/json; charset=utf-8",
+            "size_bytes": len(result["download"]["content"]),
+            "sha256": result["hashes"]["output_sha256"],
+            "metadata": {
+                "role": "debug",
+                "conversion_mode": conversion_mode,
+                "source_filename": "CON report:name.json",
+                "download": {
+                    "available": True,
+                    "field": "download",
+                },
+            },
+        },
+    ]
+
+
+@pytest.mark.parametrize(
+    ("conversion_mode", "artifact_format"),
+    (
+        ("pdf_to_word", "docx"),
+        ("pdf_to_excel", "xlsx"),
+    ),
+)
+def test_convert_uploaded_document_manifest_preserves_artifact_suffixes_for_long_names(
+    conversion_mode: str,
+    artifact_format: str,
+) -> None:
+    parser_output = {
+        "source_type": "pdf",
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 320,
+                "height": 240,
+                "unit": "pt",
+                "fragments": [{"text": "PDF text", "confidence": 0.95}],
+            }
+        ],
+    }
+    mode_slug = conversion_mode.replace("_", "-")
+
+    result = convert_uploaded_document(
+        filename=f"{'a' * 300}.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+        conversion_mode=conversion_mode,
+    )
+
+    primary_filename = result["artifacts"][0]["filename"]
+    debug_filename = result["artifacts"][1]["filename"]
+    assert primary_filename.endswith(f".veridoc-{mode_slug}.{artifact_format}")
+    assert len(primary_filename.encode("utf-8")) <= poc_web.MAX_DOWNLOAD_FILENAME_BYTES
+    assert debug_filename.endswith(".veridoc-result.json")
+    assert len(debug_filename.encode("utf-8")) <= poc_web.MAX_DOWNLOAD_FILENAME_BYTES
+    assert result["download"]["filename"] == debug_filename
+
+
+@pytest.mark.parametrize(
+    ("conversion_mode", "artifact_format"),
+    (
+        ("pdf_to_word", "docx"),
+        ("pdf_to_excel", "xlsx"),
+    ),
+)
+def test_convert_uploaded_document_manifest_avoids_reserved_stems_after_trim(
+    conversion_mode: str,
+    artifact_format: str,
+) -> None:
+    parser_output = {
+        "source_type": "pdf",
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 320,
+                "height": 240,
+                "unit": "pt",
+                "fragments": [{"text": "PDF text", "confidence": 0.95}],
+            }
+        ],
+    }
+    mode_slug = conversion_mode.replace("_", "-")
+
+    result = convert_uploaded_document(
+        filename="nested/CON-.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+        conversion_mode=conversion_mode,
+    )
+
+    primary_filename = result["artifacts"][0]["filename"]
+    debug_filename = result["artifacts"][1]["filename"]
+    assert primary_filename == f"CON_.veridoc-{mode_slug}.{artifact_format}"
+    assert debug_filename == "CON_.veridoc-result.json"
+    assert result["download"]["filename"] == debug_filename
+
+
+@pytest.mark.parametrize(
+    ("conversion_mode", "artifact_format"),
+    (
+        ("pdf_to_word", "docx"),
+        ("pdf_to_excel", "xlsx"),
+    ),
+)
+def test_convert_uploaded_document_manifest_avoids_reserved_stems_after_truncation(
+    conversion_mode: str,
+    artifact_format: str,
+) -> None:
+    parser_output = {
+        "source_type": "pdf",
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 320,
+                "height": 240,
+                "unit": "pt",
+                "fragments": [{"text": "PDF text", "confidence": 0.95}],
+            }
+        ],
+    }
+    mode_slug = conversion_mode.replace("_", "-")
+
+    result = convert_uploaded_document(
+        filename=f"CON{'-' * 233}A.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+        conversion_mode=conversion_mode,
+    )
+
+    primary_filename = result["artifacts"][0]["filename"]
+    debug_filename = result["artifacts"][1]["filename"]
+    assert primary_filename == f"CON_.veridoc-{mode_slug}.{artifact_format}"
+    assert debug_filename == "CON_.veridoc-result.json"
+    assert result["download"]["filename"] == debug_filename
 
 
 def test_convert_uploaded_document_records_selected_conversion_mode() -> None:
