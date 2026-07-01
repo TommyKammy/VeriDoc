@@ -714,6 +714,11 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 job_event_store = self._job_event_store()
                 try:
                     job_event_store.require_integrity()
+                    upload_audit_event = _job_event_with_auth_context(
+                        _desktop_upload_audit_event(job),
+                        auth_context,
+                    )
+                    upload_actor = upload_audit_event.get("actor")
                     existing_upload_audit = _job_has_desktop_upload_audit(
                         job_event_store,
                         job.job_id,
@@ -731,8 +736,12 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                             "desktop_upload audit cannot be added after idempotent job creation"
                         )
                     upload_audit_event = job_event_store.record_once(
-                        _job_event_with_auth_context(_desktop_upload_audit_event(job), auth_context),
-                        dedupe={"job_id": job.job_id, "action": "desktop_upload"},
+                        upload_audit_event,
+                        dedupe={
+                            "job_id": job.job_id,
+                            "action": "desktop_upload",
+                            "actor": upload_actor,
+                        },
                     )
                 except Exception:
                     if created_job:
@@ -1550,7 +1559,7 @@ def _job_audit_event(job: JobRecord, action: str) -> dict[str, Any]:
 def _desktop_upload_audit_event(job: JobRecord) -> dict[str, Any]:
     source = job.source if isinstance(job.source, dict) else {}
     source_filename = source.get("filename")
-    filename = source_filename if isinstance(source_filename, str) and source_filename else _safe_filename(job.filename)
+    filename = _safe_filename(source_filename if isinstance(source_filename, str) else job.filename)
     return {
         "event_type": "desktop.job_operation",
         "job_id": job.job_id,
@@ -1633,9 +1642,17 @@ def _reject_direct_desktop_upload_audit_event(
 def _job_has_desktop_upload_audit(
     job_event_store: JobAuditEventStore,
     job_id: str,
+    *,
+    actor_id: str | None = None,
 ) -> bool:
     return any(
         event.get("action") == "desktop_upload"
+        and (
+            actor_id is None
+            or
+            (event.get("actor") if isinstance(event.get("actor"), dict) else {}).get("id")
+            == actor_id
+        )
         for event in job_event_store.list_events(filters={"job_id": job_id})
     )
 
@@ -2275,7 +2292,8 @@ def _source_type_from_path(path: str) -> str:
 
 
 def _safe_filename(filename: str) -> str:
-    candidate = Path(filename).name.strip()
+    basename = re.split(r"[\\/]+", filename)[-1].strip()
+    candidate = re.sub(r'[\x00-\x1f\x7f"\\]', "", basename).strip()
     return candidate or "upload.txt"
 
 

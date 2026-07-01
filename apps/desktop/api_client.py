@@ -406,7 +406,7 @@ class DesktopApiClient:
                         "output_sha256": hashlib.sha256(body).hexdigest(),
                     },
                 )
-            except PermissionError:
+            except (MissingApiTokenError, InvalidApiTokenError, PermissionError):
                 _remove_download_file(save_path)
                 raise
             if audit_status == "rejected":

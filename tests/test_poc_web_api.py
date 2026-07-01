@@ -2812,7 +2812,7 @@ def test_poc_http_api_records_desktop_upload_and_download_audit_events() -> None
         payload = json.dumps(
             {
                 "idempotency_key": "desktop-upload-download",
-                "filename": "../batch-record.pdf",
+                "filename": "C:\\staged\\batch-record\r.pdf",
                 "content_type": "application/pdf",
                 "content_base64": base64.b64encode(uploaded_content).decode("ascii"),
                 "size_bytes": len(uploaded_content),
@@ -3427,6 +3427,73 @@ def test_poc_http_api_records_one_desktop_upload_audit_for_concurrent_idempotent
     assert {body["audit_event"]["event_hash"] for _status, body in responses} == {
         events[0]["event_hash"]
     }
+
+
+def test_poc_http_api_records_distinct_desktop_upload_audits_for_different_actors() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue()
+    server.job_event_store = JobAuditEventStore()
+    server.local_auth_tokens = {
+        "reviewer-one-token": {"role": "reviewer", "principal_id": "reviewer-one"},
+        "reviewer-two-token": {"role": "reviewer", "principal_id": "reviewer-two"},
+    }
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    uploaded_content = b"%PDF-1.7\nshared source"
+    source_sha256 = hashlib.sha256(uploaded_content).hexdigest()
+    request = {
+        "idempotency_key": "shared-desktop-upload",
+        "filename": "batch-record.pdf",
+        "content_type": "application/pdf",
+        "content_base64": base64.b64encode(uploaded_content).decode("ascii"),
+        "size_bytes": len(uploaded_content),
+        "source_sha256": source_sha256,
+        "mode": "standard",
+        "desktop_upload_audit": True,
+    }
+    payload = json.dumps(request).encode("utf-8")
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/jobs",
+            body=payload,
+            headers={
+                "Authorization": "Bearer reviewer-one-token",
+                "Content-Type": "application/json",
+                "Content-Length": str(len(payload)),
+            },
+        )
+        first_response = connection.getresponse()
+        first_body = json.loads(first_response.read().decode("utf-8"))
+        connection.request(
+            "POST",
+            "/api/jobs",
+            body=payload,
+            headers={
+                "Authorization": "Bearer reviewer-two-token",
+                "Content-Type": "application/json",
+                "Content-Length": str(len(payload)),
+            },
+        )
+        second_response = connection.getresponse()
+        second_body = json.loads(second_response.read().decode("utf-8"))
+        events = server.job_event_store.list_events(filters={"job_id": first_body["job"]["job_id"]})
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert first_response.status == 202
+    assert second_response.status == 202
+    assert second_body["job"]["job_id"] == first_body["job"]["job_id"]
+    assert [event["action"] for event in events] == ["desktop_upload", "desktop_upload"]
+    assert [event["actor"]["id"] for event in events] == [
+        "local-principal:reviewer-one",
+        "local-principal:reviewer-two",
+    ]
+    assert second_body["audit_event"] == events[1]
+    assert [event["source_sha256"] for event in events] == [source_sha256, source_sha256]
+    assert first_body["audit_event"]["event_hash"] != second_body["audit_event"]["event_hash"]
 
 
 def test_poc_http_api_rejects_non_string_job_upload_base64_content() -> None:
