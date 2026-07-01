@@ -37,6 +37,10 @@ class DesktopApiError(RuntimeError):
     """Raised when the local API returns a non-auth client error."""
 
 
+class _DesktopAuditOutcomeUnconfirmed(DesktopApiError):
+    """Raised when the audit request may have been persisted but the response was unusable."""
+
+
 class DesktopUploadValidationError(ValueError):
     """Raised when a selected or dropped file cannot be uploaded."""
 
@@ -406,6 +410,8 @@ class DesktopApiClient:
                         "output_sha256": hashlib.sha256(body).hexdigest(),
                     },
                 )
+            except _DesktopAuditOutcomeUnconfirmed:
+                raise
             except Exception:
                 _remove_download_file(save_path)
                 raise
@@ -413,15 +419,27 @@ class DesktopApiClient:
         raise DesktopApiError("downloaded result filename has too many collisions")
 
     def _record_desktop_result_download(self, job_id: str, audit_event: dict[str, Any]) -> None:
-        payload = self._request_json(
-            "POST",
-            "/api/job-events",
-            {
-                "job_id": job_id,
-                "action": "desktop_result_download",
-                "audit_event": audit_event,
-            },
-        )
+        try:
+            payload = self._request_json(
+                "POST",
+                "/api/job-events",
+                {
+                    "job_id": job_id,
+                    "action": "desktop_result_download",
+                    "audit_event": audit_event,
+                },
+            )
+        except DesktopApiError as exc:
+            if str(exc) in {
+                "API response must be a JSON object",
+                "API response must be valid JSON",
+                "API response body was incomplete",
+                "API response transport failed",
+            }:
+                raise _DesktopAuditOutcomeUnconfirmed(
+                    "desktop result download audit outcome is unconfirmed"
+                ) from exc
+            raise
         audit_event = payload.get("audit_event")
         if payload.get("accepted") is not True or not isinstance(audit_event, dict):
             raise DesktopApiError("API did not accept the desktop result download audit event")

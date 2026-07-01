@@ -836,20 +836,14 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 accepted_event = _validate_desktop_result_download_audit_event(job, audit_event)
             elif action == "desktop_upload":
                 job_event_store.require_integrity()
-                accepted_event = _validate_desktop_upload_audit_event(job, audit_event)
+                accepted_event = _reject_direct_desktop_upload_audit_event(job, audit_event)
             else:
                 accepted_event = _validate_job_event(job, action, audit_event, job_queue)
             if action == "retry_conversion":
                 job_event_store.require_integrity()
                 updated_job = job_queue.retry_failed_job(job_id)
             event = _job_event_with_auth_context(accepted_event, auth_context)
-            if action == "desktop_upload":
-                stored_event = job_event_store.record_once(
-                    event,
-                    dedupe={"job_id": job.job_id, "action": "desktop_upload"},
-                )
-            else:
-                stored_event = job_event_store.record(event)
+            stored_event = job_event_store.record(event)
         except KeyError:
             self._send_json({"error": "job_not_found"}, status=404)
             return
@@ -1623,7 +1617,7 @@ def _validate_desktop_result_download_audit_event(
     return accepted_event
 
 
-def _validate_desktop_upload_audit_event(
+def _reject_direct_desktop_upload_audit_event(
     job: JobRecord,
     audit_event: Any,
 ) -> dict[str, Any]:

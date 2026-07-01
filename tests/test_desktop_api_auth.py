@@ -479,6 +479,36 @@ def test_desktop_api_client_removes_saved_result_when_audit_is_rejected(tmp_path
     assert not (tmp_path / "result.json").exists()
 
 
+def test_desktop_api_client_preserves_saved_result_when_audit_response_is_unconfirmed(
+    tmp_path,
+) -> None:
+    class MalformedAuditResponseTransport(ResultSaveTransport):
+        def __call__(self, request: Request, *, timeout: float):
+            self.requests.append(request)
+            if request.full_url.endswith("/api/job-events"):
+                return RawResponse(b"{")
+            return RawResponse(self.body, headers=self.headers)
+
+    transport = MalformedAuditResponseTransport(
+        b'{"document_ir":{}}',
+        headers={"Content-Disposition": 'attachment; filename="result.json"'},
+    )
+    client = DesktopApiClient(
+        DesktopApiClientConfig(base_url="http://127.0.0.1:8765"),
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=transport,
+    )
+
+    with pytest.raises(
+        DesktopApiError,
+        match="desktop result download audit outcome is unconfirmed",
+    ):
+        client.save_job_result("job-complete-1", tmp_path)
+
+    assert len(transport.requests) == 2
+    assert (tmp_path / "result.json").read_bytes() == b'{"document_ir":{}}'
+
+
 def test_desktop_api_client_clamps_long_result_download_names(tmp_path) -> None:
     long_filename = f"{'a' * 300}.veridoc-result.json"
 
