@@ -15,6 +15,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 import pytest
 
 from apps.desktop.api_client import ApiCredentialStore, DesktopApiClient, DesktopApiClientConfig
+from core.parsers.xlsx_extraction import extract_xlsx_structure
 import services.api.poc_web as poc_web
 from services.api.job_queue import JobQueue
 from services.api.poc_web import (
@@ -254,6 +255,100 @@ def test_convert_uploaded_document_manifest_names_mode_artifacts_safely(
             },
         },
     }
+
+
+def test_convert_uploaded_document_blocks_primary_render_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def failing_docx_renderer(document_ir: dict, output_path: Path) -> None:
+        raise ValueError("docx renderer fixture failure")
+
+    monkeypatch.setattr(
+        poc_web,
+        "render_editable_docx_from_pdf_ir",
+        failing_docx_renderer,
+    )
+    parser_output = {
+        "source_type": "pdf",
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 320,
+                "height": 240,
+                "unit": "pt",
+                "fragments": [
+                    {
+                        "text": "PDF text",
+                        "bbox": {"x": 10, "y": 20, "width": 120, "height": 16, "unit": "pt"},
+                        "confidence": 0.95,
+                    }
+                ],
+            }
+        ],
+    }
+
+    result = convert_uploaded_document(
+        filename="phase0-output.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+        conversion_mode="pdf_to_word",
+    )
+
+    assert result["status"] == "blocked"
+    assert result["warnings"] == [
+        "conversion mode pdf_to_word selected",
+        "primary artifact generation failed: docx renderer fixture failure",
+    ]
+    assert [artifact["id"] for artifact in result["artifacts"]] == ["debug-json"]
+
+
+@pytest.mark.parametrize(
+    ("conversion_mode", "source_type"),
+    (
+        ("pdf_to_excel", "pdf"),
+        ("word_to_excel", "docx"),
+    ),
+)
+def test_convert_uploaded_document_xlsx_primary_renders_table_blocks_as_grid(
+    tmp_path: Path,
+    conversion_mode: str,
+    source_type: str,
+) -> None:
+    parser_output = {
+        "source_type": source_type,
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 320,
+                "height": 240,
+                "unit": "pt",
+                "fragments": [
+                    {
+                        "kind": "table",
+                        "text": "Lot\tAssay\nA\t12.5",
+                        "bbox": {"x": 10, "y": 20, "width": 120, "height": 32, "unit": "pt"},
+                        "confidence": 0.95,
+                    }
+                ],
+            }
+        ],
+    }
+
+    result = convert_uploaded_document(
+        filename="phase0-output.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+        conversion_mode=conversion_mode,
+    )
+
+    primary_artifact = result["artifacts"][0]
+    assert primary_artifact["format"] == "xlsx"
+    primary_path = tmp_path / primary_artifact["filename"]
+    primary_path.write_bytes(primary_artifact["content"])
+    xlsx = extract_xlsx_structure(primary_path)
+    cells = {cell.ref: (cell.value, cell.value_type) for cell in xlsx.sheets[0].cells}
+    assert cells["A4"] == ("Lot", "inline_string")
+    assert cells["B4"] == ("Assay", "inline_string")
+    assert cells["A5"] == ("A", "inline_string")
+    assert cells["B5"] == ("12.5", "number")
 
 
 @pytest.mark.parametrize(
@@ -1194,6 +1289,62 @@ def test_poc_http_api_returns_json_safe_download_content() -> None:
     ]
     downloaded = json.loads(body["download"]["content_text"])
     assert downloaded["document_ir"]["document"]["id"] == "upload"
+
+
+def test_poc_http_api_advertises_base64_artifact_payload_field() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        parser_output = {
+            "source_type": "pdf",
+            "pages": [
+                {
+                    "page_number": 1,
+                    "width": 320,
+                    "height": 240,
+                    "unit": "pt",
+                    "fragments": [
+                        {
+                            "text": "PDF text",
+                            "bbox": {
+                                "x": 10,
+                                "y": 20,
+                                "width": 120,
+                                "height": 16,
+                                "unit": "pt",
+                            },
+                            "confidence": 0.95,
+                        }
+                    ],
+                }
+            ],
+        }
+        payload = json.dumps(
+            {
+                "filename": "phase0-output.json",
+                "content": json.dumps(parser_output),
+                "conversion_mode": "pdf_to_word",
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/convert",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 200
+    primary_artifact = body["artifacts"][0]
+    assert "content" not in primary_artifact
+    assert base64.b64decode(primary_artifact["content_base64"]).startswith(b"PK")
+    assert primary_artifact["metadata"]["download"]["field"] == "artifacts[0].content_base64"
 
 
 def test_poc_http_api_scopes_review_actions_by_conversion_role() -> None:

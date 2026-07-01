@@ -562,7 +562,7 @@ def _should_render_xlsx_table_grid(
     table_merges: Mapping[str, Sequence[str]],
 ) -> bool:
     block_id = _text(block.get("id"))
-    return bool(table_merges.get(block_id))
+    return bool(table_merges.get(block_id)) or bool(_docx_table_rows(block))
 
 
 def _joined_annotation_text(texts: Sequence[str]) -> str:

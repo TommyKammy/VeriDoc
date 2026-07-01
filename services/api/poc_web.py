@@ -628,8 +628,11 @@ def convert_uploaded_document(
         debug_sha256=output_sha256,
         primary_artifact=primary_artifact,
     )
+    status = "blocked" if primary_warning is not None else _status(
+        validation.ok, validation.requires_review
+    )
     return {
-        "status": _status(validation.ok, validation.requires_review),
+        "status": status,
         "conversion_id": conversion_id,
         "hashes": {
             "source_sha256": source_sha256,
@@ -2562,7 +2565,10 @@ def _review_actions(role: str | None) -> list[str]:
 def _http_result(result: dict[str, Any], *, role: str | None = None) -> dict[str, Any]:
     download = dict(result["download"])
     content = download.pop("content")
-    artifacts = [_http_artifact(artifact) for artifact in result.get("artifacts", [])]
+    artifacts = [
+        _http_artifact(artifact, artifact_index=index)
+        for index, artifact in enumerate(result.get("artifacts", []))
+    ]
     return {
         **{key: value for key, value in result.items() if key not in {"artifacts", "download"}},
         "artifacts": artifacts,
@@ -2574,13 +2580,27 @@ def _http_result(result: dict[str, Any], *, role: str | None = None) -> dict[str
     }
 
 
-def _http_artifact(artifact: Any) -> Any:
+def _http_artifact(artifact: Any, *, artifact_index: int | None = None) -> Any:
     if not isinstance(artifact, dict):
         return artifact
     item = dict(artifact)
     content = item.pop("content", None)
     if isinstance(content, bytes):
         item["content_base64"] = base64.b64encode(content).decode("ascii")
+        metadata = item.get("metadata")
+        if isinstance(metadata, dict):
+            metadata = dict(metadata)
+            download = metadata.get("download")
+            if isinstance(download, dict):
+                metadata["download"] = {
+                    **download,
+                    "field": (
+                        f"artifacts[{artifact_index}].content_base64"
+                        if artifact_index is not None
+                        else "content_base64"
+                    ),
+                }
+                item["metadata"] = metadata
     return item
 
 
