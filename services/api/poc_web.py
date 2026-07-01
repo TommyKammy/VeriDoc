@@ -1596,7 +1596,7 @@ def _desktop_upload_audit_event(job: JobRecord) -> dict[str, Any]:
 def _desktop_result_download_audit_event(job: JobRecord) -> dict[str, Any]:
     download = _job_download(job)
     hashes = _job_hashes(job)
-    output_sha256 = hashes["output_sha256"] or hashlib.sha256(download["content"]).hexdigest()
+    output_sha256 = _desktop_result_output_sha256(download, hashes)
     return {
         "event_type": "desktop.job_operation",
         "job_id": job.job_id,
@@ -1607,6 +1607,16 @@ def _desktop_result_download_audit_event(job: JobRecord) -> dict[str, Any]:
         "source_sha256": hashes["source_sha256"],
         "output_sha256": output_sha256,
     }
+
+
+def _desktop_result_output_sha256(
+    download: dict[str, Any],
+    hashes: dict[str, str | None],
+) -> str:
+    stored_hash = hashes["output_sha256"]
+    if stored_hash is not None:
+        return stored_hash
+    return hashlib.sha256(download["content"]).hexdigest()
 
 
 def _validate_job_event(

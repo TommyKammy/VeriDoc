@@ -423,7 +423,7 @@ class DesktopApiClient:
         audit_event: dict[str, Any],
     ) -> Literal["accepted", "rejected", "unconfirmed"]:
         try:
-            payload = self._request_json(
+            payload = self._request_json_single_attempt(
                 "POST",
                 "/api/job-events",
                 {
@@ -431,7 +431,6 @@ class DesktopApiClient:
                     "action": "desktop_result_download",
                     "audit_event": audit_event,
                 },
-                retry_on_url_error=False,
             )
         except DesktopApiError as exc:
             if str(exc) in {
@@ -450,6 +449,14 @@ class DesktopApiClient:
         if audit_event.get("job_id") != job_id or audit_event.get("action") != "desktop_result_download":
             return "rejected"
         return "accepted"
+
+    def _request_json_single_attempt(
+        self,
+        method: str,
+        path: str,
+        body: dict[str, Any],
+    ) -> dict[str, Any]:
+        return self._request_json(method, path, body, retry_on_url_error=False)
 
     def _request_json(
         self,
