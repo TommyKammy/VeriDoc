@@ -128,9 +128,12 @@ class JobQueue:
                 job = self._jobs[job_id]
             except KeyError as exc:
                 raise KeyError(f"unknown job_id: {job_id}") from exc
+            was_unpublished = job_id in self._unpublished_job_ids
             self._unpublished_job_ids.discard(job_id)
             if enqueue and job_id not in self._pending_job_ids:
                 if job.status != "queued":
+                    if not was_unpublished:
+                        return job
                     raise RuntimeError("job is already active")
                 self._pending_job_ids.append(job_id)
             self._condition.notify_all()

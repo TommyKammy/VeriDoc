@@ -3875,6 +3875,95 @@ def test_poc_http_api_publishes_unpublished_desktop_upload_replay_after_audit() 
     assert first_result["body"]["audit_event"] == replay_body["audit_event"] == events[0]
 
 
+def test_poc_http_api_creator_publish_is_idempotent_after_replay_starts_job() -> None:
+    audit_recorded = Event()
+    release_creator_publish = Event()
+
+    class BlockingPublishJobAuditEventStore(JobAuditEventStore):
+        def record_once(
+            self,
+            event: dict[str, object],
+            *,
+            dedupe: dict[str, object],
+        ) -> dict[str, object]:
+            recorded = super().record_once(event, dedupe=dedupe)
+            audit_recorded.set()
+            release_creator_publish.wait(timeout=5)
+            return recorded
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue()
+    server.job_event_store = BlockingPublishJobAuditEventStore()
+    server.local_auth_tokens = _local_auth_tokens()
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    uploaded_content = b"%PDF-1.7\nreplay started source"
+    source_sha256 = hashlib.sha256(uploaded_content).hexdigest()
+    payload = json.dumps(
+        {
+            "idempotency_key": "replay-started-before-creator-publish",
+            "filename": "batch-record.pdf",
+            "content_type": "application/pdf",
+            "content_base64": base64.b64encode(uploaded_content).decode("ascii"),
+            "size_bytes": len(uploaded_content),
+            "source_sha256": source_sha256,
+            "mode": "standard",
+            "desktop_upload_audit": True,
+        }
+    ).encode("utf-8")
+    headers = {
+        "Authorization": "Bearer reviewer-token",
+        "Content-Type": "application/json",
+        "Content-Length": str(len(payload)),
+    }
+    first_result: dict[str, object] = {}
+    errors: list[BaseException] = []
+
+    def post_first_upload() -> None:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        try:
+            connection.request("POST", "/api/jobs", body=payload, headers=headers)
+            response = connection.getresponse()
+            first_result["status"] = response.status
+            first_result["body"] = json.loads(response.read().decode("utf-8"))
+        except BaseException as exc:  # pragma: no cover - assertion below preserves the failure.
+            errors.append(exc)
+        finally:
+            connection.close()
+
+    try:
+        worker = Thread(target=post_first_upload)
+        worker.start()
+        assert audit_recorded.wait(timeout=5)
+
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request("POST", "/api/jobs", body=payload, headers=headers)
+        replay_response = connection.getresponse()
+        replay_body = json.loads(replay_response.read().decode("utf-8"))
+        connection.close()
+
+        running = server.job_queue.start_next_job()
+        release_creator_publish.set()
+        worker.join(timeout=10)
+        job_id = replay_body["job"]["job_id"]
+        events = server.job_event_store.list_events(filters={"job_id": job_id})
+    finally:
+        release_creator_publish.set()
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert errors == []
+    assert running is not None
+    assert running.job_id == replay_body["job"]["job_id"]
+    assert running.status == "running"
+    assert first_result["status"] == 202
+    assert replay_response.status == 202
+    assert first_result["body"]["job"]["job_id"] == replay_body["job"]["job_id"]
+    assert first_result["body"]["job"]["status"] == "running"
+    assert [event["action"] for event in events] == ["desktop_upload"]
+    assert first_result["body"]["audit_event"] == replay_body["audit_event"] == events[0]
+
+
 def test_poc_http_api_keeps_in_flight_desktop_upload_replay_idempotent() -> None:
     audit_recording_started = Event()
     release_audit_recording = Event()
