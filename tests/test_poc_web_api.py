@@ -2686,6 +2686,57 @@ def test_poc_http_api_rolls_back_desktop_upload_when_create_audit_fails() -> Non
     assert jobs == []
 
 
+def test_poc_http_api_does_not_expose_desktop_upload_job_before_create_audit() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue()
+
+    class RacingJobAuditEventStore(JobAuditEventStore):
+        started_job_id: Optional[str] = None
+
+        def record_once(self, event: dict[str, object], *, dedupe: dict[str, object]) -> dict[str, object]:
+            started = server.job_queue.start_next_job()
+            self.started_job_id = started.job_id if started is not None else None
+            raise ValueError("audit log unavailable")
+
+    audit_store = RacingJobAuditEventStore()
+    server.job_event_store = audit_store
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    uploaded_content = b"%PDF-1.7\nqueued source"
+    source_sha256 = hashlib.sha256(uploaded_content).hexdigest()
+    try:
+        payload = json.dumps(
+            {
+                "idempotency_key": "desktop-upload-audit-race",
+                "filename": "batch-record.pdf",
+                "content_type": "application/pdf",
+                "content_base64": base64.b64encode(uploaded_content).decode("ascii"),
+                "size_bytes": len(uploaded_content),
+                "source_sha256": source_sha256,
+                "mode": "standard",
+                "desktop_upload_audit": True,
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/jobs",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+        jobs = server.job_queue.list_jobs()
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 400
+    assert body == {"error": "invalid_job_request", "message": "audit log unavailable"}
+    assert audit_store.started_job_id is None
+    assert jobs == []
+
+
 def test_poc_http_api_records_desktop_upload_and_download_audit_events() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     server.job_queue = JobQueue()

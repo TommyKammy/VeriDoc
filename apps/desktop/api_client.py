@@ -386,7 +386,8 @@ class DesktopApiClient:
             raise ValueError("destination_dir must be an existing directory")
         body, headers = self._request_bytes("GET", f"/api/jobs/{quote(job_id, safe='')}/result")
         filename = _download_filename_from_headers(headers) or f"{job_id}.veridoc-result.json"
-        safe_filename = _sanitize_download_filename(filename)
+        api_filename = _api_download_filename(filename)
+        safe_filename = _sanitize_download_filename(api_filename)
         for _ in range(1000):
             save_path = _available_destination_path(destination, safe_filename)
             try:
@@ -400,7 +401,7 @@ class DesktopApiClient:
                         "event_type": "desktop.job_operation",
                         "job_id": job_id,
                         "action": "desktop_result_download",
-                        "download_filename": safe_filename,
+                        "download_filename": api_filename,
                         "saved_filename": save_path.name,
                         "output_sha256": hashlib.sha256(body).hexdigest(),
                     },
@@ -818,6 +819,13 @@ def _download_filename_from_headers(headers: dict[str, str]) -> str | None:
     if filename:
         return (filename.group(1) or filename.group(2) or "").strip()
     return None
+
+
+def _api_download_filename(filename: str) -> str:
+    basename = filename.replace("\\", "/").rsplit("/", maxsplit=1)[-1].strip()
+    safe = re.sub(r'[\x00-\x1f\x7f"\\]', "", basename)
+    safe = "".join(char for char in safe if 0x20 <= ord(char) <= 0x7E).strip()
+    return safe or DOWNLOAD_FILENAME_FALLBACK
 
 
 def _sanitize_download_filename(filename: str, *, max_bytes: int = MAX_DOWNLOAD_FILENAME_BYTES) -> str:

@@ -50,6 +50,7 @@ class JobQueue:
         mode: str,
         source: dict[str, Any] | None = None,
         template: dict[str, Any] | None = None,
+        enqueue: bool = True,
     ) -> JobRecord:
         key, filename, mode = _normalize_job_request(
             idempotency_key=idempotency_key,
@@ -73,6 +74,7 @@ class JobQueue:
                 mode=mode,
                 source=source,
                 template=template,
+                enqueue=enqueue,
             )
 
     def get_or_create_job(
@@ -84,6 +86,7 @@ class JobQueue:
         source: dict[str, Any] | None = None,
         template: dict[str, Any] | None = None,
         create_template: Callable[[], dict[str, Any] | None] | None = None,
+        enqueue: bool = True,
     ) -> tuple[JobRecord, bool]:
         key, filename, mode = _normalize_job_request(
             idempotency_key=idempotency_key,
@@ -108,8 +111,21 @@ class JobQueue:
                 mode=mode,
                 source=source,
                 template=stored_template,
+                enqueue=enqueue,
             )
             return job, True
+
+    def enqueue_job(self, job_id: str) -> JobRecord:
+        with self._lock:
+            try:
+                job = self._jobs[job_id]
+            except KeyError as exc:
+                raise KeyError(f"unknown job_id: {job_id}") from exc
+            if job.status != "queued":
+                raise RuntimeError("job is already active")
+            if job_id not in self._pending_job_ids:
+                self._pending_job_ids.append(job_id)
+            return job
 
     def discard_queued_job(self, job_id: str) -> None:
         with self._lock:
@@ -179,6 +195,7 @@ class JobQueue:
         mode: str,
         source: dict[str, Any] | None,
         template: dict[str, Any] | None,
+        enqueue: bool,
     ) -> JobRecord:
         if mode == "high_quality" and self._has_active_high_quality_job():
             raise RuntimeError("high_quality job already active")
@@ -193,7 +210,8 @@ class JobQueue:
         )
         self._jobs[job.job_id] = job
         self._idempotency_index[idempotency_key] = job.job_id
-        self._pending_job_ids.append(job.job_id)
+        if enqueue:
+            self._pending_job_ids.append(job.job_id)
         return job
 
     def get_job(self, job_id: str) -> JobRecord:

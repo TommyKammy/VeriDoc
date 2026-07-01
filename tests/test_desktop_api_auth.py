@@ -406,7 +406,7 @@ def test_desktop_api_client_saves_completed_job_result_to_selected_folder_with_s
     assert existing.read_text(encoding="utf-8") == "existing result"
     audit_request = transport.requests[1]
     audit_body = json.loads(audit_request.data.decode("utf-8"))
-    assert audit_body["audit_event"]["download_filename"] == "unsafe-name.veridoc-result.json"
+    assert audit_body["audit_event"]["download_filename"] == "unsafe:name.veridoc-result.json"
     assert audit_body["audit_event"]["saved_filename"] == "unsafe-name (1).veridoc-result.json"
 
 
@@ -601,9 +601,13 @@ def test_desktop_api_client_avoids_windows_reserved_result_filenames(
     )
 
     saved_path = client.save_job_result("job-complete-1", tmp_path)
+    audit_request = transport.requests[1]
+    audit_payload = json.loads(audit_request.data.decode("utf-8"))
 
     assert saved_path == tmp_path / saved_filename
     assert saved_path.read_bytes() == b'{"document_ir":{}}'
+    assert audit_payload["audit_event"]["download_filename"] == server_filename
+    assert audit_payload["audit_event"]["saved_filename"] == saved_filename
 
 
 def test_desktop_api_client_fetches_job_progress_display_state() -> None:

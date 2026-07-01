@@ -705,6 +705,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 source=source,
                 template=requested_template,
                 create_template=lambda: self._job_template_snapshot(request.get("template_id")),
+                enqueue=not desktop_upload_audit,
             )
             upload_audit_event = None
             if desktop_upload_audit:
@@ -721,6 +722,8 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                     if created_job:
                         job_queue.discard_queued_job(job.job_id)
                     raise
+                if created_job:
+                    job = job_queue.enqueue_job(job.job_id)
         except RuntimeError as exc:
             self._send_json({"error": "job_conflict", "message": str(exc)}, status=409)
             return
