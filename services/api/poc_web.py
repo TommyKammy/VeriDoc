@@ -2567,6 +2567,8 @@ def _parser_output_from_upload(
     if not isinstance(parsed, dict):
         warnings.append("JSON upload root is not an object; content requires review")
         return _plain_text_parser_output(text), warnings
+    if _source_type(filename, parsed) == "pdf" and isinstance(parsed.get("candidates"), list):
+        warnings.extend(_pdf_table_warnings(parsed))
     return parsed, warnings
 
 
@@ -2740,13 +2742,6 @@ def _pdf_table_existing_tables(
     parser_output: dict[str, Any]
 ) -> dict[tuple[int, tuple[tuple[str, ...], ...]], list[dict[str, Any]]]:
     table_fragments: dict[tuple[int, tuple[tuple[str, ...], ...]], list[dict[str, Any]]] = {}
-    blocks = parser_output.get("blocks")
-    if isinstance(blocks, list):
-        for block in blocks:
-            if isinstance(block, dict) and block.get("type") == "table":
-                block_key = _pdf_table_key(_pdf_table_block_page_number(block), block)
-                if block_key:
-                    table_fragments.setdefault(block_key, []).append(block)
     pages = parser_output.get("pages")
     if isinstance(pages, list):
         for page in pages:
@@ -2765,6 +2760,13 @@ def _pdf_table_existing_tables(
                 )
                 if fragment_key:
                     table_fragments.setdefault(fragment_key, []).append(fragment)
+    blocks = parser_output.get("blocks")
+    if isinstance(blocks, list):
+        for block in blocks:
+            if isinstance(block, dict) and block.get("type") == "table":
+                block_key = _pdf_table_key(_pdf_table_block_page_number(block), block)
+                if block_key:
+                    table_fragments.setdefault(block_key, []).append(block)
     return table_fragments
 
 
@@ -2774,12 +2776,13 @@ def _merge_pdf_table_into_parser_fragments(
     page: dict[str, Any],
     candidate_name: str,
 ) -> bool:
-    parser_fragments = [
-        fragment for fragment in fragments if fragment.get("extractor") != candidate_name
-    ]
-    for fragment in parser_fragments:
+    for index, fragment in enumerate(fragments):
+        if fragment.get("extractor") == candidate_name:
+            continue
         _merge_pdf_table_fragment(fragment, table, page, candidate_name)
-    return bool(parser_fragments)
+        del fragments[index]
+        return True
+    return False
 
 
 def _merge_pdf_table_fragment(
@@ -2874,15 +2877,18 @@ def _pdf_table_text_cell(value: Any) -> str:
 def _pdf_table_bbox(table: dict[str, Any], page: dict[str, Any]) -> dict[str, Any] | None:
     cells: list[dict[str, float | str]] = []
     page_height = _float_value(page.get("height"))
-    for row in table.get("cell_bboxes") if isinstance(table.get("cell_bboxes"), list) else []:
-        if not isinstance(row, list):
-            continue
+    rows = _pdf_table_structured_rows(table.get("rows"))
+    cell_bboxes = table.get("cell_bboxes")
+    if not rows or not isinstance(cell_bboxes, list) or len(cell_bboxes) != len(rows):
+        return None
+    for row_index, row in enumerate(cell_bboxes):
+        if not isinstance(row, list) or len(row) != len(rows[row_index]):
+            return None
         for cell in row:
             normalized = _pdf_table_cell_bbox(cell, page_height=page_height)
-            if normalized is not None:
-                cells.append(normalized)
-    if not cells:
-        return None
+            if normalized is None:
+                return None
+            cells.append(normalized)
     units = {str(cell.get("unit") or "pt") for cell in cells}
     if len(units) != 1:
         return None

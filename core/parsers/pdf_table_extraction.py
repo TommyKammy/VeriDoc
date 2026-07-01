@@ -95,7 +95,11 @@ class MissingPdfTableExtractorDependency(RuntimeError):
     """Raised when an optional PDF table extraction dependency is unavailable."""
 
 
-CONSENSUS_BLOCKING_MISMATCH_KINDS = {"candidate-shape", "candidate-table-count"}
+CONSENSUS_BLOCKING_MISMATCH_KINDS = {
+    "candidate-shape",
+    "candidate-table-count",
+    "candidate-text",
+}
 
 
 def compare_pdf_table_extractors(
@@ -215,6 +219,17 @@ def build_table_extraction_report(
                             expected=_shape_label(left_table),
                             actual=_shape_label(right_table),
                             notes=f"Candidate extractors disagree on table {table_index} shape.",
+                        )
+                    )
+                    continue
+                if _table_text_key(left_table) != _table_text_key(right_table):
+                    mismatches.append(
+                        TableExtractionMismatch(
+                            kind="candidate-text",
+                            candidate=f"{left_candidate.name} vs {right_candidate.name}",
+                            expected=_table_text_label(left_table),
+                            actual=_table_text_label(right_table),
+                            notes=f"Candidate extractors disagree on table {table_index} cell text.",
                         )
                     )
 
@@ -426,6 +441,14 @@ def _shape_label(table: ExtractedTable) -> str:
     if table.is_rectangular:
         return f"{table.row_count}x{table.column_count}"
     return f"row widths {table.row_widths}"
+
+
+def _table_text_key(table: ExtractedTable) -> tuple[tuple[str, ...], ...]:
+    return tuple(tuple(_cell_text(cell) for cell in row) for row in table.rows)
+
+
+def _table_text_label(table: ExtractedTable) -> str:
+    return "\n".join("\t".join(row) for row in _table_text_key(table))
 
 
 def _package_version(package_name: str) -> str | None:

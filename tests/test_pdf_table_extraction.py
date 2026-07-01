@@ -255,6 +255,28 @@ def test_build_table_extraction_report_compares_every_table_without_expected_sha
     )
 
 
+def test_build_table_extraction_report_blocks_selection_when_cell_text_disagrees(
+    tmp_path: Path,
+) -> None:
+    report = build_table_extraction_report(
+        source_path=tmp_path / "text-mismatch.pdf",
+        candidates=[
+            _candidate("camelot", "lattice", [["Lot", "Assay"], ["A-001", "12.5"]]),
+            _candidate("pdfplumber", "table", [["Lot", "Assay"], ["A-001", "13.0"]]),
+        ],
+    )
+
+    assert report.selected_candidate is None
+    assert any(
+        mismatch.kind == "candidate-text"
+        and mismatch.candidate == "camelot:lattice vs pdfplumber:table"
+        and mismatch.expected == "Lot\tAssay\nA-001\t12.5"
+        and mismatch.actual == "Lot\tAssay\nA-001\t13.0"
+        and "table 1 cell text" in mismatch.notes
+        for mismatch in report.mismatches
+    )
+
+
 def test_build_table_extraction_report_blocks_selection_when_table_counts_disagree(
     tmp_path: Path,
 ) -> None:
