@@ -13,6 +13,7 @@ import math
 import os
 from pathlib import Path
 import re
+import secrets
 import sys
 from tempfile import TemporaryDirectory
 from threading import Lock
@@ -46,6 +47,10 @@ MAX_UPLOAD_BYTES = 2 * 1024 * 1024
 MAX_UPLOAD_REQUEST_BYTES = (MAX_UPLOAD_BYTES * 4 // 3) + 4096
 MAX_DOWNLOAD_FILENAME_BYTES = 255
 DOWNLOAD_FILENAME_FALLBACK = "veridoc-result.json"
+DESKTOP_CLIENT_HEADER = "X-VeriDoc-Desktop-Client"
+DESKTOP_CLIENT_HEADER_VALUE = "VeriDocDesktop"
+DESKTOP_SAVE_PROOF_HEADER = "X-VeriDoc-Desktop-Save-Proof"
+MAX_DESKTOP_SAVE_PROOFS = 1024
 WINDOWS_RESERVED_DOWNLOAD_STEMS = {
     "CON",
     "PRN",
@@ -251,6 +256,28 @@ class JobAuditEventStore:
                 self._events,
                 checkpoint=self._integrity_checkpoint,
             )
+
+
+class DesktopSaveProofStore:
+    def __init__(self, *, max_proofs: int = MAX_DESKTOP_SAVE_PROOFS) -> None:
+        self._proofs: dict[str, dict[str, Any]] = {}
+        self._max_proofs = max(1, max_proofs)
+        self._lock = Lock()
+
+    def issue(self, proof: dict[str, Any]) -> str:
+        proof_token = secrets.token_urlsafe(32)
+        with self._lock:
+            while len(self._proofs) >= self._max_proofs:
+                self._proofs.pop(next(iter(self._proofs)))
+            self._proofs[proof_token] = deepcopy(proof)
+        return proof_token
+
+    def consume(self, proof_token: str, *, expected: dict[str, Any]) -> bool:
+        with self._lock:
+            proof = self._proofs.pop(proof_token, None)
+        if proof is None:
+            return False
+        return proof == expected
 
 
 def _audit_event_with_integrity(
@@ -514,6 +541,7 @@ def _review_workflow_event_view(audit_event: dict[str, Any]) -> dict[str, Any]:
 
 DEFAULT_REVIEW_AUDIT_EVENTS = ReviewAuditEventStore()
 DEFAULT_JOB_AUDIT_EVENTS = JobAuditEventStore()
+DEFAULT_DESKTOP_SAVE_PROOFS = DesktopSaveProofStore()
 LLM_EXTRACTOR_NAME_TOKENS = ("llm", "gpt", "openai")
 LLM_INFERENCE_PROFILE_FIELDS = ("id", "label", "provider", "model_family", "recommended_model")
 
@@ -889,7 +917,12 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             updated_job = job
             if action == "desktop_result_download":
                 job_event_store.require_integrity()
-                accepted_event = _validate_desktop_result_download_audit_event(job, audit_event)
+                accepted_event = _validate_desktop_result_download_audit_event(
+                    job,
+                    audit_event,
+                    auth_context,
+                    self._desktop_save_proof_store(),
+                )
             elif action == "desktop_upload":
                 job_event_store.require_integrity()
                 accepted_event = _reject_direct_desktop_upload_audit_event(job, audit_event)
@@ -1007,6 +1040,14 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             download = _job_download(job)
             content_type = _download_content_type(download["content_type"])
             filename = _download_filename(download["filename"])
+            save_proof = None
+            if self.headers.get(DESKTOP_CLIENT_HEADER) == DESKTOP_CLIENT_HEADER_VALUE:
+                save_proof = self._desktop_save_proof_store().issue(
+                    _desktop_save_proof(
+                        _desktop_result_download_audit_event(job),
+                        auth_context,
+                    )
+                )
         except KeyError:
             self._send_json({"error": "job_not_found"}, status=404)
             return
@@ -1025,6 +1066,8 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             "Content-Disposition",
             f'attachment; filename="{filename}"',
         )
+        if save_proof is not None:
+            self.send_header(DESKTOP_SAVE_PROOF_HEADER, save_proof)
         self.send_header("Content-Length", str(len(download["content"])))
         self.end_headers()
         self.wfile.write(download["content"])
@@ -1049,6 +1092,9 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
 
     def _job_event_store(self) -> JobAuditEventStore:
         return getattr(self.server, "job_event_store", DEFAULT_JOB_AUDIT_EVENTS)
+
+    def _desktop_save_proof_store(self) -> DesktopSaveProofStore:
+        return getattr(self.server, "desktop_save_proof_store", DEFAULT_DESKTOP_SAVE_PROOFS)
 
     def _template_store(self) -> TemplateStore:
         return getattr(self.server, "template_store", DEFAULT_TEMPLATE_STORE)
@@ -1119,7 +1165,11 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 status=401,
             )
             return False, None
-        return True, {"role": role["role"], "actor_id": _local_actor_id(role)}
+        return True, {
+            "role": role["role"],
+            "actor_id": _local_actor_id(role),
+            "token_id": role.get("token_id"),
+        }
 
     def _role_has_permission(self, role: str | None, permission: str) -> bool:
         if role is None:
@@ -1665,6 +1715,8 @@ def _validate_job_event(
 def _validate_desktop_result_download_audit_event(
     job: JobRecord,
     audit_event: Any,
+    auth_context: dict[str, str | None] | None,
+    proof_store: DesktopSaveProofStore,
 ) -> dict[str, Any]:
     expected_event = _desktop_result_download_audit_event(job)
     if not isinstance(audit_event, dict):
@@ -1674,6 +1726,9 @@ def _validate_desktop_result_download_audit_event(
             raise ValueError(f"audit_event.{field_name} does not match downloaded result")
     if audit_event.get("output_sha256") != expected_event["output_sha256"]:
         raise ValueError("audit_event.output_sha256 does not match downloaded result content")
+    proof_token = audit_event.get("download_proof")
+    if not isinstance(proof_token, str) or not proof_token.strip():
+        raise ValueError("audit_event.download_proof is required")
     accepted_event = dict(expected_event)
     if "saved_filename" in audit_event:
         saved_filename = audit_event.get("saved_filename")
@@ -1683,7 +1738,26 @@ def _validate_desktop_result_download_audit_event(
         ):
             raise ValueError("audit_event.saved_filename is invalid")
         accepted_event["saved_filename"] = saved_filename
+    if not proof_store.consume(
+        proof_token,
+        expected=_desktop_save_proof(expected_event, auth_context),
+    ):
+        raise ValueError("audit_event.download_proof is invalid")
     return accepted_event
+
+
+def _desktop_save_proof(
+    audit_event: dict[str, Any],
+    auth_context: dict[str, str | None] | None,
+) -> dict[str, Any]:
+    return {
+        "job_id": audit_event.get("job_id"),
+        "action": audit_event.get("action"),
+        "download_filename": audit_event.get("download_filename"),
+        "output_sha256": audit_event.get("output_sha256"),
+        "actor_id": None if auth_context is None else auth_context.get("actor_id"),
+        "token_id": None if auth_context is None else auth_context.get("token_id"),
+    }
 
 
 def _reject_direct_desktop_upload_audit_event(

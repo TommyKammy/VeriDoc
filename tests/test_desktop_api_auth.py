@@ -20,6 +20,8 @@ from apps.desktop.api_client import (
     DesktopApiClientConfig,
     DesktopJobDisplayState,
     DesktopUploadValidationError,
+    DESKTOP_CLIENT_HEADER_VALUE,
+    DESKTOP_SAVE_PROOF_HEADER,
     InvalidApiTokenError,
     MAX_DOWNLOAD_FILENAME_BYTES,
     MAX_DESKTOP_UPLOAD_BYTES,
@@ -103,7 +105,7 @@ class ResultSaveTransport:
     def __init__(self, body: bytes, *, headers: dict[str, str] | None = None) -> None:
         self.requests: list[Request] = []
         self.body = body
-        self.headers = headers or {}
+        self.headers = {DESKTOP_SAVE_PROOF_HEADER: "save-proof-1", **(headers or {})}
 
     def __call__(self, request: Request, *, timeout: float):
         self.requests.append(request)
@@ -433,6 +435,9 @@ def test_desktop_api_client_result_save_records_audit_event_after_authenticated_
     assert download_request.get_method() == "GET"
     assert download_request.get_header("Authorization") == "Bearer reviewer-token"
     assert download_request.get_header("Accept") == "application/octet-stream"
+    assert dict(download_request.header_items())["X-veridoc-desktop-client"] == (
+        DESKTOP_CLIENT_HEADER_VALUE
+    )
     assert audit_request.full_url == "http://127.0.0.1:8765/api/job-events"
     assert audit_request.get_method() == "POST"
     assert audit_request.get_header("Authorization") == "Bearer reviewer-token"
@@ -447,6 +452,7 @@ def test_desktop_api_client_result_save_records_audit_event_after_authenticated_
             "download_filename": "result.json",
             "saved_filename": "result.json",
             "output_sha256": hashlib.sha256(b"{}").hexdigest(),
+            "download_proof": "save-proof-1",
         },
     }
 
@@ -1430,6 +1436,7 @@ def test_desktop_api_client_preserves_pinned_https_result_download_headers(
                     else {
                         "Content-Disposition": 'attachment; filename="pinned-result.json"',
                         "Content-Type": "application/json",
+                        DESKTOP_SAVE_PROOF_HEADER: "pinned-save-proof",
                     }
                 )
 
@@ -1473,6 +1480,7 @@ def test_desktop_api_client_preserves_pinned_https_result_download_headers(
     assert requests[0]["headers"] == {
         "Accept": "application/octet-stream",
         "Authorization": "Bearer reviewer-token",
+        "X-veridoc-desktop-client": DESKTOP_CLIENT_HEADER_VALUE,
         "Host": "localhost:8765",
     }
     assert requests[1]["method"] == "POST"
@@ -1493,6 +1501,7 @@ def test_desktop_api_client_preserves_pinned_https_result_download_headers(
             "download_filename": "pinned-result.json",
             "saved_filename": "pinned-result.json",
             "output_sha256": hashlib.sha256(b'{"document_ir":{}}').hexdigest(),
+            "download_proof": "pinned-save-proof",
         },
     }
     assert captured["closed"] is True

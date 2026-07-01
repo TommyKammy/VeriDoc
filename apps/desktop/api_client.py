@@ -54,6 +54,9 @@ class DesktopTemporaryCleanupError(RuntimeError):
 MAX_DESKTOP_UPLOAD_BYTES = 2 * 1024 * 1024
 MAX_DOWNLOAD_FILENAME_BYTES = 255
 DOWNLOAD_FILENAME_FALLBACK = "veridoc-result.json"
+DESKTOP_CLIENT_HEADER = "X-VeriDoc-Desktop-Client"
+DESKTOP_CLIENT_HEADER_VALUE = "VeriDocDesktop"
+DESKTOP_SAVE_PROOF_HEADER = "X-VeriDoc-Desktop-Save-Proof"
 DESKTOP_TEMP_WORK_DIR = "work"
 DESKTOP_TEMP_TOKEN_BYTES = 16
 DESKTOP_TEMP_DIR_MODE = 0o700
@@ -393,6 +396,9 @@ class DesktopApiClient:
             token=token,
         )
         filename = _download_filename_from_headers(headers) or f"{job_id}.veridoc-result.json"
+        download_proof = headers.get(DESKTOP_SAVE_PROOF_HEADER.lower())
+        if not isinstance(download_proof, str) or not download_proof.strip():
+            raise DesktopApiError("API result download did not include a desktop save proof")
         api_filename = _api_download_filename(filename)
         safe_filename = _sanitize_download_filename(api_filename)
         for _ in range(1000):
@@ -411,6 +417,7 @@ class DesktopApiClient:
                         "download_filename": api_filename,
                         "saved_filename": save_path.name,
                         "output_sha256": hashlib.sha256(body).hexdigest(),
+                        "download_proof": download_proof,
                     },
                     token=token,
                 )
@@ -560,6 +567,7 @@ class DesktopApiClient:
             request_headers = {
                 "Accept": "application/octet-stream",
                 "Authorization": f"Bearer {token}",
+                DESKTOP_CLIENT_HEADER: DESKTOP_CLIENT_HEADER_VALUE,
             }
             if self.config._host_header:
                 request_headers["Host"] = self.config._host_header
@@ -878,11 +886,11 @@ def _response_headers(response: Any) -> dict[str, str]:
     headers: dict[str, str] = {}
     raw_headers = getattr(response, "headers", None)
     if raw_headers is not None:
-        for name in ("Content-Disposition", "Content-Type"):
+        for name in ("Content-Disposition", "Content-Type", DESKTOP_SAVE_PROOF_HEADER):
             value = raw_headers.get(name)
             if isinstance(value, str):
                 headers[name.lower()] = value
-    for name in ("Content-Disposition", "Content-Type"):
+    for name in ("Content-Disposition", "Content-Type", DESKTOP_SAVE_PROOF_HEADER):
         getheader = getattr(response, "getheader", None)
         if callable(getheader):
             value = getheader(name)

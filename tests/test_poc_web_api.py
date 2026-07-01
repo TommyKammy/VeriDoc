@@ -3181,12 +3181,20 @@ def test_poc_http_api_records_desktop_upload_and_download_audit_events() -> None
         replay_body = json.loads(replay_response.read().decode("utf-8"))
         connection.request("GET", f"/api/jobs/{job_id}/result")
         download_response = connection.getresponse()
+        browser_download_proof = download_response.getheader(poc_web.DESKTOP_SAVE_PROOF_HEADER)
         download_body = download_response.read()
         browser_download_events = server.job_event_store.list_events(filters={"job_id": job_id})
         rejected_event_payload = json.dumps(
             {
                 "job_id": job_id,
                 "action": "desktop_result_download",
+                "audit_event": {
+                    "event_type": "desktop.job_operation",
+                    "job_id": job_id,
+                    "action": "desktop_result_download",
+                    "download_filename": "batch-record.veridoc-result.json",
+                    "output_sha256": hashlib.sha256(b'{"converted": true}').hexdigest(),
+                },
             }
         ).encode("utf-8")
         connection.request(
@@ -3201,6 +3209,14 @@ def test_poc_http_api_records_desktop_upload_and_download_audit_events() -> None
         rejected_event_response = connection.getresponse()
         rejected_event_body = json.loads(rejected_event_response.read().decode("utf-8"))
         rejected_events = server.job_event_store.list_events(filters={"job_id": job_id})
+        connection.request(
+            "GET",
+            f"/api/jobs/{job_id}/result",
+            headers={poc_web.DESKTOP_CLIENT_HEADER: poc_web.DESKTOP_CLIENT_HEADER_VALUE},
+        )
+        desktop_download_response = connection.getresponse()
+        download_proof = desktop_download_response.getheader(poc_web.DESKTOP_SAVE_PROOF_HEADER)
+        assert desktop_download_response.read() == b'{"converted": true}'
         event_payload = json.dumps(
             {
                 "job_id": job_id,
@@ -3211,6 +3227,7 @@ def test_poc_http_api_records_desktop_upload_and_download_audit_events() -> None
                     "action": "desktop_result_download",
                     "download_filename": "batch-record.veridoc-result.json",
                     "output_sha256": hashlib.sha256(b'{"converted": true}').hexdigest(),
+                    "download_proof": download_proof,
                 },
             }
         ).encode("utf-8")
@@ -3238,11 +3255,17 @@ def test_poc_http_api_records_desktop_upload_and_download_audit_events() -> None
     assert replay_response.status == 202
     assert replay_body["job"]["job_id"] == job_id
     assert download_response.status == 200
+    assert browser_download_proof is None
     assert download_body == b'{"converted": true}'
     assert [event["action"] for event in browser_download_events] == ["desktop_upload"]
     assert rejected_event_response.status == 400
-    assert rejected_event_body["error"] == "invalid_job_event"
+    assert rejected_event_body == {
+        "error": "invalid_job_event",
+        "message": "audit_event.download_proof is required",
+    }
     assert [event["action"] for event in rejected_events] == ["desktop_upload"]
+    assert desktop_download_response.status == 200
+    assert isinstance(download_proof, str) and download_proof
     assert save_event_response.status == 202
     assert [event["action"] for event in events] == [
         "desktop_upload",
@@ -3314,7 +3337,11 @@ def test_poc_http_api_downloads_result_when_job_audit_log_is_tampered() -> None:
     thread.start()
     try:
         connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
-        connection.request("GET", f"/api/jobs/{job.job_id}/result")
+        connection.request(
+            "GET",
+            f"/api/jobs/{job.job_id}/result",
+            headers={poc_web.DESKTOP_CLIENT_HEADER: poc_web.DESKTOP_CLIENT_HEADER_VALUE},
+        )
         download_response = connection.getresponse()
         download_body = download_response.read()
         event_payload = json.dumps(
@@ -3388,6 +3415,15 @@ def test_poc_http_api_rejects_unwritable_desktop_saved_filename(saved_filename: 
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "GET",
+            f"/api/jobs/{job.job_id}/result",
+            headers={poc_web.DESKTOP_CLIENT_HEADER: poc_web.DESKTOP_CLIENT_HEADER_VALUE},
+        )
+        download_response = connection.getresponse()
+        download_proof = download_response.getheader(poc_web.DESKTOP_SAVE_PROOF_HEADER)
+        download_response.read()
         event_payload = json.dumps(
             {
                 "job_id": job.job_id,
@@ -3399,10 +3435,10 @@ def test_poc_http_api_rejects_unwritable_desktop_saved_filename(saved_filename: 
                     "download_filename": "batch-record.veridoc-result.json",
                     "saved_filename": saved_filename,
                     "output_sha256": output_sha256,
+                    "download_proof": download_proof,
                 },
             }
         ).encode("utf-8")
-        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
         connection.request(
             "POST",
             "/api/job-events",
@@ -3415,10 +3451,94 @@ def test_poc_http_api_rejects_unwritable_desktop_saved_filename(saved_filename: 
         server.shutdown()
         thread.join(timeout=5)
 
+    assert download_response.status == 200
+    assert isinstance(download_proof, str) and download_proof
     assert response.status == 400
     assert body == {
         "error": "invalid_job_event",
         "message": "audit_event.saved_filename is invalid",
+    }
+    assert server.job_event_store.list_events(filters={"job_id": job.job_id}) == []
+
+
+def test_poc_http_api_rejects_desktop_save_proof_from_different_token() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue()
+    server.job_event_store = JobAuditEventStore()
+    server.desktop_save_proof_store = poc_web.DesktopSaveProofStore()
+    server.local_auth_tokens = _local_auth_tokens()
+    result_content = b'{"converted": true}'
+    output_sha256 = hashlib.sha256(result_content).hexdigest()
+    job = server.job_queue.create_job(
+        idempotency_key="desktop-save-proof-token-binding",
+        filename="batch-record.pdf",
+        mode="standard",
+    )
+    running = server.job_queue.start_next_job()
+    assert running is not None
+    server.job_queue.mark_succeeded(
+        job.job_id,
+        result={
+            "status": "converted",
+            "hashes": {"output_sha256": output_sha256},
+            "download": {
+                "filename": "batch-record.veridoc-result.json",
+                "content_type": "application/json",
+                "content": result_content,
+            },
+        },
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "GET",
+            f"/api/jobs/{job.job_id}/result",
+            headers={
+                "Authorization": "Bearer reviewer-token",
+                poc_web.DESKTOP_CLIENT_HEADER: poc_web.DESKTOP_CLIENT_HEADER_VALUE,
+            },
+        )
+        download_response = connection.getresponse()
+        download_proof = download_response.getheader(poc_web.DESKTOP_SAVE_PROOF_HEADER)
+        download_response.read()
+        payload = json.dumps(
+            {
+                "job_id": job.job_id,
+                "action": "desktop_result_download",
+                "audit_event": {
+                    "event_type": "desktop.job_operation",
+                    "job_id": job.job_id,
+                    "action": "desktop_result_download",
+                    "download_filename": "batch-record.veridoc-result.json",
+                    "output_sha256": output_sha256,
+                    "download_proof": download_proof,
+                },
+            }
+        ).encode("utf-8")
+        connection.request(
+            "POST",
+            "/api/job-events",
+            body=payload,
+            headers={
+                "Authorization": "Bearer admin-token",
+                "Content-Type": "application/json",
+                "Content-Length": str(len(payload)),
+            },
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert download_response.status == 200
+    assert isinstance(download_proof, str) and download_proof
+    assert response.status == 400
+    assert body == {
+        "error": "invalid_job_event",
+        "message": "audit_event.download_proof is invalid",
     }
     assert server.job_event_store.list_events(filters={"job_id": job.job_id}) == []
 
@@ -3724,6 +3844,15 @@ def test_poc_http_api_accepts_desktop_save_audit_for_hashless_downloadable_resul
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "GET",
+            f"/api/jobs/{job.job_id}/result",
+            headers={poc_web.DESKTOP_CLIENT_HEADER: poc_web.DESKTOP_CLIENT_HEADER_VALUE},
+        )
+        download_response = connection.getresponse()
+        download_proof = download_response.getheader(poc_web.DESKTOP_SAVE_PROOF_HEADER)
+        download_body = download_response.read()
         payload = json.dumps(
             {
                 "job_id": job.job_id,
@@ -3734,10 +3863,10 @@ def test_poc_http_api_accepts_desktop_save_audit_for_hashless_downloadable_resul
                     "action": "desktop_result_download",
                     "download_filename": "legacy-record.veridoc-result.json",
                     "output_sha256": hashlib.sha256(download_content).hexdigest(),
+                    "download_proof": download_proof,
                 },
             }
         ).encode("utf-8")
-        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
         connection.request(
             "POST",
             "/api/job-events",
@@ -3751,6 +3880,9 @@ def test_poc_http_api_accepts_desktop_save_audit_for_hashless_downloadable_resul
         server.shutdown()
         thread.join(timeout=5)
 
+    assert download_response.status == 200
+    assert download_body == download_content
+    assert isinstance(download_proof, str) and download_proof
     assert response.status == 202
     assert body["audit_event"] == events[0]
     assert events[0]["filename"] == "legacy-record.pdf"
