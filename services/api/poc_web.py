@@ -44,6 +44,16 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8788
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024
 MAX_UPLOAD_REQUEST_BYTES = (MAX_UPLOAD_BYTES * 4 // 3) + 4096
+MAX_DOWNLOAD_FILENAME_BYTES = 255
+DOWNLOAD_FILENAME_FALLBACK = "veridoc-result.json"
+WINDOWS_RESERVED_DOWNLOAD_STEMS = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{index}" for index in range(1, 10)),
+    *(f"LPT{index}" for index in range(1, 10)),
+}
 # Extracted document text can be much larger than the uploaded source bytes,
 # especially for compressed formats. Review events can carry original and
 # revised text snapshots; quote/backslash-heavy text doubles again when
@@ -1667,7 +1677,10 @@ def _validate_desktop_result_download_audit_event(
     accepted_event = dict(expected_event)
     if "saved_filename" in audit_event:
         saved_filename = audit_event.get("saved_filename")
-        if not isinstance(saved_filename, str) or _download_filename(saved_filename) != saved_filename:
+        if (
+            not isinstance(saved_filename, str)
+            or _saved_download_filename(saved_filename) != saved_filename
+        ):
             raise ValueError("audit_event.saved_filename is invalid")
         accepted_event["saved_filename"] = saved_filename
     return accepted_event
@@ -2040,7 +2053,55 @@ def _download_filename(filename: str) -> str:
     basename = re.split(r"[\\/]+", filename)[-1].strip()
     safe = re.sub(r'[\x00-\x1f\x7f"\\]', "", basename)
     safe = "".join(char for char in safe if 0x20 <= ord(char) <= 0x7E).strip()
-    return safe or "veridoc-result.json"
+    return safe or DOWNLOAD_FILENAME_FALLBACK
+
+
+def _saved_download_filename(filename: str) -> str:
+    leaf = re.split(r"[\\/]+", filename)[-1].strip()
+    sanitized = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "-", leaf)
+    sanitized = re.sub(r"\s+", " ", sanitized).strip(" .-")
+    if not sanitized:
+        return DOWNLOAD_FILENAME_FALLBACK
+    sanitized = _avoid_windows_reserved_download_filename(sanitized)
+    return _fit_download_filename(sanitized)
+
+
+def _avoid_windows_reserved_download_filename(filename: str) -> str:
+    first_segment, separator, remainder = filename.partition(".")
+    if first_segment.rstrip(" .").upper() not in WINDOWS_RESERVED_DOWNLOAD_STEMS:
+        return filename
+    return f"{first_segment.rstrip(' .')}_{separator}{remainder}"
+
+
+def _fit_download_filename(
+    filename: str,
+    *,
+    max_bytes: int = MAX_DOWNLOAD_FILENAME_BYTES,
+) -> str:
+    if len(filename.encode("utf-8")) <= max_bytes:
+        return filename
+    stem, dot, suffix = filename.rpartition(".")
+    if not stem:
+        stem = suffix
+        suffix = ""
+        dot = ""
+    reserved = f"{dot}{suffix}"
+    available_stem_bytes = max_bytes - len(reserved.encode("utf-8"))
+    if available_stem_bytes > 0:
+        fitted_stem = _truncate_utf8_bytes(stem, available_stem_bytes).strip(" .-")
+        if fitted_stem:
+            return f"{fitted_stem}{reserved}"
+    fitted = _truncate_utf8_bytes(filename, max_bytes).strip(" .-")
+    return fitted or DOWNLOAD_FILENAME_FALLBACK
+
+
+def _truncate_utf8_bytes(value: str, max_bytes: int) -> str:
+    if max_bytes <= 0:
+        return ""
+    encoded = value.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return value
+    return encoded[:max_bytes].decode("utf-8", errors="ignore")
 
 
 def _parser_output_from_upload(filename: str, content: bytes) -> tuple[dict[str, Any], list[str]]:

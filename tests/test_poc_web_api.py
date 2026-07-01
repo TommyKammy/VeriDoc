@@ -3359,6 +3359,70 @@ def test_poc_http_api_downloads_result_when_job_audit_log_is_tampered() -> None:
     }
 
 
+@pytest.mark.parametrize("saved_filename", ["CON", "a:b.json"])
+def test_poc_http_api_rejects_unwritable_desktop_saved_filename(saved_filename: str) -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue()
+    server.job_event_store = JobAuditEventStore()
+    result_content = b'{"converted": true}'
+    output_sha256 = hashlib.sha256(result_content).hexdigest()
+    job = server.job_queue.create_job(
+        idempotency_key=f"desktop-saved-filename-{saved_filename}",
+        filename="batch-record.pdf",
+        mode="standard",
+    )
+    running = server.job_queue.start_next_job()
+    assert running is not None
+    server.job_queue.mark_succeeded(
+        job.job_id,
+        result={
+            "status": "converted",
+            "hashes": {"output_sha256": output_sha256},
+            "download": {
+                "filename": "batch-record.veridoc-result.json",
+                "content_type": "application/json; charset=utf-8",
+                "content": result_content,
+            },
+        },
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        event_payload = json.dumps(
+            {
+                "job_id": job.job_id,
+                "action": "desktop_result_download",
+                "audit_event": {
+                    "event_type": "desktop.job_operation",
+                    "job_id": job.job_id,
+                    "action": "desktop_result_download",
+                    "download_filename": "batch-record.veridoc-result.json",
+                    "saved_filename": saved_filename,
+                    "output_sha256": output_sha256,
+                },
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/job-events",
+            body=event_payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(event_payload))},
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 400
+    assert body == {
+        "error": "invalid_job_event",
+        "message": "audit_event.saved_filename is invalid",
+    }
+    assert server.job_event_store.list_events(filters={"job_id": job.job_id}) == []
+
+
 def test_poc_http_api_requires_create_permission_for_direct_desktop_upload_audit() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     server.job_queue = JobQueue()
