@@ -420,6 +420,9 @@ class DesktopApiClient:
             if audit_status == "rejected":
                 _remove_download_file(save_path)
                 raise DesktopApiError("API did not accept the desktop result download audit event")
+            if audit_status == "not_recorded":
+                _remove_download_file(save_path)
+                raise DesktopApiError("desktop result download audit was not recorded")
             if audit_status == "unconfirmed":
                 raise DesktopApiError("desktop result download audit outcome is unconfirmed")
             return save_path
@@ -431,7 +434,7 @@ class DesktopApiClient:
         audit_event: dict[str, Any],
         *,
         token: str,
-    ) -> Literal["accepted", "rejected", "unconfirmed"]:
+    ) -> Literal["accepted", "rejected", "unconfirmed", "not_recorded"]:
         try:
             payload = self._request_json_pre_connection_retry(
                 "POST",
@@ -452,7 +455,9 @@ class DesktopApiClient:
             }:
                 return "unconfirmed"
             return "rejected"
-        except URLError:
+        except URLError as exc:
+            if _is_pre_connection_url_error(exc):
+                return "not_recorded"
             return "unconfirmed"
         audit_event = payload.get("audit_event")
         if payload.get("accepted") is not True or not isinstance(audit_event, dict):
