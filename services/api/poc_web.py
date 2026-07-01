@@ -1613,12 +1613,15 @@ def _validate_desktop_upload_audit_event(
 ) -> dict[str, Any]:
     if not isinstance(job.source, dict):
         raise ValueError("desktop_upload requires stored job source")
+    if job.status != "queued":
+        raise ValueError("desktop_upload audit must be recorded before job starts")
     expected_event = _desktop_upload_audit_event(job)
     if not isinstance(audit_event, dict):
         raise ValueError("audit_event is required")
     for field_name in (
         "event_type",
         "job_id",
+        "job_status",
         "action",
         "filename",
         "mode",
