@@ -2235,7 +2235,9 @@ def _artifact_filename(
     if artifact_format not in ARTIFACT_CONTENT_TYPES:
         raise ValueError(f"unsupported artifact format: {artifact_format}")
     safe_source = _saved_download_filename(source_filename)
-    source_stem = Path(safe_source).stem.strip(" .-") or "upload"
+    source_stem = _avoid_windows_reserved_download_stem(
+        Path(safe_source).stem.strip(" .-") or "upload"
+    )
     if role == "debug" and artifact_format == "json":
         suffix = ".veridoc-result.json"
     elif role == "primary":
@@ -2279,9 +2281,17 @@ def _saved_download_filename(filename: str) -> str:
 
 def _avoid_windows_reserved_download_filename(filename: str) -> str:
     first_segment, separator, remainder = filename.partition(".")
-    if first_segment.rstrip(" .").upper() not in WINDOWS_RESERVED_DOWNLOAD_STEMS:
+    safe_first_segment = _avoid_windows_reserved_download_stem(first_segment)
+    if safe_first_segment == first_segment:
         return filename
-    return f"{first_segment.rstrip(' .')}_{separator}{remainder}"
+    return f"{safe_first_segment}{separator}{remainder}"
+
+
+def _avoid_windows_reserved_download_stem(stem: str) -> str:
+    trimmed = stem.rstrip(" .")
+    if trimmed.upper() not in WINDOWS_RESERVED_DOWNLOAD_STEMS:
+        return stem
+    return f"{trimmed}_"
 
 
 def _fit_download_filename(
