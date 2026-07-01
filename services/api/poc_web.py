@@ -1631,23 +1631,9 @@ def _validate_desktop_upload_audit_event(
         raise ValueError("desktop_upload requires stored job source")
     if job.status != "queued" or job.attempts > 0:
         raise ValueError("desktop_upload audit must be recorded before job starts")
-    expected_event = _desktop_upload_audit_event(job)
     if not isinstance(audit_event, dict):
         raise ValueError("audit_event is required")
-    for field_name in (
-        "event_type",
-        "job_id",
-        "job_status",
-        "action",
-        "filename",
-        "mode",
-        "source_sha256",
-        "size_bytes",
-        "content_type",
-    ):
-        if audit_event.get(field_name) != expected_event.get(field_name):
-            raise ValueError(f"audit_event.{field_name} does not match uploaded source")
-    return expected_event
+    raise ValueError("desktop_upload audit must be recorded through the job create request")
 
 
 def _job_has_desktop_upload_audit(

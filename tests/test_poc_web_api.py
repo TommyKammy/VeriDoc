@@ -2937,8 +2937,11 @@ def test_poc_http_api_records_desktop_upload_and_download_audit_events() -> None
     assert create_response.status == 202
     assert create_body["audit_event"]["action"] == "desktop_upload"
     assert create_body["audit_event"]["source_sha256"] == source_sha256
-    assert upload_event_response.status == 202
-    assert upload_event_body["audit_event"]["action"] == "desktop_upload"
+    assert upload_event_response.status == 400
+    assert upload_event_body == {
+        "error": "invalid_job_event",
+        "message": "desktop_upload audit must be recorded through the job create request",
+    }
     assert replay_response.status == 202
     assert replay_body["job"]["job_id"] == job_id
     assert download_response.status == 200
@@ -3023,6 +3026,69 @@ def test_poc_http_api_requires_create_permission_for_direct_desktop_upload_audit
         "message": "role viewer cannot perform jobs_create",
     }
     assert events == []
+
+
+def test_poc_http_api_rejects_queued_direct_desktop_upload_audit_backfill() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue()
+    server.job_event_store = JobAuditEventStore()
+    uploaded_content = b"%PDF-1.7\nqueued source"
+    source_sha256 = hashlib.sha256(uploaded_content).hexdigest()
+    job = server.job_queue.create_job(
+        idempotency_key="desktop-upload-queued-backfill",
+        filename="batch-record.pdf",
+        mode="standard",
+        source={
+            "filename": "batch-record.pdf",
+            "content_type": "application/pdf",
+            "size_bytes": len(uploaded_content),
+            "sha256": source_sha256,
+            "content": uploaded_content,
+        },
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = json.dumps(
+            {
+                "job_id": job.job_id,
+                "action": "desktop_upload",
+                "audit_event": {
+                    "event_type": "desktop.job_operation",
+                    "job_id": job.job_id,
+                    "job_status": "queued",
+                    "action": "desktop_upload",
+                    "filename": "batch-record.pdf",
+                    "mode": "standard",
+                    "source_sha256": source_sha256,
+                    "size_bytes": len(uploaded_content),
+                    "content_type": "application/pdf",
+                },
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/job-events",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+        events = server.job_event_store.list_events(filters={"job_id": job.job_id})
+        stored_job = server.job_queue.get_job(job.job_id)
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 400
+    assert body == {
+        "error": "invalid_job_event",
+        "message": "desktop_upload audit must be recorded through the job create request",
+    }
+    assert events == []
+    assert stored_job.status == "queued"
+    assert stored_job.attempts == 0
 
 
 @pytest.mark.parametrize("terminal_state", ["running", "succeeded"])
@@ -3316,13 +3382,12 @@ def test_poc_http_api_records_one_desktop_upload_audit_for_concurrent_idempotent
             "size_bytes": len(uploaded_content),
             "source_sha256": source_sha256,
             "mode": "standard",
+            "desktop_upload_audit": True,
         }
     ).encode("utf-8")
     headers = {"Content-Type": "application/json", "Content-Length": str(len(payload))}
     responses: list[tuple[int, dict[str, object]]] = []
     errors: list[BaseException] = []
-    audit_responses: list[tuple[int, dict[str, object]]] = []
-    audit_errors: list[BaseException] = []
     events: list[dict[str, object]] = []
 
     def post_upload() -> None:
@@ -3346,51 +3411,6 @@ def test_poc_http_api_records_one_desktop_upload_audit_for_concurrent_idempotent
             job_ids = {body["job"]["job_id"] for _status, body in responses}
             if len(job_ids) == 1:
                 job_id = str(job_ids.pop())
-                audit_payload = json.dumps(
-                    {
-                        "job_id": job_id,
-                        "action": "desktop_upload",
-                        "audit_event": {
-                            "event_type": "desktop.job_operation",
-                            "job_id": job_id,
-                            "job_status": "queued",
-                            "action": "desktop_upload",
-                            "filename": "batch-record.pdf",
-                            "mode": "standard",
-                            "source_sha256": source_sha256,
-                            "size_bytes": len(uploaded_content),
-                            "content_type": "application/pdf",
-                        },
-                    }
-                ).encode("utf-8")
-                audit_headers = {
-                    "Content-Type": "application/json",
-                    "Content-Length": str(len(audit_payload)),
-                }
-
-                def post_upload_audit() -> None:
-                    connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
-                    try:
-                        connection.request(
-                            "POST",
-                            "/api/job-events",
-                            body=audit_payload,
-                            headers=audit_headers,
-                        )
-                        response = connection.getresponse()
-                        audit_responses.append(
-                            (response.status, json.loads(response.read().decode("utf-8")))
-                        )
-                    except BaseException as exc:  # pragma: no cover - assertion below preserves failure.
-                        audit_errors.append(exc)
-                    finally:
-                        connection.close()
-
-                audit_workers = [Thread(target=post_upload_audit), Thread(target=post_upload_audit)]
-                for worker in audit_workers:
-                    worker.start()
-                for worker in audit_workers:
-                    worker.join(timeout=10)
                 events = server.job_event_store.list_events(filters={"job_id": job_id})
     finally:
         server.shutdown()
@@ -3402,12 +3422,9 @@ def test_poc_http_api_records_one_desktop_upload_audit_for_concurrent_idempotent
     assert sorted(created_flags) == [False, True]
     job_ids = {body["job"]["job_id"] for _status, body in responses}
     assert len(job_ids) == 1
-    assert audit_errors == []
-    assert len(audit_responses) == 2
-    assert [status for status, _body in audit_responses] == [202, 202]
     assert [event["action"] for event in events] == ["desktop_upload"]
     assert events[0]["source_sha256"] == source_sha256
-    assert {body["audit_event"]["event_hash"] for _status, body in audit_responses} == {
+    assert {body["audit_event"]["event_hash"] for _status, body in responses} == {
         events[0]["event_hash"]
     }
 
