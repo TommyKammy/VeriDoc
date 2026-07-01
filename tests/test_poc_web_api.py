@@ -111,6 +111,59 @@ def test_convert_uploaded_document_surfaces_review_items_and_download_payload() 
     assert downloaded["document_ir"]["blocks"][0]["review"]["requires_review"] is True
 
 
+def test_convert_uploaded_document_returns_artifact_manifest_contract() -> None:
+    parser_output = {
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 320,
+                "height": 240,
+                "unit": "pt",
+                "fragments": [
+                    {
+                        "text": "Lot: SAMPLE-001",
+                        "bbox": {"x": 10, "y": 20, "width": 120, "height": 16, "unit": "pt"},
+                        "confidence": 0.91,
+                    }
+                ],
+            }
+        ]
+    }
+
+    result = convert_uploaded_document(
+        filename="phase0-output.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+    )
+
+    assert result["document_ir"]["document"]["id"] == "phase0-output"
+    assert result["review_items"] == []
+    assert result["warnings"] == []
+    assert result["audit"] == {
+        "conversion_id": result["conversion_id"],
+        "source_filename": "phase0-output.json",
+        "source_sha256": result["hashes"]["source_sha256"],
+    }
+
+    assert result["artifacts"] == [
+        {
+            "id": "debug-json",
+            "kind": "debug",
+            "format": "json",
+            "filename": "phase0-output.veridoc-result.json",
+            "content_type": "application/json; charset=utf-8",
+            "size_bytes": len(result["download"]["content"]),
+            "sha256": result["hashes"]["output_sha256"],
+            "metadata": {
+                "role": "debug",
+                "download": {
+                    "available": True,
+                    "field": "download",
+                },
+            },
+        }
+    ]
+
+
 def test_convert_uploaded_document_treats_unusable_review_bboxes_as_absent() -> None:
     parser_output = {
         "pages": [
