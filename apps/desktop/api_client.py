@@ -19,7 +19,7 @@ import ssl
 import subprocess
 import sys
 import threading
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import SplitResult, quote, unquote, urljoin, urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
@@ -395,7 +395,7 @@ class DesktopApiClient:
             except FileExistsError:
                 continue
             try:
-                audit_confirmed = self._record_desktop_result_download(
+                audit_status = self._record_desktop_result_download(
                     job_id,
                     {
                         "event_type": "desktop.job_operation",
@@ -406,15 +406,22 @@ class DesktopApiClient:
                         "output_sha256": hashlib.sha256(body).hexdigest(),
                     },
                 )
-            except Exception:
+            except PermissionError:
                 _remove_download_file(save_path)
                 raise
-            if not audit_confirmed:
+            if audit_status == "rejected":
+                _remove_download_file(save_path)
+                raise DesktopApiError("API did not accept the desktop result download audit event")
+            if audit_status == "unconfirmed":
                 raise DesktopApiError("desktop result download audit outcome is unconfirmed")
             return save_path
         raise DesktopApiError("downloaded result filename has too many collisions")
 
-    def _record_desktop_result_download(self, job_id: str, audit_event: dict[str, Any]) -> bool:
+    def _record_desktop_result_download(
+        self,
+        job_id: str,
+        audit_event: dict[str, Any],
+    ) -> Literal["accepted", "rejected", "unconfirmed"]:
         try:
             payload = self._request_json(
                 "POST",
@@ -432,14 +439,16 @@ class DesktopApiClient:
                 "API response body was incomplete",
                 "API response transport failed",
             }:
-                return False
-            raise
+                return "unconfirmed"
+            return "rejected"
+        except URLError:
+            return "unconfirmed"
         audit_event = payload.get("audit_event")
         if payload.get("accepted") is not True or not isinstance(audit_event, dict):
-            raise DesktopApiError("API did not accept the desktop result download audit event")
+            return "rejected"
         if audit_event.get("job_id") != job_id or audit_event.get("action") != "desktop_result_download":
-            raise DesktopApiError("API accepted a mismatched desktop result download audit event")
-        return True
+            return "rejected"
+        return "accepted"
 
     def _request_json(self, method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
         token = self._credential_store.require_token()
