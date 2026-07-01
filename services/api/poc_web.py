@@ -2266,7 +2266,7 @@ def _render_primary_artifact(
                 "source_filename": source_filename,
                 "download": {
                     "available": True,
-                    "field": "artifacts[0].content",
+                    "field": "artifacts[0].content_base64",
                 },
             },
         },
@@ -2287,9 +2287,17 @@ def _render_primary_artifact_file(
         render_docx_from_ir(document_ir, output_path)
         return
     if conversion_mode in {"pdf_to_excel", "word_to_excel"}:
-        render_xlsx_from_ir(document_ir, output_path)
+        render_xlsx_from_ir(
+            document_ir,
+            output_path,
+            render_plan=_xlsx_primary_render_plan(document_ir),
+        )
         return
     raise ValueError(f"primary artifact rendering is unsupported for {conversion_mode}")
+
+
+def _xlsx_primary_render_plan(_document_ir: dict[str, Any]) -> dict[str, Any]:
+    return {"table_merges": []}
 
 
 def _artifact_filename(
