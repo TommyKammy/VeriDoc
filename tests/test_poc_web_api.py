@@ -142,6 +142,7 @@ def test_convert_uploaded_document_returns_artifact_manifest_contract() -> None:
         "conversion_id": result["conversion_id"],
         "source_filename": "phase0-output.json",
         "source_sha256": result["hashes"]["source_sha256"],
+        "conversion_mode": "auto",
     }
 
     assert result["artifacts"] == [
@@ -162,6 +163,73 @@ def test_convert_uploaded_document_returns_artifact_manifest_contract() -> None:
             },
         }
     ]
+
+
+def test_convert_uploaded_document_records_selected_conversion_mode() -> None:
+    parser_output = {
+        "source_type": "pdf",
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 320,
+                "height": 240,
+                "unit": "pt",
+                "fragments": [
+                    {
+                        "text": "Lot: SAMPLE-001",
+                        "bbox": {"x": 10, "y": 20, "width": 120, "height": 16, "unit": "pt"},
+                        "confidence": 0.91,
+                    }
+                ],
+            }
+        ],
+    }
+
+    result = convert_uploaded_document(
+        filename="phase0-output.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+        conversion_mode="pdf_to_word",
+    )
+
+    assert result["warnings"] == ["conversion mode pdf_to_word selected"]
+    assert result["audit"]["conversion_mode"] == "pdf_to_word"
+    downloaded = json.loads(result["download"]["content"].decode("utf-8"))
+    assert downloaded["warnings"] == ["conversion mode pdf_to_word selected"]
+    assert downloaded["audit"]["conversion_mode"] == "pdf_to_word"
+
+
+def test_convert_uploaded_document_rejects_unknown_conversion_mode() -> None:
+    with pytest.raises(ValueError, match="unsupported conversion_mode"):
+        convert_uploaded_document(
+            filename="upload.txt",
+            content=b"fallback text",
+            conversion_mode="spreadsheet_magic",
+        )
+
+
+def test_convert_uploaded_document_rejects_mismatched_conversion_mode() -> None:
+    parser_output = {
+        "source_type": "pdf",
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 320,
+                "height": 240,
+                "unit": "pt",
+                "fragments": [{"text": "PDF text", "confidence": 0.95}],
+            }
+        ],
+    }
+
+    with pytest.raises(
+        ValueError,
+        match="conversion_mode word_to_excel requires docx input; got pdf",
+    ):
+        convert_uploaded_document(
+            filename="phase0-output.json",
+            content=json.dumps(parser_output).encode("utf-8"),
+            conversion_mode="word_to_excel",
+        )
 
 
 def test_convert_uploaded_document_treats_unusable_review_bboxes_as_absent() -> None:
@@ -6317,6 +6385,38 @@ def test_poc_http_api_rejects_unsupported_non_utf8_binary_upload() -> None:
     }
 
 
+def test_poc_http_api_rejects_unknown_conversion_mode() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = json.dumps(
+            {
+                "filename": "upload.txt",
+                "content": "Unstructured OCR fallback text",
+                "conversion_mode": "spreadsheet_magic",
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/convert",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 400
+    assert body == {
+        "error": "invalid_upload",
+        "message": "unsupported conversion_mode: spreadsheet_magic",
+    }
+
+
 def test_poc_http_api_rejects_too_long_binary_filename_as_json_error() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     thread = Thread(target=server.serve_forever, daemon=True)
@@ -6479,6 +6579,19 @@ def test_web_upload_preserves_file_bytes() -> None:
     assert "file.arrayBuffer()" in html
     assert "content_base64" in html
     assert "file.text()" not in html
+
+
+def test_web_direct_convert_selects_and_posts_conversion_mode() -> None:
+    html = Path("apps/web/index.html").read_text(encoding="utf-8")
+
+    assert 'id="direct-conversion-mode"' in html
+    assert '<option value="auto">auto</option>' in html
+    assert '<option value="pdf_to_excel">pdf_to_excel</option>' in html
+    assert '<option value="pdf_to_word">pdf_to_word</option>' in html
+    assert '<option value="word_to_excel">word_to_excel</option>' in html
+    assert '<option value="excel_to_word">excel_to_word</option>' in html
+    assert "const directConversionMode = document.querySelector(\"#direct-conversion-mode\")" in html
+    assert "conversion_mode: directConversionMode.value" in html
 
 
 def test_web_job_detail_actions_perform_download_and_retry_side_effects() -> None:
