@@ -722,19 +722,23 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                     publish=False,
                     include_unpublished=True,
                 )
-                if not isinstance(job.source, dict):
-                    raise ValueError("desktop_upload requires stored job source")
                 job_event_store = self._job_event_store()
                 try:
+                    if not isinstance(job.source, dict):
+                        raise ValueError("desktop_upload requires stored job source")
                     job_event_store.require_integrity()
                     upload_audit_event = _job_event_with_auth_context(
                         _desktop_upload_audit_event(job),
                         auth_context,
                     )
                     upload_actor = upload_audit_event.get("actor")
+                    upload_actor_id = (
+                        upload_actor.get("id") if isinstance(upload_actor, dict) else None
+                    )
                     existing_upload_audit = _job_has_desktop_upload_audit(
                         job_event_store,
                         job.job_id,
+                        actor_id=upload_actor_id,
                     )
                     if (
                         not created_job

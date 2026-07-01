@@ -540,6 +540,51 @@ def test_desktop_api_client_preserves_saved_result_when_audit_response_is_unconf
     assert (tmp_path / "result.json").read_bytes() == b'{"document_ir":{}}'
 
 
+def test_desktop_api_client_does_not_retry_unconfirmed_result_save_audit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    def fake_getaddrinfo(host: str, port: object, *, type: int):
+        assert host == "localhost"
+        assert port == 8765
+        assert type == socket.SOCK_STREAM
+        return [
+            (socket.AF_INET6, socket.SOCK_STREAM, 0, "", ("::1", 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", 0)),
+        ]
+
+    class LosingAuditResponseTransport(ResultSaveTransport):
+        def __call__(self, request: Request, *, timeout: float):
+            self.requests.append(request)
+            if request.full_url.endswith("/api/job-events"):
+                raise URLError("response lost after audit write")
+            return RawResponse(self.body, headers=self.headers)
+
+    monkeypatch.setattr("apps.desktop.api_client.socket.getaddrinfo", fake_getaddrinfo)
+    transport = LosingAuditResponseTransport(
+        b'{"document_ir":{}}',
+        headers={"Content-Disposition": 'attachment; filename="result.json"'},
+    )
+    client = DesktopApiClient(
+        DesktopApiClientConfig(base_url="http://localhost:8765"),
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=transport,
+    )
+
+    with pytest.raises(
+        DesktopApiError,
+        match="desktop result download audit outcome is unconfirmed",
+    ):
+        client.save_job_result("job-complete-1", tmp_path)
+
+    audit_requests = [
+        request for request in transport.requests if request.full_url.endswith("/api/job-events")
+    ]
+    assert len(audit_requests) == 1
+    assert audit_requests[0].full_url == "http://[::1]:8765/api/job-events"
+    assert (tmp_path / "result.json").read_bytes() == b'{"document_ir":{}}'
+
+
 def test_desktop_api_client_clamps_long_result_download_names(tmp_path) -> None:
     long_filename = f"{'a' * 300}.veridoc-result.json"
 

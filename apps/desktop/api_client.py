@@ -431,6 +431,7 @@ class DesktopApiClient:
                     "action": "desktop_result_download",
                     "audit_event": audit_event,
                 },
+                retry_on_url_error=False,
             )
         except DesktopApiError as exc:
             if str(exc) in {
@@ -450,7 +451,14 @@ class DesktopApiClient:
             return "rejected"
         return "accepted"
 
-    def _request_json(self, method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _request_json(
+        self,
+        method: str,
+        path: str,
+        body: dict[str, Any] | None = None,
+        *,
+        retry_on_url_error: bool = True,
+    ) -> dict[str, Any]:
         token = self._credential_store.require_token()
         payload = None if body is None else json.dumps(body).encode("utf-8")
         request_urls = tuple(urljoin(base_url, path) for base_url in self.config._request_base_urls)
@@ -484,7 +492,7 @@ class DesktopApiClient:
                 raise DesktopApiError("API response transport failed") from exc
             except URLError as exc:
                 last_url_error = exc
-                if index + 1 < len(request_urls):
+                if retry_on_url_error and index + 1 < len(request_urls):
                     continue
                 raise
 
