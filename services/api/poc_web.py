@@ -714,6 +714,22 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 job_event_store = self._job_event_store()
                 try:
                     job_event_store.require_integrity()
+                    existing_upload_audit = _job_has_desktop_upload_audit(
+                        job_event_store,
+                        job.job_id,
+                    )
+                    if (
+                        not created_job
+                        and not existing_upload_audit
+                        and (
+                            job.status != "queued"
+                            or job.attempts > 0
+                            or job_queue.is_pending(job.job_id)
+                        )
+                    ):
+                        raise ValueError(
+                            "desktop_upload audit cannot be added after idempotent job creation"
+                        )
                     upload_audit_event = job_event_store.record_once(
                         _job_event_with_auth_context(_desktop_upload_audit_event(job), auth_context),
                         dedupe={"job_id": job.job_id, "action": "desktop_upload"},
@@ -1613,7 +1629,7 @@ def _validate_desktop_upload_audit_event(
 ) -> dict[str, Any]:
     if not isinstance(job.source, dict):
         raise ValueError("desktop_upload requires stored job source")
-    if job.status != "queued":
+    if job.status != "queued" or job.attempts > 0:
         raise ValueError("desktop_upload audit must be recorded before job starts")
     expected_event = _desktop_upload_audit_event(job)
     if not isinstance(audit_event, dict):
@@ -1632,6 +1648,16 @@ def _validate_desktop_upload_audit_event(
         if audit_event.get(field_name) != expected_event.get(field_name):
             raise ValueError(f"audit_event.{field_name} does not match uploaded source")
     return expected_event
+
+
+def _job_has_desktop_upload_audit(
+    job_event_store: JobAuditEventStore,
+    job_id: str,
+) -> bool:
+    return any(
+        event.get("action") == "desktop_upload"
+        for event in job_event_store.list_events(filters={"job_id": job_id})
+    )
 
 
 def _job_event_with_auth_context(

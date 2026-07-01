@@ -142,6 +142,10 @@ class JobQueue:
             except ValueError:
                 pass
 
+    def is_pending(self, job_id: str) -> bool:
+        with self._lock:
+            return job_id in self._pending_job_ids
+
     def get_idempotent_job(
         self,
         *,
