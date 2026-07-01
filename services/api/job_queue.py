@@ -166,6 +166,10 @@ class JobQueue:
         with self._lock:
             return job_id in self._pending_job_ids
 
+    def is_unpublished(self, job_id: str) -> bool:
+        with self._lock:
+            return job_id in self._unpublished_job_ids
+
     def get_idempotent_job(
         self,
         *,

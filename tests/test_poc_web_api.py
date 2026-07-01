@@ -2862,6 +2862,85 @@ def test_poc_http_api_rejects_late_idempotent_desktop_upload_audit_create() -> N
     assert jobs[0].status == "queued"
 
 
+@pytest.mark.parametrize("job_state", ["queued_not_pending", "running", "succeeded"])
+def test_poc_http_api_rejects_existing_idempotent_desktop_upload_audit_create(
+    job_state: str,
+) -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue()
+    server.job_event_store = JobAuditEventStore()
+    uploaded_content = b"%PDF-1.7\nqueued source"
+    source_sha256 = hashlib.sha256(uploaded_content).hexdigest()
+    request = {
+        "idempotency_key": f"desktop-upload-existing-{job_state}",
+        "filename": "batch-record.pdf",
+        "content_type": "application/pdf",
+        "content_base64": base64.b64encode(uploaded_content).decode("ascii"),
+        "size_bytes": len(uploaded_content),
+        "source_sha256": source_sha256,
+        "mode": "standard",
+    }
+    job = server.job_queue.create_job(
+        idempotency_key=request["idempotency_key"],
+        filename=request["filename"],
+        mode=request["mode"],
+        source={
+            "filename": request["filename"],
+            "content_type": request["content_type"],
+            "size_bytes": request["size_bytes"],
+            "sha256": request["source_sha256"],
+            "content": uploaded_content,
+        },
+        enqueue=job_state != "queued_not_pending",
+    )
+    if job_state in {"running", "succeeded"}:
+        running = server.job_queue.start_next_job()
+        assert running is not None
+    if job_state == "succeeded":
+        server.job_queue.mark_succeeded(
+            job.job_id,
+            result={
+                "status": "converted",
+                "download": {
+                    "filename": "batch-record.veridoc-result.json",
+                    "content_type": "application/json",
+                    "content": b'{"converted": true}',
+                },
+            },
+        )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        replay_request = dict(request)
+        replay_request["desktop_upload_audit"] = True
+        replay_payload = json.dumps(replay_request).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/jobs",
+            body=replay_payload,
+            headers={
+                "Content-Type": "application/json",
+                "Content-Length": str(len(replay_payload)),
+            },
+        )
+        replay_response = connection.getresponse()
+        replay_body = json.loads(replay_response.read().decode("utf-8"))
+        events = server.job_event_store.list_events(filters={"job_id": job.job_id})
+        stored_job = server.job_queue.get_job(job.job_id)
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert replay_response.status == 400
+    assert replay_body == {
+        "error": "invalid_job_request",
+        "message": "desktop_upload audit cannot be added after idempotent job creation",
+    }
+    assert events == []
+    assert stored_job.status == ("queued" if job_state == "queued_not_pending" else job_state)
+
+
 def test_poc_http_api_records_desktop_upload_and_download_audit_events() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     server.job_queue = JobQueue()

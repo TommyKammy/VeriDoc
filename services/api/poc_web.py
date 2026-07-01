@@ -739,11 +739,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                     if (
                         not created_job
                         and not existing_upload_audit
-                        and (
-                            job.status != "queued"
-                            or job.attempts > 0
-                            or job_queue.is_pending(job.job_id)
-                        )
+                        and not job_queue.is_unpublished(job.job_id)
                     ):
                         raise ValueError(
                             "desktop_upload audit cannot be added after idempotent job creation"
