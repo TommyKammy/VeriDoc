@@ -994,8 +994,6 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
     ) -> None:
         try:
             job = self._job_queue().get_job(job_id)
-            job_event_store = self._job_event_store()
-            job_event_store.require_integrity()
             download = _job_download(job)
             content_type = _download_content_type(download["content_type"])
             filename = _download_filename(download["filename"])

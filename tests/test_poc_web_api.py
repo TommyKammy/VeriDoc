@@ -3256,6 +3256,109 @@ def test_poc_http_api_records_desktop_upload_and_download_audit_events() -> None
     assert events[1]["download_filename"] == "batch-record.veridoc-result.json"
 
 
+def test_poc_http_api_downloads_result_when_job_audit_log_is_tampered() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue()
+    server.job_event_store = JobAuditEventStore()
+    uploaded_content = b"%PDF-1.7\nqueued source"
+    result_content = b'{"converted": true}'
+    source_sha256 = hashlib.sha256(uploaded_content).hexdigest()
+    output_sha256 = hashlib.sha256(result_content).hexdigest()
+    job = server.job_queue.create_job(
+        idempotency_key="desktop-download-audit-tampered",
+        filename="batch-record.pdf",
+        mode="standard",
+        source={
+            "filename": "batch-record.pdf",
+            "content_type": "application/pdf",
+            "size_bytes": len(uploaded_content),
+            "sha256": source_sha256,
+            "content": uploaded_content,
+        },
+    )
+    running = server.job_queue.start_next_job()
+    assert running is not None
+    server.job_queue.mark_succeeded(
+        job.job_id,
+        result={
+            "status": "converted",
+            "hashes": {
+                "source_sha256": source_sha256,
+                "output_sha256": output_sha256,
+            },
+            "download": {
+                "filename": "batch-record.veridoc-result.json",
+                "content_type": "application/json; charset=utf-8",
+                "content": result_content,
+            },
+        },
+    )
+    server.job_event_store.record(
+        {
+            "event_type": "desktop.job_operation",
+            "job_id": job.job_id,
+            "action": "desktop_upload",
+            "filename": "batch-record.pdf",
+        }
+    )
+    server.job_event_store.record(
+        {
+            "event_type": "desktop.job_operation",
+            "job_id": job.job_id,
+            "action": "desktop_result_download",
+            "download_filename": "batch-record.veridoc-result.json",
+        }
+    )
+    del server.job_event_store._events[-1]  # noqa: SLF001
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request("GET", f"/api/jobs/{job.job_id}/result")
+        download_response = connection.getresponse()
+        download_body = download_response.read()
+        event_payload = json.dumps(
+            {
+                "job_id": job.job_id,
+                "action": "desktop_result_download",
+                "audit_event": {
+                    "event_type": "desktop.job_operation",
+                    "job_id": job.job_id,
+                    "action": "desktop_result_download",
+                    "download_filename": "batch-record.veridoc-result.json",
+                    "output_sha256": output_sha256,
+                },
+            }
+        ).encode("utf-8")
+        connection.request(
+            "POST",
+            "/api/job-events",
+            body=event_payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(event_payload))},
+        )
+        event_response = connection.getresponse()
+        event_body = json.loads(event_response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert download_response.status == 200
+    assert download_body == result_content
+    assert event_response.status == 400
+    assert event_body["error"] == "invalid_job_event"
+    assert "audit log integrity violation" in event_body["message"]
+    assert [event["action"] for event in server.job_event_store.list_events()] == [
+        "desktop_upload"
+    ]
+    assert server.job_event_store.verify_integrity() == {
+        "ok": False,
+        "errors": [
+            "audit log terminal sequence mismatch",
+            "audit log head hash mismatch",
+        ],
+    }
+
+
 def test_poc_http_api_requires_create_permission_for_direct_desktop_upload_audit() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     server.job_queue = JobQueue()
