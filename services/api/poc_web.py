@@ -37,6 +37,11 @@ from core.ir.document_ir_v1 import (
 from core.parsers.docx_extraction import extract_docx_structure
 from core.parsers.pdf_text_extraction import MissingPdfExtractorDependency, parse_text_pdf_to_document_ir
 from core.parsers.xlsx_extraction import extract_xlsx_structure
+from core.render.ooxml import (
+    render_docx_from_ir,
+    render_editable_docx_from_pdf_ir,
+    render_xlsx_from_ir,
+)
 from services.api.job_queue import JobQueue, JobRecord
 
 WEB_ROOT = REPO_ROOT / "apps" / "web"
@@ -585,6 +590,13 @@ def convert_uploaded_document(
     validation = validate_document_ir_v1(document_ir)
     review_items = _review_items(document_ir)
     warnings = [*input_warnings, *mode_warnings, *validation.warnings]
+    primary_artifact, primary_warning = _render_primary_artifact(
+        document_ir.to_dict(),
+        source_filename=safe_filename,
+        conversion_mode=selected_conversion_mode,
+    )
+    if primary_warning is not None:
+        warnings.append(primary_warning)
     audit = {
         "conversion_id": conversion_id,
         "source_filename": safe_filename,
@@ -614,6 +626,7 @@ def convert_uploaded_document(
         debug_content_type=download_content_type,
         debug_size_bytes=len(download_content),
         debug_sha256=output_sha256,
+        primary_artifact=primary_artifact,
     )
     return {
         "status": _status(validation.ok, validation.requires_review),
@@ -2175,33 +2188,11 @@ def _conversion_artifacts(
     debug_content_type: str,
     debug_size_bytes: int,
     debug_sha256: str,
+    primary_artifact: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     artifacts: list[dict[str, Any]] = []
-    primary_format = PRIMARY_ARTIFACT_FORMAT_BY_CONVERSION_MODE.get(conversion_mode)
-    if primary_format is not None:
-        artifacts.append(
-            {
-                "id": f"primary-{primary_format}",
-                "kind": "primary",
-                "format": primary_format,
-                "filename": _artifact_filename(
-                    source_filename,
-                    conversion_mode=conversion_mode,
-                    artifact_format=primary_format,
-                    role="primary",
-                ),
-                "content_type": ARTIFACT_CONTENT_TYPES[primary_format],
-                "metadata": {
-                    "role": "primary",
-                    "conversion_mode": conversion_mode,
-                    "source_filename": source_filename,
-                    "download": {
-                        "available": False,
-                        "reason": "artifact_generation_not_implemented",
-                    },
-                },
-            }
-        )
+    if primary_artifact is not None:
+        artifacts.append(primary_artifact)
     artifacts.append(
         {
             "id": "debug-json",
@@ -2223,6 +2214,74 @@ def _conversion_artifacts(
         }
     )
     return artifacts
+
+
+def _render_primary_artifact(
+    document_ir: dict[str, Any],
+    *,
+    source_filename: str,
+    conversion_mode: str,
+) -> tuple[dict[str, Any] | None, str | None]:
+    primary_format = PRIMARY_ARTIFACT_FORMAT_BY_CONVERSION_MODE.get(conversion_mode)
+    if primary_format is None:
+        return None, None
+    filename = _artifact_filename(
+        source_filename,
+        conversion_mode=conversion_mode,
+        artifact_format=primary_format,
+        role="primary",
+    )
+    try:
+        with TemporaryDirectory(prefix="veridoc-primary-artifact-") as temp_dir:
+            output_path = Path(temp_dir) / filename
+            _render_primary_artifact_file(
+                document_ir,
+                output_path=output_path,
+                conversion_mode=conversion_mode,
+            )
+            content = output_path.read_bytes()
+    except (OSError, ValueError) as exc:
+        return None, f"primary artifact generation failed: {exc}"
+    return (
+        {
+            "id": f"primary-{primary_format}",
+            "kind": "primary",
+            "format": primary_format,
+            "filename": filename,
+            "content_type": ARTIFACT_CONTENT_TYPES[primary_format],
+            "size_bytes": len(content),
+            "sha256": _sha256_hex(content),
+            "content": content,
+            "metadata": {
+                "role": "primary",
+                "conversion_mode": conversion_mode,
+                "source_filename": source_filename,
+                "download": {
+                    "available": True,
+                    "field": "artifacts[0].content",
+                },
+            },
+        },
+        None,
+    )
+
+
+def _render_primary_artifact_file(
+    document_ir: dict[str, Any],
+    *,
+    output_path: Path,
+    conversion_mode: str,
+) -> None:
+    if conversion_mode == "pdf_to_word":
+        render_editable_docx_from_pdf_ir(document_ir, output_path)
+        return
+    if conversion_mode in {"excel_to_word"}:
+        render_docx_from_ir(document_ir, output_path)
+        return
+    if conversion_mode in {"pdf_to_excel", "word_to_excel"}:
+        render_xlsx_from_ir(document_ir, output_path)
+        return
+    raise ValueError(f"primary artifact rendering is unsupported for {conversion_mode}")
 
 
 def _artifact_filename(
@@ -2503,14 +2562,26 @@ def _review_actions(role: str | None) -> list[str]:
 def _http_result(result: dict[str, Any], *, role: str | None = None) -> dict[str, Any]:
     download = dict(result["download"])
     content = download.pop("content")
+    artifacts = [_http_artifact(artifact) for artifact in result.get("artifacts", [])]
     return {
-        **{key: value for key, value in result.items() if key != "download"},
+        **{key: value for key, value in result.items() if key not in {"artifacts", "download"}},
+        "artifacts": artifacts,
         "available_review_actions": _review_actions(role),
         "download": {
             **download,
             "content_text": content.decode("utf-8"),
         },
     }
+
+
+def _http_artifact(artifact: Any) -> Any:
+    if not isinstance(artifact, dict):
+        return artifact
+    item = dict(artifact)
+    content = item.pop("content", None)
+    if isinstance(content, bytes):
+        item["content_base64"] = base64.b64encode(content).decode("ascii")
+    return item
 
 
 def _decode_request_content(request: dict[str, Any]) -> bytes:

@@ -1,5 +1,6 @@
 import base64
 import hashlib
+from io import BytesIO
 import json
 import re
 from http.client import HTTPConnection
@@ -208,42 +209,51 @@ def test_convert_uploaded_document_manifest_names_mode_artifacts_safely(
 
     assert result["download"]["filename"] == "CON report-name.veridoc-result.json"
     assert result["download"]["content_type"] == "application/json; charset=utf-8"
-    assert result["artifacts"] == [
-        {
-            "id": f"primary-{artifact_format}",
-            "kind": "primary",
-            "format": artifact_format,
-            "filename": f"CON report-name.veridoc-{conversion_mode.replace('_', '-')}.{artifact_format}",
-            "content_type": artifact_content_type,
-            "metadata": {
-                "role": "primary",
-                "conversion_mode": conversion_mode,
-                "source_filename": "CON report:name.json",
-                "download": {
-                    "available": False,
-                        "reason": "artifact_generation_not_implemented",
-                },
+    primary_artifact, debug_artifact = result["artifacts"]
+    primary_content = primary_artifact.pop("content")
+    assert isinstance(primary_content, bytes)
+    assert primary_artifact == {
+        "id": f"primary-{artifact_format}",
+        "kind": "primary",
+        "format": artifact_format,
+        "filename": f"CON report-name.veridoc-{conversion_mode.replace('_', '-')}.{artifact_format}",
+        "content_type": artifact_content_type,
+        "size_bytes": len(primary_content),
+        "sha256": hashlib.sha256(primary_content).hexdigest(),
+        "metadata": {
+            "role": "primary",
+            "conversion_mode": conversion_mode,
+            "source_filename": "CON report:name.json",
+            "download": {
+                "available": True,
+                "field": "artifacts[0].content",
             },
         },
-        {
-            "id": "debug-json",
-            "kind": "debug",
-            "format": "json",
-            "filename": "CON report-name.veridoc-result.json",
-            "content_type": "application/json; charset=utf-8",
-            "size_bytes": len(result["download"]["content"]),
-            "sha256": result["hashes"]["output_sha256"],
-            "metadata": {
-                "role": "debug",
-                "conversion_mode": conversion_mode,
-                "source_filename": "CON report:name.json",
-                "download": {
-                    "available": True,
-                    "field": "download",
-                },
+    }
+    with ZipFile(BytesIO(primary_content)) as archive:
+        assert (
+            "word/document.xml"
+            if artifact_format == "docx"
+            else "xl/worksheets/sheet1.xml"
+        ) in archive.namelist()
+    assert debug_artifact == {
+        "id": "debug-json",
+        "kind": "debug",
+        "format": "json",
+        "filename": "CON report-name.veridoc-result.json",
+        "content_type": "application/json; charset=utf-8",
+        "size_bytes": len(result["download"]["content"]),
+        "sha256": result["hashes"]["output_sha256"],
+        "metadata": {
+            "role": "debug",
+            "conversion_mode": conversion_mode,
+            "source_filename": "CON report:name.json",
+            "download": {
+                "available": True,
+                "field": "download",
             },
         },
-    ]
+    }
 
 
 @pytest.mark.parametrize(
