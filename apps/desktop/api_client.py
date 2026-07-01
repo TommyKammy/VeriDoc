@@ -386,7 +386,12 @@ class DesktopApiClient:
         destination = Path(destination_dir)
         if not destination.is_dir():
             raise ValueError("destination_dir must be an existing directory")
-        body, headers = self._request_bytes("GET", f"/api/jobs/{quote(job_id, safe='')}/result")
+        token = self._credential_store.require_token()
+        body, headers = self._request_bytes(
+            "GET",
+            f"/api/jobs/{quote(job_id, safe='')}/result",
+            token=token,
+        )
         filename = _download_filename_from_headers(headers) or f"{job_id}.veridoc-result.json"
         api_filename = _api_download_filename(filename)
         safe_filename = _sanitize_download_filename(api_filename)
@@ -407,6 +412,7 @@ class DesktopApiClient:
                         "saved_filename": save_path.name,
                         "output_sha256": hashlib.sha256(body).hexdigest(),
                     },
+                    token=token,
                 )
             except (MissingApiTokenError, InvalidApiTokenError, PermissionError):
                 _remove_download_file(save_path)
@@ -423,6 +429,8 @@ class DesktopApiClient:
         self,
         job_id: str,
         audit_event: dict[str, Any],
+        *,
+        token: str,
     ) -> Literal["accepted", "rejected", "unconfirmed"]:
         try:
             payload = self._request_json_pre_connection_retry(
@@ -433,6 +441,7 @@ class DesktopApiClient:
                     "action": "desktop_result_download",
                     "audit_event": audit_event,
                 },
+                token=token,
             )
         except DesktopApiError as exc:
             if str(exc) in {
@@ -465,11 +474,14 @@ class DesktopApiClient:
         method: str,
         path: str,
         body: dict[str, Any],
+        *,
+        token: str | None = None,
     ) -> dict[str, Any]:
         return self._request_json(
             method,
             path,
             body,
+            token=token,
             retry_on_url_error=_is_pre_connection_url_error,
         )
 
@@ -479,9 +491,11 @@ class DesktopApiClient:
         path: str,
         body: dict[str, Any] | None = None,
         *,
+        token: str | None = None,
         retry_on_url_error: bool | Callable[[URLError], bool] = True,
     ) -> dict[str, Any]:
-        token = self._credential_store.require_token()
+        if token is None:
+            token = self._credential_store.require_token()
         payload = None if body is None else json.dumps(body).encode("utf-8")
         request_urls = tuple(urljoin(base_url, path) for base_url in self.config._request_base_urls)
         last_url_error: URLError | None = None
@@ -526,8 +540,15 @@ class DesktopApiClient:
         assert last_url_error is not None
         raise last_url_error
 
-    def _request_bytes(self, method: str, path: str) -> tuple[bytes, dict[str, str]]:
-        token = self._credential_store.require_token()
+    def _request_bytes(
+        self,
+        method: str,
+        path: str,
+        *,
+        token: str | None = None,
+    ) -> tuple[bytes, dict[str, str]]:
+        if token is None:
+            token = self._credential_store.require_token()
         request_urls = tuple(urljoin(base_url, path) for base_url in self.config._request_base_urls)
         last_url_error: URLError | None = None
         for index, request_url in enumerate(request_urls):

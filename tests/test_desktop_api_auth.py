@@ -479,35 +479,28 @@ def test_desktop_api_client_removes_saved_result_when_audit_is_rejected(tmp_path
     assert not (tmp_path / "result.json").exists()
 
 
-@pytest.mark.parametrize(
-    ("audit_token", "expected_error"),
-    [
-        (None, MissingApiTokenError),
-        ("placeholder-token", InvalidApiTokenError),
-    ],
-)
-def test_desktop_api_client_removes_saved_result_when_audit_token_is_invalid(
+def test_desktop_api_client_pins_download_token_for_result_save_audit(
     tmp_path,
-    audit_token: str | None,
-    expected_error: type[Exception],
 ) -> None:
     transport = ResultSaveTransport(
         b'{"document_ir":{}}',
         headers={"Content-Disposition": 'attachment; filename="result.json"'},
     )
-    tokens = iter(["reviewer-token", audit_token])
+    tokens = iter(["download-actor-token", "different-signed-in-user-token"])
     client = DesktopApiClient(
         DesktopApiClientConfig(base_url="http://127.0.0.1:8765"),
         credential_store=ApiCredentialStore(read_token=lambda: next(tokens)),
         transport=transport,
     )
 
-    with pytest.raises(expected_error):
-        client.save_job_result("job-complete-1", tmp_path)
+    assert client.save_job_result("job-complete-1", tmp_path) == tmp_path / "result.json"
 
-    assert len(transport.requests) == 1
-    assert transport.requests[0].full_url == "http://127.0.0.1:8765/api/jobs/job-complete-1/result"
-    assert not (tmp_path / "result.json").exists()
+    assert len(transport.requests) == 2
+    assert [request.get_header("Authorization") for request in transport.requests] == [
+        "Bearer download-actor-token",
+        "Bearer download-actor-token",
+    ]
+    assert (tmp_path / "result.json").read_bytes() == b'{"document_ir":{}}'
 
 
 def test_desktop_api_client_preserves_saved_result_when_audit_response_is_unconfirmed(
