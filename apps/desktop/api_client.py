@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import base64
+from collections.abc import Callable
 from dataclasses import dataclass, field
+import errno
 import hashlib
 import http.client
 import ipaddress
@@ -423,7 +425,7 @@ class DesktopApiClient:
         audit_event: dict[str, Any],
     ) -> Literal["accepted", "rejected", "unconfirmed"]:
         try:
-            payload = self._request_json_single_attempt(
+            payload = self._request_json_pre_connection_retry(
                 "POST",
                 "/api/job-events",
                 {
@@ -458,13 +460,26 @@ class DesktopApiClient:
     ) -> dict[str, Any]:
         return self._request_json(method, path, body, retry_on_url_error=False)
 
+    def _request_json_pre_connection_retry(
+        self,
+        method: str,
+        path: str,
+        body: dict[str, Any],
+    ) -> dict[str, Any]:
+        return self._request_json(
+            method,
+            path,
+            body,
+            retry_on_url_error=_is_pre_connection_url_error,
+        )
+
     def _request_json(
         self,
         method: str,
         path: str,
         body: dict[str, Any] | None = None,
         *,
-        retry_on_url_error: bool = True,
+        retry_on_url_error: bool | Callable[[URLError], bool] = True,
     ) -> dict[str, Any]:
         token = self._credential_store.require_token()
         payload = None if body is None else json.dumps(body).encode("utf-8")
@@ -499,7 +514,12 @@ class DesktopApiClient:
                 raise DesktopApiError("API response transport failed") from exc
             except URLError as exc:
                 last_url_error = exc
-                if retry_on_url_error and index + 1 < len(request_urls):
+                should_retry = (
+                    retry_on_url_error(exc)
+                    if callable(retry_on_url_error)
+                    else retry_on_url_error
+                )
+                if should_retry and index + 1 < len(request_urls):
                     continue
                 raise
 
@@ -1013,6 +1033,15 @@ def _urlopen_transport(request: Request, *, timeout: float, tls_server_name: str
         return _pinned_https_transport(request, timeout=timeout, tls_server_name=tls_server_name)
     opener = build_opener(ProxyHandler({}), _NoRedirectHandler())
     return opener.open(request, timeout=timeout)
+
+
+def _is_pre_connection_url_error(exc: URLError) -> bool:
+    reason = exc.reason
+    if isinstance(reason, ConnectionRefusedError):
+        return True
+    if isinstance(reason, OSError):
+        return reason.errno in {errno.ECONNREFUSED, errno.EHOSTUNREACH, errno.ENETUNREACH}
+    return False
 
 
 def _split_valid_base_url(base_url: str) -> SplitResult:

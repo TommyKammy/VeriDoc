@@ -743,21 +743,21 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                     upload_actor_id = (
                         upload_actor.get("id") if isinstance(upload_actor, dict) else None
                     )
+                    upload_audit_event["actor_id"] = upload_actor_id
                     upload_dedupe = {
                         "job_id": job.job_id,
                         "action": "desktop_upload",
-                        "actor": upload_actor,
+                        "actor_id": upload_actor_id,
                     }
                     existing_upload_audit = job_event_store.find_once(dedupe=upload_dedupe)
-                    if (
-                        not created_job
-                        and not job_queue.is_unpublished(job.job_id)
-                    ):
+                    if not created_job:
                         if existing_upload_audit is None:
                             raise ValueError(
                                 "desktop_upload audit cannot be added after idempotent job creation"
                             )
                         upload_audit_event = existing_upload_audit
+                        if job_queue.is_unpublished(job.job_id):
+                            job = job_queue.publish_job(job.job_id, enqueue=True)
                     else:
                         upload_audit_event = job_event_store.record_once(
                             upload_audit_event,

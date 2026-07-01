@@ -540,6 +540,58 @@ def test_desktop_api_client_preserves_saved_result_when_audit_response_is_unconf
     assert (tmp_path / "result.json").read_bytes() == b'{"document_ir":{}}'
 
 
+def test_desktop_api_client_retries_result_save_audit_pre_connection_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    def fake_getaddrinfo(host: str, port: object, *, type: int):
+        assert host == "localhost"
+        assert port == 8765
+        assert type == socket.SOCK_STREAM
+        return [
+            (socket.AF_INET6, socket.SOCK_STREAM, 0, "", ("::1", 0, 0, 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", 0)),
+        ]
+
+    class Ipv4OnlyTransport(ResultSaveTransport):
+        def __call__(self, request: Request, *, timeout: float):
+            self.requests.append(request)
+            if request.full_url.startswith("http://[::1]:8765/"):
+                raise URLError(ConnectionRefusedError("connection refused"))
+            if request.full_url.endswith("/api/job-events"):
+                return JsonResponse(
+                    {
+                        "accepted": True,
+                        "audit_event": {
+                            "job_id": "job-complete-1",
+                            "action": "desktop_result_download",
+                        },
+                    }
+                )
+            return RawResponse(self.body, headers=self.headers)
+
+    monkeypatch.setattr("apps.desktop.api_client.socket.getaddrinfo", fake_getaddrinfo)
+    transport = Ipv4OnlyTransport(
+        b'{"document_ir":{}}',
+        headers={"Content-Disposition": 'attachment; filename="result.json"'},
+    )
+    client = DesktopApiClient(
+        DesktopApiClientConfig(base_url="http://localhost:8765"),
+        credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        transport=transport,
+    )
+
+    assert client.save_job_result("job-complete-1", tmp_path) == tmp_path / "result.json"
+
+    assert [request.full_url for request in transport.requests] == [
+        "http://[::1]:8765/api/jobs/job-complete-1/result",
+        "http://127.0.0.1:8765/api/jobs/job-complete-1/result",
+        "http://[::1]:8765/api/job-events",
+        "http://127.0.0.1:8765/api/job-events",
+    ]
+    assert all(request.get_header("Host") == "localhost:8765" for request in transport.requests)
+
+
 def test_desktop_api_client_does_not_retry_unconfirmed_result_save_audit(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
