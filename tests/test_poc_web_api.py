@@ -324,6 +324,44 @@ def test_convert_uploaded_document_manifest_avoids_reserved_stems_after_trim(
     assert result["download"]["filename"] == debug_filename
 
 
+@pytest.mark.parametrize(
+    ("conversion_mode", "artifact_format"),
+    (
+        ("pdf_to_word", "docx"),
+        ("pdf_to_excel", "xlsx"),
+    ),
+)
+def test_convert_uploaded_document_manifest_avoids_reserved_stems_after_truncation(
+    conversion_mode: str,
+    artifact_format: str,
+) -> None:
+    parser_output = {
+        "source_type": "pdf",
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 320,
+                "height": 240,
+                "unit": "pt",
+                "fragments": [{"text": "PDF text", "confidence": 0.95}],
+            }
+        ],
+    }
+    mode_slug = conversion_mode.replace("_", "-")
+
+    result = convert_uploaded_document(
+        filename=f"CON{'-' * 233}A.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+        conversion_mode=conversion_mode,
+    )
+
+    primary_filename = result["artifacts"][0]["filename"]
+    debug_filename = result["artifacts"][1]["filename"]
+    assert primary_filename == f"CON_.veridoc-{mode_slug}.{artifact_format}"
+    assert debug_filename == "CON_.veridoc-result.json"
+    assert result["download"]["filename"] == debug_filename
+
+
 def test_convert_uploaded_document_records_selected_conversion_mode() -> None:
     parser_output = {
         "source_type": "pdf",

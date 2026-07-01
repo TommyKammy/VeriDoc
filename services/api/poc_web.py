@@ -2249,7 +2249,10 @@ def _artifact_filename(
     if max_stem_bytes <= 0:
         return _fit_download_filename(suffix.lstrip("."))
     fitted_stem = _truncate_utf8_bytes(source_stem, max_stem_bytes).strip(" .-")
-    return _fit_download_filename(f"{fitted_stem or 'upload'}{suffix}")
+    safe_stem = (
+        _avoid_windows_reserved_download_stem(fitted_stem) if fitted_stem else "upload"
+    )
+    return _fit_download_filename(f"{safe_stem}{suffix}")
 
 
 def _download_content_type(content_type: str) -> str:
