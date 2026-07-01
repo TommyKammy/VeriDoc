@@ -634,10 +634,10 @@ def test_xlsx_renders_non_field_blocks_as_document_content_rows(tmp_path: Path) 
     assert ("B6", "list_item", "inline_string") in cells
     assert ("C6", "-01", "inline_string") in cells
     assert ("D6", "text", "inline_string") in cells
-    assert ("A7", "table-1", "inline_string") in cells
-    assert ("B7", "table", "inline_string") in cells
-    assert ("C7", "A\tB\n1\t2", "inline_string") in cells
-    assert ("D7", "text", "inline_string") in cells
+    assert ("A7", "A", "inline_string") in cells
+    assert ("B7", "B", "inline_string") in cells
+    assert ("A8", 1, "number") in cells
+    assert ("B8", 2, "number") in cells
 
 
 def test_renderer_sanitizes_xml_invalid_text_before_writing_ooxml(tmp_path: Path) -> None:
