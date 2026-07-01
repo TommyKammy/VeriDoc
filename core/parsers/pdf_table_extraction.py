@@ -96,6 +96,7 @@ class MissingPdfTableExtractorDependency(RuntimeError):
 
 
 CONSENSUS_BLOCKING_MISMATCH_KINDS = {
+    "candidate-page",
     "candidate-shape",
     "candidate-table-count",
     "candidate-text",
@@ -211,6 +212,16 @@ def build_table_extraction_report(
                 zip(left_candidate.tables, right_candidate.tables),
                 start=1,
             ):
+                if left_table.page_number != right_table.page_number:
+                    mismatches.append(
+                        TableExtractionMismatch(
+                            kind="candidate-page",
+                            candidate=f"{left_candidate.name} vs {right_candidate.name}",
+                            expected=f"page {left_table.page_number}",
+                            actual=f"page {right_table.page_number}",
+                            notes=f"Candidate extractors disagree on table {table_index} page.",
+                        )
+                    )
                 if left_table.row_widths != right_table.row_widths:
                     mismatches.append(
                         TableExtractionMismatch(

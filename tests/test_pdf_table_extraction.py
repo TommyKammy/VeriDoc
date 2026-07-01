@@ -21,6 +21,7 @@ def _candidate(
     rows: list[list[str]],
     *,
     has_bboxes: bool = True,
+    page_number: int = 1,
 ) -> TableExtractionCandidate:
     bboxes = [
         [
@@ -40,7 +41,7 @@ def _candidate(
             ExtractedTable(
                 extractor=name,
                 flavor=flavor,
-                page_number=1,
+                page_number=page_number,
                 rows=rows,
                 cell_bboxes=bboxes,
             )
@@ -273,6 +274,38 @@ def test_build_table_extraction_report_blocks_selection_when_cell_text_disagrees
         and mismatch.expected == "Lot\tAssay\nA-001\t12.5"
         and mismatch.actual == "Lot\tAssay\nA-001\t13.0"
         and "table 1 cell text" in mismatch.notes
+        for mismatch in report.mismatches
+    )
+
+
+def test_build_table_extraction_report_blocks_selection_when_table_pages_disagree(
+    tmp_path: Path,
+) -> None:
+    report = build_table_extraction_report(
+        source_path=tmp_path / "repeated-form.pdf",
+        candidates=[
+            _candidate(
+                "camelot",
+                "lattice",
+                [["Lot", "Assay"], ["A-001", "12.5"]],
+                page_number=1,
+            ),
+            _candidate(
+                "pdfplumber",
+                "table",
+                [["Lot", "Assay"], ["A-001", "12.5"]],
+                page_number=2,
+            ),
+        ],
+    )
+
+    assert report.selected_candidate is None
+    assert any(
+        mismatch.kind == "candidate-page"
+        and mismatch.candidate == "camelot:lattice vs pdfplumber:table"
+        and mismatch.expected == "page 1"
+        and mismatch.actual == "page 2"
+        and "table 1 page" in mismatch.notes
         for mismatch in report.mismatches
     )
 

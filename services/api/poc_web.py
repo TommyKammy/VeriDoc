@@ -2640,6 +2640,7 @@ def _parser_output_with_pdf_tables(parser_output: dict[str, Any], report: Any) -
     candidates = report_data.get("candidates")
     if not isinstance(candidates, list):
         return output
+    selected_table_keys: set[tuple[int, tuple[tuple[str, ...], ...]]] = set()
     for candidate in candidates:
         if not isinstance(candidate, dict) or candidate.get("status") != "ok":
             continue
@@ -2654,6 +2655,8 @@ def _parser_output_with_pdf_tables(parser_output: dict[str, Any], report: Any) -
                 continue
             page_number = _int_value(table.get("page_number"), default=1)
             table_key = _pdf_table_key(page_number, table.get("rows"))
+            if table_key:
+                selected_table_keys.add(table_key)
             if table_key and _merge_pdf_table_into_parser_fragments(
                 existing_tables.get(table_key, []),
                 table,
@@ -2677,7 +2680,8 @@ def _parser_output_with_pdf_tables(parser_output: dict[str, Any], report: Any) -
                 continue
             fragment: dict[str, Any] = {"kind": "table", "page_number": page_number}
             _merge_pdf_table_fragment(fragment, table, page, candidate_name)
-            _append_pdf_table_fragment(fragments, fragment, existing_tables, table_key)
+            _append_pdf_table_fragment(fragments, fragment)
+    _discard_unmerged_pdf_table_fragments(output, selected_table_keys, existing_tables)
     return output
 
 
@@ -2802,13 +2806,6 @@ def _pdf_table_existing_tables(
                 )
                 if fragment_key:
                     table_fragments.setdefault(fragment_key, []).append(fragment)
-    blocks = parser_output.get("blocks")
-    if isinstance(blocks, list):
-        for block in blocks:
-            if isinstance(block, dict) and block.get("type") == "table":
-                block_key = _pdf_table_key(_pdf_table_block_page_number(block), block)
-                if block_key:
-                    table_fragments.setdefault(block_key, []).append(block)
     return table_fragments
 
 
@@ -2844,6 +2841,7 @@ def _merge_pdf_table_fragment(
         fragment.pop("missing_confidence", None)
         fragment.pop("low_confidence", None)
     else:
+        fragment.pop("bbox", None)
         fragment["requires_review"] = True
         fragment["missing_confidence"] = True
 
@@ -2851,12 +2849,36 @@ def _merge_pdf_table_fragment(
 def _append_pdf_table_fragment(
     fragments: list[Any],
     fragment: dict[str, Any],
-    existing_tables: dict[tuple[int, tuple[tuple[str, ...], ...]], list[dict[str, Any]]],
-    table_key: tuple[int, tuple[tuple[str, ...], ...]] | None,
 ) -> None:
     fragments.extend([fragment])
-    if table_key:
-        existing_tables.setdefault(table_key, []).append(fragment)
+
+
+def _discard_unmerged_pdf_table_fragments(
+    parser_output: dict[str, Any],
+    selected_table_keys: set[tuple[int, tuple[tuple[str, ...], ...]]],
+    existing_tables: dict[tuple[int, tuple[tuple[str, ...], ...]], list[dict[str, Any]]],
+) -> None:
+    stale_fragment_ids = {
+        id(fragment)
+        for table_key in selected_table_keys
+        for fragment in existing_tables.get(table_key, [])
+    }
+    if not stale_fragment_ids:
+        return
+    pages = parser_output.get("pages")
+    if not isinstance(pages, list):
+        return
+    for page in pages:
+        if not isinstance(page, dict):
+            continue
+        for container_name in ("fragments", "regions"):
+            container = page.get(container_name)
+            if isinstance(container, list):
+                container[:] = [
+                    fragment
+                    for fragment in container
+                    if id(fragment) not in stale_fragment_ids
+                ]
 
 
 def _pdf_table_key(
@@ -2870,19 +2892,6 @@ def _pdf_table_key(
     if not rows_key:
         return None
     return (page_number, rows_key)
-
-
-def _pdf_table_block_page_number(block: dict[str, Any]) -> int:
-    page_number = _int_value(block.get("page_number"), default=0)
-    if page_number:
-        return page_number
-    source_page = _int_value(block.get("source_page"), default=0)
-    if source_page:
-        return source_page
-    metadata = block.get("value_metadata")
-    if isinstance(metadata, dict):
-        return _int_value(metadata.get("source_page"), default=0)
-    return 0
 
 
 def _pdf_table_block_rows_key(block: dict[str, Any]) -> tuple[tuple[str, ...], ...]:
