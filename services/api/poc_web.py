@@ -1644,9 +1644,11 @@ def _validate_desktop_result_download_audit_event(
     expected_event = _desktop_result_download_audit_event(job)
     if not isinstance(audit_event, dict):
         raise ValueError("audit_event is required")
-    for field_name in ("event_type", "job_id", "action", "download_filename", "output_sha256"):
+    for field_name in ("event_type", "job_id", "action", "download_filename"):
         if audit_event.get(field_name) != expected_event.get(field_name):
             raise ValueError(f"audit_event.{field_name} does not match downloaded result")
+    if audit_event.get("output_sha256") != expected_event["output_sha256"]:
+        raise ValueError("audit_event.output_sha256 does not match downloaded result content")
     accepted_event = dict(expected_event)
     if "saved_filename" in audit_event:
         saved_filename = audit_event.get("saved_filename")
