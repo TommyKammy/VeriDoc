@@ -201,16 +201,7 @@ def build_table_extraction_report(
         for right_candidate in ok_candidates[left_index + 1 :]:
             if len(left_candidate.tables) != len(right_candidate.tables):
                 mismatches.append(
-                    TableExtractionMismatch(
-                        kind="candidate-table-count",
-                        candidate=f"{left_candidate.name} vs {right_candidate.name}",
-                        expected=str(len(left_candidate.tables)),
-                        actual=str(len(right_candidate.tables)),
-                        notes=(
-                            "Candidate extractors disagree on extracted table count; "
-                            "automatic selection is blocked without an expected shape."
-                        ),
-                    )
+                    _candidate_table_count_mismatch(left_candidate, right_candidate)
                 )
             for table_index, (left_table, right_table) in enumerate(
                 zip(left_candidate.tables, right_candidate.tables),
@@ -391,6 +382,22 @@ def _cell_text(value: Any) -> str:
 
 def _first_table(candidate: TableExtractionCandidate) -> ExtractedTable | None:
     return candidate.tables[0] if candidate.tables else None
+
+
+def _candidate_table_count_mismatch(
+    left_candidate: TableExtractionCandidate,
+    right_candidate: TableExtractionCandidate,
+) -> TableExtractionMismatch:
+    return TableExtractionMismatch(
+        kind="candidate-table-count",
+        candidate=f"{left_candidate.name} vs {right_candidate.name}",
+        expected=str(len(left_candidate.tables)),
+        actual=str(len(right_candidate.tables)),
+        notes=(
+            "Candidate extractors disagree on extracted table count; "
+            "automatic selection is blocked without an expected shape."
+        ),
+    )
 
 
 def _select_candidate(
