@@ -698,17 +698,30 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             desktop_upload_audit = _desktop_upload_audit_requested(request)
             requested_template = self._job_template_binding(request.get("template_id"))
             job_queue = self._job_queue()
-            job, created_job = job_queue.get_or_create_job(
-                idempotency_key=idempotency_key,
-                filename=filename,
-                mode=mode,
-                source=source,
-                template=requested_template,
-                create_template=lambda: self._job_template_snapshot(request.get("template_id")),
-                enqueue=not desktop_upload_audit,
-            )
             upload_audit_event = None
-            if desktop_upload_audit:
+            if not desktop_upload_audit:
+                job, created_job = job_queue.get_or_create_job(
+                    idempotency_key=idempotency_key,
+                    filename=filename,
+                    mode=mode,
+                    source=source,
+                    template=requested_template,
+                    create_template=lambda: self._job_template_snapshot(request.get("template_id")),
+                )
+            else:
+                job, created_job = job_queue.get_or_create_job(
+                    idempotency_key=idempotency_key,
+                    filename=filename,
+                    mode=mode,
+                    source=source,
+                    template=requested_template,
+                    create_template=lambda: self._job_template_snapshot(
+                        request.get("template_id")
+                    ),
+                    enqueue=False,
+                    publish=False,
+                    include_unpublished=True,
+                )
                 if not isinstance(job.source, dict):
                     raise ValueError("desktop_upload requires stored job source")
                 job_event_store = self._job_event_store()
@@ -748,7 +761,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                         job_queue.discard_queued_job(job.job_id)
                     raise
                 if created_job:
-                    job = job_queue.enqueue_job(job.job_id)
+                    job = job_queue.publish_job(job.job_id, enqueue=True)
         except RuntimeError as exc:
             self._send_json({"error": "job_conflict", "message": str(exc)}, status=409)
             return

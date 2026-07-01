@@ -40,6 +40,7 @@ class JobQueue:
         self._jobs: dict[str, JobRecord] = {}
         self._idempotency_index: dict[str, str] = {}
         self._pending_job_ids: deque[str] = deque()
+        self._unpublished_job_ids: set[str] = set()
         self._lock = Lock()
 
     def create_job(
@@ -87,6 +88,8 @@ class JobQueue:
         template: dict[str, Any] | None = None,
         create_template: Callable[[], dict[str, Any] | None] | None = None,
         enqueue: bool = True,
+        publish: bool = True,
+        include_unpublished: bool = False,
     ) -> tuple[JobRecord, bool]:
         key, filename, mode = _normalize_job_request(
             idempotency_key=idempotency_key,
@@ -101,6 +104,7 @@ class JobQueue:
                 mode=mode,
                 source=source,
                 template=template,
+                include_unpublished=include_unpublished,
             )
             if existing is not None:
                 return existing, False
@@ -112,8 +116,22 @@ class JobQueue:
                 source=source,
                 template=stored_template,
                 enqueue=enqueue,
+                publish=publish,
             )
             return job, True
+
+    def publish_job(self, job_id: str, *, enqueue: bool = True) -> JobRecord:
+        with self._lock:
+            try:
+                job = self._jobs[job_id]
+            except KeyError as exc:
+                raise KeyError(f"unknown job_id: {job_id}") from exc
+            self._unpublished_job_ids.discard(job_id)
+            if enqueue and job_id not in self._pending_job_ids:
+                if job.status != "queued":
+                    raise RuntimeError("job is already active")
+                self._pending_job_ids.append(job_id)
+            return job
 
     def enqueue_job(self, job_id: str) -> JobRecord:
         with self._lock:
@@ -121,6 +139,7 @@ class JobQueue:
                 job = self._jobs[job_id]
             except KeyError as exc:
                 raise KeyError(f"unknown job_id: {job_id}") from exc
+            self._unpublished_job_ids.discard(job_id)
             if job.status != "queued":
                 raise RuntimeError("job is already active")
             if job_id not in self._pending_job_ids:
@@ -136,6 +155,7 @@ class JobQueue:
             if job.status != "queued":
                 raise RuntimeError("job is already active")
             del self._jobs[job_id]
+            self._unpublished_job_ids.discard(job_id)
             self._idempotency_index.pop(job.idempotency_key, None)
             try:
                 self._pending_job_ids.remove(job_id)
@@ -167,6 +187,7 @@ class JobQueue:
                 mode=mode,
                 source=source,
                 template=template,
+                include_unpublished=False,
             )
 
     def _get_idempotent_job_locked(
@@ -177,10 +198,13 @@ class JobQueue:
         mode: str,
         source: dict[str, Any] | None,
         template: dict[str, Any] | None,
+        include_unpublished: bool = False,
     ) -> JobRecord | None:
         existing_id = self._idempotency_index.get(idempotency_key)
         if existing_id is None:
             return None
+        if existing_id in self._unpublished_job_ids and not include_unpublished:
+            raise RuntimeError("job creation pending")
         existing = self._jobs[existing_id]
         if (
             existing.filename != filename
@@ -200,6 +224,7 @@ class JobQueue:
         source: dict[str, Any] | None,
         template: dict[str, Any] | None,
         enqueue: bool,
+        publish: bool = True,
     ) -> JobRecord:
         if mode == "high_quality" and self._has_active_high_quality_job():
             raise RuntimeError("high_quality job already active")
@@ -214,16 +239,21 @@ class JobQueue:
         )
         self._jobs[job.job_id] = job
         self._idempotency_index[idempotency_key] = job.job_id
-        if enqueue:
+        if not publish:
+            self._unpublished_job_ids.add(job.job_id)
+        if enqueue and publish:
             self._pending_job_ids.append(job.job_id)
         return job
 
     def get_job(self, job_id: str) -> JobRecord:
         with self._lock:
             try:
-                return self._jobs[job_id]
+                job = self._jobs[job_id]
             except KeyError as exc:
                 raise KeyError(f"unknown job_id: {job_id}") from exc
+            if job_id in self._unpublished_job_ids:
+                raise KeyError(f"unknown job_id: {job_id}")
+            return job
 
     def list_jobs(self, *, status: str | None = None) -> list[JobRecord]:
         if status is not None and status not in JOB_STATUSES:
@@ -232,7 +262,8 @@ class JobQueue:
             return [
                 job
                 for job in self._jobs.values()
-                if status is None or job.status == status
+                if job.job_id not in self._unpublished_job_ids
+                and (status is None or job.status == status)
             ]
 
     def start_next_job(self) -> JobRecord | None:

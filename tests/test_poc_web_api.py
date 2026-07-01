@@ -2689,11 +2689,17 @@ def test_poc_http_api_rolls_back_desktop_upload_when_create_audit_fails() -> Non
 def test_poc_http_api_does_not_expose_desktop_upload_job_before_create_audit() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     server.job_queue = JobQueue()
+    audit_started = Event()
+    release_audit = Event()
 
     class RacingJobAuditEventStore(JobAuditEventStore):
         started_job_id: Optional[str] = None
+        audit_job_id: Optional[str] = None
 
         def record_once(self, event: dict[str, object], *, dedupe: dict[str, object]) -> dict[str, object]:
+            self.audit_job_id = str(event["job_id"])
+            audit_started.set()
+            release_audit.wait(timeout=5)
             started = server.job_queue.start_next_job()
             self.started_job_id = started.job_id if started is not None else None
             raise ValueError("audit log unavailable")
@@ -2717,22 +2723,78 @@ def test_poc_http_api_does_not_expose_desktop_upload_job_before_create_audit() -
                 "desktop_upload_audit": True,
             }
         ).encode("utf-8")
-        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
-        connection.request(
+        headers = {"Content-Type": "application/json", "Content-Length": str(len(payload))}
+        result: dict[str, object] = {}
+
+        def post_upload() -> None:
+            connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+            try:
+                connection.request("POST", "/api/jobs", body=payload, headers=headers)
+                response = connection.getresponse()
+                result["status"] = response.status
+                result["body"] = json.loads(response.read().decode("utf-8"))
+            finally:
+                connection.close()
+
+        worker = Thread(target=post_upload)
+        worker.start()
+        assert audit_started.wait(timeout=5)
+
+        list_connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        list_connection.request("GET", "/api/jobs")
+        list_response = list_connection.getresponse()
+        list_body = json.loads(list_response.read().decode("utf-8"))
+        list_connection.close()
+
+        detail_connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        detail_connection.request("GET", f"/api/jobs/{audit_store.audit_job_id}")
+        detail_response = detail_connection.getresponse()
+        detail_body = json.loads(detail_response.read().decode("utf-8"))
+        detail_connection.close()
+
+        replay_payload = json.dumps(
+            {
+                "idempotency_key": "desktop-upload-audit-race",
+                "filename": "batch-record.pdf",
+                "content_type": "application/pdf",
+                "content_base64": base64.b64encode(uploaded_content).decode("ascii"),
+                "size_bytes": len(uploaded_content),
+                "source_sha256": source_sha256,
+                "mode": "standard",
+            }
+        ).encode("utf-8")
+        replay_connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        replay_connection.request(
             "POST",
             "/api/jobs",
-            body=payload,
-            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+            body=replay_payload,
+            headers={
+                "Content-Type": "application/json",
+                "Content-Length": str(len(replay_payload)),
+            },
         )
-        response = connection.getresponse()
-        body = json.loads(response.read().decode("utf-8"))
+        replay_response = replay_connection.getresponse()
+        replay_body = json.loads(replay_response.read().decode("utf-8"))
+        replay_connection.close()
+
+        release_audit.set()
+        worker.join(timeout=10)
         jobs = server.job_queue.list_jobs()
     finally:
+        release_audit.set()
         server.shutdown()
         thread.join(timeout=5)
 
-    assert response.status == 400
-    assert body == {"error": "invalid_job_request", "message": "audit log unavailable"}
+    assert result == {
+        "status": 400,
+        "body": {"error": "invalid_job_request", "message": "audit log unavailable"},
+    }
+    assert list_response.status == 200
+    assert list_body["jobs"] == []
+    assert detail_response.status == 404
+    assert detail_body == {"error": "job_not_found"}
+    assert replay_response.status == 409
+    assert replay_body == {"error": "job_conflict", "message": "job creation pending"}
     assert audit_store.started_job_id is None
     assert jobs == []
 
