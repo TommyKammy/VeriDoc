@@ -2652,16 +2652,13 @@ def _parser_output_with_pdf_tables(parser_output: dict[str, Any], report: Any) -
                 continue
             page_number = _int_value(table.get("page_number"), default=1)
             table_key = _pdf_table_key(page_number, table.get("rows"))
-            if table_key:
-                matched_fragments = _pdf_table_parser_merge_fragments(
-                    existing_tables.get(table_key, []),
-                    candidate_name,
-                )
-                if matched_fragments:
-                    page = pages_by_number.get(page_number) or {}
-                    for fragment in matched_fragments:
-                        _merge_pdf_table_fragment(fragment, table, page, candidate_name)
-                    continue
+            if table_key and _merge_pdf_table_into_parser_fragments(
+                existing_tables.get(table_key, []),
+                table,
+                pages_by_number.get(page_number) or {},
+                candidate_name,
+            ):
+                continue
             page = pages_by_number.get(page_number)
             if page is None:
                 page = {
@@ -2771,11 +2768,18 @@ def _pdf_table_existing_tables(
     return table_fragments
 
 
-def _pdf_table_parser_merge_fragments(
+def _merge_pdf_table_into_parser_fragments(
     fragments: list[dict[str, Any]],
+    table: dict[str, Any],
+    page: dict[str, Any],
     candidate_name: str,
-) -> list[dict[str, Any]]:
-    return [fragment for fragment in fragments if fragment.get("extractor") != candidate_name]
+) -> bool:
+    parser_fragments = [
+        fragment for fragment in fragments if fragment.get("extractor") != candidate_name
+    ]
+    for fragment in parser_fragments:
+        _merge_pdf_table_fragment(fragment, table, page, candidate_name)
+    return bool(parser_fragments)
 
 
 def _merge_pdf_table_fragment(

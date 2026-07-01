@@ -95,6 +95,9 @@ class MissingPdfTableExtractorDependency(RuntimeError):
     """Raised when an optional PDF table extraction dependency is unavailable."""
 
 
+CONSENSUS_BLOCKING_MISMATCH_KINDS = {"candidate-shape", "candidate-table-count"}
+
+
 def compare_pdf_table_extractors(
     pdf_path: str | Path,
     *,
@@ -203,7 +206,10 @@ def build_table_extraction_report(
                         candidate=f"{left_candidate.name} vs {right_candidate.name}",
                         expected=str(len(left_candidate.tables)),
                         actual=str(len(right_candidate.tables)),
-                        notes="Candidate extractors disagree on extracted table count.",
+                        notes=(
+                            "Candidate extractors disagree on extracted table count; "
+                            "automatic selection is blocked without an expected shape."
+                        ),
                     )
                 )
             for table_index, (left_table, right_table) in enumerate(
@@ -396,7 +402,7 @@ def _select_candidate(
     blocked = {mismatch.candidate for mismatch in mismatches if " vs " not in mismatch.candidate}
     if require_shape_consensus:
         for mismatch in mismatches:
-            if mismatch.kind in {"candidate-shape", "candidate-table-count"}:
+            if mismatch.kind in CONSENSUS_BLOCKING_MISMATCH_KINDS:
                 blocked.update(mismatch.candidate.split(" vs "))
     for preferred in ("camelot:lattice", "pdfplumber:table", "camelot:stream"):
         for candidate in candidates:
