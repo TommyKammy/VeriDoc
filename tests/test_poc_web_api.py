@@ -15,6 +15,12 @@ from zipfile import ZIP_DEFLATED, ZipFile
 import pytest
 
 from apps.desktop.api_client import ApiCredentialStore, DesktopApiClient, DesktopApiClientConfig
+from core.parsers.pdf_table_extraction import (
+    ExtractedTable,
+    TableBBox,
+    TableExtractionCandidate,
+    TableExtractionReport,
+)
 from core.parsers.xlsx_extraction import extract_xlsx_structure
 import services.api.poc_web as poc_web
 from services.api.job_queue import JobQueue
@@ -399,6 +405,88 @@ def test_convert_uploaded_document_xlsx_primary_renders_table_blocks_as_grid(
     assert cells["B4"] == ("Assay", "inline_string")
     assert cells["A5"] == ("A", "inline_string")
     assert cells["B5"] == ("12.5", "number")
+
+
+def test_pdf_to_excel_primary_uses_extracted_pdf_table_with_source_comment(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def fake_parse_text_pdf_to_document_ir(pdf_path: Path, *, document_id: str | None = None) -> dict:
+        return {
+            "schema_version": "document-ir/v0",
+            "document": {"id": document_id or "sample", "title": pdf_path.name, "source_type": "pdf"},
+            "pages": [{"page_number": 1, "width": 320, "height": 240, "unit": "pt"}],
+            "blocks": [
+                {
+                    "id": "block-001",
+                    "type": "paragraph",
+                    "text": "Introductory PDF text",
+                    "value_metadata": {
+                        "source_page": 1,
+                        "bbox": {"x": 12, "y": 18, "width": 180, "height": 16, "unit": "pt"},
+                        "extractor": {"name": "test-text", "version": "test"},
+                        "confidence": 0.95,
+                    },
+                }
+            ],
+        }
+
+    table = ExtractedTable(
+        extractor="camelot",
+        flavor="lattice",
+        page_number=1,
+        rows=[["Lot", "Assay"], ["A-001", "12.5"]],
+        cell_bboxes=[
+            [
+                TableBBox(x=10, y=20, width=50, height=12),
+                TableBBox(x=60, y=20, width=60, height=12),
+            ],
+            [
+                TableBBox(x=10, y=32, width=50, height=12),
+                TableBBox(x=60, y=32, width=60, height=12),
+            ],
+        ],
+    )
+    report = TableExtractionReport(
+        source_path="sample.pdf",
+        candidates=[
+            TableExtractionCandidate(
+                extractor="camelot",
+                flavor="lattice",
+                version="test",
+                status="ok",
+                tables=[table],
+                notes="synthetic selected table",
+            )
+        ],
+        mismatches=[],
+        selected_candidate="camelot:lattice",
+        notes="synthetic report",
+    )
+    monkeypatch.setattr(poc_web, "parse_text_pdf_to_document_ir", fake_parse_text_pdf_to_document_ir)
+    monkeypatch.setattr(poc_web, "compare_pdf_table_extractors", lambda _path: report, raising=False)
+
+    result = convert_uploaded_document(
+        filename="sample.pdf",
+        content=b"%PDF-1.4\n%%EOF\n",
+        conversion_mode="pdf_to_excel",
+    )
+
+    primary_artifact = result["artifacts"][0]
+    assert primary_artifact["format"] == "xlsx"
+    primary_path = tmp_path / primary_artifact["filename"]
+    primary_path.write_bytes(primary_artifact["content"])
+    xlsx = extract_xlsx_structure(primary_path)
+    cells = {cell.ref: (cell.value, cell.value_type) for cell in xlsx.sheets[0].cells}
+    assert cells["A5"] == ("Lot", "inline_string")
+    assert cells["B5"] == ("Assay", "inline_string")
+    assert cells["A6"] == ("A-001", "inline_string")
+    assert cells["B6"] == ("12.5", "number")
+    with ZipFile(primary_path) as archive:
+        comments_xml = archive.read("xl/comments1.xml").decode("utf-8")
+    assert "PDF table extraction: camelot:lattice" in comments_xml
+    assert "source_page=1" in comments_xml
+    assert "bbox=10.0,196.0,110.0,24.0 pt" in comments_xml
 
 
 def test_convert_uploaded_document_passes_xlsx_render_plan_for_table_blocks(
