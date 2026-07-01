@@ -13,6 +13,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
 
+from apps.desktop.api_client import ApiCredentialStore, DesktopApiClient, DesktopApiClientConfig
 import services.api.poc_web as poc_web
 from services.api.job_queue import JobQueue
 from services.api.poc_web import (
@@ -2856,6 +2857,54 @@ def test_poc_http_api_accepts_desktop_save_audit_for_hashless_downloadable_resul
     assert events[0]["filename"] == "legacy-record.pdf"
     assert events[0]["download_filename"] == "legacy-record.veridoc-result.json"
     assert events[0]["output_sha256"] == hashlib.sha256(download_content).hexdigest()
+
+
+def test_desktop_client_records_hashless_result_save_audit_with_computed_hash(tmp_path) -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue()
+    server.job_event_store = JobAuditEventStore()
+    server.local_auth_tokens = _local_auth_tokens()
+    job = server.job_queue.create_job(
+        idempotency_key="desktop-client-hashless-result",
+        filename="../legacy-record.pdf",
+        mode="standard",
+    )
+    running = server.job_queue.start_next_job()
+    assert running is not None
+    download_content = b'{"converted": "legacy-client"}'
+    server.job_queue.mark_succeeded(
+        job.job_id,
+        result={
+            "status": "converted",
+            "download": {
+                "filename": "../legacy-record\r\n.veridoc-result.json",
+                "content_type": "application/json",
+                "content": download_content,
+            },
+        },
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        client = DesktopApiClient(
+            DesktopApiClientConfig(base_url=f"http://127.0.0.1:{server.server_port}"),
+            credential_store=ApiCredentialStore(read_token=lambda: "reviewer-token"),
+        )
+
+        saved_path = client.save_job_result(job.job_id, tmp_path)
+        events = server.job_event_store.list_events(filters={"job_id": job.job_id})
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert saved_path == tmp_path / "legacy-record.veridoc-result.json"
+    assert saved_path.read_bytes() == download_content
+    assert len(events) == 1
+    assert events[0]["action"] == "desktop_result_download"
+    assert events[0]["filename"] == "legacy-record.pdf"
+    assert events[0]["download_filename"] == "legacy-record.veridoc-result.json"
+    assert events[0]["output_sha256"] == hashlib.sha256(download_content).hexdigest()
+    assert events[0]["actor"] == {"id": "local-principal:reviewer", "role": "reviewer"}
 
 
 def test_poc_http_api_records_one_desktop_upload_audit_for_concurrent_idempotent_uploads() -> None:
