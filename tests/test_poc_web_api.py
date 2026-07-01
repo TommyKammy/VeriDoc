@@ -301,6 +301,56 @@ def test_convert_uploaded_document_blocks_primary_render_failures(
     assert [artifact["id"] for artifact in result["artifacts"]] == ["debug-json"]
 
 
+def test_convert_uploaded_document_skips_primary_render_for_invalid_ir(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected_docx_renderer(document_ir: dict, output_path: Path) -> None:
+        raise AssertionError("renderer should not run for invalid IR")
+
+    monkeypatch.setattr(
+        poc_web,
+        "render_editable_docx_from_pdf_ir",
+        unexpected_docx_renderer,
+    )
+    parser_output = {
+        "schema_version": "document-ir/v0",
+        "document": {
+            "id": "sample-document-001",
+            "title": "Invalid PDF IR",
+            "source_type": "pdf",
+        },
+        "pages": [{"page_number": 1, "width": 100, "height": 100, "unit": "pt"}],
+        "blocks": [
+            {
+                "id": "block-001",
+                "type": "paragraph",
+                "text": "Outside page",
+                "value_metadata": {
+                    "source_page": 1,
+                    "bbox": {"x": 90, "y": 10, "width": 20, "height": 12, "unit": "pt"},
+                    "confidence": 0.95,
+                },
+            }
+        ],
+    }
+
+    result = convert_uploaded_document(
+        filename="phase0-output.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+        conversion_mode="pdf_to_word",
+    )
+
+    assert result["status"] == "blocked"
+    assert result["validation"]["errors"] == ["blocks[0].bbox extends past page 1"]
+    assert result["warnings"] == [
+        "conversion mode pdf_to_word selected",
+        "primary artifact generation skipped: document IR validation failed",
+    ]
+    assert [artifact["id"] for artifact in result["artifacts"]] == ["debug-json"]
+    downloaded = json.loads(result["download"]["content"].decode("utf-8"))
+    assert downloaded["warnings"] == result["warnings"]
+
+
 @pytest.mark.parametrize(
     ("conversion_mode", "source_type"),
     (

@@ -590,11 +590,16 @@ def convert_uploaded_document(
     validation = validate_document_ir_v1(document_ir)
     review_items = _review_items(document_ir)
     warnings = [*input_warnings, *mode_warnings, *validation.warnings]
-    primary_artifact, primary_warning = _render_primary_artifact(
-        document_ir.to_dict(),
-        source_filename=safe_filename,
-        conversion_mode=selected_conversion_mode,
-    )
+    primary_artifact: dict[str, Any] | None = None
+    primary_warning: str | None = None
+    if validation.ok:
+        primary_artifact, primary_warning = _render_primary_artifact(
+            document_ir.to_dict(),
+            source_filename=safe_filename,
+            conversion_mode=selected_conversion_mode,
+        )
+    elif selected_conversion_mode in PRIMARY_ARTIFACT_FORMAT_BY_CONVERSION_MODE:
+        primary_warning = "primary artifact generation skipped: document IR validation failed"
     if primary_warning is not None:
         warnings.append(primary_warning)
     audit = {
