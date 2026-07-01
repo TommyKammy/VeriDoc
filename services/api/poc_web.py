@@ -205,6 +205,14 @@ class JobAuditEventStore:
             self._integrity_checkpoint = _audit_event_integrity_checkpoint(self._events)
         return deepcopy(event)
 
+    def find_once(self, *, dedupe: dict[str, Any]) -> dict[str, Any] | None:
+        with self._lock:
+            self._require_integrity_locked()
+            for event in self._events:
+                if all(event.get(name) == value for name, value in dedupe.items()):
+                    return deepcopy(event)
+        return None
+
     def require_integrity(self) -> None:
         with self._lock:
             self._require_integrity_locked()
@@ -735,27 +743,26 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                     upload_actor_id = (
                         upload_actor.get("id") if isinstance(upload_actor, dict) else None
                     )
-                    existing_upload_audit = _job_has_desktop_upload_audit(
-                        job_event_store,
-                        job.job_id,
-                        actor_id=upload_actor_id,
-                    )
+                    upload_dedupe = {
+                        "job_id": job.job_id,
+                        "action": "desktop_upload",
+                        "actor": upload_actor,
+                    }
+                    existing_upload_audit = job_event_store.find_once(dedupe=upload_dedupe)
                     if (
                         not created_job
-                        and not existing_upload_audit
                         and not job_queue.is_unpublished(job.job_id)
                     ):
-                        raise ValueError(
-                            "desktop_upload audit cannot be added after idempotent job creation"
+                        if existing_upload_audit is None:
+                            raise ValueError(
+                                "desktop_upload audit cannot be added after idempotent job creation"
+                            )
+                        upload_audit_event = existing_upload_audit
+                    else:
+                        upload_audit_event = job_event_store.record_once(
+                            upload_audit_event,
+                            dedupe=upload_dedupe,
                         )
-                    upload_audit_event = job_event_store.record_once(
-                        upload_audit_event,
-                        dedupe={
-                            "job_id": job.job_id,
-                            "action": "desktop_upload",
-                            "actor": upload_actor,
-                        },
-                    )
                 except Exception:
                     if created_job:
                         job_queue.discard_queued_job(job.job_id)
@@ -1650,24 +1657,6 @@ def _reject_direct_desktop_upload_audit_event(
     if not isinstance(audit_event, dict):
         raise ValueError("audit_event is required")
     raise ValueError("desktop_upload audit must be recorded through the job create request")
-
-
-def _job_has_desktop_upload_audit(
-    job_event_store: JobAuditEventStore,
-    job_id: str,
-    *,
-    actor_id: str | None = None,
-) -> bool:
-    return any(
-        event.get("action") == "desktop_upload"
-        and (
-            actor_id is None
-            or
-            (event.get("actor") if isinstance(event.get("actor"), dict) else {}).get("id")
-            == actor_id
-        )
-        for event in job_event_store.list_events(filters={"job_id": job_id})
-    )
 
 
 def _job_event_with_auth_context(
