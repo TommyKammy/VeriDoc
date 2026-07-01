@@ -592,6 +592,7 @@ def convert_uploaded_document(
         title=_document_title_from_parser_output(safe_filename, parser_output),
         source_type=source_type,
     )
+    document_ir_dict = document_ir.to_dict()
     validation = validate_document_ir_v1(document_ir)
     review_items = _review_items(document_ir)
     warnings = [*input_warnings, *mode_warnings, *validation.warnings]
@@ -599,7 +600,7 @@ def convert_uploaded_document(
     primary_warning: str | None = None
     if validation.ok:
         primary_artifact, primary_warning = _render_primary_artifact(
-            document_ir.to_dict(),
+            _document_ir_with_parser_table_rows(document_ir_dict, parser_output),
             source_filename=safe_filename,
             conversion_mode=selected_conversion_mode,
         )
@@ -614,7 +615,7 @@ def convert_uploaded_document(
         "conversion_mode": selected_conversion_mode,
     }
     download_payload = {
-        "document_ir": document_ir.to_dict(),
+        "document_ir": document_ir_dict,
         "validation": asdict(validation),
         "review_items": review_items,
         "warnings": warnings,
@@ -638,8 +639,13 @@ def convert_uploaded_document(
         debug_sha256=output_sha256,
         primary_artifact=primary_artifact,
     )
-    status = "blocked" if primary_warning is not None else _status(
-        validation.ok, validation.requires_review
+    status = (
+        "blocked"
+        if primary_warning is not None
+        else _status(
+            validation.ok,
+            validation.requires_review or _warnings_require_review(warnings),
+        )
     )
     return {
         "status": status,
@@ -2309,6 +2315,82 @@ def _xlsx_primary_render_plan(document_ir: dict[str, Any]) -> dict[str, Any]:
     return render_plan
 
 
+def _document_ir_with_parser_table_rows(
+    document_ir: dict[str, Any], parser_output: dict[str, Any]
+) -> dict[str, Any]:
+    parser_tables = _parser_output_table_row_records(parser_output)
+    if not parser_tables:
+        return document_ir
+    blocks = document_ir.get("blocks")
+    if not isinstance(blocks, list):
+        return document_ir
+    output = deepcopy(document_ir)
+    output_blocks = output.get("blocks")
+    if not isinstance(output_blocks, list):
+        return document_ir
+    for block in output_blocks:
+        if not isinstance(block, dict) or block.get("type") != "table":
+            continue
+        for parser_table in parser_tables:
+            if parser_table.get("matched") is True:
+                continue
+            if not _parser_table_matches_ir_block(parser_table, block):
+                continue
+            block["rows"] = parser_table["rows"]
+            parser_table["matched"] = True
+            break
+    return output
+
+
+def _parser_output_table_row_records(parser_output: dict[str, Any]) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    pages = parser_output.get("pages")
+    if not isinstance(pages, list):
+        return records
+    for page in pages:
+        if not isinstance(page, dict):
+            continue
+        page_number = _int_value(page.get("page_number"), default=0)
+        for fragment in [
+            *_parser_output_fragment_list(page.get("fragments")),
+            *_parser_output_fragment_list(page.get("regions")),
+        ]:
+            if not isinstance(fragment, dict) or fragment.get("kind") != "table":
+                continue
+            rows = _pdf_table_structured_rows(fragment.get("rows"))
+            if not rows:
+                continue
+            records.append(
+                {
+                    "page_number": page_number,
+                    "extractor": str(fragment.get("extractor") or ""),
+                    "text": str(fragment.get("text") or ""),
+                    "rows": rows,
+                }
+            )
+    return records
+
+
+def _parser_output_fragment_list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def _parser_table_matches_ir_block(
+    parser_table: dict[str, Any], block: dict[str, Any]
+) -> bool:
+    extractor = block.get("extractor")
+    extractor_name = (
+        str(extractor.get("name"))
+        if isinstance(extractor, dict) and extractor.get("name") is not None
+        else ""
+    )
+    return (
+        _int_value(block.get("source_page"), default=0) == parser_table.get("page_number")
+        and extractor_name == parser_table.get("extractor")
+        and str(block.get("text") or "") == parser_table.get("text")
+    )
+
+
 def _xlsx_pdf_table_source_annotations(document_ir: dict[str, Any]) -> list[dict[str, str]]:
     document = document_ir.get("document")
     if not isinstance(document, dict) or document.get("source_type") != "pdf":
@@ -2587,6 +2669,7 @@ def _parser_output_with_pdf_tables(parser_output: dict[str, Any], report: Any) -
             fragment: dict[str, Any] = {
                 "kind": "table",
                 "text": _pdf_table_rows_text(table.get("rows")),
+                "rows": _pdf_table_structured_rows(table.get("rows")),
                 "page_number": page_number,
                 "extractor": candidate_name,
                 "confidence": 0.9 if bbox is not None else 0.0,
@@ -2635,8 +2718,23 @@ def _pdf_table_rows_text(rows_value: Any) -> str:
     for row in rows_value:
         if not isinstance(row, list):
             continue
-        lines.append("\t".join("" if cell is None else str(cell) for cell in row))
+        lines.append("\t".join(_pdf_table_text_cell(cell) for cell in row))
     return "\n".join(lines)
+
+
+def _pdf_table_structured_rows(rows_value: Any) -> list[list[str]]:
+    if not isinstance(rows_value, list):
+        return []
+    rows: list[list[str]] = []
+    for row in rows_value:
+        if not isinstance(row, list):
+            continue
+        rows.append(["" if cell is None else str(cell) for cell in row])
+    return rows
+
+
+def _pdf_table_text_cell(value: Any) -> str:
+    return re.sub(r"[\t\r\n]+", " ", "" if value is None else str(value))
 
 
 def _pdf_table_bbox(table: dict[str, Any], page: dict[str, Any]) -> dict[str, Any] | None:
@@ -3031,6 +3129,10 @@ def _status(ok: bool, requires_review: bool) -> str:
     if requires_review:
         return "requires_review"
     return "converted"
+
+
+def _warnings_require_review(warnings: list[str]) -> bool:
+    return any("requires review" in warning for warning in warnings)
 
 
 def _strict_json_bytes(payload: Any, *, indent: int | None = None) -> bytes:
