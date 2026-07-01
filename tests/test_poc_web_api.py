@@ -6770,6 +6770,35 @@ def test_poc_web_script_entrypoint_can_bootstrap_repo_imports() -> None:
     assert result.returncode == 0, result.stderr
 
 
+def test_readme_documents_local_poc_api_startup_and_smoke_contract() -> None:
+    readme = Path("README.md").read_text(encoding="utf-8")
+
+    expected_snippets = [
+        "## Local PoC API startup and smoke checks",
+        "python3 services/api/poc_web.py --check",
+        "Expected result: the command exits with status `0` and prints no output.",
+        "python3 services/api/poc_web.py",
+        "http://127.0.0.1:8788",
+        "GET /",
+        "POST /api/convert",
+        '"conversion_mode": "auto"',
+        "PoC API smoke check passed",
+        "`pdf_to_excel`",
+        "`pdf_to_word`",
+        "`word_to_excel`",
+        "`excel_to_word`",
+        "download.available: false",
+        "artifact_generation_not_implemented",
+    ]
+
+    for snippet in expected_snippets:
+        assert snippet in readme
+
+    assert str(poc_web.MAX_UPLOAD_BYTES // (1024 * 1024)) + " MiB" in readme
+    for mode in poc_web.CONVERSION_MODE_SOURCE_TYPES:
+        assert f"`{mode}`" in readme
+
+
 def test_web_upload_preserves_file_bytes() -> None:
     html = Path("apps/web/index.html").read_text(encoding="utf-8")
 

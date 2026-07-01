@@ -19,6 +19,112 @@ python3 -m unittest tests.test_template_definition_schema
 ```
 VeriDocはPDF／Word／Excelを対象とした文書変換・再構成システム
 
+## Local PoC API startup and smoke checks
+
+The current PoC API is a developer-only stdlib HTTP server. It is intended for
+local startup checks, supervisor reproduction, and browser/API smoke tests; it
+is not a production deployment, authentication, or Desktop distribution guide.
+
+From the repository root, first confirm that the script entrypoint can import
+the local package tree:
+
+```bash
+python3 services/api/poc_web.py --check
+```
+
+Expected result: the command exits with status `0` and prints no output. A
+non-zero exit usually means the command was not run from the repository root, a
+required source file is missing, or the Python environment cannot import one of
+the local modules named in the traceback.
+
+Start the local PoC API with:
+
+```bash
+python3 services/api/poc_web.py
+```
+
+By default it listens on `http://127.0.0.1:8788` and serves the PoC web UI from
+`GET /`. Stop it with `Ctrl-C`.
+
+With `VERIDOC_LOCAL_AUTH_TOKENS` unset, use this minimal HTTP smoke test from
+another terminal while the server is running:
+
+```bash
+python3 - <<'PY'
+import base64
+import json
+from urllib.request import Request, urlopen
+
+base_url = "http://127.0.0.1:8788"
+
+with urlopen(base_url + "/", timeout=5) as response:
+    assert response.status == 200
+    assert "text/html" in response.headers.get("content-type", "")
+
+payload = {
+    "filename": "smoke.json",
+    "content_base64": base64.b64encode(
+        json.dumps(
+            {
+                "pages": [
+                    {
+                        "page_number": 1,
+                        "width": 320,
+                        "height": 240,
+                        "unit": "pt",
+                        "fragments": [
+                            {"text": "Lot: SAMPLE-001", "confidence": 0.95}
+                        ],
+                    }
+                ]
+            }
+        ).encode("utf-8")
+    ).decode("ascii"),
+    "conversion_mode": "auto",
+}
+request = Request(
+    base_url + "/api/convert",
+    data=json.dumps(payload).encode("utf-8"),
+    headers={"content-type": "application/json"},
+    method="POST",
+)
+with urlopen(request, timeout=5) as response:
+    body = json.load(response)
+
+assert body["download"]["filename"] == "smoke.veridoc-result.json"
+assert body["artifacts"][0]["id"] == "debug-json"
+print("PoC API smoke check passed")
+PY
+```
+
+Expected result: `GET /` returns HTML, `POST /api/convert` returns JSON, and the
+script prints `PoC API smoke check passed`.
+
+Supported input formats are PDF (`.pdf`), Word (`.docx`), Excel (`.xlsx`), and
+the current parser-output JSON shape used by the smoke test above. Uploads are
+limited to 2 MiB before base64 request expansion. PDF parsing depends on the
+optional local PDF extractor dependency; if it is missing, PDF conversion
+returns `server_dependency_unavailable`.
+
+Supported `conversion_mode` values are:
+
+- `auto`: produce the current debug JSON artifact from the detected input.
+- `pdf_to_excel`: accept PDF input and include an XLSX primary artifact manifest
+  entry.
+- `pdf_to_word`: accept PDF input and include a DOCX primary artifact manifest
+  entry.
+- `word_to_excel`: accept DOCX input and include an XLSX primary artifact
+  manifest entry.
+- `excel_to_word`: accept XLSX input and include a DOCX primary artifact
+  manifest entry.
+
+The artifact manifest is intentionally honest about current PoC limits. The
+downloadable result is still the debug JSON artifact at `download` /
+`artifacts[].id == "debug-json"`. DOCX and XLSX primary artifacts are manifest
+placeholders only; their metadata reports `download.available: false` with
+`reason: artifact_generation_not_implemented` until renderer integration is
+completed.
+
 ## Local PoC API authentication
 
 `services/api/poc_web.py` can enforce local bearer-token authentication when
