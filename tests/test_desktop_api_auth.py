@@ -48,7 +48,7 @@ class RecordingTransport:
                     },
                 }
             )
-        return JsonResponse(self.payload)
+        return JsonResponse(_desktop_upload_create_response(self.payload, request))
 
 
 class JsonResponse:
@@ -81,6 +81,22 @@ class RawResponse:
 
     def getheader(self, name: str, default: str | None = None) -> str | None:
         return self.headers.get(name, default)
+
+
+def _desktop_upload_create_response(
+    payload: dict[str, object],
+    request: Request,
+) -> dict[str, object]:
+    response = dict(payload)
+    if request.full_url.endswith("/api/jobs") and request.get_method() == "POST" and request.data:
+        body = json.loads(request.data.decode("utf-8"))
+        job = response.get("job")
+        if body.get("desktop_upload_audit") is True and isinstance(job, dict):
+            response["audit_event"] = {
+                "job_id": job.get("job_id"),
+                "action": "desktop_upload",
+            }
+    return response
 
 
 class ResultSaveTransport:
@@ -133,7 +149,7 @@ class SequenceTransport:
                     },
                 }
             )
-        return JsonResponse(self.payloads.pop(0))
+        return JsonResponse(_desktop_upload_create_response(self.payloads.pop(0), request))
 
 
 def test_desktop_api_client_attaches_bearer_token_from_credential_store() -> None:
@@ -176,9 +192,8 @@ def test_desktop_api_client_uploads_selected_pdf_and_returns_job_reference(tmp_p
 
     assert job_ref["job_id"] == "job-upload-1"
     assert job_ref["status"] == "queued"
-    assert len(transport.requests) == 2
+    assert len(transport.requests) == 1
     request = transport.requests[0]
-    audit_request = transport.requests[1]
     assert request.full_url == "http://127.0.0.1:8765/api/jobs"
     assert request.get_method() == "POST"
     assert request.get_header("Authorization") == "Bearer reviewer-token"
@@ -204,24 +219,7 @@ def test_desktop_api_client_uploads_selected_pdf_and_returns_job_reference(tmp_p
         "source_sha256": source_sha256,
         "idempotency_key": f"upload:{idempotency_digest}",
         "mode": "standard",
-    }
-    assert audit_request.full_url == "http://127.0.0.1:8765/api/job-events"
-    assert audit_request.get_method() == "POST"
-    assert audit_request.get_header("Authorization") == "Bearer reviewer-token"
-    assert json.loads(audit_request.data.decode("utf-8")) == {
-        "job_id": "job-upload-1",
-        "action": "desktop_upload",
-        "audit_event": {
-            "event_type": "desktop.job_operation",
-            "job_id": "job-upload-1",
-            "job_status": "queued",
-            "action": "desktop_upload",
-            "filename": "batch-record.pdf",
-            "mode": "standard",
-            "source_sha256": source_sha256,
-            "size_bytes": selected_file.stat().st_size,
-            "content_type": "application/pdf",
-        },
+        "desktop_upload_audit": True,
     }
 
 
@@ -245,23 +243,15 @@ def test_desktop_api_client_uploads_multiple_selected_files_in_order(tmp_path) -
     job_refs = client.upload_document_files([pdf_file, xlsx_file])
 
     assert [job_ref["job_id"] for job_ref in job_refs] == ["job-pdf", "job-xlsx"]
-    assert len(transport.requests) == 4
+    assert len(transport.requests) == 2
     job_requests = [
         request for request in transport.requests if request.full_url == "http://127.0.0.1:8765/api/jobs"
-    ]
-    audit_requests = [
-        request
-        for request in transport.requests
-        if request.full_url == "http://127.0.0.1:8765/api/job-events"
     ]
     assert [json.loads(request.data.decode("utf-8"))["filename"] for request in job_requests] == [
         "batch-record.pdf",
         "batch-metrics.xlsx",
     ]
-    assert [json.loads(request.data.decode("utf-8"))["action"] for request in audit_requests] == [
-        "desktop_upload",
-        "desktop_upload",
-    ]
+    assert [json.loads(request.data.decode("utf-8"))["desktop_upload_audit"] for request in job_requests] == [True, True]
 
 
 def test_desktop_api_client_upload_key_includes_job_parameters(tmp_path) -> None:
@@ -414,6 +404,10 @@ def test_desktop_api_client_saves_completed_job_result_to_selected_folder_with_s
     assert saved_path == destination_dir / "unsafe-name (1).veridoc-result.json"
     assert saved_path.read_bytes() == download_body
     assert existing.read_text(encoding="utf-8") == "existing result"
+    audit_request = transport.requests[1]
+    audit_body = json.loads(audit_request.data.decode("utf-8"))
+    assert audit_body["audit_event"]["download_filename"] == "unsafe-name.veridoc-result.json"
+    assert audit_body["audit_event"]["saved_filename"] == "unsafe-name (1).veridoc-result.json"
 
 
 def test_desktop_api_client_result_save_records_audit_event_after_authenticated_download(
@@ -451,6 +445,7 @@ def test_desktop_api_client_result_save_records_audit_event_after_authenticated_
             "job_id": "job-complete-1",
             "action": "desktop_result_download",
             "download_filename": "result.json",
+            "saved_filename": "result.json",
             "output_sha256": hashlib.sha256(b"{}").hexdigest(),
         },
     }
@@ -1311,6 +1306,7 @@ def test_desktop_api_client_preserves_pinned_https_result_download_headers(
             "job_id": "job-complete-1",
             "action": "desktop_result_download",
             "download_filename": "pinned-result.json",
+            "saved_filename": "pinned-result.json",
             "output_sha256": hashlib.sha256(b'{"document_ir":{}}').hexdigest(),
         },
     }

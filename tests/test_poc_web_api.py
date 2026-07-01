@@ -2642,6 +2642,50 @@ def test_poc_http_api_stores_uploaded_job_source_before_returning_reference() ->
     assert server.job_event_store.list_events(filters={"job_id": job.job_id}) == []
 
 
+def test_poc_http_api_rolls_back_desktop_upload_when_create_audit_fails() -> None:
+    class RejectingJobAuditEventStore(JobAuditEventStore):
+        def record_once(self, event: dict[str, object], *, dedupe: dict[str, object]) -> dict[str, object]:
+            raise ValueError("audit log unavailable")
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue()
+    server.job_event_store = RejectingJobAuditEventStore()
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    uploaded_content = b"%PDF-1.7\nqueued source"
+    source_sha256 = hashlib.sha256(uploaded_content).hexdigest()
+    try:
+        payload = json.dumps(
+            {
+                "idempotency_key": "desktop-upload-audit-fails",
+                "filename": "batch-record.pdf",
+                "content_type": "application/pdf",
+                "content_base64": base64.b64encode(uploaded_content).decode("ascii"),
+                "size_bytes": len(uploaded_content),
+                "source_sha256": source_sha256,
+                "mode": "standard",
+                "desktop_upload_audit": True,
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/jobs",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+        jobs = server.job_queue.list_jobs()
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 400
+    assert body == {"error": "invalid_job_request", "message": "audit log unavailable"}
+    assert jobs == []
+
+
 def test_poc_http_api_records_desktop_upload_and_download_audit_events() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     server.job_queue = JobQueue()
@@ -2660,6 +2704,7 @@ def test_poc_http_api_records_desktop_upload_and_download_audit_events() -> None
                 "size_bytes": len(uploaded_content),
                 "source_sha256": source_sha256,
                 "mode": "standard",
+                "desktop_upload_audit": True,
             }
         ).encode("utf-8")
         connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
@@ -2776,6 +2821,8 @@ def test_poc_http_api_records_desktop_upload_and_download_audit_events() -> None
         thread.join(timeout=5)
 
     assert create_response.status == 202
+    assert create_body["audit_event"]["action"] == "desktop_upload"
+    assert create_body["audit_event"]["source_sha256"] == source_sha256
     assert upload_event_response.status == 202
     assert upload_event_body["audit_event"]["action"] == "desktop_upload"
     assert replay_response.status == 202
@@ -2797,6 +2844,71 @@ def test_poc_http_api_records_desktop_upload_and_download_audit_events() -> None
     assert events[1]["filename"] == "batch-record.pdf"
     assert events[1]["output_sha256"] == hashlib.sha256(b'{"converted": true}').hexdigest()
     assert events[1]["download_filename"] == "batch-record.veridoc-result.json"
+
+
+def test_poc_http_api_requires_create_permission_for_direct_desktop_upload_audit() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue()
+    server.job_event_store = JobAuditEventStore()
+    server.local_auth_tokens = _local_auth_tokens()
+    uploaded_content = b"%PDF-1.7\nqueued source"
+    source_sha256 = hashlib.sha256(uploaded_content).hexdigest()
+    job = server.job_queue.create_job(
+        idempotency_key="desktop-upload-viewer-forgery",
+        filename="batch-record.pdf",
+        mode="standard",
+        source={
+            "filename": "batch-record.pdf",
+            "content_type": "application/pdf",
+            "size_bytes": len(uploaded_content),
+            "sha256": source_sha256,
+            "content": uploaded_content,
+        },
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = json.dumps(
+            {
+                "job_id": job.job_id,
+                "action": "desktop_upload",
+                "audit_event": {
+                    "event_type": "desktop.job_operation",
+                    "job_id": job.job_id,
+                    "job_status": "queued",
+                    "action": "desktop_upload",
+                    "filename": "batch-record.pdf",
+                    "mode": "standard",
+                    "source_sha256": source_sha256,
+                    "size_bytes": len(uploaded_content),
+                    "content_type": "application/pdf",
+                },
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/job-events",
+            body=payload,
+            headers={
+                "Authorization": "Bearer viewer-token",
+                "Content-Type": "application/json",
+                "Content-Length": str(len(payload)),
+            },
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+        events = server.job_event_store.list_events(filters={"job_id": job.job_id})
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 403
+    assert body == {
+        "error": "forbidden",
+        "message": "role viewer cannot perform jobs_create",
+    }
+    assert events == []
 
 
 def test_poc_http_api_accepts_desktop_save_audit_for_hashless_downloadable_result() -> None:
@@ -2903,6 +3015,7 @@ def test_desktop_client_records_hashless_result_save_audit_with_computed_hash(tm
     assert events[0]["action"] == "desktop_result_download"
     assert events[0]["filename"] == "legacy-record.pdf"
     assert events[0]["download_filename"] == "legacy-record.veridoc-result.json"
+    assert events[0]["saved_filename"] == "legacy-record.veridoc-result.json"
     assert events[0]["output_sha256"] == hashlib.sha256(download_content).hexdigest()
     assert events[0]["actor"] == {"id": "local-principal:reviewer", "role": "reviewer"}
 

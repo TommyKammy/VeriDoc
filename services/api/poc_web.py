@@ -695,6 +695,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 request.get("idempotency_key") or self.headers.get("Idempotency-Key") or ""
             )
             source = _job_source_from_request(request, filename=filename)
+            desktop_upload_audit = _desktop_upload_audit_requested(request)
             requested_template = self._job_template_binding(request.get("template_id"))
             job_queue = self._job_queue()
             job, created_job = job_queue.get_or_create_job(
@@ -705,6 +706,21 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 template=requested_template,
                 create_template=lambda: self._job_template_snapshot(request.get("template_id")),
             )
+            upload_audit_event = None
+            if desktop_upload_audit:
+                if not isinstance(job.source, dict):
+                    raise ValueError("desktop_upload requires stored job source")
+                job_event_store = self._job_event_store()
+                try:
+                    job_event_store.require_integrity()
+                    upload_audit_event = job_event_store.record_once(
+                        _job_event_with_auth_context(_desktop_upload_audit_event(job), auth_context),
+                        dedupe={"job_id": job.job_id, "action": "desktop_upload"},
+                    )
+                except Exception:
+                    if created_job:
+                        job_queue.discard_queued_job(job.job_id)
+                    raise
         except RuntimeError as exc:
             self._send_json({"error": "job_conflict", "message": str(exc)}, status=409)
             return
@@ -717,7 +733,10 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 return
             self._send_json({"error": "invalid_job_request", "message": str(exc)}, status=400)
             return
-        self._send_json({"job": _job_response(job, self._job_queue(), role=role)}, status=202)
+        response = {"job": _job_response(job, self._job_queue(), role=role)}
+        if upload_audit_event is not None:
+            response["audit_event"] = upload_audit_event
+        self._send_json(response, status=202)
 
     def _handle_register_template(
         self,
@@ -780,7 +799,12 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             request = self._read_json_request()
             job_id = str(request.get("job_id") or "")
             action = str(request.get("action") or "")
-            permission = "jobs:retry" if action == "retry_conversion" else "jobs:read"
+            if action == "retry_conversion":
+                permission = "jobs:retry"
+            elif action == "desktop_upload":
+                permission = "jobs:create"
+            else:
+                permission = "jobs:read"
             if not self._role_has_permission(role, permission):
                 return
             audit_event = request.get("audit_event")
@@ -1571,7 +1595,13 @@ def _validate_desktop_result_download_audit_event(
     for field_name in ("event_type", "job_id", "action", "download_filename", "output_sha256"):
         if audit_event.get(field_name) != expected_event.get(field_name):
             raise ValueError(f"audit_event.{field_name} does not match downloaded result")
-    return expected_event
+    accepted_event = dict(expected_event)
+    if "saved_filename" in audit_event:
+        saved_filename = audit_event.get("saved_filename")
+        if not isinstance(saved_filename, str) or _download_filename(saved_filename) != saved_filename:
+            raise ValueError("audit_event.saved_filename is invalid")
+        accepted_event["saved_filename"] = saved_filename
+    return accepted_event
 
 
 def _validate_desktop_upload_audit_event(
@@ -2183,6 +2213,13 @@ def _job_source_from_request(request: dict[str, Any], *, filename: str) -> dict[
         "sha256": actual_sha256,
         "content": content,
     }
+
+
+def _desktop_upload_audit_requested(request: dict[str, Any]) -> bool:
+    requested = request.get("desktop_upload_audit", False)
+    if isinstance(requested, bool):
+        return requested
+    raise ValueError("desktop_upload_audit must be boolean")
 
 
 def _source_type(filename: str, parser_output: dict[str, Any] | None = None) -> str:

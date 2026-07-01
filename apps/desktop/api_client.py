@@ -343,9 +343,10 @@ class DesktopApiClient:
             mode=mode,
             template_id=template_id,
         )
+        request["desktop_upload_audit"] = True
         payload = self._request_json("POST", "/api/jobs", request)
         job_ref = _validate_job_response(payload)
-        self._record_desktop_upload(job_ref, request)
+        _validate_desktop_upload_audit_response(payload, job_ref)
         return job_ref
 
     def upload_document_files(
@@ -371,9 +372,10 @@ class DesktopApiClient:
         ]
         job_refs: list[dict[str, Any]] = []
         for request in requests:
+            request["desktop_upload_audit"] = True
             payload = self._request_json("POST", "/api/jobs", request)
             job_ref = _validate_job_response(payload)
-            self._record_desktop_upload(job_ref, request)
+            _validate_desktop_upload_audit_response(payload, job_ref)
             job_refs.append(job_ref)
         return job_refs
 
@@ -398,7 +400,8 @@ class DesktopApiClient:
                         "event_type": "desktop.job_operation",
                         "job_id": job_id,
                         "action": "desktop_result_download",
-                        "download_filename": filename,
+                        "download_filename": safe_filename,
+                        "saved_filename": save_path.name,
                         "output_sha256": hashlib.sha256(body).hexdigest(),
                     },
                 )
@@ -407,34 +410,6 @@ class DesktopApiClient:
                 raise
             return save_path
         raise DesktopApiError("downloaded result filename has too many collisions")
-
-    def _record_desktop_upload(self, job_ref: dict[str, Any], request: dict[str, Any]) -> None:
-        job_id = str(job_ref["job_id"])
-        audit_event = {
-            "event_type": "desktop.job_operation",
-            "job_id": job_id,
-            "job_status": job_ref.get("status"),
-            "action": "desktop_upload",
-            "filename": request["filename"],
-            "mode": request["mode"],
-            "source_sha256": request["source_sha256"],
-            "size_bytes": request["size_bytes"],
-            "content_type": request["content_type"],
-        }
-        payload = self._request_json(
-            "POST",
-            "/api/job-events",
-            {
-                "job_id": job_id,
-                "action": "desktop_upload",
-                "audit_event": audit_event,
-            },
-        )
-        audit_event = payload.get("audit_event")
-        if payload.get("accepted") is not True or not isinstance(audit_event, dict):
-            raise DesktopApiError("API did not accept the desktop upload audit event")
-        if audit_event.get("job_id") != job_id or audit_event.get("action") != "desktop_upload":
-            raise DesktopApiError("API accepted a mismatched desktop upload audit event")
 
     def _record_desktop_result_download(self, job_id: str, audit_event: dict[str, Any]) -> None:
         payload = self._request_json(
@@ -628,6 +603,17 @@ def _validate_job_response(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(job.get("job_id"), str) or not job["job_id"].strip():
         raise DesktopApiError("API job response must include a job_id")
     return job
+
+
+def _validate_desktop_upload_audit_response(
+    payload: dict[str, Any],
+    job_ref: dict[str, Any],
+) -> None:
+    audit_event = payload.get("audit_event")
+    if not isinstance(audit_event, dict):
+        raise DesktopApiError("API did not accept the desktop upload audit event")
+    if audit_event.get("job_id") != job_ref["job_id"] or audit_event.get("action") != "desktop_upload":
+        raise DesktopApiError("API accepted a mismatched desktop upload audit event")
 
 
 def _validate_job_id(job_id: str) -> str:

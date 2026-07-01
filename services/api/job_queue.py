@@ -111,6 +111,21 @@ class JobQueue:
             )
             return job, True
 
+    def discard_queued_job(self, job_id: str) -> None:
+        with self._lock:
+            try:
+                job = self._jobs[job_id]
+            except KeyError:
+                return
+            if job.status != "queued":
+                raise RuntimeError("job is already active")
+            del self._jobs[job_id]
+            self._idempotency_index.pop(job.idempotency_key, None)
+            try:
+                self._pending_job_ids.remove(job_id)
+            except ValueError:
+                pass
+
     def get_idempotent_job(
         self,
         *,
