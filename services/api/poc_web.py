@@ -2647,7 +2647,7 @@ def _parser_output_with_pdf_tables(parser_output: dict[str, Any], report: Any) -
         tables = candidate.get("tables")
         if not isinstance(tables, list):
             continue
-        for table_index, table in enumerate(tables, start=1):
+        for table in _pdf_table_export_tables(tables):
             if not isinstance(table, dict):
                 continue
             page_number = _int_value(table.get("page_number"), default=1)
@@ -2675,9 +2675,7 @@ def _parser_output_with_pdf_tables(parser_output: dict[str, Any], report: Any) -
                 continue
             fragment: dict[str, Any] = {"kind": "table", "page_number": page_number}
             _merge_pdf_table_fragment(fragment, table, page, candidate_name)
-            fragments.append(fragment)
-            if table_key:
-                existing_tables.setdefault(table_key, []).append(fragment)
+            _append_pdf_table_fragment(fragments, fragment, existing_tables, table_key)
     return output
 
 
@@ -2723,6 +2721,10 @@ def _pdf_table_warnings(report: Any) -> list[str]:
 
 def _pdf_table_candidate_name(candidate: dict[str, Any]) -> str:
     return f"{candidate.get('extractor') or 'unknown'}:{candidate.get('flavor') or 'table'}"
+
+
+def _pdf_table_export_tables(tables: list[Any]) -> list[Any]:
+    return tables
 
 
 def _pdf_table_rows_text(rows_value: Any) -> str:
@@ -2798,6 +2800,17 @@ def _merge_pdf_table_fragment(
     else:
         fragment["requires_review"] = True
         fragment["missing_confidence"] = True
+
+
+def _append_pdf_table_fragment(
+    fragments: list[Any],
+    fragment: dict[str, Any],
+    existing_tables: dict[tuple[int, tuple[tuple[str, ...], ...]], list[dict[str, Any]]],
+    table_key: tuple[int, tuple[tuple[str, ...], ...]] | None,
+) -> None:
+    fragments.extend([fragment])
+    if table_key:
+        existing_tables.setdefault(table_key, []).append(fragment)
 
 
 def _pdf_table_key(

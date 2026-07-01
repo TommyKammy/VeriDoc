@@ -195,23 +195,31 @@ def build_table_extraction_report(
                 )
 
     for left_index, left_candidate in enumerate(ok_candidates):
-        left_table = first_tables[left_candidate.name]
-        if left_table is None:
-            continue
         for right_candidate in ok_candidates[left_index + 1 :]:
-            right_table = first_tables[right_candidate.name]
-            if right_table is None:
-                continue
-            if left_table.row_widths != right_table.row_widths:
+            if len(left_candidate.tables) != len(right_candidate.tables):
                 mismatches.append(
                     TableExtractionMismatch(
-                        kind="candidate-shape",
+                        kind="candidate-table-count",
                         candidate=f"{left_candidate.name} vs {right_candidate.name}",
-                        expected=_shape_label(left_table),
-                        actual=_shape_label(right_table),
-                        notes="Candidate extractors disagree on table shape.",
+                        expected=str(len(left_candidate.tables)),
+                        actual=str(len(right_candidate.tables)),
+                        notes="Candidate extractors disagree on extracted table count.",
                     )
                 )
+            for table_index, (left_table, right_table) in enumerate(
+                zip(left_candidate.tables, right_candidate.tables),
+                start=1,
+            ):
+                if left_table.row_widths != right_table.row_widths:
+                    mismatches.append(
+                        TableExtractionMismatch(
+                            kind="candidate-shape",
+                            candidate=f"{left_candidate.name} vs {right_candidate.name}",
+                            expected=_shape_label(left_table),
+                            actual=_shape_label(right_table),
+                            notes=f"Candidate extractors disagree on table {table_index} shape.",
+                        )
+                    )
 
     selected_candidate = _select_candidate(
         ok_candidates,
