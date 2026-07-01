@@ -843,6 +843,12 @@ def test_pdf_table_extractor_requires_review_for_partial_table_bboxes() -> None:
 
     output = poc_web._parser_output_with_pdf_tables(parser_output, report)
 
+    assert poc_web._pdf_table_warnings(report) == [
+        (
+            "PDF table extraction selected table has incomplete cell boundaries; "
+            "xlsx artifact requires review"
+        )
+    ]
     fragments = output["pages"][0]["fragments"]
     assert fragments[0]["confidence"] == 0.9
     assert "requires_review" not in fragments[0]

@@ -2694,6 +2694,14 @@ def _pdf_table_warnings(report: Any) -> list[str]:
     candidates = report_data.get("candidates")
     if isinstance(candidates, list):
         selected_candidate = str(report_data.get("selected_candidate") or "")
+        if selected_candidate and _pdf_table_selected_candidate_has_incomplete_bboxes(
+            candidates,
+            selected_candidate,
+        ):
+            warnings.append(
+                "PDF table extraction selected table has incomplete cell boundaries; "
+                "xlsx artifact requires review"
+            )
         unavailable = [
             _pdf_table_candidate_name(candidate)
             for candidate in candidates
@@ -2706,6 +2714,40 @@ def _pdf_table_warnings(report: Any) -> list[str]:
                 + "; xlsx artifact requires review"
             )
     return warnings
+
+
+def _pdf_table_selected_candidate_has_incomplete_bboxes(
+    candidates: list[Any],
+    selected_candidate: str,
+) -> bool:
+    for candidate in candidates:
+        if not isinstance(candidate, dict) or candidate.get("status") != "ok":
+            continue
+        if _pdf_table_candidate_name(candidate) != selected_candidate:
+            continue
+        tables = candidate.get("tables")
+        if not isinstance(tables, list):
+            return True
+        if not tables:
+            return True
+        return any(
+            not isinstance(table, dict) or not _pdf_table_has_complete_cell_bboxes(table)
+            for table in tables
+        )
+    return False
+
+
+def _pdf_table_has_complete_cell_bboxes(table: dict[str, Any]) -> bool:
+    rows = _pdf_table_structured_rows(table.get("rows"))
+    cell_bboxes = table.get("cell_bboxes")
+    if not rows or not isinstance(cell_bboxes, list) or len(cell_bboxes) != len(rows):
+        return False
+    for row_index, row in enumerate(cell_bboxes):
+        if not isinstance(row, list) or len(row) != len(rows[row_index]):
+            return False
+        if any(not isinstance(cell, dict) for cell in row):
+            return False
+    return True
 
 
 def _pdf_table_candidate_name(candidate: dict[str, Any]) -> str:
@@ -2877,13 +2919,11 @@ def _pdf_table_text_cell(value: Any) -> str:
 def _pdf_table_bbox(table: dict[str, Any], page: dict[str, Any]) -> dict[str, Any] | None:
     cells: list[dict[str, float | str]] = []
     page_height = _float_value(page.get("height"))
-    rows = _pdf_table_structured_rows(table.get("rows"))
-    cell_bboxes = table.get("cell_bboxes")
-    if not rows or not isinstance(cell_bboxes, list) or len(cell_bboxes) != len(rows):
+    if not _pdf_table_has_complete_cell_bboxes(table):
         return None
+    cell_bboxes = table.get("cell_bboxes")
+    rows = _pdf_table_structured_rows(table.get("rows"))
     for row_index, row in enumerate(cell_bboxes):
-        if not isinstance(row, list) or len(row) != len(rows[row_index]):
-            return None
         for cell in row:
             normalized = _pdf_table_cell_bbox(cell, page_height=page_height)
             if normalized is None:

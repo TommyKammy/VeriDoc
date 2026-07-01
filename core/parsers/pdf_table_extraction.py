@@ -444,11 +444,15 @@ def _shape_label(table: ExtractedTable) -> str:
 
 
 def _table_text_key(table: ExtractedTable) -> tuple[tuple[str, ...], ...]:
-    return tuple(tuple(_cell_text(cell) for cell in row) for row in table.rows)
+    return tuple(tuple(_normalized_table_text(cell) for cell in row) for row in table.rows)
 
 
 def _table_text_label(table: ExtractedTable) -> str:
     return "\n".join("\t".join(row) for row in _table_text_key(table))
+
+
+def _normalized_table_text(value: Any) -> str:
+    return " ".join(_cell_text(value).split())
 
 
 def _package_version(package_name: str) -> str | None:
