@@ -97,6 +97,13 @@ class DesktopJobDisplayState:
     is_terminal: bool
 
 
+@dataclass(frozen=True)
+class _ByteResponse:
+    body: bytes
+    headers: dict[str, str]
+    base_url: str
+
+
 class TokenReader(Protocol):
     def __call__(self) -> str | None:
         ...
@@ -390,11 +397,13 @@ class DesktopApiClient:
         if not destination.is_dir():
             raise ValueError("destination_dir must be an existing directory")
         token = self._credential_store.require_token()
-        body, headers = self._request_bytes(
+        response = self._request_bytes(
             "GET",
             f"/api/jobs/{quote(job_id, safe='')}/result",
             token=token,
         )
+        body = response.body
+        headers = response.headers
         filename = _download_filename_from_headers(headers) or f"{job_id}.veridoc-result.json"
         download_proof = headers.get(DESKTOP_SAVE_PROOF_HEADER.lower())
         if not isinstance(download_proof, str) or not download_proof.strip():
@@ -420,6 +429,7 @@ class DesktopApiClient:
                         "download_proof": download_proof,
                     },
                     token=token,
+                    preferred_base_url=response.base_url,
                 )
             except (MissingApiTokenError, InvalidApiTokenError, PermissionError):
                 _remove_download_file(save_path)
@@ -441,6 +451,7 @@ class DesktopApiClient:
         audit_event: dict[str, Any],
         *,
         token: str,
+        preferred_base_url: str,
     ) -> Literal["accepted", "rejected", "unconfirmed", "not_recorded"]:
         try:
             payload = self._request_json_pre_connection_retry(
@@ -452,6 +463,7 @@ class DesktopApiClient:
                     "audit_event": audit_event,
                 },
                 token=token,
+                preferred_base_url=preferred_base_url,
             )
         except DesktopApiError as exc:
             if str(exc) in {
@@ -488,6 +500,7 @@ class DesktopApiClient:
         body: dict[str, Any],
         *,
         token: str | None = None,
+        preferred_base_url: str | None = None,
     ) -> dict[str, Any]:
         return self._request_json(
             method,
@@ -495,6 +508,7 @@ class DesktopApiClient:
             body,
             token=token,
             retry_on_url_error=_is_pre_connection_url_error,
+            preferred_base_url=preferred_base_url,
         )
 
     def _request_json(
@@ -505,11 +519,15 @@ class DesktopApiClient:
         *,
         token: str | None = None,
         retry_on_url_error: bool | Callable[[URLError], bool] = True,
+        preferred_base_url: str | None = None,
     ) -> dict[str, Any]:
         if token is None:
             token = self._credential_store.require_token()
         payload = None if body is None else json.dumps(body).encode("utf-8")
-        request_urls = tuple(urljoin(base_url, path) for base_url in self.config._request_base_urls)
+        request_urls = tuple(
+            urljoin(base_url, path)
+            for base_url in self._request_base_urls(preferred_base_url=preferred_base_url)
+        )
         last_url_error: URLError | None = None
         for index, request_url in enumerate(request_urls):
             request_headers = {
@@ -558,12 +576,13 @@ class DesktopApiClient:
         path: str,
         *,
         token: str | None = None,
-    ) -> tuple[bytes, dict[str, str]]:
+    ) -> _ByteResponse:
         if token is None:
             token = self._credential_store.require_token()
-        request_urls = tuple(urljoin(base_url, path) for base_url in self.config._request_base_urls)
         last_url_error: URLError | None = None
-        for index, request_url in enumerate(request_urls):
+        request_base_urls = self._request_base_urls()
+        for index, base_url in enumerate(request_base_urls):
+            request_url = urljoin(base_url, path)
             request_headers = {
                 "Accept": "application/octet-stream",
                 "Authorization": f"Bearer {token}",
@@ -575,7 +594,11 @@ class DesktopApiClient:
 
             try:
                 with self._open(request) as response:
-                    return response.read(), _response_headers(response)
+                    return _ByteResponse(
+                        body=response.read(),
+                        headers=_response_headers(response),
+                        base_url=base_url,
+                    )
             except HTTPError as exc:
                 if exc.code in {401, 403}:
                     raise PermissionError("API authentication failed") from exc
@@ -586,12 +609,21 @@ class DesktopApiClient:
                 raise DesktopApiError("API response transport failed") from exc
             except URLError as exc:
                 last_url_error = exc
-                if index + 1 < len(request_urls):
+                if index + 1 < len(request_base_urls):
                     continue
                 raise
 
         assert last_url_error is not None
         raise last_url_error
+
+    def _request_base_urls(self, *, preferred_base_url: str | None = None) -> tuple[str, ...]:
+        base_urls = self.config._request_base_urls
+        if preferred_base_url is None or preferred_base_url not in base_urls:
+            return base_urls
+        return (
+            preferred_base_url,
+            *(base_url for base_url in base_urls if base_url != preferred_base_url),
+        )
 
     def _open(self, request: Request) -> Any:
         if self._transport is not None:

@@ -615,7 +615,6 @@ def test_desktop_api_client_retries_result_save_audit_pre_connection_failure(
     assert [request.full_url for request in transport.requests] == [
         "http://[::1]:8765/api/jobs/job-complete-1/result",
         "http://127.0.0.1:8765/api/jobs/job-complete-1/result",
-        "http://[::1]:8765/api/job-events",
         "http://127.0.0.1:8765/api/job-events",
     ]
     assert all(request.get_header("Host") == "localhost:8765" for request in transport.requests)
