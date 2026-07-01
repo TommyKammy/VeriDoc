@@ -2653,7 +2653,10 @@ def _parser_output_with_pdf_tables(parser_output: dict[str, Any], report: Any) -
             page_number = _int_value(table.get("page_number"), default=1)
             table_key = _pdf_table_key(page_number, table.get("rows"))
             if table_key:
-                matched_fragments = existing_tables.get(table_key, [])
+                matched_fragments = _pdf_table_parser_merge_fragments(
+                    existing_tables.get(table_key, []),
+                    candidate_name,
+                )
                 if matched_fragments:
                     page = pages_by_number.get(page_number) or {}
                     for fragment in matched_fragments:
@@ -2703,19 +2706,6 @@ def _pdf_table_warnings(report: Any) -> list[str]:
                 + ", ".join(sorted(unavailable))
                 + "; xlsx artifact requires review"
             )
-        for candidate in candidates:
-            if (
-                not isinstance(candidate, dict)
-                or _pdf_table_candidate_name(candidate) != selected_candidate
-            ):
-                continue
-            tables = candidate.get("tables")
-            if isinstance(tables, list) and len(tables) > 1:
-                warnings.append(
-                    "PDF table extraction selected candidate contains multiple tables without "
-                    "full comparison coverage; xlsx artifact requires review"
-                )
-                break
     return warnings
 
 
@@ -2779,6 +2769,13 @@ def _pdf_table_existing_tables(
                 if fragment_key:
                     table_fragments.setdefault(fragment_key, []).append(fragment)
     return table_fragments
+
+
+def _pdf_table_parser_merge_fragments(
+    fragments: list[dict[str, Any]],
+    candidate_name: str,
+) -> list[dict[str, Any]]:
+    return [fragment for fragment in fragments if fragment.get("extractor") != candidate_name]
 
 
 def _merge_pdf_table_fragment(

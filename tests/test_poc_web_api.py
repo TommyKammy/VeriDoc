@@ -651,7 +651,7 @@ def test_pdf_to_excel_unavailable_table_comparator_requires_review(
     ]
 
 
-def test_pdf_to_excel_multiple_selected_tables_requires_review(
+def test_pdf_to_excel_multiple_selected_tables_without_mismatch_converts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def fake_parse_text_pdf_to_document_ir(
@@ -724,22 +724,9 @@ def test_pdf_to_excel_multiple_selected_tables_requires_review(
         conversion_mode="pdf_to_excel",
     )
 
-    warning = (
-        "PDF table extraction selected candidate contains multiple tables without "
-        "full comparison coverage; xlsx artifact requires review"
-    )
-    assert result["status"] == "requires_review"
-    assert warning in result["warnings"]
-    assert result["review_items"] == [
-        {
-            "document_id": "sample",
-            "block_id": "pdf-table-extraction",
-            "source_id": "sample:pdf-table-extraction",
-            "source_page": None,
-            "text": "PDF table extraction requires review",
-            "warnings": [warning],
-        }
-    ]
+    assert result["status"] == "converted"
+    assert result["warnings"] == ["conversion mode pdf_to_excel selected"]
+    assert result["review_items"] == []
 
 
 def test_pdf_to_excel_does_not_duplicate_parser_table_blocks(
@@ -908,6 +895,75 @@ def test_pdf_table_extractor_merges_existing_parser_table_block() -> None:
         "origin": "top-left",
     }
     assert "requires_review" not in fragments[0]
+
+
+def test_pdf_table_extractor_preserves_repeated_identical_selected_tables() -> None:
+    parser_output = {
+        "document": {
+            "id": "sample",
+            "title": "sample.pdf",
+            "source_type": "pdf",
+        },
+        "pages": [{"page_number": 1, "width": 320, "height": 240, "unit": "pt"}],
+    }
+    first_table = ExtractedTable(
+        extractor="camelot",
+        flavor="lattice",
+        page_number=1,
+        rows=[["Lot", "Assay"], ["A-001", "12.5"]],
+        cell_bboxes=[
+            [
+                TableBBox(x=10, y=20, width=50, height=12),
+                TableBBox(x=60, y=20, width=60, height=12),
+            ],
+            [
+                TableBBox(x=10, y=32, width=50, height=12),
+                TableBBox(x=60, y=32, width=60, height=12),
+            ],
+        ],
+    )
+    second_table = ExtractedTable(
+        extractor="camelot",
+        flavor="lattice",
+        page_number=1,
+        rows=[["Lot", "Assay"], ["A-001", "12.5"]],
+        cell_bboxes=[
+            [
+                TableBBox(x=10, y=80, width=50, height=12),
+                TableBBox(x=60, y=80, width=60, height=12),
+            ],
+            [
+                TableBBox(x=10, y=92, width=50, height=12),
+                TableBBox(x=60, y=92, width=60, height=12),
+            ],
+        ],
+    )
+    report = TableExtractionReport(
+        source_path="sample.pdf",
+        candidates=[
+            TableExtractionCandidate(
+                extractor="camelot",
+                flavor="lattice",
+                version="test",
+                status="ok",
+                tables=[first_table, second_table],
+                notes="synthetic selected tables",
+            )
+        ],
+        mismatches=[],
+        selected_candidate="camelot:lattice",
+        notes="synthetic report",
+    )
+
+    output = poc_web._parser_output_with_pdf_tables(parser_output, report)
+
+    fragments = output["pages"][0]["fragments"]
+    assert len(fragments) == 2
+    assert [fragment["text"] for fragment in fragments] == [
+        "Lot\tAssay\nA-001\t12.5",
+        "Lot\tAssay\nA-001\t12.5",
+    ]
+    assert [fragment["bbox"]["y"] for fragment in fragments] == [196.0, 136.0]
 
 
 def test_convert_uploaded_document_passes_xlsx_render_plan_for_table_blocks(

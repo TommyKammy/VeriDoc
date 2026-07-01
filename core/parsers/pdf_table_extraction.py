@@ -396,7 +396,7 @@ def _select_candidate(
     blocked = {mismatch.candidate for mismatch in mismatches if " vs " not in mismatch.candidate}
     if require_shape_consensus:
         for mismatch in mismatches:
-            if mismatch.kind == "candidate-shape":
+            if mismatch.kind in {"candidate-shape", "candidate-table-count"}:
                 blocked.update(mismatch.candidate.split(" vs "))
     for preferred in ("camelot:lattice", "pdfplumber:table", "camelot:stream"):
         for candidate in candidates:

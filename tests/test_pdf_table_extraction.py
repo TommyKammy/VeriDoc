@@ -255,6 +255,33 @@ def test_build_table_extraction_report_compares_every_table_without_expected_sha
     )
 
 
+def test_build_table_extraction_report_blocks_selection_when_table_counts_disagree(
+    tmp_path: Path,
+) -> None:
+    report = build_table_extraction_report(
+        source_path=tmp_path / "count-mismatch.pdf",
+        candidates=[
+            _multi_table_candidate(
+                "camelot",
+                "lattice",
+                [[["A", "B"], ["C", "D"]], [["Lot", "Assay"], ["A-001", "12.5"]]],
+            ),
+            _multi_table_candidate(
+                "pdfplumber",
+                "table",
+                [[["A", "B"], ["C", "D"]]],
+            ),
+        ],
+    )
+
+    assert report.selected_candidate is None
+    assert any(
+        mismatch.kind == "candidate-table-count"
+        and mismatch.candidate == "camelot:lattice vs pdfplumber:table"
+        for mismatch in report.mismatches
+    )
+
+
 def test_pdfplumber_bbox_preserves_top_left_origin() -> None:
     class Row:
         cells = [(10.0, 20.0, 40.0, 50.0)]
