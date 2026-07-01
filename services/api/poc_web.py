@@ -67,6 +67,13 @@ MAX_REVIEW_EVENT_TEXT_BYTES = 8 * 1024 * 1024
 MAX_REVIEW_EVENT_REQUEST_BYTES = (MAX_REVIEW_EVENT_TEXT_BYTES * 4) + (64 * 1024)
 SOURCE_TYPES = {"pdf", "docx", "xlsx", "unknown"}
 KNOWN_SOURCE_TYPES = SOURCE_TYPES - {"unknown"}
+CONVERSION_MODE_SOURCE_TYPES = {
+    "auto": None,
+    "pdf_to_excel": "pdf",
+    "pdf_to_word": "pdf",
+    "word_to_excel": "docx",
+    "excel_to_word": "xlsx",
+}
 LOCAL_AUTH_TOKENS_ENV = "VERIDOC_LOCAL_AUTH_TOKENS"
 ROLES = {"viewer", "reviewer", "approver", "admin"}
 ROLE_PERMISSIONS = {
@@ -546,25 +553,39 @@ LLM_EXTRACTOR_NAME_TOKENS = ("llm", "gpt", "openai")
 LLM_INFERENCE_PROFILE_FIELDS = ("id", "label", "provider", "model_family", "recommended_model")
 
 
-def convert_uploaded_document(*, filename: str, content: bytes) -> dict[str, Any]:
+def convert_uploaded_document(
+    *, filename: str, content: bytes, conversion_mode: str = "auto"
+) -> dict[str, Any]:
     """Convert one uploaded PoC document into IR, review details, and download bytes."""
     safe_filename = _safe_filename(filename)
+    selected_conversion_mode = _validate_conversion_mode(conversion_mode)
     conversion_id = _conversion_id()
     source_sha256 = _sha256_hex(content)
     parser_output, input_warnings = _parser_output_from_upload(safe_filename, content)
+    source_type = _source_type(safe_filename, parser_output)
+    _validate_conversion_mode_source_type(selected_conversion_mode, source_type)
+    mode_warnings = _conversion_mode_warnings(selected_conversion_mode)
     document_ir = from_parser_output(
         parser_output,
         document_id=_document_id_from_parser_output(safe_filename, parser_output),
         title=_document_title_from_parser_output(safe_filename, parser_output),
-        source_type=_source_type(safe_filename, parser_output),
+        source_type=source_type,
     )
     validation = validate_document_ir_v1(document_ir)
     review_items = _review_items(document_ir)
+    warnings = [*input_warnings, *mode_warnings, *validation.warnings]
+    audit = {
+        "conversion_id": conversion_id,
+        "source_filename": safe_filename,
+        "source_sha256": source_sha256,
+        "conversion_mode": selected_conversion_mode,
+    }
     download_payload = {
         "document_ir": document_ir.to_dict(),
         "validation": asdict(validation),
         "review_items": review_items,
-        "warnings": [*input_warnings, *validation.warnings],
+        "warnings": warnings,
+        "audit": audit,
     }
     download_content = _strict_json_bytes(download_payload, indent=2)
     output_sha256 = _sha256_hex(download_content)
@@ -607,11 +628,7 @@ def convert_uploaded_document(*, filename: str, content: bytes) -> dict[str, Any
         },
         **download_payload,
         "artifacts": artifacts,
-        "audit": {
-            "conversion_id": conversion_id,
-            "source_filename": safe_filename,
-            "source_sha256": source_sha256,
-        },
+        "audit": audit,
         "download": {
             "filename": download_filename,
             "content_type": "application/json; charset=utf-8",
@@ -728,10 +745,15 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             request = self._read_json_request()
             filename = str(request.get("filename") or "upload.txt")
             content = _decode_request_content(request)
+            conversion_mode = _validate_conversion_mode(request.get("conversion_mode"))
             if len(content) > MAX_UPLOAD_BYTES:
                 self._send_json({"error": "upload_too_large"}, status=413)
                 return
-            result = convert_uploaded_document(filename=filename, content=content)
+            result = convert_uploaded_document(
+                filename=filename,
+                content=content,
+                conversion_mode=conversion_mode,
+            )
         except PocServerDependencyError as exc:
             self._send_json(
                 {"error": "server_dependency_unavailable", "message": str(exc)},
@@ -2438,6 +2460,36 @@ def _desktop_upload_audit_requested(request: dict[str, Any]) -> bool:
     if isinstance(requested, bool):
         return requested
     raise ValueError("desktop_upload_audit must be boolean")
+
+
+def _validate_conversion_mode(value: Any) -> str:
+    if value is None:
+        return "auto"
+    if not isinstance(value, str):
+        raise ValueError("conversion_mode must be a string")
+    mode = value.strip()
+    if not mode:
+        return "auto"
+    if mode not in CONVERSION_MODE_SOURCE_TYPES:
+        raise ValueError(f"unsupported conversion_mode: {mode}")
+    return mode
+
+
+def _validate_conversion_mode_source_type(conversion_mode: str, source_type: str) -> None:
+    required_source_type = CONVERSION_MODE_SOURCE_TYPES[conversion_mode]
+    if required_source_type is None:
+        return
+    if source_type != required_source_type:
+        raise ValueError(
+            f"conversion_mode {conversion_mode} requires {required_source_type} input; "
+            f"got {source_type}"
+        )
+
+
+def _conversion_mode_warnings(conversion_mode: str) -> list[str]:
+    if conversion_mode == "auto":
+        return []
+    return [f"conversion mode {conversion_mode} selected"]
 
 
 def _source_type(filename: str, parser_output: dict[str, Any] | None = None) -> str:

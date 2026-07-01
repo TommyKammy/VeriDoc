@@ -696,6 +696,16 @@
             <label for="document-file">Document or Phase0 JSON</label>
             <input id="document-file" type="file" />
           </div>
+          <div class="field">
+            <label for="direct-conversion-mode">Conversion mode</label>
+            <select id="direct-conversion-mode">
+              <option value="auto">auto</option>
+              <option value="pdf_to_excel">pdf_to_excel</option>
+              <option value="pdf_to_word">pdf_to_word</option>
+              <option value="word_to_excel">word_to_excel</option>
+              <option value="excel_to_word">excel_to_word</option>
+            </select>
+          </div>
           <button id="convert-button" type="button">Convert now</button>
         </div>
         <div id="result-panel" class="empty" hidden>
@@ -848,6 +858,7 @@
       };
 
       const input = document.querySelector("#document-file");
+      const directConversionMode = document.querySelector("#direct-conversion-mode");
       const button = document.querySelector("#convert-button");
       const resultPanel = document.querySelector("#result-panel");
       const rawPanel = document.querySelector("#raw-panel");
@@ -932,7 +943,11 @@
           const response = await apiFetch("/api/convert", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ filename: file.name, content_base64: contentBase64 }),
+            body: JSON.stringify({
+              filename: file.name,
+              content_base64: contentBase64,
+              conversion_mode: directConversionMode.value,
+            }),
           });
           const result = await response.json();
           if (!isActiveDirectConversion(conversionToken)) return;
