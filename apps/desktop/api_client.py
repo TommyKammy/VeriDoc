@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import base64
+from collections.abc import Callable
 from dataclasses import dataclass, field
+import errno
 import hashlib
 import http.client
 import ipaddress
@@ -19,7 +21,7 @@ import ssl
 import subprocess
 import sys
 import threading
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import SplitResult, quote, unquote, urljoin, urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
@@ -52,6 +54,9 @@ class DesktopTemporaryCleanupError(RuntimeError):
 MAX_DESKTOP_UPLOAD_BYTES = 2 * 1024 * 1024
 MAX_DOWNLOAD_FILENAME_BYTES = 255
 DOWNLOAD_FILENAME_FALLBACK = "veridoc-result.json"
+DESKTOP_CLIENT_HEADER = "X-VeriDoc-Desktop-Client"
+DESKTOP_CLIENT_HEADER_VALUE = "VeriDocDesktop"
+DESKTOP_SAVE_PROOF_HEADER = "X-VeriDoc-Desktop-Save-Proof"
 DESKTOP_TEMP_WORK_DIR = "work"
 DESKTOP_TEMP_TOKEN_BYTES = 16
 DESKTOP_TEMP_DIR_MODE = 0o700
@@ -90,6 +95,13 @@ class DesktopJobDisplayState:
     warning_count: int
     error_message: str | None
     is_terminal: bool
+
+
+@dataclass(frozen=True)
+class _ByteResponse:
+    body: bytes
+    headers: dict[str, str]
+    base_url: str
 
 
 class TokenReader(Protocol):
@@ -343,8 +355,11 @@ class DesktopApiClient:
             mode=mode,
             template_id=template_id,
         )
+        request["desktop_upload_audit"] = True
         payload = self._request_json("POST", "/api/jobs", request)
-        return _validate_job_response(payload)
+        job_ref = _validate_job_response(payload)
+        _validate_desktop_upload_audit_response(payload, job_ref)
+        return job_ref
 
     def upload_document_files(
         self,
@@ -369,8 +384,11 @@ class DesktopApiClient:
         ]
         job_refs: list[dict[str, Any]] = []
         for request in requests:
+            request["desktop_upload_audit"] = True
             payload = self._request_json("POST", "/api/jobs", request)
-            job_refs.append(_validate_job_response(payload))
+            job_ref = _validate_job_response(payload)
+            _validate_desktop_upload_audit_response(payload, job_ref)
+            job_refs.append(job_ref)
         return job_refs
 
     def save_job_result(self, job_id: str, destination_dir: str | Path) -> Path:
@@ -378,22 +396,138 @@ class DesktopApiClient:
         destination = Path(destination_dir)
         if not destination.is_dir():
             raise ValueError("destination_dir must be an existing directory")
-        body, headers = self._request_bytes("GET", f"/api/jobs/{quote(job_id, safe='')}/result")
+        token = self._credential_store.require_token()
+        response = self._request_bytes(
+            "GET",
+            f"/api/jobs/{quote(job_id, safe='')}/result",
+            token=token,
+        )
+        body = response.body
+        headers = response.headers
         filename = _download_filename_from_headers(headers) or f"{job_id}.veridoc-result.json"
-        safe_filename = _sanitize_download_filename(filename)
+        download_proof = headers.get(DESKTOP_SAVE_PROOF_HEADER.lower())
+        if not isinstance(download_proof, str) or not download_proof.strip():
+            raise DesktopApiError("API result download did not include a desktop save proof")
+        api_filename = _api_download_filename(filename)
+        safe_filename = _sanitize_download_filename(api_filename)
         for _ in range(1000):
             save_path = _available_destination_path(destination, safe_filename)
             try:
                 _write_download_file(save_path, body, safe_filename)
             except FileExistsError:
                 continue
+            try:
+                audit_status = self._record_desktop_result_download(
+                    job_id,
+                    {
+                        "event_type": "desktop.job_operation",
+                        "job_id": job_id,
+                        "action": "desktop_result_download",
+                        "download_filename": api_filename,
+                        "saved_filename": save_path.name,
+                        "output_sha256": hashlib.sha256(body).hexdigest(),
+                        "download_proof": download_proof,
+                    },
+                    token=token,
+                    preferred_base_url=response.base_url,
+                )
+            except (MissingApiTokenError, InvalidApiTokenError, PermissionError):
+                _remove_download_file(save_path)
+                raise
+            if audit_status == "rejected":
+                _remove_download_file(save_path)
+                raise DesktopApiError("API did not accept the desktop result download audit event")
+            if audit_status == "not_recorded":
+                _remove_download_file(save_path)
+                raise DesktopApiError("desktop result download audit was not recorded")
+            if audit_status == "unconfirmed":
+                raise DesktopApiError("desktop result download audit outcome is unconfirmed")
             return save_path
         raise DesktopApiError("downloaded result filename has too many collisions")
 
-    def _request_json(self, method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
-        token = self._credential_store.require_token()
+    def _record_desktop_result_download(
+        self,
+        job_id: str,
+        audit_event: dict[str, Any],
+        *,
+        token: str,
+        preferred_base_url: str,
+    ) -> Literal["accepted", "rejected", "unconfirmed", "not_recorded"]:
+        try:
+            payload = self._request_json_pre_connection_retry(
+                "POST",
+                "/api/job-events",
+                {
+                    "job_id": job_id,
+                    "action": "desktop_result_download",
+                    "audit_event": audit_event,
+                },
+                token=token,
+                preferred_base_url=preferred_base_url,
+            )
+        except DesktopApiError as exc:
+            if str(exc) in {
+                "API response must be a JSON object",
+                "API response must be valid JSON",
+                "API response body was incomplete",
+                "API response transport failed",
+            }:
+                return "unconfirmed"
+            return "rejected"
+        except URLError as exc:
+            if _is_pre_connection_url_error(exc):
+                return "not_recorded"
+            return "unconfirmed"
+        audit_event = payload.get("audit_event")
+        if payload.get("accepted") is not True or not isinstance(audit_event, dict):
+            return "rejected"
+        if audit_event.get("job_id") != job_id or audit_event.get("action") != "desktop_result_download":
+            return "rejected"
+        return "accepted"
+
+    def _request_json_single_attempt(
+        self,
+        method: str,
+        path: str,
+        body: dict[str, Any],
+    ) -> dict[str, Any]:
+        return self._request_json(method, path, body, retry_on_url_error=False)
+
+    def _request_json_pre_connection_retry(
+        self,
+        method: str,
+        path: str,
+        body: dict[str, Any],
+        *,
+        token: str | None = None,
+        preferred_base_url: str | None = None,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            method,
+            path,
+            body,
+            token=token,
+            retry_on_url_error=_is_pre_connection_url_error,
+            preferred_base_url=preferred_base_url,
+        )
+
+    def _request_json(
+        self,
+        method: str,
+        path: str,
+        body: dict[str, Any] | None = None,
+        *,
+        token: str | None = None,
+        retry_on_url_error: bool | Callable[[URLError], bool] = True,
+        preferred_base_url: str | None = None,
+    ) -> dict[str, Any]:
+        if token is None:
+            token = self._credential_store.require_token()
         payload = None if body is None else json.dumps(body).encode("utf-8")
-        request_urls = tuple(urljoin(base_url, path) for base_url in self.config._request_base_urls)
+        request_urls = tuple(
+            urljoin(base_url, path)
+            for base_url in self._request_base_urls(preferred_base_url=preferred_base_url)
+        )
         last_url_error: URLError | None = None
         for index, request_url in enumerate(request_urls):
             request_headers = {
@@ -424,21 +558,35 @@ class DesktopApiClient:
                 raise DesktopApiError("API response transport failed") from exc
             except URLError as exc:
                 last_url_error = exc
-                if index + 1 < len(request_urls):
+                should_retry = (
+                    retry_on_url_error(exc)
+                    if callable(retry_on_url_error)
+                    else retry_on_url_error
+                )
+                if should_retry and index + 1 < len(request_urls):
                     continue
                 raise
 
         assert last_url_error is not None
         raise last_url_error
 
-    def _request_bytes(self, method: str, path: str) -> tuple[bytes, dict[str, str]]:
-        token = self._credential_store.require_token()
-        request_urls = tuple(urljoin(base_url, path) for base_url in self.config._request_base_urls)
+    def _request_bytes(
+        self,
+        method: str,
+        path: str,
+        *,
+        token: str | None = None,
+    ) -> _ByteResponse:
+        if token is None:
+            token = self._credential_store.require_token()
         last_url_error: URLError | None = None
-        for index, request_url in enumerate(request_urls):
+        request_base_urls = self._request_base_urls()
+        for index, base_url in enumerate(request_base_urls):
+            request_url = urljoin(base_url, path)
             request_headers = {
                 "Accept": "application/octet-stream",
                 "Authorization": f"Bearer {token}",
+                DESKTOP_CLIENT_HEADER: DESKTOP_CLIENT_HEADER_VALUE,
             }
             if self.config._host_header:
                 request_headers["Host"] = self.config._host_header
@@ -446,7 +594,11 @@ class DesktopApiClient:
 
             try:
                 with self._open(request) as response:
-                    return response.read(), _response_headers(response)
+                    return _ByteResponse(
+                        body=response.read(),
+                        headers=_response_headers(response),
+                        base_url=base_url,
+                    )
             except HTTPError as exc:
                 if exc.code in {401, 403}:
                     raise PermissionError("API authentication failed") from exc
@@ -457,12 +609,21 @@ class DesktopApiClient:
                 raise DesktopApiError("API response transport failed") from exc
             except URLError as exc:
                 last_url_error = exc
-                if index + 1 < len(request_urls):
+                if index + 1 < len(request_base_urls):
                     continue
                 raise
 
         assert last_url_error is not None
         raise last_url_error
+
+    def _request_base_urls(self, *, preferred_base_url: str | None = None) -> tuple[str, ...]:
+        base_urls = self.config._request_base_urls
+        if preferred_base_url is None or preferred_base_url not in base_urls:
+            return base_urls
+        return (
+            preferred_base_url,
+            *(base_url for base_url in base_urls if base_url != preferred_base_url),
+        )
 
     def _open(self, request: Request) -> Any:
         if self._transport is not None:
@@ -566,6 +727,17 @@ def _validate_job_response(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(job.get("job_id"), str) or not job["job_id"].strip():
         raise DesktopApiError("API job response must include a job_id")
     return job
+
+
+def _validate_desktop_upload_audit_response(
+    payload: dict[str, Any],
+    job_ref: dict[str, Any],
+) -> None:
+    audit_event = payload.get("audit_event")
+    if not isinstance(audit_event, dict):
+        raise DesktopApiError("API did not accept the desktop upload audit event")
+    if audit_event.get("job_id") != job_ref["job_id"] or audit_event.get("action") != "desktop_upload":
+        raise DesktopApiError("API accepted a mismatched desktop upload audit event")
 
 
 def _validate_job_id(job_id: str) -> str:
@@ -746,11 +918,11 @@ def _response_headers(response: Any) -> dict[str, str]:
     headers: dict[str, str] = {}
     raw_headers = getattr(response, "headers", None)
     if raw_headers is not None:
-        for name in ("Content-Disposition", "Content-Type"):
+        for name in ("Content-Disposition", "Content-Type", DESKTOP_SAVE_PROOF_HEADER):
             value = raw_headers.get(name)
             if isinstance(value, str):
                 headers[name.lower()] = value
-    for name in ("Content-Disposition", "Content-Type"):
+    for name in ("Content-Disposition", "Content-Type", DESKTOP_SAVE_PROOF_HEADER):
         getheader = getattr(response, "getheader", None)
         if callable(getheader):
             value = getheader(name)
@@ -770,6 +942,13 @@ def _download_filename_from_headers(headers: dict[str, str]) -> str | None:
     if filename:
         return (filename.group(1) or filename.group(2) or "").strip()
     return None
+
+
+def _api_download_filename(filename: str) -> str:
+    basename = filename.replace("\\", "/").rsplit("/", maxsplit=1)[-1].strip()
+    safe = re.sub(r'[\x00-\x1f\x7f"\\]', "", basename)
+    safe = "".join(char for char in safe if 0x20 <= ord(char) <= 0x7E).strip()
+    return safe or DOWNLOAD_FILENAME_FALLBACK
 
 
 def _sanitize_download_filename(filename: str, *, max_bytes: int = MAX_DOWNLOAD_FILENAME_BYTES) -> str:
@@ -796,6 +975,15 @@ def _write_download_file(save_path: Path, body: bytes, safe_filename: str) -> No
         except OSError:
             pass
         raise DesktopApiError(f"downloaded result could not be saved: {safe_filename}") from exc
+
+
+def _remove_download_file(save_path: Path) -> None:
+    try:
+        save_path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise DesktopApiError("downloaded result audit failed and saved file could not be removed") from exc
 
 
 def _require_path_inside_root(path: Path, root: Path) -> None:
@@ -911,6 +1099,15 @@ def _urlopen_transport(request: Request, *, timeout: float, tls_server_name: str
         return _pinned_https_transport(request, timeout=timeout, tls_server_name=tls_server_name)
     opener = build_opener(ProxyHandler({}), _NoRedirectHandler())
     return opener.open(request, timeout=timeout)
+
+
+def _is_pre_connection_url_error(exc: URLError) -> bool:
+    reason = exc.reason
+    if isinstance(reason, ConnectionRefusedError):
+        return True
+    if isinstance(reason, OSError):
+        return reason.errno in {errno.ECONNREFUSED, errno.EHOSTUNREACH, errno.ENETUNREACH}
+    return False
 
 
 def _split_valid_base_url(base_url: str) -> SplitResult:

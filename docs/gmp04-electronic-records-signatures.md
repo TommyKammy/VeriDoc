@@ -15,8 +15,10 @@ responsible for:
   explicit job-event submissions, and related operator decisions on enforced
   event paths; when local auth is enabled, direct result downloads are
   protected by job-read authorization, while the default unauthenticated PoC
-  mode permits downloads without making them authenticated GMP evidence;
-  result downloads are not yet recorded as job-action audit events;
+  mode permits downloads without making them authenticated GMP evidence; Phase5
+  desktop result save operations add a separate `desktop_result_download`
+  job-action audit event when the desktop client records the completed local
+  save;
 - keeping reviewer, approver, and admin review or explicit job-event actions
   tied to the authenticated local actor context when local auth is enabled,
   while default unauthenticated PoC review and job-event submissions store null

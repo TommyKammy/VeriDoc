@@ -13,6 +13,7 @@ import math
 import os
 from pathlib import Path
 import re
+import secrets
 import sys
 from tempfile import TemporaryDirectory
 from threading import Lock
@@ -44,6 +45,20 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8788
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024
 MAX_UPLOAD_REQUEST_BYTES = (MAX_UPLOAD_BYTES * 4 // 3) + 4096
+MAX_DOWNLOAD_FILENAME_BYTES = 255
+DOWNLOAD_FILENAME_FALLBACK = "veridoc-result.json"
+DESKTOP_CLIENT_HEADER = "X-VeriDoc-Desktop-Client"
+DESKTOP_CLIENT_HEADER_VALUE = "VeriDocDesktop"
+DESKTOP_SAVE_PROOF_HEADER = "X-VeriDoc-Desktop-Save-Proof"
+MAX_DESKTOP_SAVE_PROOFS = 1024
+WINDOWS_RESERVED_DOWNLOAD_STEMS = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{index}" for index in range(1, 10)),
+    *(f"LPT{index}" for index in range(1, 10)),
+}
 # Extracted document text can be much larger than the uploaded source bytes,
 # especially for compressed formats. Review events can carry original and
 # revised text snapshots; quote/backslash-heavy text doubles again when
@@ -185,6 +200,34 @@ class JobAuditEventStore:
             self._integrity_checkpoint = _audit_event_integrity_checkpoint(self._events)
         return deepcopy(event)
 
+    def record_once(
+        self,
+        audit_event: dict[str, Any],
+        *,
+        dedupe: dict[str, Any],
+    ) -> dict[str, Any]:
+        with self._lock:
+            self._require_integrity_locked()
+            for event in self._events:
+                if all(event.get(name) == value for name, value in dedupe.items()):
+                    return deepcopy(event)
+            event = _audit_event_with_integrity(
+                audit_event,
+                previous_events=self._events,
+                checkpoint=self._integrity_checkpoint,
+            )
+            self._events.append(event)
+            self._integrity_checkpoint = _audit_event_integrity_checkpoint(self._events)
+        return deepcopy(event)
+
+    def find_once(self, *, dedupe: dict[str, Any]) -> dict[str, Any] | None:
+        with self._lock:
+            self._require_integrity_locked()
+            for event in self._events:
+                if all(event.get(name) == value for name, value in dedupe.items()):
+                    return deepcopy(event)
+        return None
+
     def require_integrity(self) -> None:
         with self._lock:
             self._require_integrity_locked()
@@ -213,6 +256,28 @@ class JobAuditEventStore:
                 self._events,
                 checkpoint=self._integrity_checkpoint,
             )
+
+
+class DesktopSaveProofStore:
+    def __init__(self, *, max_proofs: int = MAX_DESKTOP_SAVE_PROOFS) -> None:
+        self._proofs: dict[str, dict[str, Any]] = {}
+        self._max_proofs = max(1, max_proofs)
+        self._lock = Lock()
+
+    def issue(self, proof: dict[str, Any]) -> str:
+        proof_token = secrets.token_urlsafe(32)
+        with self._lock:
+            while len(self._proofs) >= self._max_proofs:
+                self._proofs.pop(next(iter(self._proofs)))
+            self._proofs[proof_token] = deepcopy(proof)
+        return proof_token
+
+    def consume(self, proof_token: str, *, expected: dict[str, Any]) -> bool:
+        with self._lock:
+            proof = self._proofs.pop(proof_token, None)
+        if proof is None:
+            return False
+        return proof == expected
 
 
 def _audit_event_with_integrity(
@@ -476,6 +541,7 @@ def _review_workflow_event_view(audit_event: dict[str, Any]) -> dict[str, Any]:
 
 DEFAULT_REVIEW_AUDIT_EVENTS = ReviewAuditEventStore()
 DEFAULT_JOB_AUDIT_EVENTS = JobAuditEventStore()
+DEFAULT_DESKTOP_SAVE_PROOFS = DesktopSaveProofStore()
 LLM_EXTRACTOR_NAME_TOKENS = ("llm", "gpt", "openai")
 LLM_INFERENCE_PROFILE_FIELDS = ("id", "label", "provider", "model_family", "recommended_model")
 
@@ -554,9 +620,10 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             self._send_file(WEB_ROOT / "index.html", "text/html; charset=utf-8")
             return
         if path == "/api/jobs":
-            authorized, role = self._authorized_role_for_permission("jobs:read")
+            authorized, auth_context = self._authorized_context_for_permission("jobs:read")
             if not authorized:
                 return
+            role = auth_context["role"] if auth_context is not None else None
             self._handle_list_jobs(parsed_url.query, role=role)
             return
         if path == "/api/review-events":
@@ -580,12 +647,16 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             self._handle_get_template(path.removeprefix("/api/templates/"))
             return
         if path.startswith("/api/jobs/"):
-            authorized, role = self._authorized_role_for_permission("jobs:read")
+            authorized, auth_context = self._authorized_context_for_permission("jobs:read")
             if not authorized:
                 return
+            role = auth_context["role"] if auth_context is not None else None
             job_path = path.removeprefix("/api/jobs/")
             if job_path.endswith("/result"):
-                self._handle_job_result_download(job_path.removesuffix("/result"))
+                self._handle_job_result_download(
+                    job_path.removesuffix("/result"),
+                    auth_context=auth_context,
+                )
                 return
             job_id = job_path
             job_queue = self._job_queue()
@@ -601,10 +672,11 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         path = urlsplit(self.path).path
         if path == "/api/jobs":
-            authorized, role = self._authorized_role_for_permission("jobs:create")
+            authorized, auth_context = self._authorized_context_for_permission("jobs:create")
             if not authorized:
                 return
-            self._handle_create_job(role=role)
+            role = auth_context["role"] if auth_context is not None else None
+            self._handle_create_job(role=role, auth_context=auth_context)
             return
         if path == "/api/job-events":
             self._handle_job_event()
@@ -655,7 +727,12 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:
         return
 
-    def _handle_create_job(self, *, role: str | None = None) -> None:
+    def _handle_create_job(
+        self,
+        *,
+        role: str | None = None,
+        auth_context: dict[str, str | None] | None = None,
+    ) -> None:
         try:
             request = self._read_json_request()
             filename = str(request.get("filename") or "").strip()
@@ -664,24 +741,89 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 request.get("idempotency_key") or self.headers.get("Idempotency-Key") or ""
             )
             source = _job_source_from_request(request, filename=filename)
+            desktop_upload_audit = _desktop_upload_audit_requested(request)
             requested_template = self._job_template_binding(request.get("template_id"))
             job_queue = self._job_queue()
-            job = job_queue.get_idempotent_job(
-                idempotency_key=idempotency_key,
-                filename=filename,
-                mode=mode,
-                source=source,
-                template=requested_template,
-            )
-            if job is None:
-                template = self._job_template_snapshot(request.get("template_id"))
-                job = job_queue.create_job(
+            upload_audit_event = None
+            if not desktop_upload_audit:
+                job, created_job = job_queue.get_or_create_job(
                     idempotency_key=idempotency_key,
                     filename=filename,
                     mode=mode,
                     source=source,
-                    template=template,
+                    template=requested_template,
+                    create_template=lambda: self._job_template_snapshot(request.get("template_id")),
                 )
+            else:
+                job, created_job = job_queue.get_or_create_job(
+                    idempotency_key=idempotency_key,
+                    filename=filename,
+                    mode=mode,
+                    source=source,
+                    template=requested_template,
+                    create_template=lambda: self._job_template_snapshot(
+                        request.get("template_id")
+                    ),
+                    enqueue=False,
+                    publish=False,
+                    include_unpublished=True,
+                )
+                job_event_store = self._job_event_store()
+                try:
+                    if not isinstance(job.source, dict):
+                        raise ValueError("desktop_upload requires stored job source")
+                    job_event_store.require_integrity()
+                    upload_audit_event = _job_event_with_auth_context(
+                        _desktop_upload_audit_event(job),
+                        auth_context,
+                    )
+                    upload_actor = upload_audit_event.get("actor")
+                    upload_actor_id = (
+                        upload_actor.get("id") if isinstance(upload_actor, dict) else None
+                    )
+                    upload_audit_event["actor_id"] = upload_actor_id
+                    upload_dedupe = {
+                        "job_id": job.job_id,
+                        "action": "desktop_upload",
+                        "actor_id": upload_actor_id,
+                    }
+                    existing_upload_audit = job_event_store.find_once(dedupe=upload_dedupe)
+                    if not created_job:
+                        if existing_upload_audit is None:
+                            existing_job_upload_audit = job_event_store.find_once(
+                                dedupe={
+                                    "job_id": job.job_id,
+                                    "action": "desktop_upload",
+                                }
+                            )
+                            if (
+                                existing_job_upload_audit is None
+                                and job_queue.is_unpublished(job.job_id)
+                            ):
+                                published_job = job_queue.wait_until_published(job.job_id)
+                                if published_job is not None:
+                                    job = published_job
+                                    existing_upload_audit = job_event_store.find_once(
+                                        dedupe=upload_dedupe
+                                    )
+                            if existing_upload_audit is None:
+                                raise ValueError(
+                                    "desktop_upload audit cannot be added after idempotent job creation"
+                                )
+                        upload_audit_event = existing_upload_audit
+                        if job_queue.is_unpublished(job.job_id):
+                            job = job_queue.publish_job(job.job_id, enqueue=True)
+                    else:
+                        upload_audit_event = job_event_store.record_once(
+                            upload_audit_event,
+                            dedupe=upload_dedupe,
+                        )
+                except Exception:
+                    if created_job:
+                        job_queue.discard_queued_job(job.job_id)
+                    raise
+                if created_job:
+                    job = job_queue.publish_job(job.job_id, enqueue=True)
         except RuntimeError as exc:
             self._send_json({"error": "job_conflict", "message": str(exc)}, status=409)
             return
@@ -694,7 +836,10 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 return
             self._send_json({"error": "invalid_job_request", "message": str(exc)}, status=400)
             return
-        self._send_json({"job": _job_response(job, self._job_queue(), role=role)}, status=202)
+        response = {"job": _job_response(job, self._job_queue(), role=role)}
+        if upload_audit_event is not None:
+            response["audit_event"] = upload_audit_event
+        self._send_json(response, status=202)
 
     def _handle_register_template(
         self,
@@ -757,21 +902,37 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             request = self._read_json_request()
             job_id = str(request.get("job_id") or "")
             action = str(request.get("action") or "")
-            permission = "jobs:retry" if action == "retry_conversion" else "jobs:read"
+            if action == "retry_conversion":
+                permission = "jobs:retry"
+            elif action == "desktop_upload":
+                permission = "jobs:create"
+            else:
+                permission = "jobs:read"
             if not self._role_has_permission(role, permission):
                 return
             audit_event = request.get("audit_event")
             job_queue = self._job_queue()
             job = job_queue.get_job(job_id)
-            accepted_event = _validate_job_event(job, action, audit_event, job_queue)
             job_event_store = self._job_event_store()
             updated_job = job
+            if action == "desktop_result_download":
+                job_event_store.require_integrity()
+                accepted_event = _validate_desktop_result_download_audit_event(
+                    job,
+                    audit_event,
+                    auth_context,
+                    self._desktop_save_proof_store(),
+                )
+            elif action == "desktop_upload":
+                job_event_store.require_integrity()
+                accepted_event = _reject_direct_desktop_upload_audit_event(job, audit_event)
+            else:
+                accepted_event = _validate_job_event(job, action, audit_event, job_queue)
             if action == "retry_conversion":
                 job_event_store.require_integrity()
                 updated_job = job_queue.retry_failed_job(job_id)
-            stored_event = job_event_store.record(
-                _job_event_with_auth_context(accepted_event, auth_context)
-            )
+            event = _job_event_with_auth_context(accepted_event, auth_context)
+            stored_event = job_event_store.record(event)
         except KeyError:
             self._send_json({"error": "job_not_found"}, status=404)
             return
@@ -868,12 +1029,25 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
         job_events = self._job_event_store().list_events(filters=filters)
         self._send_json({"job_events": job_events})
 
-    def _handle_job_result_download(self, job_id: str) -> None:
+    def _handle_job_result_download(
+        self,
+        job_id: str,
+        *,
+        auth_context: dict[str, str | None] | None = None,
+    ) -> None:
         try:
             job = self._job_queue().get_job(job_id)
             download = _job_download(job)
             content_type = _download_content_type(download["content_type"])
             filename = _download_filename(download["filename"])
+            save_proof = None
+            if self.headers.get(DESKTOP_CLIENT_HEADER) == DESKTOP_CLIENT_HEADER_VALUE:
+                save_proof = self._desktop_save_proof_store().issue(
+                    _desktop_save_proof(
+                        _desktop_result_download_audit_event(job),
+                        auth_context,
+                    )
+                )
         except KeyError:
             self._send_json({"error": "job_not_found"}, status=404)
             return
@@ -892,6 +1066,8 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             "Content-Disposition",
             f'attachment; filename="{filename}"',
         )
+        if save_proof is not None:
+            self.send_header(DESKTOP_SAVE_PROOF_HEADER, save_proof)
         self.send_header("Content-Length", str(len(download["content"])))
         self.end_headers()
         self.wfile.write(download["content"])
@@ -917,6 +1093,9 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
     def _job_event_store(self) -> JobAuditEventStore:
         return getattr(self.server, "job_event_store", DEFAULT_JOB_AUDIT_EVENTS)
 
+    def _desktop_save_proof_store(self) -> DesktopSaveProofStore:
+        return getattr(self.server, "desktop_save_proof_store", DEFAULT_DESKTOP_SAVE_PROOFS)
+
     def _template_store(self) -> TemplateStore:
         return getattr(self.server, "template_store", DEFAULT_TEMPLATE_STORE)
 
@@ -939,12 +1118,23 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
         return authorized
 
     def _authorized_role_for_permission(self, permission: str) -> tuple[bool, str | None]:
-        authenticated, role = self._authenticated_role()
-        if not authenticated:
-            return False, None
-        if not self._role_has_permission(role, permission):
+        authorized, auth_context = self._authorized_context_for_permission(permission)
+        role = auth_context["role"] if auth_context is not None else None
+        if not authorized:
             return False, role
         return True, role
+
+    def _authorized_context_for_permission(
+        self,
+        permission: str,
+    ) -> tuple[bool, dict[str, str | None] | None]:
+        authenticated, auth_context = self._authenticated_context()
+        if not authenticated:
+            return False, None
+        role = auth_context["role"] if auth_context is not None else None
+        if not self._role_has_permission(role, permission):
+            return False, auth_context
+        return True, auth_context
 
     def _authenticated_role(self) -> tuple[bool, str | None]:
         authenticated, auth_context = self._authenticated_context()
@@ -975,7 +1165,11 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 status=401,
             )
             return False, None
-        return True, {"role": role["role"], "actor_id": _local_actor_id(role)}
+        return True, {
+            "role": role["role"],
+            "actor_id": _local_actor_id(role),
+            "token_id": role.get("token_id"),
+        }
 
     def _role_has_permission(self, role: str | None, permission: str) -> bool:
         if role is None:
@@ -1457,6 +1651,49 @@ def _job_audit_event(job: JobRecord, action: str) -> dict[str, Any]:
     }
 
 
+def _desktop_upload_audit_event(job: JobRecord) -> dict[str, Any]:
+    source = job.source if isinstance(job.source, dict) else {}
+    source_filename = source.get("filename")
+    filename = _safe_filename(source_filename if isinstance(source_filename, str) else job.filename)
+    return {
+        "event_type": "desktop.job_operation",
+        "job_id": job.job_id,
+        "job_status": job.status,
+        "action": "desktop_upload",
+        "filename": filename,
+        "mode": job.mode,
+        "source_sha256": _sha256_value(source.get("sha256")),
+        "size_bytes": source.get("size_bytes") if isinstance(source.get("size_bytes"), int) else None,
+        "content_type": source.get("content_type") if isinstance(source.get("content_type"), str) else None,
+    }
+
+
+def _desktop_result_download_audit_event(job: JobRecord) -> dict[str, Any]:
+    download = _job_download(job)
+    hashes = _job_hashes(job)
+    output_sha256 = _desktop_result_output_sha256(download, hashes)
+    return {
+        "event_type": "desktop.job_operation",
+        "job_id": job.job_id,
+        "job_status": job.status,
+        "action": "desktop_result_download",
+        "filename": _download_filename(job.filename),
+        "download_filename": _download_filename(download["filename"]),
+        "source_sha256": hashes["source_sha256"],
+        "output_sha256": output_sha256,
+    }
+
+
+def _desktop_result_output_sha256(
+    download: dict[str, Any],
+    hashes: dict[str, str | None],
+) -> str:
+    stored_hash = hashes["output_sha256"]
+    if stored_hash is not None:
+        return stored_hash
+    return hashlib.sha256(download["content"]).hexdigest()
+
+
 def _validate_job_event(
     job: JobRecord,
     action: str,
@@ -1473,6 +1710,67 @@ def _validate_job_event(
     if audit_event != expected_event:
         raise ValueError("audit_event does not match job action")
     return expected_event
+
+
+def _validate_desktop_result_download_audit_event(
+    job: JobRecord,
+    audit_event: Any,
+    auth_context: dict[str, str | None] | None,
+    proof_store: DesktopSaveProofStore,
+) -> dict[str, Any]:
+    expected_event = _desktop_result_download_audit_event(job)
+    if not isinstance(audit_event, dict):
+        raise ValueError("audit_event is required")
+    for field_name in ("event_type", "job_id", "action", "download_filename"):
+        if audit_event.get(field_name) != expected_event.get(field_name):
+            raise ValueError(f"audit_event.{field_name} does not match downloaded result")
+    if audit_event.get("output_sha256") != expected_event["output_sha256"]:
+        raise ValueError("audit_event.output_sha256 does not match downloaded result content")
+    proof_token = audit_event.get("download_proof")
+    if not isinstance(proof_token, str) or not proof_token.strip():
+        raise ValueError("audit_event.download_proof is required")
+    accepted_event = dict(expected_event)
+    if "saved_filename" in audit_event:
+        saved_filename = audit_event.get("saved_filename")
+        if (
+            not isinstance(saved_filename, str)
+            or _saved_download_filename(saved_filename) != saved_filename
+        ):
+            raise ValueError("audit_event.saved_filename is invalid")
+        accepted_event["saved_filename"] = saved_filename
+    if not proof_store.consume(
+        proof_token,
+        expected=_desktop_save_proof(expected_event, auth_context),
+    ):
+        raise ValueError("audit_event.download_proof is invalid")
+    return accepted_event
+
+
+def _desktop_save_proof(
+    audit_event: dict[str, Any],
+    auth_context: dict[str, str | None] | None,
+) -> dict[str, Any]:
+    return {
+        "job_id": audit_event.get("job_id"),
+        "action": audit_event.get("action"),
+        "download_filename": audit_event.get("download_filename"),
+        "output_sha256": audit_event.get("output_sha256"),
+        "actor_id": None if auth_context is None else auth_context.get("actor_id"),
+        "token_id": None if auth_context is None else auth_context.get("token_id"),
+    }
+
+
+def _reject_direct_desktop_upload_audit_event(
+    job: JobRecord,
+    audit_event: Any,
+) -> dict[str, Any]:
+    if not isinstance(job.source, dict):
+        raise ValueError("desktop_upload requires stored job source")
+    if job.status != "queued" or job.attempts > 0:
+        raise ValueError("desktop_upload audit must be recorded before job starts")
+    if not isinstance(audit_event, dict):
+        raise ValueError("audit_event is required")
+    raise ValueError("desktop_upload audit must be recorded through the job create request")
 
 
 def _job_event_with_auth_context(
@@ -1829,7 +2127,55 @@ def _download_filename(filename: str) -> str:
     basename = re.split(r"[\\/]+", filename)[-1].strip()
     safe = re.sub(r'[\x00-\x1f\x7f"\\]', "", basename)
     safe = "".join(char for char in safe if 0x20 <= ord(char) <= 0x7E).strip()
-    return safe or "veridoc-result.json"
+    return safe or DOWNLOAD_FILENAME_FALLBACK
+
+
+def _saved_download_filename(filename: str) -> str:
+    leaf = re.split(r"[\\/]+", filename)[-1].strip()
+    sanitized = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "-", leaf)
+    sanitized = re.sub(r"\s+", " ", sanitized).strip(" .-")
+    if not sanitized:
+        return DOWNLOAD_FILENAME_FALLBACK
+    sanitized = _avoid_windows_reserved_download_filename(sanitized)
+    return _fit_download_filename(sanitized)
+
+
+def _avoid_windows_reserved_download_filename(filename: str) -> str:
+    first_segment, separator, remainder = filename.partition(".")
+    if first_segment.rstrip(" .").upper() not in WINDOWS_RESERVED_DOWNLOAD_STEMS:
+        return filename
+    return f"{first_segment.rstrip(' .')}_{separator}{remainder}"
+
+
+def _fit_download_filename(
+    filename: str,
+    *,
+    max_bytes: int = MAX_DOWNLOAD_FILENAME_BYTES,
+) -> str:
+    if len(filename.encode("utf-8")) <= max_bytes:
+        return filename
+    stem, dot, suffix = filename.rpartition(".")
+    if not stem:
+        stem = suffix
+        suffix = ""
+        dot = ""
+    reserved = f"{dot}{suffix}"
+    available_stem_bytes = max_bytes - len(reserved.encode("utf-8"))
+    if available_stem_bytes > 0:
+        fitted_stem = _truncate_utf8_bytes(stem, available_stem_bytes).strip(" .-")
+        if fitted_stem:
+            return f"{fitted_stem}{reserved}"
+    fitted = _truncate_utf8_bytes(filename, max_bytes).strip(" .-")
+    return fitted or DOWNLOAD_FILENAME_FALLBACK
+
+
+def _truncate_utf8_bytes(value: str, max_bytes: int) -> str:
+    if max_bytes <= 0:
+        return ""
+    encoded = value.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return value
+    return encoded[:max_bytes].decode("utf-8", errors="ignore")
 
 
 def _parser_output_from_upload(filename: str, content: bytes) -> tuple[dict[str, Any], list[str]]:
@@ -2062,6 +2408,13 @@ def _job_source_from_request(request: dict[str, Any], *, filename: str) -> dict[
     }
 
 
+def _desktop_upload_audit_requested(request: dict[str, Any]) -> bool:
+    requested = request.get("desktop_upload_audit", False)
+    if isinstance(requested, bool):
+        return requested
+    raise ValueError("desktop_upload_audit must be boolean")
+
+
 def _source_type(filename: str, parser_output: dict[str, Any] | None = None) -> str:
     filename_source_type = _source_type_from_path(filename)
     if filename_source_type != "unknown":
@@ -2103,7 +2456,8 @@ def _source_type_from_path(path: str) -> str:
 
 
 def _safe_filename(filename: str) -> str:
-    candidate = Path(filename).name.strip()
+    basename = re.split(r"[\\/]+", filename)[-1].strip()
+    candidate = re.sub(r'[\x00-\x1f\x7f"\\]', "", basename).strip()
     return candidate or "upload.txt"
 
 
