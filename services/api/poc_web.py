@@ -640,13 +640,11 @@ def convert_uploaded_document(
         debug_sha256=output_sha256,
         primary_artifact=primary_artifact,
     )
+    review_required = validation.requires_review or _warnings_require_review(warnings)
     status = (
         "blocked"
         if primary_warning is not None
-        else _status(
-            validation.ok,
-            validation.requires_review or _warnings_require_review(warnings),
-        )
+        else _status(validation.ok, review_required)
     )
     return {
         "status": status,
@@ -2605,9 +2603,9 @@ def _parser_output_from_binary_upload_with_warnings(
                 if conversion_mode != "pdf_to_excel":
                     return parser_output, []
                 report = compare_pdf_table_extractors(upload_path)
-                return _parser_output_with_pdf_tables(parser_output, report), _pdf_table_warnings(
-                    report
-                )
+                parser_output = _parser_output_with_pdf_tables(parser_output, report)
+                pdf_table_warnings = _pdf_table_warnings(report)
+                return parser_output, pdf_table_warnings
         except MissingPdfExtractorDependency as exc:
             raise PocServerDependencyError(
                 "PDF parser dependency is unavailable; install requirements-pdf-eval.txt"
@@ -2628,6 +2626,7 @@ def _parser_output_with_pdf_tables(parser_output: dict[str, Any], report: Any) -
         return parser_output
 
     output = deepcopy(parser_output)
+    existing_table_keys = _pdf_table_existing_rows_keys(output)
     pages = output.get("pages")
     if not isinstance(pages, list):
         return output
@@ -2651,6 +2650,9 @@ def _parser_output_with_pdf_tables(parser_output: dict[str, Any], report: Any) -
         for table_index, table in enumerate(tables, start=1):
             if not isinstance(table, dict):
                 continue
+            table_key = _pdf_table_rows_key(table.get("rows"))
+            if table_key and table_key in existing_table_keys:
+                continue
             page_number = _int_value(table.get("page_number"), default=1)
             page = pages_by_number.get(page_number)
             if page is None:
@@ -2665,8 +2667,6 @@ def _parser_output_with_pdf_tables(parser_output: dict[str, Any], report: Any) -
                 pages_by_number[page_number] = page
             fragments = page.setdefault("fragments", [])
             if not isinstance(fragments, list):
-                continue
-            if _pdf_table_fragment_already_present(fragments, table):
                 continue
             bbox = _pdf_table_bbox(table, page)
             fragment: dict[str, Any] = {
@@ -2683,6 +2683,8 @@ def _parser_output_with_pdf_tables(parser_output: dict[str, Any], report: Any) -
                 fragment["requires_review"] = True
                 fragment["missing_confidence"] = True
             fragments.append(fragment)
+            if table_key:
+                existing_table_keys.add(table_key)
     return output
 
 
@@ -2738,25 +2740,37 @@ def _pdf_table_structured_rows(rows_value: Any) -> list[list[str]]:
     return rows
 
 
-def _pdf_table_fragment_already_present(
-    fragments: list[Any], table: dict[str, Any]
-) -> bool:
-    candidate_key = _pdf_table_rows_key(table.get("rows"))
-    if not candidate_key:
-        return False
-    for fragment in fragments:
-        if not isinstance(fragment, dict) or fragment.get("kind") != "table":
-            continue
-        if _pdf_table_fragment_rows_key(fragment) == candidate_key:
-            return True
-    return False
+def _pdf_table_existing_rows_keys(parser_output: dict[str, Any]) -> set[tuple[tuple[str, ...], ...]]:
+    table_keys: set[tuple[tuple[str, ...], ...]] = set()
+    blocks = parser_output.get("blocks")
+    if isinstance(blocks, list):
+        for block in blocks:
+            if isinstance(block, dict) and block.get("type") == "table":
+                block_key = _pdf_table_block_rows_key(block)
+                if block_key:
+                    table_keys.add(block_key)
+    pages = parser_output.get("pages")
+    if isinstance(pages, list):
+        for page in pages:
+            if not isinstance(page, dict):
+                continue
+            for fragment in [
+                *_parser_output_fragment_list(page.get("fragments")),
+                *_parser_output_fragment_list(page.get("regions")),
+            ]:
+                if not isinstance(fragment, dict) or fragment.get("kind") != "table":
+                    continue
+                fragment_key = _pdf_table_block_rows_key(fragment)
+                if fragment_key:
+                    table_keys.add(fragment_key)
+    return table_keys
 
 
-def _pdf_table_fragment_rows_key(fragment: dict[str, Any]) -> tuple[tuple[str, ...], ...]:
-    rows_key = _pdf_table_rows_key(fragment.get("rows"))
+def _pdf_table_block_rows_key(block: dict[str, Any]) -> tuple[tuple[str, ...], ...]:
+    rows_key = _pdf_table_rows_key(block.get("rows"))
     if rows_key:
         return rows_key
-    text = fragment.get("text")
+    text = block.get("text")
     if not isinstance(text, str):
         return ()
     rows: list[list[str]] = []

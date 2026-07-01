@@ -741,6 +741,67 @@ def test_pdf_to_excel_does_not_duplicate_parser_table_blocks(
     assert values.count("12.5") == 1
 
 
+def test_pdf_table_extractor_skips_existing_parser_table_block() -> None:
+    parser_output = {
+        "document": {
+            "id": "sample",
+            "title": "sample.pdf",
+            "source_type": "pdf",
+        },
+        "pages": [{"page_number": 1, "width": 320, "height": 240, "unit": "pt"}],
+        "blocks": [
+            {
+                "id": "block-001",
+                "type": "table",
+                "text": "Lot\tAssay\nA-001\t12.5",
+                "value_metadata": {
+                    "source_page": 1,
+                    "bbox": {"x": 10, "y": 20, "width": 110, "height": 24, "unit": "pt"},
+                    "extractor": {"name": "pymupdf-text-table-heuristic", "version": "test"},
+                    "confidence": 0.6,
+                    "requires_review": True,
+                },
+            }
+        ],
+    }
+    table = ExtractedTable(
+        extractor="camelot",
+        flavor="lattice",
+        page_number=1,
+        rows=[["Lot", "Assay"], ["A-001", "12.5"]],
+        cell_bboxes=[
+            [
+                TableBBox(x=10, y=20, width=50, height=12),
+                TableBBox(x=60, y=20, width=60, height=12),
+            ],
+            [
+                TableBBox(x=10, y=32, width=50, height=12),
+                TableBBox(x=60, y=32, width=60, height=12),
+            ],
+        ],
+    )
+    report = TableExtractionReport(
+        source_path="sample.pdf",
+        candidates=[
+            TableExtractionCandidate(
+                extractor="camelot",
+                flavor="lattice",
+                version="test",
+                status="ok",
+                tables=[table],
+                notes="synthetic selected table",
+            )
+        ],
+        mismatches=[],
+        selected_candidate="camelot:lattice",
+        notes="synthetic report",
+    )
+
+    output = poc_web._parser_output_with_pdf_tables(parser_output, report)
+
+    assert output["pages"] == parser_output["pages"]
+
+
 def test_convert_uploaded_document_passes_xlsx_render_plan_for_table_blocks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
