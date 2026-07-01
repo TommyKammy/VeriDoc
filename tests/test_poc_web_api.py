@@ -246,6 +246,46 @@ def test_convert_uploaded_document_manifest_names_mode_artifacts_safely(
     ]
 
 
+@pytest.mark.parametrize(
+    ("conversion_mode", "artifact_format"),
+    (
+        ("pdf_to_word", "docx"),
+        ("pdf_to_excel", "xlsx"),
+    ),
+)
+def test_convert_uploaded_document_manifest_preserves_artifact_suffixes_for_long_names(
+    conversion_mode: str,
+    artifact_format: str,
+) -> None:
+    parser_output = {
+        "source_type": "pdf",
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 320,
+                "height": 240,
+                "unit": "pt",
+                "fragments": [{"text": "PDF text", "confidence": 0.95}],
+            }
+        ],
+    }
+    mode_slug = conversion_mode.replace("_", "-")
+
+    result = convert_uploaded_document(
+        filename=f"{'a' * 300}.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+        conversion_mode=conversion_mode,
+    )
+
+    primary_filename = result["artifacts"][0]["filename"]
+    debug_filename = result["artifacts"][1]["filename"]
+    assert primary_filename.endswith(f".veridoc-{mode_slug}.{artifact_format}")
+    assert len(primary_filename.encode("utf-8")) <= poc_web.MAX_DOWNLOAD_FILENAME_BYTES
+    assert debug_filename.endswith(".veridoc-result.json")
+    assert len(debug_filename.encode("utf-8")) <= poc_web.MAX_DOWNLOAD_FILENAME_BYTES
+    assert result["download"]["filename"] == debug_filename
+
+
 def test_convert_uploaded_document_records_selected_conversion_mode() -> None:
     parser_output = {
         "source_type": "pdf",

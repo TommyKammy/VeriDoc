@@ -2243,7 +2243,11 @@ def _artifact_filename(
         suffix = f".veridoc-{mode_slug}.{artifact_format}"
     else:
         suffix = f".veridoc-{role}.{artifact_format}"
-    return _fit_download_filename(f"{source_stem}{suffix}")
+    max_stem_bytes = MAX_DOWNLOAD_FILENAME_BYTES - len(suffix.encode("utf-8"))
+    if max_stem_bytes <= 0:
+        return _fit_download_filename(suffix.lstrip("."))
+    fitted_stem = _truncate_utf8_bytes(source_stem, max_stem_bytes).strip(" .-")
+    return _fit_download_filename(f"{fitted_stem or 'upload'}{suffix}")
 
 
 def _download_content_type(content_type: str) -> str:
