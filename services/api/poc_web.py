@@ -2625,8 +2625,8 @@ def _parser_output_with_pdf_tables(parser_output: dict[str, Any], report: Any) -
     if not selected_candidate:
         return parser_output
 
-    output = deepcopy(parser_output)
-    existing_table_keys = _pdf_table_existing_rows_keys(output)
+    output = adapt_document_ir_v0_blocks(deepcopy(parser_output))
+    existing_tables = _pdf_table_existing_tables(output)
     pages = output.get("pages")
     if not isinstance(pages, list):
         return output
@@ -2650,10 +2650,15 @@ def _parser_output_with_pdf_tables(parser_output: dict[str, Any], report: Any) -
         for table_index, table in enumerate(tables, start=1):
             if not isinstance(table, dict):
                 continue
-            table_key = _pdf_table_rows_key(table.get("rows"))
-            if table_key and table_key in existing_table_keys:
-                continue
             page_number = _int_value(table.get("page_number"), default=1)
+            table_key = _pdf_table_key(page_number, table.get("rows"))
+            if table_key:
+                matched_fragments = existing_tables.get(table_key, [])
+                if matched_fragments:
+                    page = pages_by_number.get(page_number) or {}
+                    for fragment in matched_fragments:
+                        _merge_pdf_table_fragment(fragment, table, page, candidate_name)
+                    continue
             page = pages_by_number.get(page_number)
             if page is None:
                 page = {
@@ -2668,23 +2673,11 @@ def _parser_output_with_pdf_tables(parser_output: dict[str, Any], report: Any) -
             fragments = page.setdefault("fragments", [])
             if not isinstance(fragments, list):
                 continue
-            bbox = _pdf_table_bbox(table, page)
-            fragment: dict[str, Any] = {
-                "kind": "table",
-                "text": _pdf_table_rows_text(table.get("rows")),
-                "rows": _pdf_table_structured_rows(table.get("rows")),
-                "page_number": page_number,
-                "extractor": candidate_name,
-                "confidence": 0.9 if bbox is not None else 0.0,
-            }
-            if bbox is not None:
-                fragment["bbox"] = bbox
-            else:
-                fragment["requires_review"] = True
-                fragment["missing_confidence"] = True
+            fragment: dict[str, Any] = {"kind": "table", "page_number": page_number}
+            _merge_pdf_table_fragment(fragment, table, page, candidate_name)
             fragments.append(fragment)
             if table_key:
-                existing_table_keys.add(table_key)
+                existing_tables.setdefault(table_key, []).append(fragment)
     return output
 
 
@@ -2700,6 +2693,7 @@ def _pdf_table_warnings(report: Any) -> list[str]:
         warnings.append("PDF table extraction candidates disagreed; xlsx artifact requires review")
     candidates = report_data.get("candidates")
     if isinstance(candidates, list):
+        selected_candidate = str(report_data.get("selected_candidate") or "")
         unavailable = [
             _pdf_table_candidate_name(candidate)
             for candidate in candidates
@@ -2711,6 +2705,19 @@ def _pdf_table_warnings(report: Any) -> list[str]:
                 + ", ".join(sorted(unavailable))
                 + "; xlsx artifact requires review"
             )
+        for candidate in candidates:
+            if (
+                not isinstance(candidate, dict)
+                or _pdf_table_candidate_name(candidate) != selected_candidate
+            ):
+                continue
+            tables = candidate.get("tables")
+            if isinstance(tables, list) and len(tables) > 1:
+                warnings.append(
+                    "PDF table extraction selected candidate contains multiple tables without "
+                    "full comparison coverage; xlsx artifact requires review"
+                )
+                break
     return warnings
 
 
@@ -2740,30 +2747,83 @@ def _pdf_table_structured_rows(rows_value: Any) -> list[list[str]]:
     return rows
 
 
-def _pdf_table_existing_rows_keys(parser_output: dict[str, Any]) -> set[tuple[tuple[str, ...], ...]]:
-    table_keys: set[tuple[tuple[str, ...], ...]] = set()
+def _pdf_table_existing_tables(
+    parser_output: dict[str, Any]
+) -> dict[tuple[int, tuple[tuple[str, ...], ...]], list[dict[str, Any]]]:
+    table_fragments: dict[tuple[int, tuple[tuple[str, ...], ...]], list[dict[str, Any]]] = {}
     blocks = parser_output.get("blocks")
     if isinstance(blocks, list):
         for block in blocks:
             if isinstance(block, dict) and block.get("type") == "table":
-                block_key = _pdf_table_block_rows_key(block)
+                block_key = _pdf_table_key(_pdf_table_block_page_number(block), block)
                 if block_key:
-                    table_keys.add(block_key)
+                    table_fragments.setdefault(block_key, []).append(block)
     pages = parser_output.get("pages")
     if isinstance(pages, list):
         for page in pages:
             if not isinstance(page, dict):
                 continue
+            page_number = _int_value(page.get("page_number"), default=0)
             for fragment in [
                 *_parser_output_fragment_list(page.get("fragments")),
                 *_parser_output_fragment_list(page.get("regions")),
             ]:
                 if not isinstance(fragment, dict) or fragment.get("kind") != "table":
                     continue
-                fragment_key = _pdf_table_block_rows_key(fragment)
+                fragment_key = _pdf_table_key(
+                    _int_value(fragment.get("page_number"), default=page_number),
+                    fragment,
+                )
                 if fragment_key:
-                    table_keys.add(fragment_key)
-    return table_keys
+                    table_fragments.setdefault(fragment_key, []).append(fragment)
+    return table_fragments
+
+
+def _merge_pdf_table_fragment(
+    fragment: dict[str, Any],
+    table: dict[str, Any],
+    page: dict[str, Any],
+    candidate_name: str,
+) -> None:
+    bbox = _pdf_table_bbox(table, page)
+    fragment["text"] = _pdf_table_rows_text(table.get("rows"))
+    fragment["rows"] = _pdf_table_structured_rows(table.get("rows"))
+    fragment["extractor"] = candidate_name
+    fragment["confidence"] = 0.9 if bbox is not None else 0.0
+    if bbox is not None:
+        fragment["bbox"] = bbox
+        fragment.pop("requires_review", None)
+        fragment.pop("missing_confidence", None)
+        fragment.pop("low_confidence", None)
+    else:
+        fragment["requires_review"] = True
+        fragment["missing_confidence"] = True
+
+
+def _pdf_table_key(
+    page_number: int, table_or_rows: Any
+) -> tuple[int, tuple[tuple[str, ...], ...]] | None:
+    rows_key = (
+        _pdf_table_block_rows_key(table_or_rows)
+        if isinstance(table_or_rows, dict)
+        else _pdf_table_rows_key(table_or_rows)
+    )
+    if not rows_key:
+        return None
+    return (page_number, rows_key)
+
+
+def _pdf_table_block_page_number(block: dict[str, Any]) -> int:
+    page_number = _int_value(block.get("page_number"), default=0)
+    if page_number:
+        return page_number
+    source_page = _int_value(block.get("source_page"), default=0)
+    if source_page:
+        return source_page
+    metadata = block.get("value_metadata")
+    if isinstance(metadata, dict):
+        return _int_value(metadata.get("source_page"), default=0)
+    return 0
 
 
 def _pdf_table_block_rows_key(block: dict[str, Any]) -> tuple[tuple[str, ...], ...]:
