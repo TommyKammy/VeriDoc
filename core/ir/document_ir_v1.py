@@ -321,6 +321,7 @@ def _parser_pages(data: dict[str, Any], source_type: str) -> list[Any]:
 def adapt_document_ir_v0_blocks(parser_output: Any) -> dict[str, Any]:
     """Return parser output with top-level Document IR v0 blocks adapted into page fragments."""
     data = dict(_to_mapping(parser_output))
+    fallback_extractor = _extractor_name_value(data.get("extractor"), default="unknown")
     pages = _list_value(data.get("pages"))
     if not pages:
         return data
@@ -353,12 +354,20 @@ def adapt_document_ir_v0_blocks(parser_output: Any) -> dict[str, Any]:
 
     for index, page_data in enumerate(pages, start=1):
         page = dict(_to_mapping(page_data))
+        page_number = _page_number_value(page.get("page_number"), default=index)
         existing_page_blocks = [*_list_value(page.get("fragments")), *_list_value(page.get("regions"))]
         if existing_page_blocks:
+            inherited_fragments = list(blocks_by_page.get(page_number, []))
+            if index == 1:
+                inherited_fragments.extend(unmatched_blocks)
+            page = _merge_v0_review_metadata_into_existing_page_blocks(
+                page,
+                inherited_fragments,
+                fallback_extractor=fallback_extractor,
+            )
             adapted_pages.append(page)
             continue
 
-        page_number = _page_number_value(page.get("page_number"), default=index)
         fragments = list(blocks_by_page.get(page_number, []))
         if index == 1:
             fragments.extend(unmatched_blocks)
@@ -367,6 +376,107 @@ def adapt_document_ir_v0_blocks(parser_output: Any) -> dict[str, Any]:
         adapted_pages.append(page)
     data["pages"] = adapted_pages
     return data
+
+
+def _merge_v0_review_metadata_into_existing_page_blocks(
+    page: dict[str, Any],
+    inherited_fragments: list[dict[str, Any]],
+    *,
+    fallback_extractor: str,
+) -> dict[str, Any]:
+    review_fragments = [
+        fragment for fragment in inherited_fragments if _fragment_has_review_metadata(fragment)
+    ]
+    if not review_fragments:
+        return page
+
+    output = dict(page)
+    remaining = review_fragments
+    for key in ("fragments", "regions"):
+        values = _list_value(page.get(key))
+        if not values or not remaining:
+            continue
+        merged_values, remaining = _merge_review_metadata_into_fragment_list(
+            values,
+            remaining,
+            fallback_extractor=fallback_extractor,
+        )
+        output[key] = merged_values
+    return output
+
+
+def _merge_review_metadata_into_fragment_list(
+    values: list[Any],
+    review_fragments: list[dict[str, Any]],
+    *,
+    fallback_extractor: str,
+) -> tuple[list[Any], list[dict[str, Any]]]:
+    merged_values: list[Any] = []
+    remaining = list(review_fragments)
+    for value in values:
+        target = _to_mapping(value)
+        match_index = next(
+            (
+                index
+                for index, fragment in enumerate(remaining)
+                if target
+                and _fragments_match_for_review_metadata(
+                    target,
+                    fragment,
+                    fallback_extractor=fallback_extractor,
+                )
+            ),
+            None,
+        )
+        if match_index is None:
+            merged_values.append(value)
+            continue
+        source = remaining.pop(match_index)
+        merged_values.append(_fragment_with_review_metadata(value, source))
+    return merged_values, remaining
+
+
+def _fragment_has_review_metadata(fragment: dict[str, Any]) -> bool:
+    return fragment.get("requires_review") is True or bool(_fragment_warnings(fragment))
+
+
+def _fragment_warnings(fragment: dict[str, Any]) -> list[str]:
+    return [str(warning) for warning in _list_value(fragment.get("warnings")) if str(warning)]
+
+
+def _fragments_match_for_review_metadata(
+    target: dict[str, Any],
+    source: dict[str, Any],
+    *,
+    fallback_extractor: str,
+) -> bool:
+    if (target.get("kind") or target.get("type")) != (source.get("kind") or source.get("type")):
+        return False
+    if str(target.get("text") or "") != str(source.get("text") or ""):
+        return False
+
+    target_extractor = _extractor_name_value(
+        target.get("extractor") or target.get("engine"),
+        default=fallback_extractor,
+    )
+    source_extractor = _extractor_name_value(
+        source.get("extractor") or source.get("engine"),
+        default=fallback_extractor,
+    )
+    return target_extractor in {source_extractor, fallback_extractor}
+
+
+def _fragment_with_review_metadata(value: Any, source: dict[str, Any]) -> Any:
+    if not isinstance(value, dict):
+        return value
+
+    output = dict(value)
+    if source.get("requires_review") is True:
+        output["requires_review"] = True
+    warnings = [*dict.fromkeys([*_fragment_warnings(output), *_fragment_warnings(source)])]
+    if warnings:
+        output["warnings"] = warnings
+    return output
 
 
 def _document_ir_v0_block_fragment(
