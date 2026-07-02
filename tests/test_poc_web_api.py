@@ -705,6 +705,59 @@ def test_pdf_to_excel_json_table_report_warnings_require_review() -> None:
     } in result["review_items"]
 
 
+def test_pdf_to_excel_json_table_report_preserves_structured_rows(tmp_path: Path) -> None:
+    table = ExtractedTable(
+        extractor="camelot",
+        flavor="lattice",
+        page_number=1,
+        rows=[["Lot\nID", "Assay\t%"], ["A-001", "12.5"]],
+        cell_bboxes=[
+            [
+                TableBBox(x=10, y=20, width=50, height=12),
+                TableBBox(x=60, y=20, width=60, height=12),
+            ],
+            [
+                TableBBox(x=10, y=32, width=50, height=12),
+                TableBBox(x=60, y=32, width=60, height=12),
+            ],
+        ],
+    )
+    report = TableExtractionReport(
+        source_path="sample.pdf",
+        candidates=[
+            TableExtractionCandidate(
+                extractor="camelot",
+                flavor="lattice",
+                version="test",
+                status="ok",
+                tables=[table],
+                notes="synthetic selected table",
+            )
+        ],
+        mismatches=[],
+        selected_candidate="camelot:lattice",
+        notes="synthetic report",
+    )
+
+    result = convert_uploaded_document(
+        filename="sample.json",
+        content=json.dumps(report.to_dict()).encode("utf-8"),
+        conversion_mode="pdf_to_excel",
+    )
+
+    assert result["status"] == "converted"
+    primary_artifact = result["artifacts"][0]
+    assert primary_artifact["format"] == "xlsx"
+    primary_path = tmp_path / primary_artifact["filename"]
+    primary_path.write_bytes(primary_artifact["content"])
+    xlsx = extract_xlsx_structure(primary_path)
+    cells = {cell.ref: (cell.value, cell.value_type) for cell in xlsx.sheets[0].cells}
+    assert cells["A4"] == ("Lot\nID", "inline_string")
+    assert cells["B4"] == ("Assay\t%", "inline_string")
+    assert cells["A5"] == ("A-001", "inline_string")
+    assert cells["B5"] == ("12.5", "number")
+
+
 def test_pdf_to_excel_multiple_selected_tables_without_mismatch_converts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

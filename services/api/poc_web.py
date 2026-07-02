@@ -2569,6 +2569,15 @@ def _parser_output_from_upload(
         return _plain_text_parser_output(text), warnings
     if _source_type(filename, parsed) == "pdf" and isinstance(parsed.get("candidates"), list):
         warnings.extend(_pdf_table_warnings(parsed))
+        if parsed.get("selected_candidate"):
+            return _parser_output_with_pdf_tables(
+                {
+                    "source_type": "pdf",
+                    "source_path": parsed.get("source_path") or filename,
+                    "pages": [],
+                },
+                parsed,
+            ), warnings
     return parsed, warnings
 
 
