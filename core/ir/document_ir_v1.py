@@ -360,7 +360,7 @@ def adapt_document_ir_v0_blocks(parser_output: Any) -> dict[str, Any]:
             inherited_fragments = list(blocks_by_page.get(page_number, []))
             if index == 1:
                 inherited_fragments.extend(unmatched_blocks)
-            page = _merge_v0_review_metadata_into_existing_page_blocks(
+            page = _merge_v0_metadata_into_existing_page_blocks(
                 page,
                 inherited_fragments,
                 fallback_extractor=fallback_extractor,
@@ -378,25 +378,25 @@ def adapt_document_ir_v0_blocks(parser_output: Any) -> dict[str, Any]:
     return data
 
 
-def _merge_v0_review_metadata_into_existing_page_blocks(
+def _merge_v0_metadata_into_existing_page_blocks(
     page: dict[str, Any],
     inherited_fragments: list[dict[str, Any]],
     *,
     fallback_extractor: str,
 ) -> dict[str, Any]:
-    review_fragments = [
-        fragment for fragment in inherited_fragments if _fragment_has_review_metadata(fragment)
+    merge_fragments = [
+        fragment for fragment in inherited_fragments if _fragment_has_v0_merge_metadata(fragment)
     ]
-    if not review_fragments:
+    if not merge_fragments:
         return page
 
     output = dict(page)
-    remaining = review_fragments
+    remaining = merge_fragments
     for key in ("fragments", "regions"):
         values = _list_value(page.get(key))
         if not values or not remaining:
             continue
-        merged_values, remaining = _merge_review_metadata_into_fragment_list(
+        merged_values, remaining = _merge_v0_metadata_into_fragment_list(
             values,
             remaining,
             fallback_extractor=fallback_extractor,
@@ -405,14 +405,14 @@ def _merge_v0_review_metadata_into_existing_page_blocks(
     return output
 
 
-def _merge_review_metadata_into_fragment_list(
+def _merge_v0_metadata_into_fragment_list(
     values: list[Any],
-    review_fragments: list[dict[str, Any]],
+    merge_fragments: list[dict[str, Any]],
     *,
     fallback_extractor: str,
 ) -> tuple[list[Any], list[dict[str, Any]]]:
     merged_values: list[Any] = []
-    remaining = list(review_fragments)
+    remaining = list(merge_fragments)
     for value in values:
         target = _to_mapping(value)
         match_index = next(
@@ -432,12 +432,16 @@ def _merge_review_metadata_into_fragment_list(
             merged_values.append(value)
             continue
         source = remaining.pop(match_index)
-        merged_values.append(_fragment_with_review_metadata(value, source))
+        merged_values.append(_fragment_with_v0_metadata(value, source))
     return merged_values, remaining
 
 
-def _fragment_has_review_metadata(fragment: dict[str, Any]) -> bool:
-    return fragment.get("requires_review") is True or bool(_fragment_warnings(fragment))
+def _fragment_has_v0_merge_metadata(fragment: dict[str, Any]) -> bool:
+    return (
+        fragment.get("requires_review") is True
+        or bool(_fragment_warnings(fragment))
+        or bool(_list_value(fragment.get("rows")))
+    )
 
 
 def _fragment_warnings(fragment: dict[str, Any]) -> list[str]:
@@ -466,11 +470,23 @@ def _fragments_match_for_review_metadata(
     return target_extractor in {source_extractor, fallback_extractor}
 
 
-def _fragment_with_review_metadata(value: Any, source: dict[str, Any]) -> Any:
+def _fragment_with_v0_metadata(value: Any, source: dict[str, Any]) -> Any:
     if not isinstance(value, dict):
         return value
 
     output = dict(value)
+    if output.get("extractor") is None and output.get("engine") is None:
+        extractor = source.get("extractor")
+        if isinstance(extractor, dict):
+            output["extractor"] = dict(extractor)
+        elif extractor is not None:
+            output["extractor"] = str(extractor)
+        elif source.get("engine") is not None:
+            output["engine"] = str(source["engine"])
+    if not _list_value(output.get("rows")):
+        rows = _list_value(source.get("rows"))
+        if rows:
+            output["rows"] = rows
     if source.get("requires_review") is True:
         output["requires_review"] = True
     warnings = [*dict.fromkeys([*_fragment_warnings(output), *_fragment_warnings(source)])]
@@ -506,10 +522,20 @@ def _document_ir_v0_block_fragment(
         fragment["missing_confidence"] = True
 
     extractor = metadata.get("extractor")
+    if extractor is None:
+        extractor = block.get("extractor")
     if isinstance(extractor, dict):
         fragment["extractor"] = dict(extractor)
     elif extractor is not None:
         fragment["extractor"] = str(extractor)
+    else:
+        engine = block.get("engine")
+        if engine is not None:
+            fragment["engine"] = str(engine)
+
+    rows = _list_value(block.get("rows"))
+    if rows:
+        fragment["rows"] = rows
 
     if metadata.get("requires_review") is True:
         fragment["requires_review"] = True

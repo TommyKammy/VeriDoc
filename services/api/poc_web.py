@@ -2350,7 +2350,8 @@ def _document_ir_with_parser_table_rows(
 def _parser_output_table_row_records(parser_output: dict[str, Any]) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     root_extractor = _parser_output_root_extractor_name(parser_output.get("extractor"))
-    pages = parser_output.get("pages")
+    adapted_parser_output = adapt_document_ir_v0_blocks(parser_output)
+    pages = adapted_parser_output.get("pages")
     if isinstance(pages, list):
         for page in pages:
             records.extend(
