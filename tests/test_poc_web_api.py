@@ -590,6 +590,52 @@ def test_word_to_excel_phase0_json_preserves_v0_table_block_rows(tmp_path: Path)
     assert cells["B5"] == ("12.5", "number")
 
 
+def test_word_to_excel_phase0_json_preserves_v0_table_block_warnings(
+    tmp_path: Path,
+) -> None:
+    warning = "DOCX table contains merged cells; xlsx artifact requires review"
+    parser_output = {
+        "schema_version": "document-ir/v0",
+        "extractor": "docx-table-parser",
+        "document": {"id": "phase0-docx", "title": "phase0-docx.docx", "source_type": "docx"},
+        "pages": [{"page_number": 1, "width": 320, "height": 240, "unit": "pt"}],
+        "blocks": [
+            {
+                "id": "block-001",
+                "type": "table",
+                "text": "Merged Header\nLot\t0007",
+                "rows": [["Merged Header", ""], ["Lot", "0007"]],
+                "warnings": [warning],
+                "value_metadata": {
+                    "source_page": 1,
+                    "bbox": {"x": 10, "y": 20, "width": 120, "height": 32},
+                    "extractor": {"name": "docx-table-parser", "version": "test"},
+                    "confidence": 0.95,
+                    "requires_review": False,
+                },
+            }
+        ],
+    }
+
+    result = convert_uploaded_document(
+        filename="phase0-docx-warnings.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+        conversion_mode="word_to_excel",
+    )
+
+    primary_artifact = result["artifacts"][0]
+    primary_path = tmp_path / primary_artifact["filename"]
+    primary_path.write_bytes(primary_artifact["content"])
+    xlsx = extract_xlsx_structure(primary_path)
+    cells = {cell.ref: (cell.value, cell.value_type) for cell in xlsx.sheets[0].cells}
+    assert cells["A4"] == ("Merged Header", "inline_string")
+    assert cells["A5"] == ("Lot", "inline_string")
+    assert cells["B5"] == ("0007", "inline_string")
+    assert result["status"] == "requires_review"
+    assert warning in result["warnings"]
+    assert result["document_ir"]["blocks"][0]["review"]["warnings"] == [warning]
+
+
 def test_word_to_excel_json_table_rows_match_root_extractor_fallback(tmp_path: Path) -> None:
     parser_output = {
         "source_type": "docx",
