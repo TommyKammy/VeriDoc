@@ -2331,17 +2331,15 @@ def _document_ir_with_parser_table_rows(
         if not isinstance(block, dict) or block.get("type") != "table":
             continue
         matching_tables = [
-            parser_table
+            (match_rank, parser_table)
             for parser_table in parser_tables
             if parser_table.get("matched") is not True
-            and _parser_table_matches_ir_block(parser_table, block)
+            for match_rank in [_parser_table_match_rank(parser_table, block)]
+            if match_rank is not None
         ]
         if not matching_tables:
             continue
-        parser_table = min(
-            matching_tables,
-            key=lambda candidate: _int_value(candidate.get("source_priority"), default=100),
-        )
+        _rank, parser_table = min(matching_tables, key=lambda candidate: candidate[0])
         block["rows"] = parser_table["rows"]
         parser_table["matched"] = True
     return output
@@ -2353,10 +2351,12 @@ def _parser_output_table_row_records(parser_output: dict[str, Any]) -> list[dict
     adapted_parser_output = adapt_document_ir_v0_blocks(parser_output)
     pages = adapted_parser_output.get("pages")
     if isinstance(pages, list):
-        for page in pages:
+        for page_index, page in enumerate(pages, start=1):
             records.extend(
                 _parser_output_page_table_row_records(
-                    page, fallback_extractor=root_extractor
+                    page,
+                    fallback_extractor=root_extractor,
+                    fallback_page_number=page_index,
                 )
             )
     records.extend(
@@ -2368,12 +2368,14 @@ def _parser_output_table_row_records(parser_output: dict[str, Any]) -> list[dict
 
 
 def _parser_output_page_table_row_records(
-    page: Any, *, fallback_extractor: str
+    page: Any, *, fallback_extractor: str, fallback_page_number: int
 ) -> list[dict[str, Any]]:
     if not isinstance(page, dict):
         return []
     records: list[dict[str, Any]] = []
-    page_number = _int_value(page.get("page_number"), default=0)
+    page_number = _int_value(page.get("page_number"), default=fallback_page_number)
+    if page_number <= 0:
+        page_number = fallback_page_number
     for fragment in [
         *_parser_output_fragment_list(page.get("fragments")),
         *_parser_output_fragment_list(page.get("regions")),
@@ -2458,30 +2460,34 @@ def _parser_output_root_extractor_name(value: Any) -> str:
 def _parser_output_extractor_name(value: Any, *, default: str) -> str:
     if isinstance(value, dict):
         name = value.get("name")
-        return str(name) if name is not None else default
+        if name is None:
+            return default
+        name_value = str(name)
+        return name_value if name_value.strip() else default
     if value is None:
         return default
-    return str(value)
+    name_value = str(value)
+    return name_value if name_value.strip() else default
 
 
 def _parser_output_fragment_list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
-def _parser_table_matches_ir_block(
+def _parser_table_match_rank(
     parser_table: dict[str, Any], block: dict[str, Any]
-) -> bool:
+) -> tuple[int, int] | None:
+    source_priority = _int_value(parser_table.get("source_priority"), default=100)
     extractor_name = _parser_output_block_extractor_name(block, fallback_extractor="unknown")
     if _int_value(block.get("source_page"), default=0) != parser_table.get("page_number"):
-        return False
+        return None
     if str(block.get("text") or "") != parser_table.get("text"):
-        return False
+        return None
     if extractor_name == parser_table.get("extractor"):
-        return True
-    return (
-        _int_value(parser_table.get("source_priority"), default=100) > 0
-        and extractor_name == parser_table.get("fallback_extractor")
-    )
+        return (source_priority, 0)
+    if source_priority > 0 and extractor_name == parser_table.get("fallback_extractor"):
+        return (source_priority, 1)
+    return None
 
 
 def _xlsx_pdf_table_source_annotations(document_ir: dict[str, Any]) -> list[dict[str, str]]:

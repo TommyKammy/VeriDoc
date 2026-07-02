@@ -415,19 +415,20 @@ def _merge_v0_metadata_into_fragment_list(
     remaining = list(merge_fragments)
     for value in values:
         target = _to_mapping(value)
-        match_index = next(
-            (
-                index
-                for index, fragment in enumerate(remaining)
-                if target
-                and _fragments_match_for_review_metadata(
+        ranked_matches = [
+            (rank, index)
+            for index, fragment in enumerate(remaining)
+            if target
+            for rank in [
+                _fragments_match_rank_for_v0_metadata(
                     target,
                     fragment,
                     fallback_extractor=fallback_extractor,
                 )
-            ),
-            None,
-        )
+            ]
+            if rank is not None
+        ]
+        match_index = min(ranked_matches, default=(0, None))[1]
         if match_index is None:
             merged_values.append(value)
             continue
@@ -448,16 +449,16 @@ def _fragment_warnings(fragment: dict[str, Any]) -> list[str]:
     return [str(warning) for warning in _list_value(fragment.get("warnings")) if str(warning)]
 
 
-def _fragments_match_for_review_metadata(
+def _fragments_match_rank_for_v0_metadata(
     target: dict[str, Any],
     source: dict[str, Any],
     *,
     fallback_extractor: str,
-) -> bool:
+) -> int | None:
     if (target.get("kind") or target.get("type")) != (source.get("kind") or source.get("type")):
-        return False
+        return None
     if str(target.get("text") or "") != str(source.get("text") or ""):
-        return False
+        return None
 
     target_extractor = _extractor_name_value(
         target.get("extractor") or target.get("engine"),
@@ -467,7 +468,11 @@ def _fragments_match_for_review_metadata(
         source.get("extractor") or source.get("engine"),
         default=fallback_extractor,
     )
-    return target_extractor in {source_extractor, fallback_extractor}
+    if target_extractor == source_extractor:
+        return 0
+    if target_extractor == fallback_extractor:
+        return 1
+    return None
 
 
 def _fragment_with_v0_metadata(value: Any, source: dict[str, Any]) -> Any:
@@ -548,10 +553,14 @@ def _document_ir_v0_block_fragment(
 def _extractor_name_value(value: Any, *, default: str) -> str:
     if isinstance(value, dict):
         name = value.get("name")
-        return str(name) if name is not None else default
+        if name is None:
+            return default
+        name_value = str(name)
+        return name_value if name_value.strip() else default
     if value is None:
         return default
-    return str(value)
+    name_value = str(value)
+    return name_value if name_value.strip() else default
 
 
 def _xlsx_sheet_page(sheet_data: Any, page_number: int) -> dict[str, Any]:
