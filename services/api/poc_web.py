@@ -2330,14 +2330,20 @@ def _document_ir_with_parser_table_rows(
     for block in output_blocks:
         if not isinstance(block, dict) or block.get("type") != "table":
             continue
-        for parser_table in parser_tables:
-            if parser_table.get("matched") is True:
-                continue
-            if not _parser_table_matches_ir_block(parser_table, block):
-                continue
-            block["rows"] = parser_table["rows"]
-            parser_table["matched"] = True
-            break
+        matching_tables = [
+            parser_table
+            for parser_table in parser_tables
+            if parser_table.get("matched") is not True
+            and _parser_table_matches_ir_block(parser_table, block)
+        ]
+        if not matching_tables:
+            continue
+        parser_table = min(
+            matching_tables,
+            key=lambda candidate: _int_value(candidate.get("source_priority"), default=100),
+        )
+        block["rows"] = parser_table["rows"]
+        parser_table["matched"] = True
     return output
 
 
@@ -2367,6 +2373,7 @@ def _parser_output_table_row_records(parser_output: dict[str, Any]) -> list[dict
                         ),
                         "text": str(fragment.get("text") or ""),
                         "rows": rows,
+                        "source_priority": 0,
                     }
                 )
     for block in _parser_output_fragment_list(parser_output.get("blocks")):
@@ -2383,6 +2390,7 @@ def _parser_output_table_row_records(parser_output: dict[str, Any]) -> list[dict
                 ),
                 "text": str(block.get("text") or ""),
                 "rows": rows,
+                "source_priority": 10,
             }
         )
     return records

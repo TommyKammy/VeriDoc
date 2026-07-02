@@ -130,11 +130,14 @@ def _table_warnings(table: ElementTree.Element) -> List[str]:
 
 
 def _table_cell_has_merge_markup(cell: ElementTree.Element) -> bool:
-    if cell.find(f"{WORD_NS}tcPr/{WORD_NS}vMerge") is not None:
+    tc_properties = cell.find(f"{WORD_NS}tcPr")
+    if tc_properties is None:
+        return False
+    if tc_properties.find(f"{WORD_NS}vMerge") is not None:
         return True
-    if cell.find(f"{WORD_NS}tcPr/{WORD_NS}hMerge") is not None:
+    if tc_properties.find(f"{WORD_NS}hMerge") is not None:
         return True
-    grid_span = cell.find(f"{WORD_NS}tcPr/{WORD_NS}gridSpan")
+    grid_span = tc_properties.find(f"{WORD_NS}gridSpan")
     if grid_span is None:
         return False
     try:
