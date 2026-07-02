@@ -454,7 +454,7 @@ def _fragments_match_rank_for_v0_metadata(
     source: dict[str, Any],
     *,
     fallback_extractor: str,
-) -> int | None:
+) -> tuple[int, int] | None:
     if (target.get("kind") or target.get("type")) != (source.get("kind") or source.get("type")):
         return None
     if str(target.get("text") or "") != str(source.get("text") or ""):
@@ -469,10 +469,44 @@ def _fragments_match_rank_for_v0_metadata(
         default=fallback_extractor,
     )
     if target_extractor == source_extractor:
-        return 0
-    if target_extractor == fallback_extractor:
+        extractor_rank = 0
+    elif target_extractor == fallback_extractor:
+        extractor_rank = 1
+    else:
+        return None
+
+    bbox_rank = _fragments_bbox_match_rank(target, source)
+    if bbox_rank is None:
+        return None
+    return (bbox_rank, extractor_rank)
+
+
+def _fragments_bbox_match_rank(target: dict[str, Any], source: dict[str, Any]) -> int | None:
+    target_bbox = _fragment_bbox_match_key(target.get("bbox"))
+    source_bbox = _fragment_bbox_match_key(source.get("bbox"))
+    if target_bbox is None or source_bbox is None:
         return 1
-    return None
+    return 0 if target_bbox == source_bbox else None
+
+
+def _fragment_bbox_match_key(value: Any) -> tuple[float, float, float, float, str, str] | None:
+    bbox = _to_mapping(value)
+    if not bbox:
+        return None
+    coordinates: list[float] = []
+    for key in ("x", "y", "width", "height"):
+        number = _required_finite_float_value(bbox.get(key))
+        if not math.isfinite(number):
+            return None
+        coordinates.append(round(number, 6))
+    return (
+        coordinates[0],
+        coordinates[1],
+        coordinates[2],
+        coordinates[3],
+        str(bbox.get("unit") or "pt"),
+        str(bbox.get("origin") or "top-left"),
+    )
 
 
 def _fragment_with_v0_metadata(value: Any, source: dict[str, Any]) -> Any:

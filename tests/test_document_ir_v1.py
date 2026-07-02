@@ -728,6 +728,68 @@ class DocumentIrV1Test(unittest.TestCase):
             fragment["warnings"],
         )
 
+    def test_document_ir_v0_top_level_rows_match_existing_fragments_by_bbox(self) -> None:
+        parser_output = {
+            "schema_version": "document-ir/v0",
+            "extractor": "docx-table-parser",
+            "pages": [
+                {
+                    "page_number": 1,
+                    "width": 320,
+                    "height": 240,
+                    "unit": "pt",
+                    "fragments": [
+                        {
+                            "kind": "table",
+                            "text": "Field\tValue\nLot\t0007",
+                            "bbox": {"x": 10, "y": 20, "width": 120, "height": 32, "unit": "pt"},
+                            "confidence": 0.95,
+                        },
+                        {
+                            "kind": "table",
+                            "text": "Field\tValue\nLot\t0007",
+                            "bbox": {"x": 10, "y": 72, "width": 120, "height": 32, "unit": "pt"},
+                            "confidence": 0.95,
+                        },
+                    ],
+                }
+            ],
+            "blocks": [
+                {
+                    "type": "table",
+                    "text": "Field\tValue\nLot\t0007",
+                    "rows": [["Field", "Value"], ["Lot", "0099"]],
+                    "warnings": ["second table warning"],
+                    "value_metadata": {
+                        "source_page": 1,
+                        "bbox": {"x": 10, "y": 72, "width": 120, "height": 32, "unit": "pt"},
+                        "extractor": {"name": "docx-table-parser", "version": "legacy"},
+                        "confidence": 0.95,
+                    },
+                },
+                {
+                    "type": "table",
+                    "text": "Field\tValue\nLot\t0007",
+                    "rows": [["Field", "Value"], ["Lot", "0007"]],
+                    "warnings": ["first table warning"],
+                    "value_metadata": {
+                        "source_page": 1,
+                        "bbox": {"x": 10, "y": 20, "width": 120, "height": 32, "unit": "pt"},
+                        "extractor": {"name": "docx-table-parser", "version": "legacy"},
+                        "confidence": 0.95,
+                    },
+                },
+            ],
+        }
+
+        adapted = adapt_document_ir_v0_blocks(parser_output)
+
+        first_fragment, second_fragment = adapted["pages"][0]["fragments"]
+        self.assertEqual([["Field", "Value"], ["Lot", "0007"]], first_fragment["rows"])
+        self.assertEqual(["first table warning"], first_fragment["warnings"])
+        self.assertEqual([["Field", "Value"], ["Lot", "0099"]], second_fragment["rows"])
+        self.assertEqual(["second table warning"], second_fragment["warnings"])
+
     def test_document_ir_v0_top_level_rows_do_not_override_existing_fragment_rows(
         self,
     ) -> None:
