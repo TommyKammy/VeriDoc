@@ -2752,9 +2752,21 @@ def _pdf_table_has_complete_cell_bboxes(table: dict[str, Any]) -> bool:
     for row_index, row in enumerate(cell_bboxes):
         if not isinstance(row, list) or len(row) != len(rows[row_index]):
             return False
-        if any(not isinstance(cell, dict) for cell in row):
+        if any(not _pdf_table_cell_bbox_has_complete_boundaries(cell) for cell in row):
             return False
     return True
+
+
+def _pdf_table_cell_bbox_has_complete_boundaries(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    x = _float_value(value.get("x"))
+    y = _float_value(value.get("y"))
+    width = _float_value(value.get("width"))
+    height = _float_value(value.get("height"))
+    if x is None or y is None or width is None or height is None:
+        return False
+    return x >= 0 and y >= 0 and width > 0 and height > 0
 
 
 def _pdf_table_candidate_name(candidate: dict[str, Any]) -> str:

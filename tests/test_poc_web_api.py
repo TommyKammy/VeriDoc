@@ -958,6 +958,64 @@ def test_pdf_table_extractor_requires_review_for_partial_table_bboxes() -> None:
     assert "bbox" not in fragments[1]
 
 
+def test_pdf_table_extractor_requires_review_for_malformed_table_bbox_dict() -> None:
+    parser_output = {
+        "document": {
+            "id": "sample",
+            "title": "sample.pdf",
+            "source_type": "pdf",
+        },
+        "pages": [{"page_number": 1, "width": 320, "height": 240, "unit": "pt"}],
+    }
+    report = {
+        "source_path": "sample.pdf",
+        "candidates": [
+            {
+                "extractor": "camelot",
+                "flavor": "lattice",
+                "version": "test",
+                "status": "ok",
+                "tables": [
+                    {
+                        "extractor": "camelot",
+                        "flavor": "lattice",
+                        "page_number": 1,
+                        "rows": [["Lot", "Assay"], ["A-001", "12.5"]],
+                        "cell_bboxes": [
+                            [
+                                {"x": 10, "y": 20, "width": 50, "height": 12},
+                                {"x": 60, "y": 20, "width": 60},
+                            ],
+                            [
+                                {"x": 10, "y": 32, "width": 50, "height": 12},
+                                {"x": 60, "y": 32, "width": 60, "height": 12},
+                            ],
+                        ],
+                    }
+                ],
+                "notes": "synthetic selected table",
+            }
+        ],
+        "mismatches": [],
+        "selected_candidate": "camelot:lattice",
+        "notes": "synthetic report",
+    }
+
+    output = poc_web._parser_output_with_pdf_tables(parser_output, report)
+
+    assert poc_web._pdf_table_warnings(report) == [
+        (
+            "PDF table extraction selected table has incomplete cell boundaries; "
+            "xlsx artifact requires review"
+        )
+    ]
+    fragment = output["pages"][0]["fragments"][0]
+    assert fragment["confidence"] == 0.0
+    assert fragment["requires_review"] is True
+    assert fragment["missing_confidence"] is True
+    assert "bbox" not in fragment
+
+
 def test_pdf_to_excel_does_not_duplicate_parser_table_blocks(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
