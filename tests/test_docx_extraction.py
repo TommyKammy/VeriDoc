@@ -139,3 +139,34 @@ def test_extract_docx_structure_flags_merged_table_cells(tmp_path: Path) -> None
     assert result.blocks[0].warnings == [
         "DOCX table contains merged cells; xlsx artifact requires review"
     ]
+
+
+def test_extract_docx_structure_does_not_flag_grid_span_one_as_merge(tmp_path: Path) -> None:
+    docx_path = tmp_path / "unmerged-grid-span.docx"
+    _write_docx(
+        docx_path,
+        """<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:tbl>
+      <w:tr>
+        <w:tc>
+          <w:tcPr><w:gridSpan w:val="1"/></w:tcPr>
+          <w:p><w:r><w:t>Lot</w:t></w:r></w:p>
+        </w:tc>
+        <w:tc><w:p><w:r><w:t>Result</w:t></w:r></w:p></w:tc>
+      </w:tr>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>0007</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>Pass</w:t></w:r></w:p></w:tc>
+      </w:tr>
+    </w:tbl>
+  </w:body>
+</w:document>
+""",
+    )
+
+    result = extract_docx_structure(docx_path)
+
+    assert result.blocks[0].requires_review is False
+    assert not result.blocks[0].warnings

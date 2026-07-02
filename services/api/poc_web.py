@@ -2343,16 +2343,19 @@ def _document_ir_with_parser_table_rows(
 
 def _parser_output_table_row_records(parser_output: dict[str, Any]) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
+    root_extractor = _parser_output_extractor_name(parser_output.get("extractor"), default="unknown")
     for block in _parser_output_fragment_list(parser_output.get("blocks")):
-        if not isinstance(block, dict) or block.get("kind") != "table":
+        if not isinstance(block, dict) or not _parser_output_table_kind(block):
             continue
         rows = _pdf_table_structured_rows(block.get("rows"))
         if not rows:
             continue
         records.append(
             {
-                "page_number": _int_value(block.get("page_number"), default=1),
-                "extractor": str(block.get("extractor") or "unknown"),
+                "page_number": _parser_output_block_page_number(block, default=1),
+                "extractor": _parser_output_block_extractor_name(
+                    block, fallback_extractor=root_extractor
+                ),
                 "text": str(block.get("text") or ""),
                 "rows": rows,
             }
@@ -2364,11 +2367,14 @@ def _parser_output_table_row_records(parser_output: dict[str, Any]) -> list[dict
         if not isinstance(page, dict):
             continue
         page_number = _int_value(page.get("page_number"), default=0)
+        page_extractor = _parser_output_extractor_name(
+            page.get("extractor"), default=root_extractor
+        )
         for fragment in [
             *_parser_output_fragment_list(page.get("fragments")),
             *_parser_output_fragment_list(page.get("regions")),
         ]:
-            if not isinstance(fragment, dict) or fragment.get("kind") != "table":
+            if not isinstance(fragment, dict) or not _parser_output_table_kind(fragment):
                 continue
             rows = _pdf_table_structured_rows(fragment.get("rows"))
             if not rows:
@@ -2376,12 +2382,50 @@ def _parser_output_table_row_records(parser_output: dict[str, Any]) -> list[dict
             records.append(
                 {
                     "page_number": page_number,
-                    "extractor": str(fragment.get("extractor") or "unknown"),
+                    "extractor": _parser_output_block_extractor_name(
+                        fragment, fallback_extractor=page_extractor
+                    ),
                     "text": str(fragment.get("text") or ""),
                     "rows": rows,
                 }
             )
     return records
+
+
+def _parser_output_table_kind(value: dict[str, Any]) -> bool:
+    return (value.get("kind") or value.get("type")) == "table"
+
+
+def _parser_output_block_page_number(value: dict[str, Any], *, default: int) -> int:
+    page_number = _int_value(value.get("page_number"), default=0)
+    if page_number > 0:
+        return page_number
+    metadata = value.get("value_metadata")
+    if isinstance(metadata, dict):
+        metadata_page_number = _int_value(metadata.get("source_page"), default=0)
+        if metadata_page_number > 0:
+            return metadata_page_number
+    return default
+
+
+def _parser_output_block_extractor_name(
+    value: dict[str, Any], *, fallback_extractor: str
+) -> str:
+    extractor = value.get("extractor")
+    if extractor is None:
+        metadata = value.get("value_metadata")
+        if isinstance(metadata, dict):
+            extractor = metadata.get("extractor")
+    return _parser_output_extractor_name(extractor, default=fallback_extractor)
+
+
+def _parser_output_extractor_name(value: Any, *, default: str) -> str:
+    if isinstance(value, dict):
+        name = value.get("name")
+        return str(name) if name is not None else default
+    if value is None:
+        return default
+    return str(value)
 
 
 def _parser_output_fragment_list(value: Any) -> list[Any]:

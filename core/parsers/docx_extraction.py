@@ -124,13 +124,21 @@ def _table_rows(table: ElementTree.Element) -> List[List[str]]:
 
 def _table_warnings(table: ElementTree.Element) -> List[str]:
     warnings: List[str] = []
-    if any(
-        cell.find(f"{WORD_NS}tcPr/{WORD_NS}gridSpan") is not None
-        or cell.find(f"{WORD_NS}tcPr/{WORD_NS}vMerge") is not None
-        for cell in table.findall(f".//{WORD_NS}tc")
-    ):
+    if any(_table_cell_has_merge_markup(cell) for cell in table.findall(f".//{WORD_NS}tc")):
         warnings.append("DOCX table contains merged cells; xlsx artifact requires review")
     return warnings
+
+
+def _table_cell_has_merge_markup(cell: ElementTree.Element) -> bool:
+    if cell.find(f"{WORD_NS}tcPr/{WORD_NS}vMerge") is not None:
+        return True
+    grid_span = cell.find(f"{WORD_NS}tcPr/{WORD_NS}gridSpan")
+    if grid_span is None:
+        return False
+    try:
+        return int(grid_span.attrib.get(f"{WORD_NS}val", "1")) > 1
+    except ValueError:
+        return False
 
 
 def _table_cell_text(cell: ElementTree.Element) -> str:
