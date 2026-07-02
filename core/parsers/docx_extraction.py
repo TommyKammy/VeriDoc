@@ -16,6 +16,8 @@ class DocxBlock:
     text: str
     style: Optional[str] = None
     rows: Optional[List[List[str]]] = None
+    requires_review: bool = False
+    warnings: Optional[List[str]] = None
 
 
 @dataclass(frozen=True)
@@ -48,7 +50,16 @@ def extract_docx_structure(docx_path: Union[str, Path]) -> DocxStructure:
             rows = _table_rows(element)
             if rows:
                 text = "\n".join("\t".join(cell for cell in row) for row in rows)
-                blocks.append(DocxBlock(kind="table", text=text, rows=rows))
+                warnings = _table_warnings(element)
+                blocks.append(
+                    DocxBlock(
+                        kind="table",
+                        text=text,
+                        rows=rows,
+                        requires_review=bool(warnings),
+                        warnings=warnings or None,
+                    )
+                )
 
     return DocxStructure(source_path=str(source), blocks=blocks)
 
@@ -109,6 +120,17 @@ def _table_rows(table: ElementTree.Element) -> List[List[str]]:
         if cells:
             rows.append(cells)
     return rows
+
+
+def _table_warnings(table: ElementTree.Element) -> List[str]:
+    warnings: List[str] = []
+    if any(
+        cell.find(f"{WORD_NS}tcPr/{WORD_NS}gridSpan") is not None
+        or cell.find(f"{WORD_NS}tcPr/{WORD_NS}vMerge") is not None
+        for cell in table.findall(f".//{WORD_NS}tc")
+    ):
+        warnings.append("DOCX table contains merged cells; xlsx artifact requires review")
+    return warnings
 
 
 def _table_cell_text(cell: ElementTree.Element) -> str:

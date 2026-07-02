@@ -2343,6 +2343,20 @@ def _document_ir_with_parser_table_rows(
 
 def _parser_output_table_row_records(parser_output: dict[str, Any]) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
+    for block in _parser_output_fragment_list(parser_output.get("blocks")):
+        if not isinstance(block, dict) or block.get("kind") != "table":
+            continue
+        rows = _pdf_table_structured_rows(block.get("rows"))
+        if not rows:
+            continue
+        records.append(
+            {
+                "page_number": _int_value(block.get("page_number"), default=1),
+                "extractor": str(block.get("extractor") or "unknown"),
+                "text": str(block.get("text") or ""),
+                "rows": rows,
+            }
+        )
     pages = parser_output.get("pages")
     if not isinstance(pages, list):
         return records
@@ -2362,7 +2376,7 @@ def _parser_output_table_row_records(parser_output: dict[str, Any]) -> list[dict
             records.append(
                 {
                     "page_number": page_number,
-                    "extractor": str(fragment.get("extractor") or ""),
+                    "extractor": str(fragment.get("extractor") or "unknown"),
                     "text": str(fragment.get("text") or ""),
                     "rows": rows,
                 }

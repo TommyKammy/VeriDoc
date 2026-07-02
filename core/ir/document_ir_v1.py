@@ -244,6 +244,10 @@ def _block_from_fragment(
     if data.get("requires_review") is True:
         requires_review = True
         review_warnings.append(f"blocks[{block_index - 1}].parser marked block requires_review")
+    parser_warnings = [str(warning) for warning in _list_value(data.get("warnings")) if str(warning)]
+    if parser_warnings:
+        requires_review = True
+        review_warnings.extend(parser_warnings)
 
     return DocumentBlock(
         id=f"block-{block_index:04d}",

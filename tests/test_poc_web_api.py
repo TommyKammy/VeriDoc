@@ -495,6 +495,111 @@ def test_convert_uploaded_document_xlsx_primary_renders_table_blocks_as_grid(
     assert cells["B5"] == ("12.5", "number")
 
 
+def test_word_to_excel_docx_upload_preserves_structured_table_cells(tmp_path: Path) -> None:
+    docx_path = tmp_path / "batch-report.docx"
+    _write_docx(
+        docx_path,
+        """<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:pPr><w:pStyle w:val="Heading1"/></w:pPr>
+      <w:r><w:t>Batch Report</w:t></w:r>
+    </w:p>
+    <w:tbl>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>Lot</w:t><w:tab/><w:t>ID</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>Assay %</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>Comment</w:t></w:r></w:p></w:tc>
+      </w:tr>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>0007</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>12.5</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p/></w:tc>
+      </w:tr>
+    </w:tbl>
+  </w:body>
+</w:document>
+""",
+    )
+
+    result = convert_uploaded_document(
+        filename="batch-report.docx",
+        content=docx_path.read_bytes(),
+        conversion_mode="word_to_excel",
+    )
+
+    assert result["status"] == "requires_review"
+    assert result["validation"]["errors"] == []
+    primary_artifact = result["artifacts"][0]
+    assert primary_artifact["format"] == "xlsx"
+    assert primary_artifact["filename"] == "batch-report.veridoc-word-to-excel.xlsx"
+    assert primary_artifact["content_type"] == (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    primary_path = tmp_path / primary_artifact["filename"]
+    primary_path.write_bytes(primary_artifact["content"])
+
+    xlsx = extract_xlsx_structure(primary_path)
+    cells = {cell.ref: (cell.value, cell.value_type) for cell in xlsx.sheets[0].cells}
+    assert cells["A5"] == ("Lot\tID", "inline_string")
+    assert cells["B5"] == ("Assay %", "inline_string")
+    assert cells["C5"] == ("Comment", "inline_string")
+    assert cells["A6"] == ("0007", "inline_string")
+    assert cells["B6"] == ("12.5", "number")
+    assert cells["C6"] == ("", "inline_string")
+
+
+def test_word_to_excel_docx_upload_flags_merged_table_cells(tmp_path: Path) -> None:
+    docx_path = tmp_path / "merged-report.docx"
+    _write_docx(
+        docx_path,
+        """<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:tbl>
+      <w:tr>
+        <w:tc>
+          <w:tcPr><w:gridSpan w:val="2"/></w:tcPr>
+          <w:p><w:r><w:t>Merged Header</w:t></w:r></w:p>
+        </w:tc>
+      </w:tr>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>Lot</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>0007</w:t></w:r></w:p></w:tc>
+      </w:tr>
+    </w:tbl>
+  </w:body>
+</w:document>
+""",
+    )
+
+    result = convert_uploaded_document(
+        filename="merged-report.docx",
+        content=docx_path.read_bytes(),
+        conversion_mode="word_to_excel",
+    )
+
+    assert result["status"] == "requires_review"
+    assert (
+        "DOCX table contains merged cells; xlsx artifact requires review" in result["warnings"]
+    )
+    assert {
+        "document_id": "merged-report",
+        "block_id": "block-0001",
+        "source_id": "merged-report:block-0001",
+        "source_page": 1,
+        "text": "Merged Header\nLot\t0007",
+        "warnings": [
+            "blocks[0].bbox missing; block marked requires_review",
+            "blocks[0].parser marked block requires_review",
+            "DOCX table contains merged cells; xlsx artifact requires review",
+            "blocks[0].source metadata incomplete; original jump unavailable",
+        ],
+    } in result["review_items"]
+    assert result["artifacts"][0]["format"] == "xlsx"
+
+
 def test_pdf_to_excel_primary_uses_extracted_pdf_table_with_source_comment(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
