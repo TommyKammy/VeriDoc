@@ -2412,6 +2412,7 @@ def _parser_output_top_level_table_row_records(
                 "extractor": _parser_output_block_extractor_name(
                     block, fallback_extractor=fallback_extractor
                 ),
+                "fallback_extractor": fallback_extractor,
                 "text": str(block.get("text") or ""),
                 "rows": rows,
                 "source_priority": 10,
@@ -2470,10 +2471,15 @@ def _parser_table_matches_ir_block(
     parser_table: dict[str, Any], block: dict[str, Any]
 ) -> bool:
     extractor_name = _parser_output_block_extractor_name(block, fallback_extractor="unknown")
+    if _int_value(block.get("source_page"), default=0) != parser_table.get("page_number"):
+        return False
+    if str(block.get("text") or "") != parser_table.get("text"):
+        return False
+    if extractor_name == parser_table.get("extractor"):
+        return True
     return (
-        _int_value(block.get("source_page"), default=0) == parser_table.get("page_number")
-        and extractor_name == parser_table.get("extractor")
-        and str(block.get("text") or "") == parser_table.get("text")
+        _int_value(parser_table.get("source_priority"), default=100) > 0
+        and extractor_name == parser_table.get("fallback_extractor")
     )
 
 

@@ -726,6 +726,59 @@ def test_word_to_excel_json_top_level_rows_match_root_extractor_object_fallback(
     assert cells["B5"] == ("0012", "inline_string")
 
 
+def test_word_to_excel_json_top_level_rows_match_fragment_without_extractor(
+    tmp_path: Path,
+) -> None:
+    parser_output = {
+        "source_type": "docx",
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 320,
+                "height": 240,
+                "unit": "pt",
+                "fragments": [
+                    {
+                        "kind": "table",
+                        "text": "Sample\tValue\tNotes\nA\t0012\t",
+                        "bbox": {"x": 10, "y": 20, "width": 120, "height": 32, "unit": "pt"},
+                        "confidence": 0.95,
+                    }
+                ],
+            }
+        ],
+        "blocks": [
+            {
+                "type": "table",
+                "text": "Sample\tValue\tNotes\nA\t0012\t",
+                "rows": [["Sample\tValue", "Notes"], ["A", "0012", ""]],
+                "value_metadata": {
+                    "source_page": 1,
+                    "bbox": {"x": 10, "y": 20, "width": 120, "height": 32, "unit": "pt"},
+                    "extractor": {"name": "docx-table-parser", "version": "legacy"},
+                    "confidence": 0.95,
+                },
+            }
+        ],
+    }
+
+    result = convert_uploaded_document(
+        filename="metadata-extractor-top-level-rows.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+        conversion_mode="word_to_excel",
+    )
+
+    primary_artifact = result["artifacts"][0]
+    primary_path = tmp_path / primary_artifact["filename"]
+    primary_path.write_bytes(primary_artifact["content"])
+    xlsx = extract_xlsx_structure(primary_path)
+    cells = {cell.ref: (cell.value, cell.value_type) for cell in xlsx.sheets[0].cells}
+    assert cells["A4"] == ("Sample\tValue", "inline_string")
+    assert cells["B4"] == ("Notes", "inline_string")
+    assert cells["A5"] == ("A", "inline_string")
+    assert cells["B5"] == ("0012", "inline_string")
+
+
 def test_word_to_excel_json_table_rows_ignore_page_extractor_fallback(
     tmp_path: Path,
 ) -> None:
