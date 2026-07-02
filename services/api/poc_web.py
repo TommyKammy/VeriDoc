@@ -2344,6 +2344,31 @@ def _document_ir_with_parser_table_rows(
 def _parser_output_table_row_records(parser_output: dict[str, Any]) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     root_extractor = _parser_output_extractor_name(parser_output.get("extractor"), default="unknown")
+    pages = parser_output.get("pages")
+    if isinstance(pages, list):
+        for page in pages:
+            if not isinstance(page, dict):
+                continue
+            page_number = _int_value(page.get("page_number"), default=0)
+            for fragment in [
+                *_parser_output_fragment_list(page.get("fragments")),
+                *_parser_output_fragment_list(page.get("regions")),
+            ]:
+                if not isinstance(fragment, dict) or not _parser_output_table_kind(fragment):
+                    continue
+                rows = _pdf_table_structured_rows(fragment.get("rows"))
+                if not rows:
+                    continue
+                records.append(
+                    {
+                        "page_number": page_number,
+                        "extractor": _parser_output_block_extractor_name(
+                            fragment, fallback_extractor=root_extractor
+                        ),
+                        "text": str(fragment.get("text") or ""),
+                        "rows": rows,
+                    }
+                )
     for block in _parser_output_fragment_list(parser_output.get("blocks")):
         if not isinstance(block, dict) or not _parser_output_table_kind(block):
             continue
@@ -2360,35 +2385,6 @@ def _parser_output_table_row_records(parser_output: dict[str, Any]) -> list[dict
                 "rows": rows,
             }
         )
-    pages = parser_output.get("pages")
-    if not isinstance(pages, list):
-        return records
-    for page in pages:
-        if not isinstance(page, dict):
-            continue
-        page_number = _int_value(page.get("page_number"), default=0)
-        page_extractor = _parser_output_extractor_name(
-            page.get("extractor"), default=root_extractor
-        )
-        for fragment in [
-            *_parser_output_fragment_list(page.get("fragments")),
-            *_parser_output_fragment_list(page.get("regions")),
-        ]:
-            if not isinstance(fragment, dict) or not _parser_output_table_kind(fragment):
-                continue
-            rows = _pdf_table_structured_rows(fragment.get("rows"))
-            if not rows:
-                continue
-            records.append(
-                {
-                    "page_number": page_number,
-                    "extractor": _parser_output_block_extractor_name(
-                        fragment, fallback_extractor=page_extractor
-                    ),
-                    "text": str(fragment.get("text") or ""),
-                    "rows": rows,
-                }
-            )
     return records
 
 
@@ -2435,12 +2431,7 @@ def _parser_output_fragment_list(value: Any) -> list[Any]:
 def _parser_table_matches_ir_block(
     parser_table: dict[str, Any], block: dict[str, Any]
 ) -> bool:
-    extractor = block.get("extractor")
-    extractor_name = (
-        str(extractor.get("name"))
-        if isinstance(extractor, dict) and extractor.get("name") is not None
-        else ""
-    )
+    extractor_name = _parser_output_block_extractor_name(block, fallback_extractor="unknown")
     return (
         _int_value(block.get("source_page"), default=0) == parser_table.get("page_number")
         and extractor_name == parser_table.get("extractor")
