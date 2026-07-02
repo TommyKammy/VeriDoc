@@ -630,6 +630,48 @@ def test_word_to_excel_json_table_rows_match_root_extractor_fallback(tmp_path: P
     assert cells["B5"] == ("0012", "inline_string")
 
 
+def test_word_to_excel_json_table_rows_match_root_extractor_object_fallback(
+    tmp_path: Path,
+) -> None:
+    parser_output = {
+        "source_type": "docx",
+        "extractor": {"name": "docx-root-parser", "version": "2"},
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 320,
+                "height": 240,
+                "unit": "pt",
+                "fragments": [
+                    {
+                        "kind": "table",
+                        "text": "Sample\tValue\tNotes\nA\t0012\t",
+                        "rows": [["Sample\tValue", "Notes"], ["A", "0012"]],
+                        "bbox": {"x": 10, "y": 20, "width": 120, "height": 32, "unit": "pt"},
+                        "confidence": 0.95,
+                    }
+                ],
+            }
+        ],
+    }
+
+    result = convert_uploaded_document(
+        filename="root-extractor-object.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+        conversion_mode="word_to_excel",
+    )
+
+    primary_artifact = result["artifacts"][0]
+    primary_path = tmp_path / primary_artifact["filename"]
+    primary_path.write_bytes(primary_artifact["content"])
+    xlsx = extract_xlsx_structure(primary_path)
+    cells = {cell.ref: (cell.value, cell.value_type) for cell in xlsx.sheets[0].cells}
+    assert cells["A4"] == ("Sample\tValue", "inline_string")
+    assert cells["B4"] == ("Notes", "inline_string")
+    assert cells["A5"] == ("A", "inline_string")
+    assert cells["B5"] == ("0012", "inline_string")
+
+
 def test_word_to_excel_json_table_rows_ignore_page_extractor_fallback(
     tmp_path: Path,
 ) -> None:

@@ -2349,7 +2349,7 @@ def _document_ir_with_parser_table_rows(
 
 def _parser_output_table_row_records(parser_output: dict[str, Any]) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
-    root_extractor = _parser_output_extractor_name(parser_output.get("extractor"), default="unknown")
+    root_extractor = _parser_output_root_extractor_name(parser_output.get("extractor"))
     pages = parser_output.get("pages")
     if isinstance(pages, list):
         for page in pages:
@@ -2421,6 +2421,10 @@ def _parser_output_block_extractor_name(
         if isinstance(metadata, dict):
             extractor = metadata.get("extractor")
     return _parser_output_extractor_name(extractor, default=fallback_extractor)
+
+
+def _parser_output_root_extractor_name(value: Any) -> str:
+    return str(value or "unknown")
 
 
 def _parser_output_extractor_name(value: Any, *, default: str) -> str:
