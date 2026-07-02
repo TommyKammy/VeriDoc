@@ -91,7 +91,7 @@ def from_parser_output(
 ) -> DocumentIRV1:
     """Build the minimal Document IR v1 surface from Phase0 parser output."""
     data = _to_mapping(parser_output)
-    parser_extractor = str(data.get("extractor") or "unknown")
+    parser_extractor = _extractor_name_value(data.get("extractor"), default="unknown")
     pages: List[DocumentPage] = []
     blocks: List[DocumentBlock] = []
     warnings: List[str] = []
@@ -244,6 +244,10 @@ def _block_from_fragment(
     if data.get("requires_review") is True:
         requires_review = True
         review_warnings.append(f"blocks[{block_index - 1}].parser marked block requires_review")
+    parser_warnings = [str(warning) for warning in _list_value(data.get("warnings")) if str(warning)]
+    if parser_warnings:
+        requires_review = True
+        review_warnings.extend(parser_warnings)
 
     return DocumentBlock(
         id=f"block-{block_index:04d}",
@@ -317,6 +321,7 @@ def _parser_pages(data: dict[str, Any], source_type: str) -> list[Any]:
 def adapt_document_ir_v0_blocks(parser_output: Any) -> dict[str, Any]:
     """Return parser output with top-level Document IR v0 blocks adapted into page fragments."""
     data = dict(_to_mapping(parser_output))
+    fallback_extractor = _extractor_name_value(data.get("extractor"), default="unknown")
     pages = _list_value(data.get("pages"))
     if not pages:
         return data
@@ -349,12 +354,20 @@ def adapt_document_ir_v0_blocks(parser_output: Any) -> dict[str, Any]:
 
     for index, page_data in enumerate(pages, start=1):
         page = dict(_to_mapping(page_data))
+        page_number = _page_number_value(page.get("page_number"), default=index)
         existing_page_blocks = [*_list_value(page.get("fragments")), *_list_value(page.get("regions"))]
         if existing_page_blocks:
+            inherited_fragments = list(blocks_by_page.get(page_number, []))
+            if index == 1:
+                inherited_fragments.extend(unmatched_blocks)
+            page = _merge_v0_metadata_into_existing_page_blocks(
+                page,
+                inherited_fragments,
+                fallback_extractor=fallback_extractor,
+            )
             adapted_pages.append(page)
             continue
 
-        page_number = _page_number_value(page.get("page_number"), default=index)
         fragments = list(blocks_by_page.get(page_number, []))
         if index == 1:
             fragments.extend(unmatched_blocks)
@@ -363,6 +376,162 @@ def adapt_document_ir_v0_blocks(parser_output: Any) -> dict[str, Any]:
         adapted_pages.append(page)
     data["pages"] = adapted_pages
     return data
+
+
+def _merge_v0_metadata_into_existing_page_blocks(
+    page: dict[str, Any],
+    inherited_fragments: list[dict[str, Any]],
+    *,
+    fallback_extractor: str,
+) -> dict[str, Any]:
+    merge_fragments = [
+        fragment for fragment in inherited_fragments if _fragment_has_v0_merge_metadata(fragment)
+    ]
+    if not merge_fragments:
+        return page
+
+    output = dict(page)
+    remaining = merge_fragments
+    for key in ("fragments", "regions"):
+        values = _list_value(page.get(key))
+        if not values or not remaining:
+            continue
+        merged_values, remaining = _merge_v0_metadata_into_fragment_list(
+            values,
+            remaining,
+            fallback_extractor=fallback_extractor,
+        )
+        output[key] = merged_values
+    return output
+
+
+def _merge_v0_metadata_into_fragment_list(
+    values: list[Any],
+    merge_fragments: list[dict[str, Any]],
+    *,
+    fallback_extractor: str,
+) -> tuple[list[Any], list[dict[str, Any]]]:
+    merged_values: list[Any] = []
+    remaining = list(merge_fragments)
+    for value in values:
+        target = _to_mapping(value)
+        ranked_matches = [
+            (rank, index)
+            for index, fragment in enumerate(remaining)
+            if target
+            for rank in [
+                _fragments_match_rank_for_v0_metadata(
+                    target,
+                    fragment,
+                    fallback_extractor=fallback_extractor,
+                )
+            ]
+            if rank is not None
+        ]
+        match_index = min(ranked_matches, default=(0, None))[1]
+        if match_index is None:
+            merged_values.append(value)
+            continue
+        source = remaining.pop(match_index)
+        merged_values.append(_fragment_with_v0_metadata(value, source))
+    return merged_values, remaining
+
+
+def _fragment_has_v0_merge_metadata(fragment: dict[str, Any]) -> bool:
+    return (
+        fragment.get("requires_review") is True
+        or bool(_fragment_warnings(fragment))
+        or bool(_list_value(fragment.get("rows")))
+    )
+
+
+def _fragment_warnings(fragment: dict[str, Any]) -> list[str]:
+    return [str(warning) for warning in _list_value(fragment.get("warnings")) if str(warning)]
+
+
+def _fragments_match_rank_for_v0_metadata(
+    target: dict[str, Any],
+    source: dict[str, Any],
+    *,
+    fallback_extractor: str,
+) -> tuple[int, int] | None:
+    if (target.get("kind") or target.get("type")) != (source.get("kind") or source.get("type")):
+        return None
+    if str(target.get("text") or "") != str(source.get("text") or ""):
+        return None
+
+    target_extractor = _extractor_name_value(
+        target.get("extractor") or target.get("engine"),
+        default=fallback_extractor,
+    )
+    source_extractor = _extractor_name_value(
+        source.get("extractor") or source.get("engine"),
+        default=fallback_extractor,
+    )
+    if target_extractor == source_extractor:
+        extractor_rank = 0
+    elif target_extractor == fallback_extractor:
+        extractor_rank = 1
+    else:
+        return None
+
+    bbox_rank = _fragments_bbox_match_rank(target, source)
+    if bbox_rank is None:
+        return None
+    return (bbox_rank, extractor_rank)
+
+
+def _fragments_bbox_match_rank(target: dict[str, Any], source: dict[str, Any]) -> int | None:
+    target_bbox = _fragment_bbox_match_key(target.get("bbox"))
+    source_bbox = _fragment_bbox_match_key(source.get("bbox"))
+    if target_bbox is None or source_bbox is None:
+        return 1
+    return 0 if target_bbox == source_bbox else None
+
+
+def _fragment_bbox_match_key(value: Any) -> tuple[float, float, float, float, str, str] | None:
+    bbox = _to_mapping(value)
+    if not bbox:
+        return None
+    coordinates: list[float] = []
+    for key in ("x", "y", "width", "height"):
+        number = _required_finite_float_value(bbox.get(key))
+        if not math.isfinite(number):
+            return None
+        coordinates.append(round(number, 6))
+    return (
+        coordinates[0],
+        coordinates[1],
+        coordinates[2],
+        coordinates[3],
+        str(bbox.get("unit") or "pt"),
+        str(bbox.get("origin") or "top-left"),
+    )
+
+
+def _fragment_with_v0_metadata(value: Any, source: dict[str, Any]) -> Any:
+    if not isinstance(value, dict):
+        return value
+
+    output = dict(value)
+    if output.get("extractor") is None and output.get("engine") is None:
+        extractor = source.get("extractor")
+        if isinstance(extractor, dict):
+            output["extractor"] = dict(extractor)
+        elif extractor is not None:
+            output["extractor"] = str(extractor)
+        elif source.get("engine") is not None:
+            output["engine"] = str(source["engine"])
+    if not _list_value(output.get("rows")):
+        rows = _list_value(source.get("rows"))
+        if rows:
+            output["rows"] = rows
+    if source.get("requires_review") is True:
+        output["requires_review"] = True
+    warnings = [*dict.fromkeys([*_fragment_warnings(output), *_fragment_warnings(source)])]
+    if warnings:
+        output["warnings"] = warnings
+    return output
 
 
 def _document_ir_v0_block_fragment(
@@ -392,14 +561,40 @@ def _document_ir_v0_block_fragment(
         fragment["missing_confidence"] = True
 
     extractor = metadata.get("extractor")
+    if extractor is None:
+        extractor = block.get("extractor")
     if isinstance(extractor, dict):
         fragment["extractor"] = dict(extractor)
     elif extractor is not None:
         fragment["extractor"] = str(extractor)
+    else:
+        engine = block.get("engine")
+        if engine is not None:
+            fragment["engine"] = str(engine)
+
+    rows = _list_value(block.get("rows"))
+    if rows:
+        fragment["rows"] = rows
 
     if metadata.get("requires_review") is True:
         fragment["requires_review"] = True
+    warnings = [str(warning) for warning in _list_value(block.get("warnings")) if str(warning)]
+    if warnings:
+        fragment["warnings"] = warnings
     return fragment
+
+
+def _extractor_name_value(value: Any, *, default: str) -> str:
+    if isinstance(value, dict):
+        name = value.get("name")
+        if name is None:
+            return default
+        name_value = str(name)
+        return name_value if name_value.strip() else default
+    if value is None:
+        return default
+    name_value = str(value)
+    return name_value if name_value.strip() else default
 
 
 def _xlsx_sheet_page(sheet_data: Any, page_number: int) -> dict[str, Any]:

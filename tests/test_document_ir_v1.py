@@ -11,6 +11,7 @@ from core.ir.document_ir_v1 import (
     DocumentPage,
     ExtractorRef,
     ReviewState,
+    adapt_document_ir_v0_blocks,
     from_parser_output,
     validate_document_ir_v1,
 )
@@ -633,6 +634,237 @@ class DocumentIrV1Test(unittest.TestCase):
         self.assertEqual([1], [page.page_number for page in document_ir.pages])
         self.assertEqual(["heading", "paragraph", "table"], [block.type for block in document_ir.blocks])
         self.assertIn("blocks[0].bbox missing; block marked requires_review", result.warnings)
+
+    def test_document_ir_v0_top_level_block_warnings_are_preserved(self) -> None:
+        document_ir = from_parser_output(
+            {
+                "schema_version": "document-ir/v0",
+                "extractor": "docx-table-parser",
+                "pages": [{"page_number": 1, "width": 320, "height": 240, "unit": "pt"}],
+                "blocks": [
+                    {
+                        "id": "block-001",
+                        "type": "table",
+                        "text": "Field\tValue\nLot\t0007",
+                        "warnings": [
+                            "DOCX table contains merged cells; xlsx artifact requires review"
+                        ],
+                        "value_metadata": {
+                            "source_page": 1,
+                            "bbox": {"x": 10, "y": 20, "width": 120, "height": 32},
+                            "extractor": {"name": "docx-table-parser", "version": "test"},
+                            "confidence": 0.95,
+                            "requires_review": False,
+                        },
+                    }
+                ],
+            },
+            document_id="sample-docx",
+            title="Sample DOCX",
+            source_type="docx",
+        )
+
+        result = validate_document_ir_v1(document_ir)
+
+        self.assertTrue(result.ok, result.errors)
+        self.assertTrue(result.requires_review)
+        self.assertIn(
+            "DOCX table contains merged cells; xlsx artifact requires review",
+            result.warnings,
+        )
+        self.assertEqual(
+            ["DOCX table contains merged cells; xlsx artifact requires review"],
+            document_ir.blocks[0].review.warnings,
+        )
+
+    def test_document_ir_v0_top_level_rows_merge_into_existing_fragments(self) -> None:
+        parser_output = {
+            "schema_version": "document-ir/v0",
+            "extractor": {"name": "docx-root-parser", "version": "2"},
+            "pages": [
+                {
+                    "page_number": 1,
+                    "width": 320,
+                    "height": 240,
+                    "unit": "pt",
+                    "fragments": [
+                        {
+                            "kind": "table",
+                            "text": "Field\tValue\nLot\t0007",
+                            "bbox": {"x": 10, "y": 20, "width": 120, "height": 32},
+                            "confidence": 0.95,
+                        }
+                    ],
+                }
+            ],
+            "blocks": [
+                {
+                    "type": "table",
+                    "text": "Field\tValue\nLot\t0007",
+                    "rows": [["Field", "Value"], ["Lot", "0007"]],
+                    "warnings": [
+                        "DOCX table contains merged cells; xlsx artifact requires review"
+                    ],
+                    "value_metadata": {
+                        "source_page": 1,
+                        "bbox": {"x": 10, "y": 20, "width": 120, "height": 32},
+                        "extractor": {"name": "docx-root-parser", "version": "legacy"},
+                        "confidence": 0.95,
+                    },
+                }
+            ],
+        }
+
+        adapted = adapt_document_ir_v0_blocks(parser_output)
+
+        fragment = adapted["pages"][0]["fragments"][0]
+        self.assertEqual([["Field", "Value"], ["Lot", "0007"]], fragment["rows"])
+        self.assertEqual(
+            {"name": "docx-root-parser", "version": "legacy"},
+            fragment["extractor"],
+        )
+        self.assertEqual(
+            ["DOCX table contains merged cells; xlsx artifact requires review"],
+            fragment["warnings"],
+        )
+
+    def test_document_ir_v0_top_level_rows_match_existing_fragments_by_bbox(self) -> None:
+        parser_output = {
+            "schema_version": "document-ir/v0",
+            "extractor": "docx-table-parser",
+            "pages": [
+                {
+                    "page_number": 1,
+                    "width": 320,
+                    "height": 240,
+                    "unit": "pt",
+                    "fragments": [
+                        {
+                            "kind": "table",
+                            "text": "Field\tValue\nLot\t0007",
+                            "bbox": {"x": 10, "y": 20, "width": 120, "height": 32, "unit": "pt"},
+                            "confidence": 0.95,
+                        },
+                        {
+                            "kind": "table",
+                            "text": "Field\tValue\nLot\t0007",
+                            "bbox": {"x": 10, "y": 72, "width": 120, "height": 32, "unit": "pt"},
+                            "confidence": 0.95,
+                        },
+                    ],
+                }
+            ],
+            "blocks": [
+                {
+                    "type": "table",
+                    "text": "Field\tValue\nLot\t0007",
+                    "rows": [["Field", "Value"], ["Lot", "0099"]],
+                    "warnings": ["second table warning"],
+                    "value_metadata": {
+                        "source_page": 1,
+                        "bbox": {"x": 10, "y": 72, "width": 120, "height": 32, "unit": "pt"},
+                        "extractor": {"name": "docx-table-parser", "version": "legacy"},
+                        "confidence": 0.95,
+                    },
+                },
+                {
+                    "type": "table",
+                    "text": "Field\tValue\nLot\t0007",
+                    "rows": [["Field", "Value"], ["Lot", "0007"]],
+                    "warnings": ["first table warning"],
+                    "value_metadata": {
+                        "source_page": 1,
+                        "bbox": {"x": 10, "y": 20, "width": 120, "height": 32, "unit": "pt"},
+                        "extractor": {"name": "docx-table-parser", "version": "legacy"},
+                        "confidence": 0.95,
+                    },
+                },
+            ],
+        }
+
+        adapted = adapt_document_ir_v0_blocks(parser_output)
+
+        first_fragment, second_fragment = adapted["pages"][0]["fragments"]
+        self.assertEqual([["Field", "Value"], ["Lot", "0007"]], first_fragment["rows"])
+        self.assertEqual(["first table warning"], first_fragment["warnings"])
+        self.assertEqual([["Field", "Value"], ["Lot", "0099"]], second_fragment["rows"])
+        self.assertEqual(["second table warning"], second_fragment["warnings"])
+
+    def test_document_ir_v0_top_level_rows_do_not_override_existing_fragment_rows(
+        self,
+    ) -> None:
+        parser_output = {
+            "schema_version": "document-ir/v0",
+            "extractor": "docx-root-parser",
+            "pages": [
+                {
+                    "page_number": 1,
+                    "width": 320,
+                    "height": 240,
+                    "unit": "pt",
+                    "fragments": [
+                        {
+                            "kind": "table",
+                            "text": "Field\tValue\nLot\t0007",
+                            "extractor": "page-fragment-parser",
+                            "rows": [["Field", "Value"], ["Lot", "0007"]],
+                            "bbox": {"x": 10, "y": 20, "width": 120, "height": 32},
+                            "confidence": 0.95,
+                        }
+                    ],
+                }
+            ],
+            "blocks": [
+                {
+                    "type": "table",
+                    "text": "Field\tValue\nLot\t0007",
+                    "rows": [["stale", "grid"], ["wrong", "cells"]],
+                    "value_metadata": {
+                        "source_page": 1,
+                        "bbox": {"x": 10, "y": 20, "width": 120, "height": 32},
+                        "extractor": {"name": "docx-root-parser", "version": "legacy"},
+                        "confidence": 0.95,
+                    },
+                }
+            ],
+        }
+
+        adapted = adapt_document_ir_v0_blocks(parser_output)
+
+        self.assertEqual(
+            [["Field", "Value"], ["Lot", "0007"]],
+            adapted["pages"][0]["fragments"][0]["rows"],
+        )
+        self.assertEqual(
+            "page-fragment-parser",
+            adapted["pages"][0]["fragments"][0]["extractor"],
+        )
+
+    def test_document_ir_v0_top_level_block_engine_is_preserved(self) -> None:
+        document_ir = from_parser_output(
+            {
+                "schema_version": "document-ir/v0",
+                "pages": [{"page_number": 1, "width": 320, "height": 240, "unit": "pt"}],
+                "blocks": [
+                    {
+                        "type": "table",
+                        "engine": "docx-engine-parser",
+                        "text": "Field\tValue\nLot\t0007",
+                        "rows": [["Field", "Value"], ["Lot", "0007"]],
+                        "value_metadata": {
+                            "source_page": 1,
+                            "bbox": {"x": 10, "y": 20, "width": 120, "height": 32},
+                            "confidence": 0.95,
+                        },
+                    }
+                ],
+            },
+            document_id="sample-docx",
+            title="Sample DOCX",
+            source_type="docx",
+        )
+
+        self.assertEqual("docx-engine-parser", document_ir.blocks[0].extractor.name)
 
     def test_xlsx_parser_output_converts_to_document_ir_v1_blocks(self) -> None:
         document_ir = from_parser_output(
