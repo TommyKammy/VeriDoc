@@ -95,6 +95,14 @@ class MissingPdfTableExtractorDependency(RuntimeError):
     """Raised when an optional PDF table extraction dependency is unavailable."""
 
 
+CONSENSUS_BLOCKING_MISMATCH_KINDS = {
+    "candidate-page",
+    "candidate-shape",
+    "candidate-table-count",
+    "candidate-text",
+}
+
+
 def compare_pdf_table_extractors(
     pdf_path: str | Path,
     *,
@@ -195,23 +203,46 @@ def build_table_extraction_report(
                 )
 
     for left_index, left_candidate in enumerate(ok_candidates):
-        left_table = first_tables[left_candidate.name]
-        if left_table is None:
-            continue
         for right_candidate in ok_candidates[left_index + 1 :]:
-            right_table = first_tables[right_candidate.name]
-            if right_table is None:
-                continue
-            if left_table.row_widths != right_table.row_widths:
+            if len(left_candidate.tables) != len(right_candidate.tables):
                 mismatches.append(
-                    TableExtractionMismatch(
-                        kind="candidate-shape",
-                        candidate=f"{left_candidate.name} vs {right_candidate.name}",
-                        expected=_shape_label(left_table),
-                        actual=_shape_label(right_table),
-                        notes="Candidate extractors disagree on table shape.",
-                    )
+                    _candidate_table_count_mismatch(left_candidate, right_candidate)
                 )
+            for table_index, (left_table, right_table) in enumerate(
+                zip(left_candidate.tables, right_candidate.tables),
+                start=1,
+            ):
+                if left_table.page_number != right_table.page_number:
+                    mismatches.append(
+                        TableExtractionMismatch(
+                            kind="candidate-page",
+                            candidate=f"{left_candidate.name} vs {right_candidate.name}",
+                            expected=f"page {left_table.page_number}",
+                            actual=f"page {right_table.page_number}",
+                            notes=f"Candidate extractors disagree on table {table_index} page.",
+                        )
+                    )
+                if left_table.row_widths != right_table.row_widths:
+                    mismatches.append(
+                        TableExtractionMismatch(
+                            kind="candidate-shape",
+                            candidate=f"{left_candidate.name} vs {right_candidate.name}",
+                            expected=_shape_label(left_table),
+                            actual=_shape_label(right_table),
+                            notes=f"Candidate extractors disagree on table {table_index} shape.",
+                        )
+                    )
+                    continue
+                if _table_text_key(left_table) != _table_text_key(right_table):
+                    mismatches.append(
+                        TableExtractionMismatch(
+                            kind="candidate-text",
+                            candidate=f"{left_candidate.name} vs {right_candidate.name}",
+                            expected=_table_text_label(left_table),
+                            actual=_table_text_label(right_table),
+                            notes=f"Candidate extractors disagree on table {table_index} cell text.",
+                        )
+                    )
 
     selected_candidate = _select_candidate(
         ok_candidates,
@@ -379,6 +410,22 @@ def _first_table(candidate: TableExtractionCandidate) -> ExtractedTable | None:
     return candidate.tables[0] if candidate.tables else None
 
 
+def _candidate_table_count_mismatch(
+    left_candidate: TableExtractionCandidate,
+    right_candidate: TableExtractionCandidate,
+) -> TableExtractionMismatch:
+    return TableExtractionMismatch(
+        kind="candidate-table-count",
+        candidate=f"{left_candidate.name} vs {right_candidate.name}",
+        expected=str(len(left_candidate.tables)),
+        actual=str(len(right_candidate.tables)),
+        notes=(
+            "Candidate extractors disagree on extracted table count; "
+            "automatic selection is blocked without an expected shape."
+        ),
+    )
+
+
 def _select_candidate(
     candidates: Iterable[TableExtractionCandidate],
     mismatches: Sequence[TableExtractionMismatch],
@@ -388,7 +435,7 @@ def _select_candidate(
     blocked = {mismatch.candidate for mismatch in mismatches if " vs " not in mismatch.candidate}
     if require_shape_consensus:
         for mismatch in mismatches:
-            if mismatch.kind == "candidate-shape":
+            if mismatch.kind in CONSENSUS_BLOCKING_MISMATCH_KINDS:
                 blocked.update(mismatch.candidate.split(" vs "))
     for preferred in ("camelot:lattice", "pdfplumber:table", "camelot:stream"):
         for candidate in candidates:
@@ -405,6 +452,18 @@ def _shape_label(table: ExtractedTable) -> str:
     if table.is_rectangular:
         return f"{table.row_count}x{table.column_count}"
     return f"row widths {table.row_widths}"
+
+
+def _table_text_key(table: ExtractedTable) -> tuple[tuple[str, ...], ...]:
+    return tuple(tuple(_normalized_table_text(cell) for cell in row) for row in table.rows)
+
+
+def _table_text_label(table: ExtractedTable) -> str:
+    return "\n".join("\t".join(row) for row in _table_text_key(table))
+
+
+def _normalized_table_text(value: Any) -> str:
+    return " ".join(_cell_text(value).split())
 
 
 def _package_version(package_name: str) -> str | None:

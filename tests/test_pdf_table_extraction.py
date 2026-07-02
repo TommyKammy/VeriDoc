@@ -21,6 +21,7 @@ def _candidate(
     rows: list[list[str]],
     *,
     has_bboxes: bool = True,
+    page_number: int = 1,
 ) -> TableExtractionCandidate:
     bboxes = [
         [
@@ -40,10 +41,45 @@ def _candidate(
             ExtractedTable(
                 extractor=name,
                 flavor=flavor,
-                page_number=1,
+                page_number=page_number,
                 rows=rows,
                 cell_bboxes=bboxes,
             )
+        ],
+        notes="synthetic candidate",
+    )
+
+
+def _multi_table_candidate(
+    name: str,
+    flavor: str,
+    tables: list[list[list[str]]],
+) -> TableExtractionCandidate:
+    return TableExtractionCandidate(
+        extractor=name,
+        flavor=flavor,
+        version="test",
+        status="ok",
+        tables=[
+            ExtractedTable(
+                extractor=name,
+                flavor=flavor,
+                page_number=index,
+                rows=rows,
+                cell_bboxes=[
+                    [
+                        TableBBox(
+                            x=float(column * 50),
+                            y=float(row * 20),
+                            width=50.0,
+                            height=20.0,
+                        )
+                        for column, _cell in enumerate(values)
+                    ]
+                    for row, values in enumerate(rows)
+                ],
+            )
+            for index, rows in enumerate(tables, start=1)
         ],
         notes="synthetic candidate",
     )
@@ -186,6 +222,117 @@ def test_build_table_extraction_report_preserves_ragged_widths_without_expected_
         and mismatch.candidate == "camelot:lattice vs camelot:stream"
         and mismatch.expected == "row widths [1, 2]"
         and mismatch.actual == "row widths [3, 1]"
+        for mismatch in report.mismatches
+    )
+
+
+def test_build_table_extraction_report_compares_every_table_without_expected_shape(
+    tmp_path: Path,
+) -> None:
+    report = build_table_extraction_report(
+        source_path=tmp_path / "multi-table.pdf",
+        candidates=[
+            _multi_table_candidate(
+                "camelot",
+                "lattice",
+                [[["A", "B"], ["C", "D"]], [["Lot", "Assay"], ["A-001", "12.5"]]],
+            ),
+            _multi_table_candidate(
+                "pdfplumber",
+                "table",
+                [[["A", "B"], ["C", "D"]], [["Lot"], ["A-001", "12.5"]]],
+            ),
+        ],
+    )
+
+    assert report.selected_candidate is None
+    assert any(
+        mismatch.kind == "candidate-shape"
+        and mismatch.candidate == "camelot:lattice vs pdfplumber:table"
+        and mismatch.expected == "2x2"
+        and mismatch.actual == "row widths [1, 2]"
+        and "table 2 shape" in mismatch.notes
+        for mismatch in report.mismatches
+    )
+
+
+def test_build_table_extraction_report_blocks_selection_when_cell_text_disagrees(
+    tmp_path: Path,
+) -> None:
+    report = build_table_extraction_report(
+        source_path=tmp_path / "text-mismatch.pdf",
+        candidates=[
+            _candidate("camelot", "lattice", [["Lot", "Assay"], ["A-001", "12.5"]]),
+            _candidate("pdfplumber", "table", [["Lot", "Assay"], ["A-001", "13.0"]]),
+        ],
+    )
+
+    assert report.selected_candidate is None
+    assert any(
+        mismatch.kind == "candidate-text"
+        and mismatch.candidate == "camelot:lattice vs pdfplumber:table"
+        and mismatch.expected == "Lot\tAssay\nA-001\t12.5"
+        and mismatch.actual == "Lot\tAssay\nA-001\t13.0"
+        and "table 1 cell text" in mismatch.notes
+        for mismatch in report.mismatches
+    )
+
+
+def test_build_table_extraction_report_blocks_selection_when_table_pages_disagree(
+    tmp_path: Path,
+) -> None:
+    report = build_table_extraction_report(
+        source_path=tmp_path / "repeated-form.pdf",
+        candidates=[
+            _candidate(
+                "camelot",
+                "lattice",
+                [["Lot", "Assay"], ["A-001", "12.5"]],
+                page_number=1,
+            ),
+            _candidate(
+                "pdfplumber",
+                "table",
+                [["Lot", "Assay"], ["A-001", "12.5"]],
+                page_number=2,
+            ),
+        ],
+    )
+
+    assert report.selected_candidate is None
+    assert any(
+        mismatch.kind == "candidate-page"
+        and mismatch.candidate == "camelot:lattice vs pdfplumber:table"
+        and mismatch.expected == "page 1"
+        and mismatch.actual == "page 2"
+        and "table 1 page" in mismatch.notes
+        for mismatch in report.mismatches
+    )
+
+
+def test_build_table_extraction_report_blocks_selection_when_table_counts_disagree(
+    tmp_path: Path,
+) -> None:
+    report = build_table_extraction_report(
+        source_path=tmp_path / "count-mismatch.pdf",
+        candidates=[
+            _multi_table_candidate(
+                "camelot",
+                "lattice",
+                [[["A", "B"], ["C", "D"]], [["Lot", "Assay"], ["A-001", "12.5"]]],
+            ),
+            _multi_table_candidate(
+                "pdfplumber",
+                "table",
+                [[["A", "B"], ["C", "D"]]],
+            ),
+        ],
+    )
+
+    assert report.selected_candidate is None
+    assert any(
+        mismatch.kind == "candidate-table-count"
+        and mismatch.candidate == "camelot:lattice vs pdfplumber:table"
         for mismatch in report.mismatches
     )
 

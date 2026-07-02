@@ -35,6 +35,7 @@ from core.ir.document_ir_v1 import (
     validate_document_ir_v1,
 )
 from core.parsers.docx_extraction import extract_docx_structure
+from core.parsers.pdf_table_extraction import compare_pdf_table_extractors
 from core.parsers.pdf_text_extraction import MissingPdfExtractorDependency, parse_text_pdf_to_document_ir
 from core.parsers.xlsx_extraction import extract_xlsx_structure
 from core.render.ooxml import (
@@ -577,7 +578,11 @@ def convert_uploaded_document(
     selected_conversion_mode = _validate_conversion_mode(conversion_mode)
     conversion_id = _conversion_id()
     source_sha256 = _sha256_hex(content)
-    parser_output, input_warnings = _parser_output_from_upload(safe_filename, content)
+    parser_output, input_warnings = _parser_output_from_upload(
+        safe_filename,
+        content,
+        conversion_mode=selected_conversion_mode,
+    )
     source_type = _source_type(safe_filename, parser_output)
     _validate_conversion_mode_source_type(selected_conversion_mode, source_type)
     mode_warnings = _conversion_mode_warnings(selected_conversion_mode)
@@ -587,6 +592,7 @@ def convert_uploaded_document(
         title=_document_title_from_parser_output(safe_filename, parser_output),
         source_type=source_type,
     )
+    document_ir_dict = document_ir.to_dict()
     validation = validate_document_ir_v1(document_ir)
     review_items = _review_items(document_ir)
     warnings = [*input_warnings, *mode_warnings, *validation.warnings]
@@ -594,7 +600,7 @@ def convert_uploaded_document(
     primary_warning: str | None = None
     if validation.ok:
         primary_artifact, primary_warning = _render_primary_artifact(
-            document_ir.to_dict(),
+            _document_ir_with_parser_table_rows(document_ir_dict, parser_output),
             source_filename=safe_filename,
             conversion_mode=selected_conversion_mode,
         )
@@ -602,6 +608,7 @@ def convert_uploaded_document(
         primary_warning = "primary artifact generation skipped: document IR validation failed"
     if primary_warning is not None:
         warnings.append(primary_warning)
+    review_items.extend(_pdf_table_warning_review_items(document_ir, warnings))
     audit = {
         "conversion_id": conversion_id,
         "source_filename": safe_filename,
@@ -609,7 +616,7 @@ def convert_uploaded_document(
         "conversion_mode": selected_conversion_mode,
     }
     download_payload = {
-        "document_ir": document_ir.to_dict(),
+        "document_ir": document_ir_dict,
         "validation": asdict(validation),
         "review_items": review_items,
         "warnings": warnings,
@@ -633,8 +640,11 @@ def convert_uploaded_document(
         debug_sha256=output_sha256,
         primary_artifact=primary_artifact,
     )
-    status = "blocked" if primary_warning is not None else _status(
-        validation.ok, validation.requires_review
+    review_required = validation.requires_review or _warnings_require_review(warnings)
+    status = (
+        "blocked"
+        if primary_warning is not None
+        else _status(validation.ok, review_required)
     )
     return {
         "status": status,
@@ -2296,8 +2306,131 @@ def _render_primary_artifact_file(
     raise ValueError(f"primary artifact rendering is unsupported for {conversion_mode}")
 
 
-def _xlsx_primary_render_plan(_document_ir: dict[str, Any]) -> dict[str, Any]:
-    return {"table_merges": []}
+def _xlsx_primary_render_plan(document_ir: dict[str, Any]) -> dict[str, Any]:
+    source_annotations = _xlsx_pdf_table_source_annotations(document_ir)
+    render_plan: dict[str, Any] = {"table_merges": []}
+    if source_annotations:
+        render_plan["source_annotations"] = source_annotations
+    return render_plan
+
+
+def _document_ir_with_parser_table_rows(
+    document_ir: dict[str, Any], parser_output: dict[str, Any]
+) -> dict[str, Any]:
+    parser_tables = _parser_output_table_row_records(parser_output)
+    if not parser_tables:
+        return document_ir
+    blocks = document_ir.get("blocks")
+    if not isinstance(blocks, list):
+        return document_ir
+    output = deepcopy(document_ir)
+    output_blocks = output.get("blocks")
+    if not isinstance(output_blocks, list):
+        return document_ir
+    for block in output_blocks:
+        if not isinstance(block, dict) or block.get("type") != "table":
+            continue
+        for parser_table in parser_tables:
+            if parser_table.get("matched") is True:
+                continue
+            if not _parser_table_matches_ir_block(parser_table, block):
+                continue
+            block["rows"] = parser_table["rows"]
+            parser_table["matched"] = True
+            break
+    return output
+
+
+def _parser_output_table_row_records(parser_output: dict[str, Any]) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    pages = parser_output.get("pages")
+    if not isinstance(pages, list):
+        return records
+    for page in pages:
+        if not isinstance(page, dict):
+            continue
+        page_number = _int_value(page.get("page_number"), default=0)
+        for fragment in [
+            *_parser_output_fragment_list(page.get("fragments")),
+            *_parser_output_fragment_list(page.get("regions")),
+        ]:
+            if not isinstance(fragment, dict) or fragment.get("kind") != "table":
+                continue
+            rows = _pdf_table_structured_rows(fragment.get("rows"))
+            if not rows:
+                continue
+            records.append(
+                {
+                    "page_number": page_number,
+                    "extractor": str(fragment.get("extractor") or ""),
+                    "text": str(fragment.get("text") or ""),
+                    "rows": rows,
+                }
+            )
+    return records
+
+
+def _parser_output_fragment_list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def _parser_table_matches_ir_block(
+    parser_table: dict[str, Any], block: dict[str, Any]
+) -> bool:
+    extractor = block.get("extractor")
+    extractor_name = (
+        str(extractor.get("name"))
+        if isinstance(extractor, dict) and extractor.get("name") is not None
+        else ""
+    )
+    return (
+        _int_value(block.get("source_page"), default=0) == parser_table.get("page_number")
+        and extractor_name == parser_table.get("extractor")
+        and str(block.get("text") or "") == parser_table.get("text")
+    )
+
+
+def _xlsx_pdf_table_source_annotations(document_ir: dict[str, Any]) -> list[dict[str, str]]:
+    document = document_ir.get("document")
+    if not isinstance(document, dict) or document.get("source_type") != "pdf":
+        return []
+    annotations: list[dict[str, str]] = []
+    blocks = document_ir.get("blocks")
+    if not isinstance(blocks, list):
+        return annotations
+    for block in blocks:
+        if not isinstance(block, dict) or block.get("type") != "table":
+            continue
+        extractor = block.get("extractor")
+        extractor_name = (
+            str(extractor.get("name"))
+            if isinstance(extractor, dict) and extractor.get("name") is not None
+            else ""
+        )
+        if ":" not in extractor_name:
+            continue
+        annotations.append(
+            {
+                "block_id": str(block.get("id") or ""),
+                "text": "\n".join(
+                    [
+                        f"PDF table extraction: {extractor_name}",
+                        f"source_page={block.get('source_page')}",
+                        f"bbox={_xlsx_source_bbox_text(block.get('bbox'))}",
+                    ]
+                ),
+            }
+        )
+    return annotations
+
+
+def _xlsx_source_bbox_text(value: Any) -> str:
+    if not isinstance(value, dict):
+        return "unknown"
+    return (
+        f"{value.get('x')},{value.get('y')},{value.get('width')},{value.get('height')} "
+        f"{value.get('unit') or 'pt'}"
+    )
 
 
 def _artifact_filename(
@@ -2403,11 +2536,22 @@ def _truncate_utf8_bytes(value: str, max_bytes: int) -> str:
     return encoded[:max_bytes].decode("utf-8", errors="ignore")
 
 
-def _parser_output_from_upload(filename: str, content: bytes) -> tuple[dict[str, Any], list[str]]:
+def _parser_output_from_upload(
+    filename: str,
+    content: bytes,
+    *,
+    conversion_mode: str = "auto",
+) -> tuple[dict[str, Any], list[str]]:
     warnings: list[str] = []
     source_type = _source_type_from_path(filename)
     if source_type in KNOWN_SOURCE_TYPES:
-        return _parser_output_from_binary_upload(filename, content, source_type), warnings
+        parser_output, parser_warnings = _parser_output_from_binary_upload_with_warnings(
+            filename,
+            content,
+            source_type,
+            conversion_mode=conversion_mode,
+        )
+        return parser_output, [*warnings, *parser_warnings]
 
     try:
         text = content.decode("utf-8")
@@ -2423,27 +2567,56 @@ def _parser_output_from_upload(filename: str, content: bytes) -> tuple[dict[str,
     if not isinstance(parsed, dict):
         warnings.append("JSON upload root is not an object; content requires review")
         return _plain_text_parser_output(text), warnings
+    if _source_type(filename, parsed) == "pdf" and isinstance(parsed.get("candidates"), list):
+        warnings.extend(_pdf_table_warnings(parsed))
+        if parsed.get("selected_candidate"):
+            return _parser_output_with_pdf_tables(
+                {
+                    "source_type": "pdf",
+                    "source_path": parsed.get("source_path") or filename,
+                    "pages": [],
+                },
+                parsed,
+            ), warnings
     return parsed, warnings
 
 
 def _parser_output_from_binary_upload(
     filename: str, content: bytes, source_type: str
 ) -> dict[str, Any]:
+    parser_output, _warnings = _parser_output_from_binary_upload_with_warnings(
+        filename,
+        content,
+        source_type,
+    )
+    return parser_output
+
+
+def _parser_output_from_binary_upload_with_warnings(
+    filename: str,
+    content: bytes,
+    source_type: str,
+    *,
+    conversion_mode: str = "auto",
+) -> tuple[dict[str, Any], list[str]]:
     with TemporaryDirectory(prefix="veridoc-poc-upload-") as temp_dir:
         upload_path = Path(temp_dir) / filename
         try:
             upload_path.write_bytes(content)
             if source_type == "docx":
-                return extract_docx_structure(upload_path).to_dict()
+                return extract_docx_structure(upload_path).to_dict(), []
             if source_type == "xlsx":
-                return extract_xlsx_structure(upload_path).to_dict()
+                return extract_xlsx_structure(upload_path).to_dict(), []
             if source_type == "pdf":
-                return adapt_document_ir_v0_blocks(
-                    parse_text_pdf_to_document_ir(
-                        upload_path,
-                        document_id=_document_id(filename),
-                    )
+                parser_output = adapt_document_ir_v0_blocks(
+                    parse_text_pdf_to_document_ir(upload_path, document_id=_document_id(filename))
                 )
+                if conversion_mode != "pdf_to_excel":
+                    return parser_output, []
+                report = compare_pdf_table_extractors(upload_path)
+                parser_output = _parser_output_with_pdf_tables(parser_output, report)
+                pdf_table_warnings = _pdf_table_warnings(report)
+                return parser_output, pdf_table_warnings
         except MissingPdfExtractorDependency as exc:
             raise PocServerDependencyError(
                 "PDF parser dependency is unavailable; install requirements-pdf-eval.txt"
@@ -2453,6 +2626,433 @@ def _parser_output_from_binary_upload(
                 f"{source_type.upper()} parser failed; upload requires a valid {source_type.upper()} file"
             ) from exc
     raise ValueError("unsupported binary upload")
+
+
+def _parser_output_with_pdf_tables(parser_output: dict[str, Any], report: Any) -> dict[str, Any]:
+    report_data = report.to_dict() if hasattr(report, "to_dict") else report
+    if not isinstance(report_data, dict):
+        return parser_output
+    selected_candidate = str(report_data.get("selected_candidate") or "")
+    if not selected_candidate:
+        return parser_output
+
+    output = adapt_document_ir_v0_blocks(deepcopy(parser_output))
+    existing_tables = _pdf_table_existing_tables(output)
+    pages = output.get("pages")
+    if not isinstance(pages, list):
+        return output
+    pages_by_number = {
+        int(page.get("page_number")): page
+        for page in pages
+        if isinstance(page, dict) and isinstance(page.get("page_number"), int)
+    }
+    candidates = report_data.get("candidates")
+    if not isinstance(candidates, list):
+        return output
+    selected_table_keys: set[tuple[int, tuple[tuple[str, ...], ...]]] = set()
+    for candidate in candidates:
+        if not isinstance(candidate, dict) or candidate.get("status") != "ok":
+            continue
+        candidate_name = _pdf_table_candidate_name(candidate)
+        if candidate_name != selected_candidate:
+            continue
+        tables = candidate.get("tables")
+        if not isinstance(tables, list):
+            continue
+        for table in _pdf_table_export_tables(tables):
+            if not isinstance(table, dict):
+                continue
+            page_number = _int_value(table.get("page_number"), default=1)
+            table_key = _pdf_table_key(page_number, table.get("rows"))
+            if table_key:
+                selected_table_keys.add(table_key)
+            if table_key and _merge_pdf_table_into_parser_fragments(
+                existing_tables.get(table_key, []),
+                table,
+                pages_by_number.get(page_number) or {},
+                candidate_name,
+            ):
+                continue
+            page = pages_by_number.get(page_number)
+            if page is None:
+                page = _synthetic_pdf_table_page(page_number, table)
+                pages.append(page)
+                pages_by_number[page_number] = page
+            fragments = page.setdefault("fragments", [])
+            if not isinstance(fragments, list):
+                continue
+            fragment: dict[str, Any] = {"kind": "table", "page_number": page_number}
+            _merge_pdf_table_fragment(fragment, table, page, candidate_name)
+            _append_pdf_table_fragment(fragments, fragment)
+    _discard_unmerged_pdf_table_fragments(output, selected_table_keys, existing_tables)
+    return output
+
+
+def _pdf_table_warnings(report: Any) -> list[str]:
+    report_data = report.to_dict() if hasattr(report, "to_dict") else report
+    if not isinstance(report_data, dict):
+        return ["PDF table extraction report was malformed; extracted tables require review"]
+    warnings: list[str] = []
+    if not report_data.get("selected_candidate"):
+        warnings.append("PDF table extraction produced no selected table; xlsx artifact requires review")
+    mismatches = report_data.get("mismatches")
+    if isinstance(mismatches, list) and mismatches:
+        warnings.append("PDF table extraction candidates disagreed; xlsx artifact requires review")
+    candidates = report_data.get("candidates")
+    if isinstance(candidates, list):
+        selected_candidate = str(report_data.get("selected_candidate") or "")
+        if selected_candidate and _pdf_table_selected_candidate_has_incomplete_bboxes(
+            candidates,
+            selected_candidate,
+        ):
+            warnings.append(
+                "PDF table extraction selected table has incomplete cell boundaries; "
+                "xlsx artifact requires review"
+            )
+        unavailable = [
+            _pdf_table_candidate_name(candidate)
+            for candidate in candidates
+            if isinstance(candidate, dict) and candidate.get("status") != "ok"
+        ]
+        if unavailable:
+            warnings.append(
+                "PDF table extraction candidate unavailable: "
+                + ", ".join(sorted(unavailable))
+                + "; xlsx artifact requires review"
+            )
+    return warnings
+
+
+def _pdf_table_selected_candidate_has_incomplete_bboxes(
+    candidates: list[Any],
+    selected_candidate: str,
+) -> bool:
+    for candidate in candidates:
+        if not isinstance(candidate, dict) or candidate.get("status") != "ok":
+            continue
+        if _pdf_table_candidate_name(candidate) != selected_candidate:
+            continue
+        tables = candidate.get("tables")
+        if not isinstance(tables, list):
+            return True
+        if not tables:
+            return True
+        return any(
+            not isinstance(table, dict) or not _pdf_table_has_complete_cell_bboxes(table)
+            for table in tables
+        )
+    return False
+
+
+def _pdf_table_has_complete_cell_bboxes(table: dict[str, Any]) -> bool:
+    rows = _pdf_table_structured_rows(table.get("rows"))
+    cell_bboxes = table.get("cell_bboxes")
+    if not rows or not isinstance(cell_bboxes, list) or len(cell_bboxes) != len(rows):
+        return False
+    for row_index, row in enumerate(cell_bboxes):
+        if not isinstance(row, list) or len(row) != len(rows[row_index]):
+            return False
+        if any(not _pdf_table_cell_bbox_has_complete_boundaries(cell) for cell in row):
+            return False
+    return True
+
+
+def _pdf_table_cell_bbox_has_complete_boundaries(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    x = _float_value(value.get("x"))
+    y = _float_value(value.get("y"))
+    width = _float_value(value.get("width"))
+    height = _float_value(value.get("height"))
+    if x is None or y is None or width is None or height is None:
+        return False
+    return x >= 0 and y >= 0 and width > 0 and height > 0
+
+
+def _pdf_table_candidate_name(candidate: dict[str, Any]) -> str:
+    return f"{candidate.get('extractor') or 'unknown'}:{candidate.get('flavor') or 'table'}"
+
+
+def _pdf_table_export_tables(tables: list[Any]) -> list[Any]:
+    return tables
+
+
+def _pdf_table_rows_text(rows_value: Any) -> str:
+    if not isinstance(rows_value, list):
+        return ""
+    lines = []
+    for row in rows_value:
+        if not isinstance(row, list):
+            continue
+        lines.append("\t".join(_pdf_table_text_cell(cell) for cell in row))
+    return "\n".join(lines)
+
+
+def _pdf_table_structured_rows(rows_value: Any) -> list[list[str]]:
+    if not isinstance(rows_value, list):
+        return []
+    rows: list[list[str]] = []
+    for row in rows_value:
+        if not isinstance(row, list):
+            continue
+        rows.append(["" if cell is None else str(cell) for cell in row])
+    return rows
+
+
+def _pdf_table_existing_tables(
+    parser_output: dict[str, Any]
+) -> dict[tuple[int, tuple[tuple[str, ...], ...]], list[dict[str, Any]]]:
+    table_fragments: dict[tuple[int, tuple[tuple[str, ...], ...]], list[dict[str, Any]]] = {}
+    pages = parser_output.get("pages")
+    if isinstance(pages, list):
+        for page in pages:
+            if not isinstance(page, dict):
+                continue
+            page_number = _int_value(page.get("page_number"), default=0)
+            for fragment in [
+                *_parser_output_fragment_list(page.get("fragments")),
+                *_parser_output_fragment_list(page.get("regions")),
+            ]:
+                if not isinstance(fragment, dict) or fragment.get("kind") != "table":
+                    continue
+                fragment_key = _pdf_table_key(
+                    _int_value(fragment.get("page_number"), default=page_number),
+                    fragment,
+                )
+                if fragment_key:
+                    table_fragments.setdefault(fragment_key, []).append(fragment)
+    return table_fragments
+
+
+def _merge_pdf_table_into_parser_fragments(
+    fragments: list[dict[str, Any]],
+    table: dict[str, Any],
+    page: dict[str, Any],
+    candidate_name: str,
+) -> bool:
+    for index, fragment in enumerate(fragments):
+        if fragment.get("extractor") == candidate_name:
+            continue
+        _merge_pdf_table_fragment(fragment, table, page, candidate_name)
+        del fragments[index]
+        return True
+    return False
+
+
+def _merge_pdf_table_fragment(
+    fragment: dict[str, Any],
+    table: dict[str, Any],
+    page: dict[str, Any],
+    candidate_name: str,
+) -> None:
+    bbox = _pdf_table_bbox(table, page)
+    fragment["text"] = _pdf_table_rows_text(table.get("rows"))
+    fragment["rows"] = _pdf_table_structured_rows(table.get("rows"))
+    fragment["extractor"] = candidate_name
+    fragment["confidence"] = 0.9 if bbox is not None else 0.0
+    if bbox is not None:
+        fragment["bbox"] = bbox
+        fragment.pop("requires_review", None)
+        fragment.pop("missing_confidence", None)
+        fragment.pop("low_confidence", None)
+    else:
+        fragment.pop("bbox", None)
+        fragment["requires_review"] = True
+        fragment["missing_confidence"] = True
+
+
+def _append_pdf_table_fragment(
+    fragments: list[Any],
+    fragment: dict[str, Any],
+) -> None:
+    fragments.extend([fragment])
+
+
+def _discard_unmerged_pdf_table_fragments(
+    parser_output: dict[str, Any],
+    selected_table_keys: set[tuple[int, tuple[tuple[str, ...], ...]]],
+    existing_tables: dict[tuple[int, tuple[tuple[str, ...], ...]], list[dict[str, Any]]],
+) -> None:
+    stale_fragment_ids = {
+        id(fragment)
+        for table_key in selected_table_keys
+        for fragment in existing_tables.get(table_key, [])
+    }
+    if not stale_fragment_ids:
+        return
+    pages = parser_output.get("pages")
+    if not isinstance(pages, list):
+        return
+    for page in pages:
+        if not isinstance(page, dict):
+            continue
+        for container_name in ("fragments", "regions"):
+            container = page.get(container_name)
+            if isinstance(container, list):
+                container[:] = [
+                    fragment
+                    for fragment in container
+                    if id(fragment) not in stale_fragment_ids
+                ]
+
+
+def _pdf_table_key(
+    page_number: int, table_or_rows: Any
+) -> tuple[int, tuple[tuple[str, ...], ...]] | None:
+    rows_key = (
+        _pdf_table_block_rows_key(table_or_rows)
+        if isinstance(table_or_rows, dict)
+        else _pdf_table_rows_key(table_or_rows)
+    )
+    if not rows_key:
+        return None
+    return (page_number, rows_key)
+
+
+def _pdf_table_block_rows_key(block: dict[str, Any]) -> tuple[tuple[str, ...], ...]:
+    rows_key = _pdf_table_rows_key(block.get("rows"))
+    if rows_key:
+        return rows_key
+    text = block.get("text")
+    if not isinstance(text, str):
+        return ()
+    rows: list[list[str]] = []
+    for line in text.splitlines():
+        cells = line.split("\t")
+        rows.append(cells)
+    return _pdf_table_rows_key(rows)
+
+
+def _pdf_table_rows_key(rows_value: Any) -> tuple[tuple[str, ...], ...]:
+    rows = []
+    for row in _pdf_table_structured_rows(rows_value):
+        normalized = tuple(_pdf_table_cell_key(cell) for cell in row)
+        if any(normalized):
+            rows.append(normalized)
+    return tuple(rows)
+
+
+def _pdf_table_cell_key(value: Any) -> str:
+    return re.sub(r"\s+", " ", "" if value is None else str(value)).strip()
+
+
+def _pdf_table_text_cell(value: Any) -> str:
+    return re.sub(r"[\t\r\n]+", " ", "" if value is None else str(value))
+
+
+def _synthetic_pdf_table_page(page_number: int, table: dict[str, Any]) -> dict[str, Any]:
+    width = 612.0
+    height = 792.0
+    unit = "pt"
+    cell_bboxes = table.get("cell_bboxes")
+    if isinstance(cell_bboxes, list):
+        units: set[str] = set()
+        for row in cell_bboxes:
+            if not isinstance(row, list):
+                continue
+            for cell in row:
+                if not isinstance(cell, dict):
+                    continue
+                x = _float_value(cell.get("x"))
+                y = _float_value(cell.get("y"))
+                cell_width = _float_value(cell.get("width"))
+                cell_height = _float_value(cell.get("height"))
+                if (
+                    x is None
+                    or y is None
+                    or cell_width is None
+                    or cell_height is None
+                    or x < 0
+                    or y < 0
+                    or cell_width <= 0
+                    or cell_height <= 0
+                ):
+                    continue
+                width = max(width, x + cell_width)
+                height = max(height, y + cell_height)
+                units.add(str(cell.get("unit") or "pt"))
+        if len(units) == 1:
+            unit = units.pop()
+    return {
+        "page_number": page_number,
+        "width": width,
+        "height": height,
+        "unit": unit,
+        "fragments": [],
+    }
+
+
+def _pdf_table_bbox(table: dict[str, Any], page: dict[str, Any]) -> dict[str, Any] | None:
+    cells: list[dict[str, float | str]] = []
+    page_height = _float_value(page.get("height"))
+    if not _pdf_table_has_complete_cell_bboxes(table):
+        return None
+    cell_bboxes = table.get("cell_bboxes")
+    rows = _pdf_table_structured_rows(table.get("rows"))
+    for row_index, row in enumerate(cell_bboxes):
+        for cell in row:
+            normalized = _pdf_table_cell_bbox(cell, page_height=page_height)
+            if normalized is None:
+                return None
+            cells.append(normalized)
+    units = {str(cell.get("unit") or "pt") for cell in cells}
+    if len(units) != 1:
+        return None
+    min_x = min(float(cell["x"]) for cell in cells)
+    min_y = min(float(cell["y"]) for cell in cells)
+    max_x = max(float(cell["x"]) + float(cell["width"]) for cell in cells)
+    max_y = max(float(cell["y"]) + float(cell["height"]) for cell in cells)
+    return {
+        "x": min_x,
+        "y": min_y,
+        "width": max_x - min_x,
+        "height": max_y - min_y,
+        "unit": units.pop(),
+        "origin": "top-left",
+    }
+
+
+def _pdf_table_cell_bbox(value: Any, *, page_height: float | None) -> dict[str, float | str] | None:
+    if not isinstance(value, dict):
+        return None
+    x = _float_value(value.get("x"))
+    y = _float_value(value.get("y"))
+    width = _float_value(value.get("width"))
+    height = _float_value(value.get("height"))
+    if x is None or y is None or width is None or height is None or width <= 0 or height <= 0:
+        return None
+    origin = str(value.get("origin") or "top-left")
+    if origin == "bottom-left":
+        if page_height is None:
+            return None
+        y = page_height - y - height
+    elif origin != "top-left":
+        return None
+    return {
+        "x": x,
+        "y": y,
+        "width": width,
+        "height": height,
+        "unit": str(value.get("unit") or "pt"),
+    }
+
+
+def _int_value(value: Any, *, default: int) -> int:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return default
+
+
+def _float_value(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(result):
+        return None
+    return result
 
 
 def _plain_text_parser_output(text: str) -> dict[str, Any]:
@@ -2505,6 +3105,29 @@ def _review_items(document_ir: DocumentIRV1) -> list[dict[str, Any]]:
             ]
         items.append(item)
     return items
+
+
+def _pdf_table_warning_review_items(
+    document_ir: DocumentIRV1, warnings: list[str]
+) -> list[dict[str, Any]]:
+    review_warnings = [
+        warning
+        for warning in warnings
+        if warning.startswith("PDF table extraction ") and "requires review" in warning
+    ]
+    if not review_warnings:
+        return []
+    source_page = document_ir.pages[0].page_number if document_ir.pages else None
+    return [
+        {
+            "document_id": document_ir.document.id,
+            "block_id": "pdf-table-extraction",
+            "source_id": f"{document_ir.document.id}:pdf-table-extraction",
+            "source_page": source_page,
+            "text": "PDF table extraction requires review",
+            "warnings": review_warnings,
+        }
+    ]
 
 
 def _block_llm_involved(block: Any) -> bool:
@@ -2775,6 +3398,10 @@ def _status(ok: bool, requires_review: bool) -> str:
     if requires_review:
         return "requires_review"
     return "converted"
+
+
+def _warnings_require_review(warnings: list[str]) -> bool:
+    return any("requires review" in warning for warning in warnings)
 
 
 def _strict_json_bytes(payload: Any, *, indent: int | None = None) -> bytes:
