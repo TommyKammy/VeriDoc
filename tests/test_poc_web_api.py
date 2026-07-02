@@ -15,6 +15,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 import pytest
 
 from apps.desktop.api_client import ApiCredentialStore, DesktopApiClient, DesktopApiClientConfig
+from core.parsers.docx_extraction import extract_docx_structure
 from core.parsers.pdf_table_extraction import (
     ExtractedTable,
     TableBBox,
@@ -302,6 +303,7 @@ def test_convert_uploaded_document_blocks_primary_render_failures(
     assert result["status"] == "blocked"
     assert result["warnings"] == [
         "conversion mode pdf_to_word selected",
+        "pdf_to_word reconstruction preserves editable text structure for review; exact PDF layout, fonts, coordinates, columns, footnotes, and OCR fidelity are not guaranteed",
         "primary artifact generation failed: docx renderer fixture failure",
     ]
     assert [artifact["id"] for artifact in result["artifacts"]] == ["debug-json"]
@@ -350,11 +352,97 @@ def test_convert_uploaded_document_skips_primary_render_for_invalid_ir(
     assert result["validation"]["errors"] == ["blocks[0].bbox extends past page 1"]
     assert result["warnings"] == [
         "conversion mode pdf_to_word selected",
+        "pdf_to_word reconstruction preserves editable text structure for review; exact PDF layout, fonts, coordinates, columns, footnotes, and OCR fidelity are not guaranteed",
         "primary artifact generation skipped: document IR validation failed",
     ]
     assert [artifact["id"] for artifact in result["artifacts"]] == ["debug-json"]
     downloaded = json.loads(result["download"]["content"].decode("utf-8"))
     assert downloaded["warnings"] == result["warnings"]
+
+
+def test_pdf_to_word_primary_reconstructs_editable_docx_structures(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def fake_parse_text_pdf_to_document_ir(pdf_path: Path, *, document_id: str | None = None) -> dict:
+        return {
+            "schema_version": "document-ir/v0",
+            "document": {
+                "id": document_id or "sample",
+                "title": pdf_path.name,
+                "source_type": "pdf",
+            },
+            "pages": [{"page_number": 1, "width": 320, "height": 240, "unit": "pt"}],
+            "blocks": [
+                {
+                    "id": "block-001",
+                    "type": "heading",
+                    "text": "Manufacturing summary",
+                    "value_metadata": {
+                        "source_page": 1,
+                        "bbox": {"x": 12, "y": 18, "width": 180, "height": 16, "unit": "pt"},
+                        "extractor": {"name": "test-text", "version": "test"},
+                        "confidence": 0.97,
+                    },
+                },
+                {
+                    "id": "block-002",
+                    "type": "paragraph",
+                    "text": "Batch was inspected before release.",
+                    "value_metadata": {
+                        "source_page": 1,
+                        "bbox": {"x": 12, "y": 44, "width": 220, "height": 16, "unit": "pt"},
+                        "extractor": {"name": "test-text", "version": "test"},
+                        "confidence": 0.95,
+                    },
+                },
+                {
+                    "id": "block-003",
+                    "type": "table",
+                    "text": "Lot\tResult\nA-001\tPass",
+                    "value_metadata": {
+                        "source_page": 1,
+                        "bbox": {"x": 12, "y": 78, "width": 160, "height": 36, "unit": "pt"},
+                        "extractor": {"name": "test-table", "version": "test"},
+                        "confidence": 0.82,
+                        "requires_review": True,
+                    },
+                },
+            ],
+        }
+
+    monkeypatch.setattr(poc_web, "parse_text_pdf_to_document_ir", fake_parse_text_pdf_to_document_ir)
+
+    result = convert_uploaded_document(
+        filename="sample.pdf",
+        content=b"%PDF-1.4\n%%EOF\n",
+        conversion_mode="pdf_to_word",
+    )
+
+    assert result["status"] == "requires_review"
+    assert result["audit"]["conversion_mode"] == "pdf_to_word"
+    assert result["warnings"] == [
+        "conversion mode pdf_to_word selected",
+        "pdf_to_word reconstruction preserves editable text structure for review; exact PDF layout, fonts, coordinates, columns, footnotes, and OCR fidelity are not guaranteed",
+        "blocks[2].parser marked block requires_review",
+    ]
+
+    primary_artifact = result["artifacts"][0]
+    assert primary_artifact["format"] == "docx"
+    assert primary_artifact["content_type"] == (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    )
+    assert primary_artifact["filename"] == "sample.veridoc-pdf-to-word.docx"
+    primary_path = tmp_path / primary_artifact["filename"]
+    primary_path.write_bytes(primary_artifact["content"])
+
+    docx = extract_docx_structure(primary_path)
+    assert [(block.kind, block.text, block.rows) for block in docx.blocks] == [
+        ("heading", "sample.pdf", None),
+        ("heading", "Manufacturing summary", None),
+        ("paragraph", "Batch was inspected before release.", None),
+        ("table", "Lot\tResult\nA-001\tPass", [["Lot", "Result"], ["A-001", "Pass"]]),
+    ]
 
 
 @pytest.mark.parametrize(
@@ -1763,10 +1851,14 @@ def test_convert_uploaded_document_records_selected_conversion_mode() -> None:
         conversion_mode="pdf_to_word",
     )
 
-    assert result["warnings"] == ["conversion mode pdf_to_word selected"]
+    expected_warnings = [
+        "conversion mode pdf_to_word selected",
+        "pdf_to_word reconstruction preserves editable text structure for review; exact PDF layout, fonts, coordinates, columns, footnotes, and OCR fidelity are not guaranteed",
+    ]
+    assert result["warnings"] == expected_warnings
     assert result["audit"]["conversion_mode"] == "pdf_to_word"
     downloaded = json.loads(result["download"]["content"].decode("utf-8"))
-    assert downloaded["warnings"] == ["conversion mode pdf_to_word selected"]
+    assert downloaded["warnings"] == expected_warnings
     assert downloaded["audit"]["conversion_mode"] == "pdf_to_word"
 
 
@@ -2680,6 +2772,7 @@ def test_poc_http_api_blocks_primary_render_failures(
     assert body["status"] == "blocked"
     assert body["warnings"] == [
         "conversion mode pdf_to_word selected",
+        "pdf_to_word reconstruction preserves editable text structure for review; exact PDF layout, fonts, coordinates, columns, footnotes, and OCR fidelity are not guaranteed",
         "primary artifact generation failed: docx renderer fixture failure",
     ]
     assert [artifact["id"] for artifact in body["artifacts"]] == ["debug-json"]
@@ -8286,8 +8379,9 @@ def test_readme_documents_local_poc_api_startup_and_smoke_contract() -> None:
         "`pdf_to_word`",
         "`word_to_excel`",
         "`excel_to_word`",
-        "download.available: false",
-        "artifact_generation_not_implemented",
+        "Renderer-backed DOCX and XLSX primary artifacts are returned",
+        "metadata.download.field",
+        "exact PDF layout, fonts, coordinates, columns, footnotes,",
     ]
 
     for snippet in expected_snippets:

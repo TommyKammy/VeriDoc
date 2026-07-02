@@ -109,21 +109,22 @@ returns `server_dependency_unavailable`.
 Supported `conversion_mode` values are:
 
 - `auto`: produce the current debug JSON artifact from the detected input.
-- `pdf_to_excel`: accept PDF input and include an XLSX primary artifact manifest
-  entry.
-- `pdf_to_word`: accept PDF input and include a DOCX primary artifact manifest
-  entry.
-- `word_to_excel`: accept DOCX input and include an XLSX primary artifact
-  manifest entry.
-- `excel_to_word`: accept XLSX input and include a DOCX primary artifact
-  manifest entry.
+- `pdf_to_excel`: accept PDF input and include a downloadable XLSX primary
+  artifact.
+- `pdf_to_word`: accept PDF input and include a downloadable DOCX primary
+  artifact reconstructed from extracted text blocks.
+- `word_to_excel`: accept DOCX input and include a downloadable XLSX primary
+  artifact.
+- `excel_to_word`: accept XLSX input and include a downloadable DOCX primary
+  artifact.
 
 The artifact manifest is intentionally honest about current PoC limits. The
-downloadable result is still the debug JSON artifact at `download` /
-`artifacts[].id == "debug-json"`. DOCX and XLSX primary artifacts are manifest
-placeholders only; their metadata reports `download.available: false` with
-`reason: artifact_generation_not_implemented` until renderer integration is
-completed.
+debug JSON artifact remains available at `download` and in `artifacts[]` with
+id `debug-json`. Renderer-backed DOCX and XLSX primary artifacts are returned in
+`artifacts[]` with `metadata.download.field` pointing at the base64 response
+field. `pdf_to_word` prioritizes editable heading, paragraph, and table
+structure for review; exact PDF layout, fonts, coordinates, columns, footnotes,
+and OCR fidelity are not guaranteed.
 
 ## Local PoC API authentication
 

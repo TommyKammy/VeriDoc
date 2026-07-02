@@ -3319,7 +3319,14 @@ def _validate_conversion_mode_source_type(conversion_mode: str, source_type: str
 def _conversion_mode_warnings(conversion_mode: str) -> list[str]:
     if conversion_mode == "auto":
         return []
-    return [f"conversion mode {conversion_mode} selected"]
+    warnings = [f"conversion mode {conversion_mode} selected"]
+    if conversion_mode == "pdf_to_word":
+        warnings.append(
+            "pdf_to_word reconstruction preserves editable text structure for review; "
+            "exact PDF layout, fonts, coordinates, columns, footnotes, and OCR fidelity "
+            "are not guaranteed"
+        )
+    return warnings
 
 
 def _source_type(filename: str, parser_output: dict[str, Any] | None = None) -> str:
