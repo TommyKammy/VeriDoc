@@ -550,7 +550,7 @@ def test_pdf_to_excel_no_selected_pdf_table_requires_review(
             "document_id": "sample",
             "block_id": "pdf-table-extraction",
             "source_id": "sample:pdf-table-extraction",
-            "source_page": None,
+            "source_page": 1,
             "text": "PDF table extraction requires review",
             "warnings": [
                 "PDF table extraction produced no selected table; xlsx artifact requires review"
@@ -639,7 +639,7 @@ def test_pdf_to_excel_unavailable_table_comparator_requires_review(
             "document_id": "sample",
             "block_id": "pdf-table-extraction",
             "source_id": "sample:pdf-table-extraction",
-            "source_page": None,
+            "source_page": 1,
             "text": "PDF table extraction requires review",
             "warnings": [
                 (
@@ -699,7 +699,7 @@ def test_pdf_to_excel_json_table_report_warnings_require_review() -> None:
         "document_id": "sample",
         "block_id": "pdf-table-extraction",
         "source_id": "sample:pdf-table-extraction",
-        "source_page": None,
+        "source_page": 1,
         "text": "PDF table extraction requires review",
         "warnings": ["PDF table extraction produced no selected table; xlsx artifact requires review"],
     } in result["review_items"]
@@ -756,6 +756,53 @@ def test_pdf_to_excel_json_table_report_preserves_structured_rows(tmp_path: Path
     assert cells["B4"] == ("Assay\t%", "inline_string")
     assert cells["A5"] == ("A-001", "inline_string")
     assert cells["B5"] == ("12.5", "number")
+
+
+def test_pdf_to_excel_json_table_report_grows_synthetic_page_for_selected_bboxes() -> None:
+    table = ExtractedTable(
+        extractor="camelot",
+        flavor="lattice",
+        page_number=1,
+        rows=[["Lot", "Assay"], ["A-001", "12.5"]],
+        cell_bboxes=[
+            [
+                TableBBox(x=700, y=900, width=50, height=12),
+                TableBBox(x=750, y=900, width=60, height=12),
+            ],
+            [
+                TableBBox(x=700, y=912, width=50, height=12),
+                TableBBox(x=750, y=912, width=60, height=12),
+            ],
+        ],
+    )
+    report = TableExtractionReport(
+        source_path="sample.pdf",
+        candidates=[
+            TableExtractionCandidate(
+                extractor="camelot",
+                flavor="lattice",
+                version="test",
+                status="ok",
+                tables=[table],
+                notes="synthetic selected table",
+            )
+        ],
+        mismatches=[],
+        selected_candidate="camelot:lattice",
+        notes="synthetic report",
+    )
+
+    result = convert_uploaded_document(
+        filename="sample.json",
+        content=json.dumps(report.to_dict()).encode("utf-8"),
+        conversion_mode="pdf_to_excel",
+    )
+
+    assert result["status"] == "converted"
+    assert result["validation"]["errors"] == []
+    page = result["document_ir"]["pages"][0]
+    assert page["width"] == 810.0
+    assert page["height"] == 924.0
 
 
 def test_pdf_to_excel_multiple_selected_tables_without_mismatch_converts(

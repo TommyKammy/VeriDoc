@@ -2675,13 +2675,7 @@ def _parser_output_with_pdf_tables(parser_output: dict[str, Any], report: Any) -
                 continue
             page = pages_by_number.get(page_number)
             if page is None:
-                page = {
-                    "page_number": page_number,
-                    "width": 612,
-                    "height": 792,
-                    "unit": "pt",
-                    "fragments": [],
-                }
+                page = _synthetic_pdf_table_page(page_number, table)
                 pages.append(page)
                 pages_by_number[page_number] = page
             fragments = page.setdefault("fragments", [])
@@ -2934,6 +2928,48 @@ def _pdf_table_text_cell(value: Any) -> str:
     return re.sub(r"[\t\r\n]+", " ", "" if value is None else str(value))
 
 
+def _synthetic_pdf_table_page(page_number: int, table: dict[str, Any]) -> dict[str, Any]:
+    width = 612.0
+    height = 792.0
+    unit = "pt"
+    cell_bboxes = table.get("cell_bboxes")
+    if isinstance(cell_bboxes, list):
+        units: set[str] = set()
+        for row in cell_bboxes:
+            if not isinstance(row, list):
+                continue
+            for cell in row:
+                if not isinstance(cell, dict):
+                    continue
+                x = _float_value(cell.get("x"))
+                y = _float_value(cell.get("y"))
+                cell_width = _float_value(cell.get("width"))
+                cell_height = _float_value(cell.get("height"))
+                if (
+                    x is None
+                    or y is None
+                    or cell_width is None
+                    or cell_height is None
+                    or x < 0
+                    or y < 0
+                    or cell_width <= 0
+                    or cell_height <= 0
+                ):
+                    continue
+                width = max(width, x + cell_width)
+                height = max(height, y + cell_height)
+                units.add(str(cell.get("unit") or "pt"))
+        if len(units) == 1:
+            unit = units.pop()
+    return {
+        "page_number": page_number,
+        "width": width,
+        "height": height,
+        "unit": unit,
+        "fragments": [],
+    }
+
+
 def _pdf_table_bbox(table: dict[str, Any], page: dict[str, Any]) -> dict[str, Any] | None:
     cells: list[dict[str, float | str]] = []
     page_height = _float_value(page.get("height"))
@@ -3069,12 +3105,13 @@ def _pdf_table_warning_review_items(
     ]
     if not review_warnings:
         return []
+    source_page = document_ir.pages[0].page_number if document_ir.pages else None
     return [
         {
             "document_id": document_ir.document.id,
             "block_id": "pdf-table-extraction",
             "source_id": f"{document_ir.document.id}:pdf-table-extraction",
-            "source_page": None,
+            "source_page": source_page,
             "text": "PDF table extraction requires review",
             "warnings": review_warnings,
         }
