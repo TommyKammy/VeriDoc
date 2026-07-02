@@ -2444,6 +2444,8 @@ def _parser_output_block_extractor_name(
         metadata = value.get("value_metadata")
         if isinstance(metadata, dict):
             extractor = metadata.get("extractor")
+    if extractor is None:
+        extractor = value.get("engine")
     return _parser_output_extractor_name(extractor, default=fallback_extractor)
 
 

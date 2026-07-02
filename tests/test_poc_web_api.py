@@ -823,6 +823,48 @@ def test_word_to_excel_json_page_fragment_rows_override_stale_top_level_rows(
     assert cells["B5"] == ("0012", "inline_string")
 
 
+def test_word_to_excel_json_table_rows_match_engine_fallback(
+    tmp_path: Path,
+) -> None:
+    parser_output = {
+        "source_type": "docx",
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 320,
+                "height": 240,
+                "unit": "pt",
+                "fragments": [
+                    {
+                        "kind": "table",
+                        "engine": "docx-engine-parser",
+                        "text": "Sample\tValue\tNotes\nA\t0012\t",
+                        "rows": [["Sample\tValue", "Notes"], ["A", "0012", ""]],
+                        "bbox": {"x": 10, "y": 20, "width": 120, "height": 32, "unit": "pt"},
+                        "confidence": 0.95,
+                    }
+                ],
+            }
+        ],
+    }
+
+    result = convert_uploaded_document(
+        filename="engine-fallback.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+        conversion_mode="word_to_excel",
+    )
+
+    primary_artifact = result["artifacts"][0]
+    primary_path = tmp_path / primary_artifact["filename"]
+    primary_path.write_bytes(primary_artifact["content"])
+    xlsx = extract_xlsx_structure(primary_path)
+    cells = {cell.ref: (cell.value, cell.value_type) for cell in xlsx.sheets[0].cells}
+    assert cells["A4"] == ("Sample\tValue", "inline_string")
+    assert cells["B4"] == ("Notes", "inline_string")
+    assert cells["A5"] == ("A", "inline_string")
+    assert cells["B5"] == ("0012", "inline_string")
+
+
 def test_word_to_excel_docx_upload_flags_merged_table_cells(tmp_path: Path) -> None:
     docx_path = tmp_path / "merged-report.docx"
     _write_docx(
