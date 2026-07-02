@@ -91,7 +91,7 @@ def from_parser_output(
 ) -> DocumentIRV1:
     """Build the minimal Document IR v1 surface from Phase0 parser output."""
     data = _to_mapping(parser_output)
-    parser_extractor = str(data.get("extractor") or "unknown")
+    parser_extractor = _extractor_name_value(data.get("extractor"), default="unknown")
     pages: List[DocumentPage] = []
     blocks: List[DocumentBlock] = []
     warnings: List[str] = []
@@ -403,7 +403,19 @@ def _document_ir_v0_block_fragment(
 
     if metadata.get("requires_review") is True:
         fragment["requires_review"] = True
+    warnings = [str(warning) for warning in _list_value(block.get("warnings")) if str(warning)]
+    if warnings:
+        fragment["warnings"] = warnings
     return fragment
+
+
+def _extractor_name_value(value: Any, *, default: str) -> str:
+    if isinstance(value, dict):
+        name = value.get("name")
+        return str(name) if name is not None else default
+    if value is None:
+        return default
+    return str(value)
 
 
 def _xlsx_sheet_page(sheet_data: Any, page_number: int) -> dict[str, Any]:

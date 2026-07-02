@@ -634,6 +634,48 @@ class DocumentIrV1Test(unittest.TestCase):
         self.assertEqual(["heading", "paragraph", "table"], [block.type for block in document_ir.blocks])
         self.assertIn("blocks[0].bbox missing; block marked requires_review", result.warnings)
 
+    def test_document_ir_v0_top_level_block_warnings_are_preserved(self) -> None:
+        document_ir = from_parser_output(
+            {
+                "schema_version": "document-ir/v0",
+                "extractor": "docx-table-parser",
+                "pages": [{"page_number": 1, "width": 320, "height": 240, "unit": "pt"}],
+                "blocks": [
+                    {
+                        "id": "block-001",
+                        "type": "table",
+                        "text": "Field\tValue\nLot\t0007",
+                        "warnings": [
+                            "DOCX table contains merged cells; xlsx artifact requires review"
+                        ],
+                        "value_metadata": {
+                            "source_page": 1,
+                            "bbox": {"x": 10, "y": 20, "width": 120, "height": 32},
+                            "extractor": {"name": "docx-table-parser", "version": "test"},
+                            "confidence": 0.95,
+                            "requires_review": False,
+                        },
+                    }
+                ],
+            },
+            document_id="sample-docx",
+            title="Sample DOCX",
+            source_type="docx",
+        )
+
+        result = validate_document_ir_v1(document_ir)
+
+        self.assertTrue(result.ok, result.errors)
+        self.assertTrue(result.requires_review)
+        self.assertIn(
+            "DOCX table contains merged cells; xlsx artifact requires review",
+            result.warnings,
+        )
+        self.assertEqual(
+            ["DOCX table contains merged cells; xlsx artifact requires review"],
+            document_ir.blocks[0].review.warnings,
+        )
+
     def test_xlsx_parser_output_converts_to_document_ir_v1_blocks(self) -> None:
         document_ir = from_parser_output(
             {

@@ -2448,7 +2448,7 @@ def _parser_output_block_extractor_name(
 
 
 def _parser_output_root_extractor_name(value: Any) -> str:
-    return str(value or "unknown")
+    return _parser_output_extractor_name(value, default="unknown")
 
 
 def _parser_output_extractor_name(value: Any, *, default: str) -> str:
