@@ -137,6 +137,12 @@ def _table_cell_has_merge_markup(cell: ElementTree.Element) -> bool:
         return True
     if tc_properties.find(f"{WORD_NS}hMerge") is not None:
         return True
+    return _table_cell_properties_have_grid_span_merge(tc_properties)
+
+
+def _table_cell_properties_have_grid_span_merge(
+    tc_properties: ElementTree.Element,
+) -> bool:
     grid_span = tc_properties.find(f"{WORD_NS}gridSpan")
     if grid_span is None:
         return False
