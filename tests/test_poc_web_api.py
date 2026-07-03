@@ -9617,14 +9617,25 @@ def test_web_direct_convert_defines_phase6_review_information_architecture() -> 
         "detail-json": ["document_ir", "review_items", "warnings", "artifacts[]", "audit"],
     }
 
+    region_html_by_name = {}
     for region, fields in expected_regions.items():
         marker = f'data-poc-ui-region="{region}"'
         assert marker in html
         start = html.index(marker)
         end = html.find('data-poc-ui-region="', start + len(marker))
         region_html = html[start:] if end == -1 else html[start:end]
+        region_html_by_name[region] = region_html
         for field in fields:
             assert field in region_html
+
+    review_region = region_html_by_name["review"]
+    downloads_region = region_html_by_name["artifact-downloads"]
+    assert 'id="top-level-warnings"' in review_region
+    assert 'function renderTopLevelWarnings(warnings)' in html
+    assert "renderTopLevelWarnings(result.warnings || [])" in html
+    assert 'id="pdf-preview-panel"' in review_region
+    assert 'id="download-link"' in downloads_region
+    assert 'id="debug-download-link"' in downloads_region
 
     assert html.index('data-poc-ui-region="review"') < html.index(
         'data-poc-ui-region="detail-json"'

@@ -332,7 +332,18 @@
         border-top: 1px solid #e5e9f0;
       }
 
+      .top-level-warnings {
+        margin-top: 10px;
+        padding-top: 10px;
+        border-top: 1px solid #e5e9f0;
+      }
+
       .review-item strong {
+        display: block;
+        margin-bottom: 4px;
+      }
+
+      .top-level-warnings strong {
         display: block;
         margin-bottom: 4px;
       }
@@ -717,24 +728,48 @@
           <button id="convert-button" type="button">Convert now</button>
         </div>
         <div
-          id="result-panel"
-          class="empty"
           data-poc-ui-region="review"
           data-api-fields="review_items warnings document_ir"
+        >
+          <div id="result-panel" class="empty" hidden>
+            <span id="status" class="status"></span>
+            <div class="page-status">
+              Review decisions are made from warnings, review items, source locations, and artifact actions.
+            </div>
+            <div id="top-level-warnings" class="top-level-warnings" data-api-fields="warnings" hidden></div>
+            <div id="review-list"></div>
+            <div id="review-action-status" class="page-status" role="status"></div>
+          </div>
+
+          <section id="pdf-preview-panel" class="panel" style="margin-top: 16px" aria-labelledby="pdf-preview-title" hidden>
+            <div class="preview-toolbar">
+              <div>
+                <h2 id="pdf-preview-title">PDF preview</h2>
+                <div id="pdf-preview-status" class="page-status"></div>
+              </div>
+              <div class="field">
+                <label for="preview-page-select">Page</label>
+                <select id="preview-page-select"></select>
+              </div>
+            </div>
+            <div id="pdf-preview-shell" class="pdf-preview-shell">
+              <div id="pdf-page-surface" class="pdf-page-surface">
+                <div id="pdf-page-placeholder" class="pdf-page-placeholder">No PDF page selected.</div>
+                <canvas id="pdf-page-canvas" class="pdf-page-canvas" hidden></canvas>
+                <object id="pdf-source-frame" class="pdf-source-frame" type="application/pdf" aria-hidden="true" hidden></object>
+                <div id="bbox-layer" class="bbox-layer" aria-label="Source bounding boxes"></div>
+              </div>
+            </div>
+            <div id="bbox-invalid" class="bbox-invalid" role="status" hidden></div>
+          </section>
+        </div>
+        <div
+          id="artifact-downloads-panel"
+          data-poc-ui-region="artifact-downloads"
+          data-api-fields="artifacts[] download audit"
           hidden
         >
-          <span id="status" class="status"></span>
-          <div class="page-status">
-            Review decisions are made from warnings, review items, source locations, and artifact actions.
-          </div>
-          <div id="review-list"></div>
-          <div id="review-action-status" class="page-status" role="status"></div>
-          <div
-            data-poc-ui-region="artifact-downloads"
-            data-api-fields="artifacts[] download audit"
-          >
-            <div id="artifact-summary" class="page-status"></div>
-          </div>
+          <div id="artifact-summary" class="page-status"></div>
           <div class="action-row" data-api-fields="artifacts[] download audit">
             <a id="download-link" download hidden>Download primary DOCX/XLSX</a>
             <a id="debug-download-link" download hidden>Download audit/debug JSON</a>
@@ -792,27 +827,6 @@
         <div id="audit-empty" class="empty" hidden>No audit events match the current filters.</div>
       </section>
 
-      <section id="pdf-preview-panel" class="panel" style="margin-top: 16px" aria-labelledby="pdf-preview-title" hidden>
-        <div class="preview-toolbar">
-          <div>
-            <h2 id="pdf-preview-title">PDF preview</h2>
-            <div id="pdf-preview-status" class="page-status"></div>
-          </div>
-          <div class="field">
-            <label for="preview-page-select">Page</label>
-            <select id="preview-page-select"></select>
-          </div>
-        </div>
-        <div id="pdf-preview-shell" class="pdf-preview-shell">
-          <div id="pdf-page-surface" class="pdf-page-surface">
-            <div id="pdf-page-placeholder" class="pdf-page-placeholder">No PDF page selected.</div>
-            <canvas id="pdf-page-canvas" class="pdf-page-canvas" hidden></canvas>
-            <object id="pdf-source-frame" class="pdf-source-frame" type="application/pdf" aria-hidden="true" hidden></object>
-            <div id="bbox-layer" class="bbox-layer" aria-label="Source bounding boxes"></div>
-          </div>
-        </div>
-        <div id="bbox-invalid" class="bbox-invalid" role="status" hidden></div>
-      </section>
     </main>
 
     <script type="module">
@@ -898,8 +912,10 @@
       const resultPanel = document.querySelector("#result-panel");
       const rawPanel = document.querySelector("#raw-panel");
       const status = document.querySelector("#status");
+      const topLevelWarnings = document.querySelector("#top-level-warnings");
       const reviewList = document.querySelector("#review-list");
       const reviewActionStatus = document.querySelector("#review-action-status");
+      const artifactDownloadsPanel = document.querySelector("#artifact-downloads-panel");
       const artifactSummary = document.querySelector("#artifact-summary");
       const downloadLink = document.querySelector("#download-link");
       const debugDownloadLink = document.querySelector("#debug-download-link");
@@ -994,6 +1010,7 @@
         } catch (error) {
           if (!isActiveDirectConversion(conversionToken)) return;
           status.textContent = `blocked: ${error.message}`;
+          clearTopLevelWarnings();
           reviewList.replaceChildren();
           clearDownload();
           clearPreview();
@@ -1632,6 +1649,7 @@
           : [];
         status.textContent = result.status;
         status.className = `status ${result.status}`;
+        renderTopLevelWarnings(result.warnings || []);
         reviewList.replaceChildren(...result.review_items.map(renderReviewItem));
         clearDownload();
         renderDownloadLinks(
@@ -1658,6 +1676,7 @@
       }
 
       function renderDownloadLinks(result, primaryArtifact, debugArtifact) {
+        artifactDownloadsPanel.hidden = false;
         if (primaryArtifact) {
           const primaryBlob = new Blob(
             [base64ToBytes(primaryArtifact.content_base64)],
@@ -1723,6 +1742,7 @@
         debugDownloadLink.removeAttribute("href");
         debugDownloadLink.removeAttribute("download");
         artifactSummary.textContent = "";
+        artifactDownloadsPanel.hidden = true;
         downloadLink.hidden = true;
         debugDownloadLink.hidden = true;
       }
@@ -1764,6 +1784,7 @@
 
       function clearReviewResult() {
         clearPreview();
+        clearTopLevelWarnings();
         reviewList.replaceChildren();
         state.reviewAuditEvents = [];
         state.pendingReviewActions.clear();
@@ -1774,6 +1795,29 @@
         clearDownload();
         resultPanel.hidden = true;
         rawPanel.hidden = true;
+      }
+
+      function clearTopLevelWarnings() {
+        topLevelWarnings.replaceChildren();
+        topLevelWarnings.hidden = true;
+      }
+
+      function renderTopLevelWarnings(warnings) {
+        clearTopLevelWarnings();
+        if (!warnings.length) return;
+        const title = document.createElement("strong");
+        title.textContent = "Top-level warnings";
+        const badges = document.createElement("div");
+        badges.className = "warning-badges";
+        for (const warning of warnings) {
+          const descriptor = warningBadgeDescriptor(warning);
+          const badge = document.createElement("span");
+          badge.className = `warning-badge ${severityClass(descriptor.severity)}`;
+          badge.textContent = `${descriptor.code} ${descriptor.label}`;
+          badges.append(badge);
+        }
+        topLevelWarnings.append(title, badges);
+        topLevelWarnings.hidden = false;
       }
 
       async function renderSourcePreview(result) {
