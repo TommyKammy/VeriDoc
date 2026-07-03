@@ -394,6 +394,58 @@ def test_excel_to_word_primary_docx_renders_sheet_values_for_review() -> None:
     ]
 
 
+def test_excel_to_word_json_prefers_page_table_rows_over_matching_sheet_rows() -> None:
+    parser_output = {
+        "source_type": "xlsx",
+        "extractor": "xlsx",
+        "sheets": [
+            {
+                "name": "WBS",
+                "cells": [
+                    {"ref": "A1", "value": "ID"},
+                    {"ref": "C1", "value": "Task"},
+                    {"ref": "A2", "value": "00123"},
+                    {"ref": "C2", "value": "Template review"},
+                ],
+            }
+        ],
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 320,
+                "height": 240,
+                "unit": "pt",
+                "fragments": [
+                    {
+                        "kind": "table",
+                        "extractor": "xlsx",
+                        "text": (
+                            "Sheet: WBS\n"
+                            "A1: ID\n"
+                            "C1: Task\n"
+                            "A2: 00123\n"
+                            "C2: Template review"
+                        ),
+                        "rows": [["ID", "Task"], ["00123", "Template review"]],
+                    }
+                ],
+            }
+        ],
+    }
+
+    result = convert_uploaded_document(
+        filename="page-and-sheet-rows.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+        conversion_mode="excel_to_word",
+    )
+
+    downloaded = json.loads(result["download"]["content"].decode("utf-8"))
+    table_blocks = [
+        block for block in downloaded["document_ir"]["blocks"] if block["type"] == "table"
+    ]
+    assert table_blocks[0]["rows"] == [["ID", "Task"], ["00123", "Template review"]]
+
+
 def test_convert_uploaded_document_blocks_primary_render_failures(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

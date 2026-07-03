@@ -1018,6 +1018,30 @@ class DocumentIrV1Test(unittest.TestCase):
             document_ir.blocks[0].rows,
         )
 
+    def test_xlsx_parser_output_preserves_sparse_column_gaps_after_row_cap(self) -> None:
+        document_ir = from_parser_output(
+            {
+                "source_path": "fixtures/sparse-row-column-gap.xlsx",
+                "sheets": [
+                    {
+                        "name": "Sparse Columns",
+                        "cells": [
+                            {"ref": "A1", "value": "Top"},
+                            {"ref": "C300", "value": "Total"},
+                        ],
+                    }
+                ],
+            },
+            document_id="sparse-row-column-gap-xlsx",
+            title="Sparse Row Column Gap XLSX",
+            source_type="xlsx",
+        )
+
+        self.assertEqual(
+            [["Sheet: Sparse Columns"], ["Top", "", ""], ["", "", "Total"]],
+            document_ir.blocks[0].rows,
+        )
+
     def test_ocr_regions_convert_to_document_ir_v1_blocks(self) -> None:
         document_ir = from_parser_output(
             {

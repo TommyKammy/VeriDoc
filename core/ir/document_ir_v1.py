@@ -684,17 +684,23 @@ def _xlsx_sheet_rows(cells: list[dict[str, Any]]) -> list[list[str]]:
     first_row = min(positioned_cells)
     last_row = max(positioned_cells)
     row_span = last_row - first_row + 1
-    if (
-        column_span <= XLSX_ROW_GAP_PRESERVE_MAX_COLUMNS
-        and row_span <= XLSX_ROW_GAP_PRESERVE_MAX_ROWS
-    ):
-        rows = [
-            [
-                positioned_cells.get(row, {}).get(column, "")
-                for column in range(first_column, last_column + 1)
+    if column_span <= XLSX_ROW_GAP_PRESERVE_MAX_COLUMNS:
+        if row_span <= XLSX_ROW_GAP_PRESERVE_MAX_ROWS:
+            rows = [
+                [
+                    positioned_cells.get(row, {}).get(column, "")
+                    for column in range(first_column, last_column + 1)
+                ]
+                for row in range(first_row, last_row + 1)
             ]
-            for row in range(first_row, last_row + 1)
-        ]
+        else:
+            rows = [
+                [
+                    row_cells.get(column, "")
+                    for column in range(first_column, last_column + 1)
+                ]
+                for _row, row_cells in sorted(positioned_cells.items())
+            ]
     else:
         rows = [
             [row_cells[column] for column in sorted(row_cells)]
