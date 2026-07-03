@@ -712,7 +712,11 @@
           <span id="status" class="status"></span>
           <div id="review-list"></div>
           <div id="review-action-status" class="page-status" role="status"></div>
-          <a id="download-link" download hidden>Download result</a>
+          <div id="artifact-summary" class="page-status"></div>
+          <div class="action-row">
+            <a id="download-link" download hidden>Download primary DOCX/XLSX</a>
+            <a id="debug-download-link" download hidden>Download audit/debug JSON</a>
+          </div>
         </div>
         <div id="raw-panel" hidden>
           <pre id="raw-result"></pre>
@@ -798,6 +802,7 @@
         reviewAuditEvents: [],
         auditEvents: [],
         auditExportUrl: "",
+        debugDownloadUrl: "",
         templates: [],
         selectedTemplate: null,
         pendingReviewActions: new Map(),
@@ -865,7 +870,9 @@
       const status = document.querySelector("#status");
       const reviewList = document.querySelector("#review-list");
       const reviewActionStatus = document.querySelector("#review-action-status");
+      const artifactSummary = document.querySelector("#artifact-summary");
       const downloadLink = document.querySelector("#download-link");
+      const debugDownloadLink = document.querySelector("#debug-download-link");
       const rawResult = document.querySelector("#raw-result");
       const refreshAudit = document.querySelector("#refresh-audit");
       const exportAudit = document.querySelector("#export-audit");
@@ -1596,12 +1603,12 @@
         status.textContent = result.status;
         status.className = `status ${result.status}`;
         reviewList.replaceChildren(...result.review_items.map(renderReviewItem));
-        const blob = new Blob([result.download.content_text], { type: result.download.content_type });
         clearDownload();
-        state.downloadUrl = URL.createObjectURL(blob);
-        downloadLink.href = state.downloadUrl;
-        downloadLink.download = result.download.filename;
-        downloadLink.hidden = false;
+        renderDownloadLinks(
+          result,
+          primaryDownloadArtifact(result),
+          debugDownloadArtifact(result)
+        );
         rawResult.textContent = JSON.stringify(
           { validation: result.validation, review_items: result.review_items.map(reviewItemForDetail) },
           null,
@@ -1613,14 +1620,68 @@
         renderSourcePreview(result);
       }
 
+      function renderDownloadLinks(result, primaryArtifact, debugArtifact) {
+        if (primaryArtifact) {
+          const primaryBlob = new Blob(
+            [base64ToBytes(primaryArtifact.content_base64)],
+            { type: primaryArtifact.content_type }
+          );
+          state.downloadUrl = URL.createObjectURL(primaryBlob);
+          downloadLink.href = state.downloadUrl;
+          downloadLink.download = primaryArtifact.filename;
+          downloadLink.textContent = `Download primary ${primaryArtifact.format.toUpperCase()}`;
+          downloadLink.hidden = false;
+        }
+        if (debugArtifact) {
+          const debugBlob = new Blob(
+            [result.download.content_text],
+            { type: result.download.content_type }
+          );
+          state.debugDownloadUrl = URL.createObjectURL(debugBlob);
+          debugDownloadLink.href = state.debugDownloadUrl;
+          debugDownloadLink.download = result.download.filename;
+          debugDownloadLink.hidden = false;
+        }
+        artifactSummary.textContent = primaryArtifact
+          ? "Primary DOCX/XLSX is ready. JSON is retained for validation and audit details."
+          : "No primary DOCX/XLSX artifact for this mode. JSON is retained for validation and audit details.";
+      }
+
+      function primaryDownloadArtifact(result) {
+        return (result.artifacts || []).find(
+          (artifact) =>
+            artifact?.kind === "primary" &&
+            typeof artifact.content_base64 === "string" &&
+            typeof artifact.filename === "string" &&
+            typeof artifact.content_type === "string" &&
+            typeof artifact.format === "string"
+        );
+      }
+
+      function debugDownloadArtifact(result) {
+        return (result.artifacts || []).find(
+          (artifact) =>
+            (artifact?.kind === "debug" || artifact?.kind === "audit") &&
+            artifact?.format === "json"
+        );
+      }
+
       function clearDownload() {
         if (state.downloadUrl) {
           URL.revokeObjectURL(state.downloadUrl);
           state.downloadUrl = "";
         }
+        if (state.debugDownloadUrl) {
+          URL.revokeObjectURL(state.debugDownloadUrl);
+          state.debugDownloadUrl = "";
+        }
         downloadLink.removeAttribute("href");
         downloadLink.removeAttribute("download");
+        debugDownloadLink.removeAttribute("href");
+        debugDownloadLink.removeAttribute("download");
+        artifactSummary.textContent = "";
         downloadLink.hidden = true;
+        debugDownloadLink.hidden = true;
       }
 
       function setSourcePreview(file, fileBytes) {
@@ -1860,6 +1921,15 @@
           binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
         }
         return btoa(binary);
+      }
+
+      function base64ToBytes(encoded) {
+        const binary = atob(encoded);
+        const bytes = new Uint8Array(binary.length);
+        for (let index = 0; index < binary.length; index += 1) {
+          bytes[index] = binary.charCodeAt(index);
+        }
+        return bytes;
       }
 
       function renderReviewItem(item) {
