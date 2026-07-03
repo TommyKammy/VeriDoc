@@ -605,9 +605,7 @@ def _xlsx_sheet_page(sheet_data: Any, page_number: int) -> dict[str, Any]:
     sheet_name = str(sheet.get("name") or f"Sheet {page_number}")
     rows = _xlsx_sheet_rows(cells)
     review_rows = [[f"Sheet: {sheet_name}"], *rows]
-    text_lines = [f"Sheet: {sheet_name}"]
-    if rows:
-        text_lines.extend(_table_rows_text(rows).splitlines())
+    text_lines = [f"Sheet: {sheet_name}", *_xlsx_sheet_cell_reference_lines(cells)]
     text = "\n".join(line for line in text_lines if line)
     fragment: dict[str, Any] = {"kind": "table", "text": text, "extractor": "xlsx"}
     fragment["rows"] = review_rows
@@ -618,6 +616,17 @@ def _xlsx_sheet_page(sheet_data: Any, page_number: int) -> dict[str, Any]:
         "unit": "pt",
         "fragments": [fragment],
     }
+
+
+def _xlsx_sheet_cell_reference_lines(cells: list[dict[str, Any]]) -> list[str]:
+    lines: list[str] = []
+    for cell in cells:
+        ref = str(cell.get("ref") or "")
+        value = cell.get("value")
+        if value is None or str(value) == "" or _xlsx_cell_coordinates(ref) is None:
+            continue
+        lines.append(f"{ref}: {value}")
+    return lines
 
 
 def _xlsx_sheet_rows(cells: list[dict[str, Any]]) -> list[list[str]]:

@@ -2554,6 +2554,8 @@ def _parser_table_match_rank(
     extractor_name = _parser_output_block_extractor_name(block, fallback_extractor="unknown")
     if _int_value(block.get("source_page"), default=0) != parser_table.get("page_number"):
         return None
+    if source_priority == 0 and extractor_name == "xlsx" and parser_table.get("extractor") == "xlsx":
+        return (source_priority, 0)
     if str(block.get("text") or "") != parser_table.get("text"):
         return None
     if extractor_name == parser_table.get("extractor"):

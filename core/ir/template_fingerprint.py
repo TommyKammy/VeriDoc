@@ -2578,6 +2578,8 @@ def _xlsx_cell_rows(value: str) -> list[list[str]]:
     for line_index, line in enumerate(lines):
         cell = _xlsx_cell_line(line)
         if cell is None:
+            if not saw_cell_ref and _is_xlsx_sheet_label_line(line):
+                continue
             if last_cell_ref is None:
                 return []
             row_index, column_index = last_cell_ref
@@ -2600,6 +2602,10 @@ def _xlsx_cell_rows(value: str) -> list[list[str]]:
         for _row, columns in sorted(row_cells.items())
         if any(_normalized_column_name(cell) for cell in columns.values())
     ]
+
+
+def _is_xlsx_sheet_label_line(value: str) -> bool:
+    return bool(re.fullmatch(r"Sheet:\s+.+", value.strip()))
 
 
 def _xlsx_cell_line(value: str) -> tuple[int, int, str] | None:

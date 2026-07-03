@@ -3445,7 +3445,7 @@ def test_convert_uploaded_phase0_json_infers_xlsx_source_type_from_source_path()
     assert result["document_ir"]["document"]["source_type"] == "xlsx"
     assert result["document_ir"]["pages"]
     assert result["document_ir"]["blocks"][0]["text"] == (
-        "Sheet: Document IR\nLot\tSAMPLE-001"
+        "Sheet: Document IR\nA1: Lot\nB1: SAMPLE-001"
     )
     assert result["document_ir"]["blocks"][0]["rows"] == [
         ["Sheet: Document IR"],
