@@ -341,6 +341,39 @@ class DocumentIrSchemaTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, msg="validator unexpectedly accepted v1 bbox unit mismatch")
         self.assertIn("$.blocks[0].bbox.unit: must match page 1 unit 'pt'", result.stderr)
 
+    def test_validator_accepts_v1_table_rows(self) -> None:
+        sample = json.loads(V1_SAMPLE_PATH.read_text(encoding="utf-8"))
+        document = sample["expected_ir"]
+        document["blocks"][0]["type"] = "table"
+        document["blocks"][0]["text"] = "Field\tValue\nLot\t0007"
+        document["blocks"][0]["rows"] = [["Field", "Value"], ["Lot", "0007"]]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            document_path = Path(temp_dir) / "table-rows-v1-document-ir.json"
+            document_path.write_text(json.dumps(document), encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(VALIDATOR_PATH),
+                    "--schema",
+                    str(V1_SCHEMA_PATH),
+                    "--document",
+                    str(document_path),
+                ],
+                cwd=REPO_ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+        self.assertEqual(
+            result.returncode,
+            0,
+            msg=f"validator failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

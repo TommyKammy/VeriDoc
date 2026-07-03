@@ -3453,6 +3453,46 @@ def test_convert_uploaded_phase0_json_infers_xlsx_source_type_from_source_path()
     ]
 
 
+def test_convert_uploaded_xlsx_json_keeps_page_table_rows_over_sheet_records() -> None:
+    parser_output = {
+        "source_path": "mixed-parser.xlsx",
+        "sheets": [
+            {
+                "name": "Sheet Source",
+                "cells": [
+                    {"ref": "A1", "value": "Sheet header"},
+                    {"ref": "B1", "value": "Sheet value"},
+                ],
+            }
+        ],
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 320,
+                "height": 240,
+                "unit": "pt",
+                "fragments": [
+                    {
+                        "kind": "table",
+                        "text": "Page header\tPage value",
+                        "rows": [["Page header", "Page value"]],
+                        "extractor": "xlsx",
+                    }
+                ],
+            }
+        ],
+    }
+
+    result = convert_uploaded_document(
+        filename="mixed-parser.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+    )
+
+    assert result["document_ir"]["document"]["source_type"] == "xlsx"
+    assert result["document_ir"]["blocks"][0]["text"] == "Page header\tPage value"
+    assert result["document_ir"]["blocks"][0]["rows"] == [["Page header", "Page value"]]
+
+
 def test_convert_uploaded_document_serializes_invalid_numeric_values_as_strict_json() -> None:
     parser_output = {
         "pages": [

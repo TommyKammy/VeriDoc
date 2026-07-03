@@ -62,6 +62,7 @@ class DocumentBlock:
     extractor: ExtractorRef
     confidence: float
     review: ReviewState
+    rows: Optional[List[List[str]]] = None
 
 
 @dataclass(frozen=True)
@@ -73,7 +74,7 @@ class DocumentIRV1:
     warnings: List[str]
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return _drop_none_values(asdict(self))
 
 
 @dataclass(frozen=True)
@@ -260,6 +261,7 @@ def _block_from_fragment(
         extractor=_extractor_ref(data, fallback_extractor),
         confidence=confidence,
         review=ReviewState(requires_review=requires_review, warnings=review_warnings),
+        rows=_rows_value(data.get("rows")),
     )
 
 
@@ -292,6 +294,28 @@ def _to_mapping(value: Any) -> dict[str, Any]:
 
 def _list_value(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
+
+
+def _drop_none_values(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _drop_none_values(item)
+            for key, item in value.items()
+            if item is not None
+        }
+    if isinstance(value, list):
+        return [_drop_none_values(item) for item in value]
+    return value
+
+
+def _rows_value(value: Any) -> Optional[List[List[str]]]:
+    rows: List[List[str]] = []
+    for row in _list_value(value):
+        if isinstance(row, list):
+            rows.append(["" if cell is None else str(cell) for cell in row])
+        else:
+            rows.append(["" if row is None else str(row)])
+    return rows or None
 
 
 def _parser_pages(data: dict[str, Any], source_type: str) -> list[Any]:
@@ -623,14 +647,17 @@ def _xlsx_sheet_cell_reference_lines(cells: list[dict[str, Any]]) -> list[str]:
     for cell in cells:
         ref = str(cell.get("ref") or "")
         value = cell.get("value")
-        if value is None or str(value) == "" or _xlsx_cell_coordinates(ref) is None:
+        if value is None or str(value) == "":
             continue
-        lines.append(f"{ref}: {value}")
+        if _xlsx_cell_coordinates(ref) is None:
+            lines.append(f"Unreferenced cell: {value}")
+        else:
+            lines.append(f"{ref}: {value}")
     return lines
 
 
 def _xlsx_sheet_rows(cells: list[dict[str, Any]]) -> list[list[str]]:
-    positioned_cells: list[tuple[int, int, str]] = []
+    positioned_cells: dict[int, dict[int, str]] = {}
     fallback_rows: list[list[str]] = []
     for cell in cells:
         value = cell.get("value")
@@ -641,19 +668,15 @@ def _xlsx_sheet_rows(cells: list[dict[str, Any]]) -> list[list[str]]:
         if coordinates is None:
             fallback_rows.append([text])
             continue
-        positioned_cells.append((*coordinates, text))
+        row, column = coordinates
+        positioned_cells.setdefault(row, {})[column] = text
     if not positioned_cells:
         return fallback_rows
 
-    min_row = min(row for row, _column, _text in positioned_cells)
-    max_row = max(row for row, _column, _text in positioned_cells)
-    min_column = min(column for _row, column, _text in positioned_cells)
-    max_column = max(column for _row, column, _text in positioned_cells)
-    row_count = max_row - min_row + 1
-    column_count = max_column - min_column + 1
-    rows = [["" for _column in range(column_count)] for _row in range(row_count)]
-    for row, column, text in positioned_cells:
-        rows[row - min_row][column - min_column] = text
+    rows = [
+        [row_cells[column] for column in sorted(row_cells)]
+        for _row, row_cells in sorted(positioned_cells.items())
+    ]
     rows.extend(fallback_rows)
     return rows
 

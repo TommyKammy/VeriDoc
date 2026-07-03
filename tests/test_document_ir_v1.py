@@ -55,6 +55,7 @@ class DocumentIrV1Test(unittest.TestCase):
         self.assertEqual("document-ir/v1", schema["properties"]["schema_version"]["const"])
         block_properties = schema["properties"]["blocks"]["items"]["properties"]
         self.assertIn("review", block_properties)
+        self.assertIn("rows", block_properties)
         self.assertIn("footnote", block_properties["type"]["enum"])
         self.assertIn("warnings", schema["properties"])
 
@@ -897,6 +898,41 @@ class DocumentIrV1Test(unittest.TestCase):
         self.assertEqual("table", document_ir.blocks[0].type)
         self.assertIn("A1: Item", document_ir.blocks[0].text)
         self.assertIn("B2: 12.5", document_ir.blocks[0].text)
+        self.assertEqual(
+            [["Sheet: Results"], ["Item", "Mass"], ["Sample A", "12.5"]],
+            document_ir.blocks[0].rows,
+        )
+
+    def test_xlsx_parser_output_preserves_sparse_and_unreferenced_cells(self) -> None:
+        document_ir = from_parser_output(
+            {
+                "source_path": "fixtures/sparse.xlsx",
+                "sheets": [
+                    {
+                        "name": "Sparse",
+                        "cells": [
+                            {"ref": "A1", "value": "Top left"},
+                            {"ref": "XFD1048576", "value": "Far edge"},
+                            {"ref": "", "value": "No ref"},
+                            {"ref": "not-a-cell", "value": "Bad ref"},
+                        ],
+                    }
+                ],
+            },
+            document_id="sparse-xlsx",
+            title="Sparse XLSX",
+            source_type="xlsx",
+        )
+
+        result = validate_document_ir_v1(document_ir)
+
+        self.assertTrue(result.ok, result.errors)
+        self.assertEqual(
+            [["Sheet: Sparse"], ["Top left"], ["Far edge"], ["No ref"], ["Bad ref"]],
+            document_ir.blocks[0].rows,
+        )
+        self.assertIn("XFD1048576: Far edge", document_ir.blocks[0].text)
+        self.assertIn("Unreferenced cell: No ref", document_ir.blocks[0].text)
 
     def test_ocr_regions_convert_to_document_ir_v1_blocks(self) -> None:
         document_ir = from_parser_output(

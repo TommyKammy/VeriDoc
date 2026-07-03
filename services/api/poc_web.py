@@ -2376,13 +2376,14 @@ def _parser_output_xlsx_sheet_table_row_records(
         if not isinstance(sheet_value, dict):
             continue
         sheet_name = str(sheet_value.get("name") or f"Sheet {index}")
-        rows = _xlsx_sheet_table_rows(sheet_value.get("cells"))
+        cells_value = sheet_value.get("cells")
+        rows = _xlsx_sheet_table_rows(cells_value)
         review_rows = [[f"Sheet: {sheet_name}"], *rows]
         text = "\n".join(
                 line
                 for line in [
                     f"Sheet: {sheet_name}",
-                    *_pdf_table_rows_text(rows).splitlines(),
+                    *_xlsx_sheet_cell_reference_lines(cells_value),
                 ]
                 if line
             )
@@ -2399,7 +2400,7 @@ def _parser_output_xlsx_sheet_table_row_records(
 
 
 def _xlsx_sheet_table_rows(cells_value: Any) -> list[list[str]]:
-    positioned_cells: list[tuple[int, int, str]] = []
+    positioned_cells: dict[int, dict[int, str]] = {}
     fallback_rows: list[list[str]] = []
     for cell_value in _parser_output_fragment_list(cells_value):
         if not isinstance(cell_value, dict):
@@ -2411,22 +2412,33 @@ def _xlsx_sheet_table_rows(cells_value: Any) -> list[list[str]]:
         if coordinates is None:
             fallback_rows.append([str(value)])
             continue
-        positioned_cells.append((*coordinates, str(value)))
+        row, column = coordinates
+        positioned_cells.setdefault(row, {})[column] = str(value)
     if not positioned_cells:
         return fallback_rows
 
-    min_row = min(row for row, _column, _text in positioned_cells)
-    max_row = max(row for row, _column, _text in positioned_cells)
-    min_column = min(column for _row, column, _text in positioned_cells)
-    max_column = max(column for _row, column, _text in positioned_cells)
     rows = [
-        ["" for _column in range(max_column - min_column + 1)]
-        for _row in range(max_row - min_row + 1)
+        [row_cells[column] for column in sorted(row_cells)]
+        for _row, row_cells in sorted(positioned_cells.items())
     ]
-    for row, column, text in positioned_cells:
-        rows[row - min_row][column - min_column] = text
     rows.extend(fallback_rows)
     return rows
+
+
+def _xlsx_sheet_cell_reference_lines(cells_value: Any) -> list[str]:
+    lines: list[str] = []
+    for cell_value in _parser_output_fragment_list(cells_value):
+        if not isinstance(cell_value, dict):
+            continue
+        value = cell_value.get("value")
+        if value is None or str(value) == "":
+            continue
+        ref = str(cell_value.get("ref") or "")
+        if _xlsx_cell_coordinates(ref) is None:
+            lines.append(f"Unreferenced cell: {value}")
+        else:
+            lines.append(f"{ref}: {value}")
+    return lines
 
 
 def _xlsx_cell_coordinates(ref: str) -> tuple[int, int] | None:
@@ -2554,8 +2566,6 @@ def _parser_table_match_rank(
     extractor_name = _parser_output_block_extractor_name(block, fallback_extractor="unknown")
     if _int_value(block.get("source_page"), default=0) != parser_table.get("page_number"):
         return None
-    if source_priority == 0 and extractor_name == "xlsx" and parser_table.get("extractor") == "xlsx":
-        return (source_priority, 0)
     if str(block.get("text") or "") != parser_table.get("text"):
         return None
     if extractor_name == parser_table.get("extractor"):
