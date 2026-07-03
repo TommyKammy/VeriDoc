@@ -3474,6 +3474,32 @@ def test_convert_uploaded_phase0_json_infers_xlsx_source_type_from_source_path()
     assert validation_result.returncode == 0, validation_result.stderr
 
 
+def test_convert_uploaded_phase0_json_preserves_xlsx_column_gaps() -> None:
+    parser_output = {
+        "source_path": "gapped-output.xlsx",
+        "sheets": [
+            {
+                "name": "Gapped",
+                "cells": [
+                    {"ref": "A1", "value": "Left"},
+                    {"ref": "C1", "value": "Right"},
+                ],
+            }
+        ],
+    }
+
+    result = convert_uploaded_document(
+        filename="gapped-output.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+        conversion_mode="excel_to_word",
+    )
+
+    assert result["document_ir"]["blocks"][0]["rows"] == [
+        ["Sheet: Gapped"],
+        ["Left", "", "Right"],
+    ]
+
+
 def test_convert_uploaded_xlsx_json_keeps_page_table_rows_over_sheet_records() -> None:
     parser_output = {
         "source_path": "mixed-parser.xlsx",

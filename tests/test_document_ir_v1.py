@@ -934,6 +934,36 @@ class DocumentIrV1Test(unittest.TestCase):
         self.assertIn("XFD1048576: Far edge", document_ir.blocks[0].text)
         self.assertIn("Unreferenced cell: No ref", document_ir.blocks[0].text)
 
+    def test_xlsx_parser_output_preserves_bounded_column_gaps(self) -> None:
+        document_ir = from_parser_output(
+            {
+                "source_path": "fixtures/gapped.xlsx",
+                "sheets": [
+                    {
+                        "name": "Gapped",
+                        "cells": [
+                            {"ref": "A1", "value": "A value"},
+                            {"ref": "C1", "value": "C value"},
+                            {"ref": "B2", "value": "B value"},
+                            {"ref": "C2", "value": "C2 value"},
+                        ],
+                    }
+                ],
+            },
+            document_id="gapped-xlsx",
+            title="Gapped XLSX",
+            source_type="xlsx",
+        )
+
+        self.assertEqual(
+            [
+                ["Sheet: Gapped"],
+                ["A value", "", "C value"],
+                ["", "B value", "C2 value"],
+            ],
+            document_ir.blocks[0].rows,
+        )
+
     def test_ocr_regions_convert_to_document_ir_v1_blocks(self) -> None:
         document_ir = from_parser_output(
             {

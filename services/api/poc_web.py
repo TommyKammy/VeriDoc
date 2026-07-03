@@ -30,6 +30,7 @@ if str(REPO_ROOT) not in sys.path:
 from core.ir.document_ir_v1 import (
     DocumentIRV1,
     UNITS,
+    XLSX_ROW_GAP_PRESERVE_MAX_COLUMNS,
     adapt_document_ir_v0_blocks,
     from_parser_output,
     validate_document_ir_v1,
@@ -2417,10 +2418,25 @@ def _xlsx_sheet_table_rows(cells_value: Any) -> list[list[str]]:
     if not positioned_cells:
         return fallback_rows
 
-    rows = [
-        [row_cells[column] for column in sorted(row_cells)]
-        for _row, row_cells in sorted(positioned_cells.items())
+    occupied_columns = [
+        column for row_cells in positioned_cells.values() for column in row_cells
     ]
+    first_column = min(occupied_columns)
+    last_column = max(occupied_columns)
+    column_span = last_column - first_column + 1
+    if column_span <= XLSX_ROW_GAP_PRESERVE_MAX_COLUMNS:
+        rows = [
+            [
+                row_cells.get(column, "")
+                for column in range(first_column, last_column + 1)
+            ]
+            for _row, row_cells in sorted(positioned_cells.items())
+        ]
+    else:
+        rows = [
+            [row_cells[column] for column in sorted(row_cells)]
+            for _row, row_cells in sorted(positioned_cells.items())
+        ]
     rows.extend(fallback_rows)
     return rows
 
