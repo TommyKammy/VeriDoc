@@ -61,6 +61,77 @@ def _sample_docx_xml() -> str:
 """
 
 
+def _sample_xlsx_bytes() -> bytes:
+    output = BytesIO()
+    with ZipFile(output, "w", ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "[Content_Types].xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+</Types>
+""",
+        )
+        archive.writestr(
+            "xl/workbook.xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="WBS" sheetId="1" r:id="rId1"/>
+  </sheets>
+</workbook>
+""",
+        )
+        archive.writestr(
+            "xl/_rels/workbook.xml.rels",
+            """<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>
+""",
+        )
+        archive.writestr(
+            "xl/styles.xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <numFmts count="1"><numFmt numFmtId="164" formatCode="00000"/></numFmts>
+  <cellXfs count="2">
+    <xf numFmtId="0"/>
+    <xf numFmtId="164" applyNumberFormat="1"/>
+  </cellXfs>
+</styleSheet>
+""",
+        )
+        archive.writestr(
+            "xl/worksheets/sheet1.xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <dimension ref="A1:D3"/>
+  <sheetData>
+    <row r="1">
+      <c r="A1" t="inlineStr"><is><t>ID</t></is></c>
+      <c r="B1" t="inlineStr"><is><t>Task</t></is></c>
+      <c r="C1" t="inlineStr"><is><t>Due</t></is></c>
+      <c r="D1" t="inlineStr"><is><t>Cost</t></is></c>
+    </row>
+    <row r="2">
+      <c r="A2" s="1"><v>123</v></c>
+      <c r="B2" t="inlineStr"><is><t>Template review</t></is></c>
+      <c r="C2" t="d"><v>2026-07-03</v></c>
+      <c r="D2"><v>12.5</v></c>
+    </row>
+  </sheetData>
+</worksheet>
+""",
+        )
+    return output.getvalue()
+
+
 def test_convert_uploaded_document_surfaces_review_items_and_download_payload() -> None:
     parser_output = {
         "pages": [
@@ -262,6 +333,64 @@ def test_convert_uploaded_document_manifest_names_mode_artifacts_safely(
             },
         },
     }
+
+
+def test_excel_to_word_primary_docx_renders_sheet_values_for_review() -> None:
+    result = convert_uploaded_document(
+        filename="wbs.xlsx",
+        content=_sample_xlsx_bytes(),
+        conversion_mode="excel_to_word",
+    )
+
+    assert result["status"] == "requires_review"
+    assert result["warnings"] == [
+        "conversion mode excel_to_word selected",
+        "blocks[0].bbox missing; block marked requires_review",
+    ]
+
+    primary_artifact, debug_artifact = result["artifacts"]
+    primary_content = primary_artifact.pop("content")
+    assert isinstance(primary_content, bytes)
+    assert primary_artifact == {
+        "id": "primary-docx",
+        "kind": "primary",
+        "format": "docx",
+        "filename": "wbs.veridoc-excel-to-word.docx",
+        "content_type": (
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        ),
+        "size_bytes": len(primary_content),
+        "sha256": hashlib.sha256(primary_content).hexdigest(),
+        "metadata": {
+            "role": "primary",
+            "conversion_mode": "excel_to_word",
+            "source_filename": "wbs.xlsx",
+            "download": {
+                "available": True,
+                "field": "artifacts[0].content_base64",
+            },
+        },
+    }
+    assert debug_artifact["id"] == "debug-json"
+    with ZipFile(BytesIO(primary_content)) as archive:
+        document_xml = archive.read("word/document.xml").decode("utf-8")
+    assert "wbs.xlsx" in document_xml
+    assert "Sheet: WBS" in document_xml
+    assert "Template review" in document_xml
+    assert "2026-07-03" in document_xml
+    assert "12.5" in document_xml
+    assert "00123" in document_xml
+
+    downloaded = json.loads(result["download"]["content"].decode("utf-8"))
+    assert downloaded["document_ir"]["document"]["source_type"] == "xlsx"
+    table_blocks = [
+        block for block in downloaded["document_ir"]["blocks"] if block["type"] == "table"
+    ]
+    assert table_blocks[0]["rows"] == [
+        ["Sheet: WBS"],
+        ["ID", "Task", "Due", "Cost"],
+        ["00123", "Template review", "2026-07-03", "12.5"],
+    ]
 
 
 def test_convert_uploaded_document_blocks_primary_render_failures(
@@ -3315,7 +3444,13 @@ def test_convert_uploaded_phase0_json_infers_xlsx_source_type_from_source_path()
 
     assert result["document_ir"]["document"]["source_type"] == "xlsx"
     assert result["document_ir"]["pages"]
-    assert "A1: Lot" in result["document_ir"]["blocks"][0]["text"]
+    assert result["document_ir"]["blocks"][0]["text"] == (
+        "Sheet: Document IR\nLot\tSAMPLE-001"
+    )
+    assert result["document_ir"]["blocks"][0]["rows"] == [
+        ["Sheet: Document IR"],
+        ["Lot", "SAMPLE-001"],
+    ]
 
 
 def test_convert_uploaded_document_serializes_invalid_numeric_values_as_strict_json() -> None:

@@ -592,7 +592,7 @@ def convert_uploaded_document(
         title=_document_title_from_parser_output(safe_filename, parser_output),
         source_type=source_type,
     )
-    document_ir_dict = document_ir.to_dict()
+    document_ir_dict = _document_ir_with_parser_table_rows(document_ir.to_dict(), parser_output)
     validation = validate_document_ir_v1(document_ir)
     review_items = _review_items(document_ir)
     warnings = [*input_warnings, *mode_warnings, *validation.warnings]
@@ -600,7 +600,7 @@ def convert_uploaded_document(
     primary_warning: str | None = None
     if validation.ok:
         primary_artifact, primary_warning = _render_primary_artifact(
-            _document_ir_with_parser_table_rows(document_ir_dict, parser_output),
+            document_ir_dict,
             source_filename=safe_filename,
             conversion_mode=selected_conversion_mode,
         )
@@ -2348,6 +2348,7 @@ def _document_ir_with_parser_table_rows(
 def _parser_output_table_row_records(parser_output: dict[str, Any]) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     root_extractor = _parser_output_root_extractor_name(parser_output.get("extractor"))
+    records.extend(_parser_output_xlsx_sheet_table_row_records(parser_output))
     adapted_parser_output = adapt_document_ir_v0_blocks(parser_output)
     pages = adapted_parser_output.get("pages")
     if isinstance(pages, list):
@@ -2365,6 +2366,78 @@ def _parser_output_table_row_records(parser_output: dict[str, Any]) -> list[dict
         )
     )
     return records
+
+
+def _parser_output_xlsx_sheet_table_row_records(
+    parser_output: dict[str, Any],
+) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for index, sheet_value in enumerate(_parser_output_fragment_list(parser_output.get("sheets")), start=1):
+        if not isinstance(sheet_value, dict):
+            continue
+        sheet_name = str(sheet_value.get("name") or f"Sheet {index}")
+        rows = _xlsx_sheet_table_rows(sheet_value.get("cells"))
+        review_rows = [[f"Sheet: {sheet_name}"], *rows]
+        text = "\n".join(
+                line
+                for line in [
+                    f"Sheet: {sheet_name}",
+                    *_pdf_table_rows_text(rows).splitlines(),
+                ]
+                if line
+            )
+        records.append(
+            {
+                "page_number": index,
+                "extractor": "xlsx",
+                "text": text,
+                "rows": review_rows,
+                "source_priority": 0,
+            }
+        )
+    return records
+
+
+def _xlsx_sheet_table_rows(cells_value: Any) -> list[list[str]]:
+    positioned_cells: list[tuple[int, int, str]] = []
+    fallback_rows: list[list[str]] = []
+    for cell_value in _parser_output_fragment_list(cells_value):
+        if not isinstance(cell_value, dict):
+            continue
+        value = cell_value.get("value")
+        if value is None or str(value) == "":
+            continue
+        coordinates = _xlsx_cell_coordinates(str(cell_value.get("ref") or ""))
+        if coordinates is None:
+            fallback_rows.append([str(value)])
+            continue
+        positioned_cells.append((*coordinates, str(value)))
+    if not positioned_cells:
+        return fallback_rows
+
+    min_row = min(row for row, _column, _text in positioned_cells)
+    max_row = max(row for row, _column, _text in positioned_cells)
+    min_column = min(column for _row, column, _text in positioned_cells)
+    max_column = max(column for _row, column, _text in positioned_cells)
+    rows = [
+        ["" for _column in range(max_column - min_column + 1)]
+        for _row in range(max_row - min_row + 1)
+    ]
+    for row, column, text in positioned_cells:
+        rows[row - min_row][column - min_column] = text
+    rows.extend(fallback_rows)
+    return rows
+
+
+def _xlsx_cell_coordinates(ref: str) -> tuple[int, int] | None:
+    match = re.fullmatch(r"([A-Z]+)([1-9][0-9]*)", ref)
+    if match is None:
+        return None
+    column_text, row_text = match.groups()
+    column = 0
+    for character in column_text:
+        column = (column * 26) + (ord(character) - ord("A") + 1)
+    return int(row_text), column
 
 
 def _parser_output_page_table_row_records(

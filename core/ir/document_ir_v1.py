@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, is_dataclass
 import math
+import re
 from typing import Any, List, Optional
 
 
@@ -11,6 +12,7 @@ BLOCK_TYPES = {"heading", "paragraph", "table", "field", "footnote", "list_item"
 UNITS = {"pt", "px", "mm"}
 DEFAULT_PAGE_WIDTH_PT = 612.0
 DEFAULT_PAGE_HEIGHT_PT = 792.0
+XLSX_CELL_REF_RE = re.compile(r"([A-Z]+)([1-9][0-9]*)\Z")
 
 
 @dataclass(frozen=True)
@@ -600,21 +602,66 @@ def _extractor_name_value(value: Any, *, default: str) -> str:
 def _xlsx_sheet_page(sheet_data: Any, page_number: int) -> dict[str, Any]:
     sheet = _to_mapping(sheet_data)
     cells = [_to_mapping(cell) for cell in _list_value(sheet.get("cells"))]
-    text_lines = []
-    for cell in cells:
-        value = cell.get("value")
-        if value is None or str(value) == "":
-            continue
-        ref = str(cell.get("ref") or "")
-        text_lines.append(f"{ref}: {value}" if ref else str(value))
-    text = "\n".join(text_lines) or str(sheet.get("name") or f"Sheet {page_number}")
+    sheet_name = str(sheet.get("name") or f"Sheet {page_number}")
+    rows = _xlsx_sheet_rows(cells)
+    review_rows = [[f"Sheet: {sheet_name}"], *rows]
+    text_lines = [f"Sheet: {sheet_name}"]
+    if rows:
+        text_lines.extend(_table_rows_text(rows).splitlines())
+    text = "\n".join(line for line in text_lines if line)
+    fragment: dict[str, Any] = {"kind": "table", "text": text, "extractor": "xlsx"}
+    fragment["rows"] = review_rows
     return {
         "page_number": page_number,
         "width": DEFAULT_PAGE_WIDTH_PT,
         "height": max(DEFAULT_PAGE_HEIGHT_PT, 72.0 + (18.0 * max(len(text_lines), 1))),
         "unit": "pt",
-        "fragments": [{"kind": "table", "text": text, "extractor": "xlsx"}],
+        "fragments": [fragment],
     }
+
+
+def _xlsx_sheet_rows(cells: list[dict[str, Any]]) -> list[list[str]]:
+    positioned_cells: list[tuple[int, int, str]] = []
+    fallback_rows: list[list[str]] = []
+    for cell in cells:
+        value = cell.get("value")
+        if value is None or str(value) == "":
+            continue
+        text = str(value)
+        coordinates = _xlsx_cell_coordinates(str(cell.get("ref") or ""))
+        if coordinates is None:
+            fallback_rows.append([text])
+            continue
+        positioned_cells.append((*coordinates, text))
+    if not positioned_cells:
+        return fallback_rows
+
+    min_row = min(row for row, _column, _text in positioned_cells)
+    max_row = max(row for row, _column, _text in positioned_cells)
+    min_column = min(column for _row, column, _text in positioned_cells)
+    max_column = max(column for _row, column, _text in positioned_cells)
+    row_count = max_row - min_row + 1
+    column_count = max_column - min_column + 1
+    rows = [["" for _column in range(column_count)] for _row in range(row_count)]
+    for row, column, text in positioned_cells:
+        rows[row - min_row][column - min_column] = text
+    rows.extend(fallback_rows)
+    return rows
+
+
+def _xlsx_cell_coordinates(ref: str) -> tuple[int, int] | None:
+    match = XLSX_CELL_REF_RE.fullmatch(ref)
+    if match is None:
+        return None
+    column_text, row_text = match.groups()
+    return int(row_text), _xlsx_column_index(column_text)
+
+
+def _xlsx_column_index(column_text: str) -> int:
+    value = 0
+    for character in column_text:
+        value = (value * 26) + (ord(character) - ord("A") + 1)
+    return value
 
 
 def _pdf_table_report_pages(data: dict[str, Any]) -> list[Any]:
