@@ -964,6 +964,31 @@ class DocumentIrV1Test(unittest.TestCase):
             document_ir.blocks[0].rows,
         )
 
+    def test_xlsx_parser_output_preserves_reasonable_wide_column_gaps(self) -> None:
+        document_ir = from_parser_output(
+            {
+                "source_path": "fixtures/wide-gapped.xlsx",
+                "sheets": [
+                    {
+                        "name": "Wide Gapped",
+                        "cells": [
+                            {"ref": "A1", "value": "Left"},
+                            {"ref": "BM1", "value": "Right"},
+                        ],
+                    }
+                ],
+            },
+            document_id="wide-gapped-xlsx",
+            title="Wide Gapped XLSX",
+            source_type="xlsx",
+        )
+
+        row = document_ir.blocks[0].rows[1]
+        self.assertEqual(65, len(row))
+        self.assertEqual("Left", row[0])
+        self.assertEqual([""] * 63, row[1:64])
+        self.assertEqual("Right", row[64])
+
     def test_xlsx_parser_output_preserves_bounded_row_gaps(self) -> None:
         document_ir = from_parser_output(
             {
@@ -1027,7 +1052,7 @@ class DocumentIrV1Test(unittest.TestCase):
                         "name": "Sparse Columns",
                         "cells": [
                             {"ref": "A1", "value": "Top"},
-                            {"ref": "C300", "value": "Total"},
+                            {"ref": "C2000", "value": "Total"},
                         ],
                     }
                 ],

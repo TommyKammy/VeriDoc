@@ -3552,6 +3552,47 @@ def test_convert_uploaded_phase0_json_preserves_xlsx_column_gaps() -> None:
     ]
 
 
+def test_convert_uploaded_phase0_json_preserves_reasonable_wide_column_gaps(
+    tmp_path: Path,
+) -> None:
+    parser_output = {
+        "source_path": "wide-gapped-output.xlsx",
+        "sheets": [
+            {
+                "name": "Wide Gapped",
+                "cells": [
+                    {"ref": "A1", "value": "Left"},
+                    {"ref": "BM1", "value": "Right"},
+                ],
+            }
+        ],
+    }
+
+    result = convert_uploaded_document(
+        filename="wide-gapped-output.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+        conversion_mode="excel_to_word",
+    )
+
+    row = result["document_ir"]["blocks"][0]["rows"][1]
+    assert len(row) == 65
+    assert row[0] == "Left"
+    assert row[1:64] == [""] * 63
+    assert row[64] == "Right"
+
+    primary_artifact = result["artifacts"][0]
+    primary_path = tmp_path / primary_artifact["filename"]
+    primary_path.write_bytes(primary_artifact["content"])
+
+    docx = extract_docx_structure(primary_path)
+    table_blocks = [block for block in docx.blocks if block.kind == "table"]
+    rendered_row = table_blocks[0].rows[1]
+    assert len(rendered_row) == 65
+    assert rendered_row[0] == "Left"
+    assert rendered_row[1:64] == [""] * 63
+    assert rendered_row[64] == "Right"
+
+
 def test_convert_uploaded_phase0_json_preserves_xlsx_row_gaps() -> None:
     parser_output = {
         "source_path": "row-gapped-output.xlsx",
@@ -3606,9 +3647,11 @@ def test_convert_uploaded_phase0_json_preserves_sparse_column_gaps_after_row_cap
     expected_rows = [
         ["Sheet: Sparse Columns"],
         ["Top", "", ""],
-        ["", "", "Total"],
     ]
-    assert result["document_ir"]["blocks"][0]["rows"] == expected_rows
+    assert result["document_ir"]["blocks"][0]["rows"][:2] == expected_rows
+    assert result["document_ir"]["blocks"][0]["rows"][2:300] == [["", "", ""]] * 298
+    assert result["document_ir"]["blocks"][0]["rows"][300] == ["", "", "Total"]
+    assert len(result["document_ir"]["blocks"][0]["rows"]) == 301
 
     primary_artifact = result["artifacts"][0]
     primary_path = tmp_path / primary_artifact["filename"]
@@ -3616,7 +3659,10 @@ def test_convert_uploaded_phase0_json_preserves_sparse_column_gaps_after_row_cap
 
     docx = extract_docx_structure(primary_path)
     table_blocks = [block for block in docx.blocks if block.kind == "table"]
-    assert table_blocks[0].rows == expected_rows
+    assert table_blocks[0].rows[:2] == expected_rows
+    assert table_blocks[0].rows[2:300] == [["", "", ""]] * 298
+    assert table_blocks[0].rows[300] == ["", "", "Total"]
+    assert len(table_blocks[0].rows) == 301
 
 
 def test_convert_uploaded_xlsx_json_keeps_page_table_rows_over_sheet_records() -> None:
