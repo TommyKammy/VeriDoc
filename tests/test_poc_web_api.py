@@ -9605,6 +9605,24 @@ def test_web_direct_convert_selects_and_posts_conversion_mode() -> None:
     assert "conversion_mode: directConversionMode.value" in html
 
 
+def test_web_direct_convert_download_uses_primary_artifact_before_debug_json() -> None:
+    html = Path("apps/web/index.html").read_text(encoding="utf-8")
+
+    render_result = re.search(
+        r"function renderResult\(result\) \{(?P<body>.*?)\n      \}",
+        html,
+        re.DOTALL,
+    )
+
+    assert render_result is not None
+    body = render_result.group("body")
+    assert "primaryDownloadArtifact(result)" in body
+    assert "artifact.content_base64" in html
+    assert "Download primary DOCX/XLSX" in html
+    assert "Download audit/debug JSON" in html
+    assert "JSON is retained for validation and audit details." in html
+
+
 def test_web_job_detail_actions_perform_download_and_retry_side_effects() -> None:
     html = Path("apps/web/index.html").read_text(encoding="utf-8")
 
