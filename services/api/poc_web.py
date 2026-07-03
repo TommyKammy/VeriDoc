@@ -2422,26 +2422,24 @@ def _xlsx_sheet_table_rows(cells_value: Any) -> list[list[str]]:
     occupied_columns = [
         column for row_cells in positioned_cells.values() for column in row_cells
     ]
-    first_column = min(occupied_columns)
     last_column = max(occupied_columns)
-    column_span = last_column - first_column + 1
-    first_row = min(positioned_cells)
     last_row = max(positioned_cells)
-    row_span = last_row - first_row + 1
+    column_span = last_column
+    row_span = last_row
     if column_span <= XLSX_ROW_GAP_PRESERVE_MAX_COLUMNS:
         if row_span <= XLSX_ROW_GAP_PRESERVE_MAX_ROWS:
             rows = [
                 [
                     positioned_cells.get(row, {}).get(column, "")
-                    for column in range(first_column, last_column + 1)
+                    for column in range(1, last_column + 1)
                 ]
-                for row in range(first_row, last_row + 1)
+                for row in range(1, last_row + 1)
             ]
         else:
             rows = [
                 [
                     row_cells.get(column, "")
-                    for column in range(first_column, last_column + 1)
+                    for column in range(1, last_column + 1)
                 ]
                 for _row, row_cells in sorted(positioned_cells.items())
             ]

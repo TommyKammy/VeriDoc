@@ -3552,6 +3552,47 @@ def test_convert_uploaded_phase0_json_preserves_xlsx_column_gaps() -> None:
     ]
 
 
+def test_convert_uploaded_phase0_json_preserves_leading_xlsx_offsets(
+    tmp_path: Path,
+) -> None:
+    parser_output = {
+        "source_path": "offset-table-output.xlsx",
+        "sheets": [
+            {
+                "name": "Offset Table",
+                "cells": [
+                    {"ref": "B2", "value": "ID"},
+                    {"ref": "C2", "value": "Task"},
+                    {"ref": "B3", "value": "00123"},
+                    {"ref": "C3", "value": "Template review"},
+                ],
+            }
+        ],
+    }
+
+    result = convert_uploaded_document(
+        filename="offset-table-output.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+        conversion_mode="excel_to_word",
+    )
+
+    expected_rows = [
+        ["Sheet: Offset Table"],
+        ["", "", ""],
+        ["", "ID", "Task"],
+        ["", "00123", "Template review"],
+    ]
+    assert result["document_ir"]["blocks"][0]["rows"] == expected_rows
+
+    primary_artifact = result["artifacts"][0]
+    primary_path = tmp_path / primary_artifact["filename"]
+    primary_path.write_bytes(primary_artifact["content"])
+
+    docx = extract_docx_structure(primary_path)
+    table_blocks = [block for block in docx.blocks if block.kind == "table"]
+    assert table_blocks[0].rows == expected_rows
+
+
 def test_convert_uploaded_phase0_json_accepts_lowercase_xlsx_refs(tmp_path: Path) -> None:
     parser_output = {
         "source_path": "lowercase-refs-output.xlsx",

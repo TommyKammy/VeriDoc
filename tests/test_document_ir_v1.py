@@ -964,6 +964,37 @@ class DocumentIrV1Test(unittest.TestCase):
             document_ir.blocks[0].rows,
         )
 
+    def test_xlsx_parser_output_preserves_leading_row_and_column_offsets(self) -> None:
+        document_ir = from_parser_output(
+            {
+                "source_path": "fixtures/offset-table.xlsx",
+                "sheets": [
+                    {
+                        "name": "Offset Table",
+                        "cells": [
+                            {"ref": "B2", "value": "ID"},
+                            {"ref": "C2", "value": "Task"},
+                            {"ref": "B3", "value": "00123"},
+                            {"ref": "C3", "value": "Template review"},
+                        ],
+                    }
+                ],
+            },
+            document_id="offset-table-xlsx",
+            title="Offset Table XLSX",
+            source_type="xlsx",
+        )
+
+        self.assertEqual(
+            [
+                ["Sheet: Offset Table"],
+                ["", "", ""],
+                ["", "ID", "Task"],
+                ["", "00123", "Template review"],
+            ],
+            document_ir.blocks[0].rows,
+        )
+
     def test_xlsx_parser_output_accepts_lowercase_cell_refs(self) -> None:
         document_ir = from_parser_output(
             {
