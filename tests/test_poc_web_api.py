@@ -9605,6 +9605,53 @@ def test_web_direct_convert_selects_and_posts_conversion_mode() -> None:
     assert "conversion_mode: directConversionMode.value" in html
 
 
+def test_web_direct_convert_defines_phase6_review_information_architecture() -> None:
+    html = Path("apps/web/index.html").read_text(encoding="utf-8")
+    readme = Path("README.md").read_text(encoding="utf-8")
+
+    expected_regions = {
+        "upload": ["content_base64", "document_ir"],
+        "conversion-settings": ["conversion_mode"],
+        "review": ["review_items", "warnings", "document_ir"],
+        "artifact-downloads": ["artifacts[]", "download", "audit"],
+        "detail-json": ["document_ir", "review_items", "warnings", "artifacts[]", "audit"],
+    }
+
+    for region, fields in expected_regions.items():
+        marker = f'data-poc-ui-region="{region}"'
+        assert marker in html
+        start = html.index(marker)
+        end = html.find('data-poc-ui-region="', start + len(marker))
+        region_html = html[start:] if end == -1 else html[start:end]
+        for field in fields:
+            assert field in region_html
+
+    assert html.index('data-poc-ui-region="review"') < html.index(
+        'data-poc-ui-region="detail-json"'
+    )
+    assert "JSON is for detail and audit inspection, not the primary review workflow." in html
+    assert (
+        "Review decisions are made from warnings, review items, source locations, and artifact actions."
+        in html
+    )
+
+    for snippet in [
+        "## PoC review UI information architecture",
+        "Upload",
+        "Conversion settings",
+        "Review",
+        "Artifact downloads",
+        "Detail JSON",
+        "JSON is retained for detail and audit inspection, not as the primary review workflow.",
+        "`document_ir`",
+        "`review_items`",
+        "`warnings`",
+        "`artifacts[]`",
+        "`audit`",
+    ]:
+        assert snippet in readme
+
+
 def test_web_direct_convert_download_uses_primary_artifact_before_debug_json() -> None:
     html = Path("apps/web/index.html").read_text(encoding="utf-8")
 

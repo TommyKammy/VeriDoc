@@ -692,11 +692,19 @@
       <section class="panel" style="margin-top: 16px" aria-labelledby="direct-title">
         <h2 id="direct-title">Direct convert</h2>
         <div class="form-grid" style="margin-top: 14px">
-          <div class="field">
+          <div
+            class="field"
+            data-poc-ui-region="upload"
+            data-api-fields="content_base64 document_ir"
+          >
             <label for="document-file">Document or Phase0 JSON</label>
             <input id="document-file" type="file" />
           </div>
-          <div class="field">
+          <div
+            class="field"
+            data-poc-ui-region="conversion-settings"
+            data-api-fields="conversion_mode"
+          >
             <label for="direct-conversion-mode">Conversion mode</label>
             <select id="direct-conversion-mode">
               <option value="auto">auto</option>
@@ -708,17 +716,39 @@
           </div>
           <button id="convert-button" type="button">Convert now</button>
         </div>
-        <div id="result-panel" class="empty" hidden>
+        <div
+          id="result-panel"
+          class="empty"
+          data-poc-ui-region="review"
+          data-api-fields="review_items warnings document_ir"
+          hidden
+        >
           <span id="status" class="status"></span>
+          <div class="page-status">
+            Review decisions are made from warnings, review items, source locations, and artifact actions.
+          </div>
           <div id="review-list"></div>
           <div id="review-action-status" class="page-status" role="status"></div>
-          <div id="artifact-summary" class="page-status"></div>
-          <div class="action-row">
+          <div
+            data-poc-ui-region="artifact-downloads"
+            data-api-fields="artifacts[] download audit"
+          >
+            <div id="artifact-summary" class="page-status"></div>
+          </div>
+          <div class="action-row" data-api-fields="artifacts[] download audit">
             <a id="download-link" download hidden>Download primary DOCX/XLSX</a>
             <a id="debug-download-link" download hidden>Download audit/debug JSON</a>
           </div>
         </div>
-        <div id="raw-panel" hidden>
+        <div
+          id="raw-panel"
+          data-poc-ui-region="detail-json"
+          data-api-fields="document_ir review_items warnings artifacts[] audit"
+          hidden
+        >
+          <div class="page-status">
+            JSON is for detail and audit inspection, not the primary review workflow.
+          </div>
           <pre id="raw-result"></pre>
         </div>
       </section>
@@ -1610,7 +1640,14 @@
           debugDownloadArtifact(result)
         );
         rawResult.textContent = JSON.stringify(
-          { validation: result.validation, review_items: result.review_items.map(reviewItemForDetail) },
+          {
+            document_ir: result.document_ir,
+            validation: result.validation,
+            review_items: result.review_items.map(reviewItemForDetail),
+            warnings: result.warnings,
+            artifacts: (result.artifacts || []).map(artifactForDetail),
+            audit: result.audit,
+          },
           null,
           2
         );
@@ -1664,6 +1701,12 @@
             (artifact?.kind === "debug" || artifact?.kind === "audit") &&
             artifact?.format === "json"
         );
+      }
+
+      function artifactForDetail(artifact) {
+        if (!artifact || typeof artifact !== "object") return artifact;
+        const { content_base64: _contentBase64, content: _content, ...detail } = artifact;
+        return detail;
       }
 
       function clearDownload() {

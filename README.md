@@ -126,6 +126,27 @@ field. `pdf_to_word` prioritizes editable heading, paragraph, and table
 structure for review; exact PDF layout, fonts, coordinates, columns, footnotes,
 and OCR fidelity are not guaranteed.
 
+## PoC review UI information architecture
+
+The Phase6 PoC web UI keeps the direct conversion review flow split into five
+stable regions so later P6 issues can add behavior without making raw JSON the
+main review surface:
+
+- Upload: accepts the source file and sends `content_base64`; the converted
+  `document_ir` feeds preview and source-location surfaces after conversion.
+- Conversion settings: sends the selected `conversion_mode` and keeps mode
+  selection separate from review judgment.
+- Review: displays `review_items`, `warnings`, and `document_ir` source page or
+  bbox context as the primary operator review surface.
+- Artifact downloads: presents primary files and debug exports from
+  `artifacts[]`, `download`, and `audit` metadata.
+- Detail JSON: shows `document_ir`, `review_items`, `warnings`, `artifacts[]`,
+  and `audit` for troubleshooting and audit inspection.
+
+JSON is retained for detail and audit inspection, not as the primary review workflow.
+Follow-up P6 work should assert that review decisions are available from the
+Review and Artifact downloads regions before relying on Detail JSON.
+
 ## Local PoC API authentication
 
 `services/api/poc_web.py` can enforce local bearer-token authentication when
