@@ -55,6 +55,7 @@ class DocumentIrV1Test(unittest.TestCase):
         self.assertEqual("document-ir/v1", schema["properties"]["schema_version"]["const"])
         block_properties = schema["properties"]["blocks"]["items"]["properties"]
         self.assertIn("review", block_properties)
+        self.assertIn("rows", block_properties)
         self.assertIn("footnote", block_properties["type"]["enum"])
         self.assertIn("warnings", schema["properties"])
 
@@ -897,6 +898,234 @@ class DocumentIrV1Test(unittest.TestCase):
         self.assertEqual("table", document_ir.blocks[0].type)
         self.assertIn("A1: Item", document_ir.blocks[0].text)
         self.assertIn("B2: 12.5", document_ir.blocks[0].text)
+        self.assertEqual(
+            [["Sheet: Results"], ["Item", "Mass"], ["Sample A", "12.5"]],
+            document_ir.blocks[0].rows,
+        )
+
+    def test_xlsx_parser_output_preserves_sparse_and_unreferenced_cells(self) -> None:
+        document_ir = from_parser_output(
+            {
+                "source_path": "fixtures/sparse.xlsx",
+                "sheets": [
+                    {
+                        "name": "Sparse",
+                        "cells": [
+                            {"ref": "A1", "value": "Top left"},
+                            {"ref": "XFD1048576", "value": "Far edge"},
+                            {"ref": "", "value": "No ref"},
+                            {"ref": "not-a-cell", "value": "Bad ref"},
+                        ],
+                    }
+                ],
+            },
+            document_id="sparse-xlsx",
+            title="Sparse XLSX",
+            source_type="xlsx",
+        )
+
+        result = validate_document_ir_v1(document_ir)
+
+        self.assertTrue(result.ok, result.errors)
+        self.assertEqual(
+            [["Sheet: Sparse"], ["Top left"], ["Far edge"], ["No ref"], ["Bad ref"]],
+            document_ir.blocks[0].rows,
+        )
+        self.assertIn("XFD1048576: Far edge", document_ir.blocks[0].text)
+        self.assertIn("Unreferenced cell: No ref", document_ir.blocks[0].text)
+
+    def test_xlsx_parser_output_preserves_bounded_column_gaps(self) -> None:
+        document_ir = from_parser_output(
+            {
+                "source_path": "fixtures/gapped.xlsx",
+                "sheets": [
+                    {
+                        "name": "Gapped",
+                        "cells": [
+                            {"ref": "A1", "value": "A value"},
+                            {"ref": "C1", "value": "C value"},
+                            {"ref": "B2", "value": "B value"},
+                            {"ref": "C2", "value": "C2 value"},
+                        ],
+                    }
+                ],
+            },
+            document_id="gapped-xlsx",
+            title="Gapped XLSX",
+            source_type="xlsx",
+        )
+
+        self.assertEqual(
+            [
+                ["Sheet: Gapped"],
+                ["A value", "", "C value"],
+                ["", "B value", "C2 value"],
+            ],
+            document_ir.blocks[0].rows,
+        )
+
+    def test_xlsx_parser_output_preserves_leading_row_and_column_offsets(self) -> None:
+        document_ir = from_parser_output(
+            {
+                "source_path": "fixtures/offset-table.xlsx",
+                "sheets": [
+                    {
+                        "name": "Offset Table",
+                        "cells": [
+                            {"ref": "B2", "value": "ID"},
+                            {"ref": "C2", "value": "Task"},
+                            {"ref": "B3", "value": "00123"},
+                            {"ref": "C3", "value": "Template review"},
+                        ],
+                    }
+                ],
+            },
+            document_id="offset-table-xlsx",
+            title="Offset Table XLSX",
+            source_type="xlsx",
+        )
+
+        self.assertEqual(
+            [
+                ["Sheet: Offset Table"],
+                ["", "", ""],
+                ["", "ID", "Task"],
+                ["", "00123", "Template review"],
+            ],
+            document_ir.blocks[0].rows,
+        )
+
+    def test_xlsx_parser_output_accepts_lowercase_cell_refs(self) -> None:
+        document_ir = from_parser_output(
+            {
+                "source_path": "fixtures/lowercase-refs.xlsx",
+                "sheets": [
+                    {
+                        "name": "Lowercase Refs",
+                        "cells": [
+                            {"ref": "a1", "value": "Left"},
+                            {"ref": "c1", "value": "Right"},
+                        ],
+                    }
+                ],
+            },
+            document_id="lowercase-refs-xlsx",
+            title="Lowercase Refs XLSX",
+            source_type="xlsx",
+        )
+
+        self.assertEqual(
+            [
+                ["Sheet: Lowercase Refs"],
+                ["Left", "", "Right"],
+            ],
+            document_ir.blocks[0].rows,
+        )
+        self.assertIn("a1: Left", document_ir.blocks[0].text)
+        self.assertIn("c1: Right", document_ir.blocks[0].text)
+
+    def test_xlsx_parser_output_preserves_reasonable_wide_column_gaps(self) -> None:
+        document_ir = from_parser_output(
+            {
+                "source_path": "fixtures/wide-gapped.xlsx",
+                "sheets": [
+                    {
+                        "name": "Wide Gapped",
+                        "cells": [
+                            {"ref": "A1", "value": "Left"},
+                            {"ref": "BM1", "value": "Right"},
+                        ],
+                    }
+                ],
+            },
+            document_id="wide-gapped-xlsx",
+            title="Wide Gapped XLSX",
+            source_type="xlsx",
+        )
+
+        row = document_ir.blocks[0].rows[1]
+        self.assertEqual(65, len(row))
+        self.assertEqual("Left", row[0])
+        self.assertEqual([""] * 63, row[1:64])
+        self.assertEqual("Right", row[64])
+
+    def test_xlsx_parser_output_preserves_bounded_row_gaps(self) -> None:
+        document_ir = from_parser_output(
+            {
+                "source_path": "fixtures/row-gapped.xlsx",
+                "sheets": [
+                    {
+                        "name": "Row Gapped",
+                        "cells": [
+                            {"ref": "A1", "value": "Header"},
+                            {"ref": "A3", "value": "Footer"},
+                            {"ref": "C3", "value": "Total"},
+                        ],
+                    }
+                ],
+            },
+            document_id="row-gapped-xlsx",
+            title="Row Gapped XLSX",
+            source_type="xlsx",
+        )
+
+        self.assertEqual(
+            [
+                ["Sheet: Row Gapped"],
+                ["Header", "", ""],
+                ["", "", ""],
+                ["Footer", "", "Total"],
+            ],
+            document_ir.blocks[0].rows,
+        )
+
+    def test_xlsx_parser_output_keeps_extreme_row_gaps_sparse(self) -> None:
+        document_ir = from_parser_output(
+            {
+                "source_path": "fixtures/extreme-row-gap.xlsx",
+                "sheets": [
+                    {
+                        "name": "Sparse Rows",
+                        "cells": [
+                            {"ref": "A1", "value": "Top"},
+                            {"ref": "A1048576", "value": "Bottom"},
+                        ],
+                    }
+                ],
+            },
+            document_id="sparse-row-xlsx",
+            title="Sparse Row XLSX",
+            source_type="xlsx",
+        )
+
+        self.assertEqual(
+            [["Sheet: Sparse Rows"], ["Top"], ["Bottom"]],
+            document_ir.blocks[0].rows,
+        )
+
+    def test_xlsx_parser_output_preserves_sparse_column_gaps_after_row_cap(self) -> None:
+        document_ir = from_parser_output(
+            {
+                "source_path": "fixtures/sparse-row-column-gap.xlsx",
+                "sheets": [
+                    {
+                        "name": "Sparse Columns",
+                        "cells": [
+                            {"ref": "A1", "value": "Top"},
+                            {"ref": "C2000", "value": "Total"},
+                        ],
+                    }
+                ],
+            },
+            document_id="sparse-row-column-gap-xlsx",
+            title="Sparse Row Column Gap XLSX",
+            source_type="xlsx",
+        )
+
+        self.assertEqual(
+            [["Sheet: Sparse Columns"], ["Top", "", ""], ["", "", "Total"]],
+            document_ir.blocks[0].rows,
+        )
 
     def test_ocr_regions_convert_to_document_ir_v1_blocks(self) -> None:
         document_ir = from_parser_output(

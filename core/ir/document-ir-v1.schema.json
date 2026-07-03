@@ -180,6 +180,15 @@
             "minimum": 0,
             "maximum": 1
           },
+          "rows": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
           "review": {
             "type": "object",
             "additionalProperties": false,

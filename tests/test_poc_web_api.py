@@ -3,6 +3,7 @@ import hashlib
 from io import BytesIO
 import json
 import re
+import tempfile
 from http.client import HTTPConnection
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -59,6 +60,77 @@ def _sample_docx_xml() -> str:
   </w:body>
 </w:document>
 """
+
+
+def _sample_xlsx_bytes() -> bytes:
+    output = BytesIO()
+    with ZipFile(output, "w", ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "[Content_Types].xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+</Types>
+""",
+        )
+        archive.writestr(
+            "xl/workbook.xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="WBS" sheetId="1" r:id="rId1"/>
+  </sheets>
+</workbook>
+""",
+        )
+        archive.writestr(
+            "xl/_rels/workbook.xml.rels",
+            """<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>
+""",
+        )
+        archive.writestr(
+            "xl/styles.xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <numFmts count="1"><numFmt numFmtId="164" formatCode="00000"/></numFmts>
+  <cellXfs count="2">
+    <xf numFmtId="0"/>
+    <xf numFmtId="164" applyNumberFormat="1"/>
+  </cellXfs>
+</styleSheet>
+""",
+        )
+        archive.writestr(
+            "xl/worksheets/sheet1.xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <dimension ref="A1:D3"/>
+  <sheetData>
+    <row r="1">
+      <c r="A1" t="inlineStr"><is><t>ID</t></is></c>
+      <c r="B1" t="inlineStr"><is><t>Task</t></is></c>
+      <c r="C1" t="inlineStr"><is><t>Due</t></is></c>
+      <c r="D1" t="inlineStr"><is><t>Cost</t></is></c>
+    </row>
+    <row r="2">
+      <c r="A2" s="1"><v>123</v></c>
+      <c r="B2" t="inlineStr"><is><t>Template review</t></is></c>
+      <c r="C2" t="d"><v>2026-07-03</v></c>
+      <c r="D2"><v>12.5</v></c>
+    </row>
+  </sheetData>
+</worksheet>
+""",
+        )
+    return output.getvalue()
 
 
 def test_convert_uploaded_document_surfaces_review_items_and_download_payload() -> None:
@@ -262,6 +334,116 @@ def test_convert_uploaded_document_manifest_names_mode_artifacts_safely(
             },
         },
     }
+
+
+def test_excel_to_word_primary_docx_renders_sheet_values_for_review() -> None:
+    result = convert_uploaded_document(
+        filename="wbs.xlsx",
+        content=_sample_xlsx_bytes(),
+        conversion_mode="excel_to_word",
+    )
+
+    assert result["status"] == "requires_review"
+    assert result["warnings"] == [
+        "conversion mode excel_to_word selected",
+        "blocks[0].bbox missing; block marked requires_review",
+    ]
+
+    primary_artifact, debug_artifact = result["artifacts"]
+    primary_content = primary_artifact.pop("content")
+    assert isinstance(primary_content, bytes)
+    assert primary_artifact == {
+        "id": "primary-docx",
+        "kind": "primary",
+        "format": "docx",
+        "filename": "wbs.veridoc-excel-to-word.docx",
+        "content_type": (
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        ),
+        "size_bytes": len(primary_content),
+        "sha256": hashlib.sha256(primary_content).hexdigest(),
+        "metadata": {
+            "role": "primary",
+            "conversion_mode": "excel_to_word",
+            "source_filename": "wbs.xlsx",
+            "download": {
+                "available": True,
+                "field": "artifacts[0].content_base64",
+            },
+        },
+    }
+    assert debug_artifact["id"] == "debug-json"
+    with ZipFile(BytesIO(primary_content)) as archive:
+        document_xml = archive.read("word/document.xml").decode("utf-8")
+    assert "wbs.xlsx" in document_xml
+    assert "Sheet: WBS" in document_xml
+    assert "Template review" in document_xml
+    assert "2026-07-03" in document_xml
+    assert "12.5" in document_xml
+    assert "00123" in document_xml
+
+    downloaded = json.loads(result["download"]["content"].decode("utf-8"))
+    assert downloaded["document_ir"]["document"]["source_type"] == "xlsx"
+    table_blocks = [
+        block for block in downloaded["document_ir"]["blocks"] if block["type"] == "table"
+    ]
+    assert table_blocks[0]["rows"] == [
+        ["Sheet: WBS"],
+        ["ID", "Task", "Due", "Cost"],
+        ["00123", "Template review", "2026-07-03", "12.5"],
+    ]
+
+
+def test_excel_to_word_json_prefers_page_table_rows_over_matching_sheet_rows() -> None:
+    parser_output = {
+        "source_type": "xlsx",
+        "extractor": "xlsx",
+        "sheets": [
+            {
+                "name": "WBS",
+                "cells": [
+                    {"ref": "A1", "value": "ID"},
+                    {"ref": "C1", "value": "Task"},
+                    {"ref": "A2", "value": "00123"},
+                    {"ref": "C2", "value": "Template review"},
+                ],
+            }
+        ],
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 320,
+                "height": 240,
+                "unit": "pt",
+                "fragments": [
+                    {
+                        "kind": "table",
+                        "extractor": "xlsx",
+                        "text": (
+                            "Sheet: WBS\n"
+                            "A1: ID\n"
+                            "C1: Task\n"
+                            "A2: 00123\n"
+                            "C2: Template review"
+                        ),
+                        "rows": [["ID", "Task"], ["00123", "Template review"]],
+                    }
+                ],
+            }
+        ],
+    }
+
+    result = convert_uploaded_document(
+        filename="page-and-sheet-rows.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+        conversion_mode="excel_to_word",
+    )
+
+    downloaded = json.loads(result["download"]["content"].decode("utf-8"))
+    table_blocks = [
+        block for block in downloaded["document_ir"]["blocks"] if block["type"] == "table"
+    ]
+    assert table_blocks[0]["rows"] == [["ID", "Task"], ["00123", "Template review"]]
 
 
 def test_convert_uploaded_document_blocks_primary_render_failures(
@@ -3315,7 +3497,287 @@ def test_convert_uploaded_phase0_json_infers_xlsx_source_type_from_source_path()
 
     assert result["document_ir"]["document"]["source_type"] == "xlsx"
     assert result["document_ir"]["pages"]
-    assert "A1: Lot" in result["document_ir"]["blocks"][0]["text"]
+    assert result["document_ir"]["blocks"][0]["text"] == (
+        "Sheet: Document IR\nA1: Lot\nB1: SAMPLE-001"
+    )
+    assert result["document_ir"]["blocks"][0]["rows"] == [
+        ["Sheet: Document IR"],
+        ["Lot", "SAMPLE-001"],
+    ]
+    with tempfile.TemporaryDirectory() as temp_dir:
+        document_path = Path(temp_dir) / "api-emitted-document-ir-v1.json"
+        document_path.write_text(json.dumps(result["document_ir"]), encoding="utf-8")
+
+        validation_result = subprocess.run(
+            [
+                sys.executable,
+                "scripts/ci/validate_document_ir.py",
+                "--schema",
+                "core/ir/document-ir-v1.schema.json",
+                "--document",
+                str(document_path),
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+    assert validation_result.returncode == 0, validation_result.stderr
+
+
+def test_convert_uploaded_phase0_json_preserves_xlsx_column_gaps() -> None:
+    parser_output = {
+        "source_path": "gapped-output.xlsx",
+        "sheets": [
+            {
+                "name": "Gapped",
+                "cells": [
+                    {"ref": "A1", "value": "Left"},
+                    {"ref": "C1", "value": "Right"},
+                ],
+            }
+        ],
+    }
+
+    result = convert_uploaded_document(
+        filename="gapped-output.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+        conversion_mode="excel_to_word",
+    )
+
+    assert result["document_ir"]["blocks"][0]["rows"] == [
+        ["Sheet: Gapped"],
+        ["Left", "", "Right"],
+    ]
+
+
+def test_convert_uploaded_phase0_json_preserves_leading_xlsx_offsets(
+    tmp_path: Path,
+) -> None:
+    parser_output = {
+        "source_path": "offset-table-output.xlsx",
+        "sheets": [
+            {
+                "name": "Offset Table",
+                "cells": [
+                    {"ref": "B2", "value": "ID"},
+                    {"ref": "C2", "value": "Task"},
+                    {"ref": "B3", "value": "00123"},
+                    {"ref": "C3", "value": "Template review"},
+                ],
+            }
+        ],
+    }
+
+    result = convert_uploaded_document(
+        filename="offset-table-output.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+        conversion_mode="excel_to_word",
+    )
+
+    expected_rows = [
+        ["Sheet: Offset Table"],
+        ["", "", ""],
+        ["", "ID", "Task"],
+        ["", "00123", "Template review"],
+    ]
+    assert result["document_ir"]["blocks"][0]["rows"] == expected_rows
+
+    primary_artifact = result["artifacts"][0]
+    primary_path = tmp_path / primary_artifact["filename"]
+    primary_path.write_bytes(primary_artifact["content"])
+
+    docx = extract_docx_structure(primary_path)
+    table_blocks = [block for block in docx.blocks if block.kind == "table"]
+    assert table_blocks[0].rows == expected_rows
+
+
+def test_convert_uploaded_phase0_json_accepts_lowercase_xlsx_refs(tmp_path: Path) -> None:
+    parser_output = {
+        "source_path": "lowercase-refs-output.xlsx",
+        "sheets": [
+            {
+                "name": "Lowercase Refs",
+                "cells": [
+                    {"ref": "a1", "value": "Left"},
+                    {"ref": "c1", "value": "Right"},
+                ],
+            }
+        ],
+    }
+
+    result = convert_uploaded_document(
+        filename="lowercase-refs-output.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+        conversion_mode="excel_to_word",
+    )
+
+    assert result["document_ir"]["blocks"][0]["rows"] == [
+        ["Sheet: Lowercase Refs"],
+        ["Left", "", "Right"],
+    ]
+
+    primary_artifact = result["artifacts"][0]
+    primary_path = tmp_path / primary_artifact["filename"]
+    primary_path.write_bytes(primary_artifact["content"])
+
+    docx = extract_docx_structure(primary_path)
+    table_blocks = [block for block in docx.blocks if block.kind == "table"]
+    assert table_blocks[0].rows[1] == ["Left", "", "Right"]
+
+
+def test_convert_uploaded_phase0_json_preserves_reasonable_wide_column_gaps(
+    tmp_path: Path,
+) -> None:
+    parser_output = {
+        "source_path": "wide-gapped-output.xlsx",
+        "sheets": [
+            {
+                "name": "Wide Gapped",
+                "cells": [
+                    {"ref": "A1", "value": "Left"},
+                    {"ref": "BM1", "value": "Right"},
+                ],
+            }
+        ],
+    }
+
+    result = convert_uploaded_document(
+        filename="wide-gapped-output.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+        conversion_mode="excel_to_word",
+    )
+
+    row = result["document_ir"]["blocks"][0]["rows"][1]
+    assert len(row) == 65
+    assert row[0] == "Left"
+    assert row[1:64] == [""] * 63
+    assert row[64] == "Right"
+
+    primary_artifact = result["artifacts"][0]
+    primary_path = tmp_path / primary_artifact["filename"]
+    primary_path.write_bytes(primary_artifact["content"])
+
+    docx = extract_docx_structure(primary_path)
+    table_blocks = [block for block in docx.blocks if block.kind == "table"]
+    rendered_row = table_blocks[0].rows[1]
+    assert len(rendered_row) == 65
+    assert rendered_row[0] == "Left"
+    assert rendered_row[1:64] == [""] * 63
+    assert rendered_row[64] == "Right"
+
+
+def test_convert_uploaded_phase0_json_preserves_xlsx_row_gaps() -> None:
+    parser_output = {
+        "source_path": "row-gapped-output.xlsx",
+        "sheets": [
+            {
+                "name": "Row Gapped",
+                "cells": [
+                    {"ref": "A1", "value": "Header"},
+                    {"ref": "A3", "value": "Footer"},
+                    {"ref": "C3", "value": "Total"},
+                ],
+            }
+        ],
+    }
+
+    result = convert_uploaded_document(
+        filename="row-gapped-output.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+        conversion_mode="excel_to_word",
+    )
+
+    assert result["document_ir"]["blocks"][0]["rows"] == [
+        ["Sheet: Row Gapped"],
+        ["Header", "", ""],
+        ["", "", ""],
+        ["Footer", "", "Total"],
+    ]
+
+
+def test_convert_uploaded_phase0_json_preserves_sparse_column_gaps_after_row_cap(
+    tmp_path: Path,
+) -> None:
+    parser_output = {
+        "source_path": "sparse-row-column-gap.xlsx",
+        "sheets": [
+            {
+                "name": "Sparse Columns",
+                "cells": [
+                    {"ref": "A1", "value": "Top"},
+                    {"ref": "C300", "value": "Total"},
+                ],
+            }
+        ],
+    }
+
+    result = convert_uploaded_document(
+        filename="sparse-row-column-gap.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+        conversion_mode="excel_to_word",
+    )
+
+    expected_rows = [
+        ["Sheet: Sparse Columns"],
+        ["Top", "", ""],
+    ]
+    assert result["document_ir"]["blocks"][0]["rows"][:2] == expected_rows
+    assert result["document_ir"]["blocks"][0]["rows"][2:300] == [["", "", ""]] * 298
+    assert result["document_ir"]["blocks"][0]["rows"][300] == ["", "", "Total"]
+    assert len(result["document_ir"]["blocks"][0]["rows"]) == 301
+
+    primary_artifact = result["artifacts"][0]
+    primary_path = tmp_path / primary_artifact["filename"]
+    primary_path.write_bytes(primary_artifact["content"])
+
+    docx = extract_docx_structure(primary_path)
+    table_blocks = [block for block in docx.blocks if block.kind == "table"]
+    assert table_blocks[0].rows[:2] == expected_rows
+    assert table_blocks[0].rows[2:300] == [["", "", ""]] * 298
+    assert table_blocks[0].rows[300] == ["", "", "Total"]
+    assert len(table_blocks[0].rows) == 301
+
+
+def test_convert_uploaded_xlsx_json_keeps_page_table_rows_over_sheet_records() -> None:
+    parser_output = {
+        "source_path": "mixed-parser.xlsx",
+        "sheets": [
+            {
+                "name": "Sheet Source",
+                "cells": [
+                    {"ref": "A1", "value": "Sheet header"},
+                    {"ref": "B1", "value": "Sheet value"},
+                ],
+            }
+        ],
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 320,
+                "height": 240,
+                "unit": "pt",
+                "fragments": [
+                    {
+                        "kind": "table",
+                        "text": "Page header\tPage value",
+                        "rows": [["Page header", "Page value"]],
+                        "extractor": "xlsx",
+                    }
+                ],
+            }
+        ],
+    }
+
+    result = convert_uploaded_document(
+        filename="mixed-parser.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+    )
+
+    assert result["document_ir"]["document"]["source_type"] == "xlsx"
+    assert result["document_ir"]["blocks"][0]["text"] == "Page header\tPage value"
+    assert result["document_ir"]["blocks"][0]["rows"] == [["Page header", "Page value"]]
 
 
 def test_convert_uploaded_document_serializes_invalid_numeric_values_as_strict_json() -> None:

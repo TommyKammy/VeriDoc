@@ -30,6 +30,8 @@ if str(REPO_ROOT) not in sys.path:
 from core.ir.document_ir_v1 import (
     DocumentIRV1,
     UNITS,
+    XLSX_ROW_GAP_PRESERVE_MAX_COLUMNS,
+    XLSX_ROW_GAP_PRESERVE_MAX_ROWS,
     adapt_document_ir_v0_blocks,
     from_parser_output,
     validate_document_ir_v1,
@@ -592,7 +594,7 @@ def convert_uploaded_document(
         title=_document_title_from_parser_output(safe_filename, parser_output),
         source_type=source_type,
     )
-    document_ir_dict = document_ir.to_dict()
+    document_ir_dict = _document_ir_with_parser_table_rows(document_ir.to_dict(), parser_output)
     validation = validate_document_ir_v1(document_ir)
     review_items = _review_items(document_ir)
     warnings = [*input_warnings, *mode_warnings, *validation.warnings]
@@ -600,7 +602,7 @@ def convert_uploaded_document(
     primary_warning: str | None = None
     if validation.ok:
         primary_artifact, primary_warning = _render_primary_artifact(
-            _document_ir_with_parser_table_rows(document_ir_dict, parser_output),
+            document_ir_dict,
             source_filename=safe_filename,
             conversion_mode=selected_conversion_mode,
         )
@@ -2364,7 +2366,117 @@ def _parser_output_table_row_records(parser_output: dict[str, Any]) -> list[dict
             parser_output, fallback_extractor=root_extractor
         )
     )
+    records.extend(_parser_output_xlsx_sheet_table_row_records(parser_output))
     return records
+
+
+def _parser_output_xlsx_sheet_table_row_records(
+    parser_output: dict[str, Any],
+) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for index, sheet_value in enumerate(_parser_output_fragment_list(parser_output.get("sheets")), start=1):
+        if not isinstance(sheet_value, dict):
+            continue
+        sheet_name = str(sheet_value.get("name") or f"Sheet {index}")
+        cells_value = sheet_value.get("cells")
+        rows = _xlsx_sheet_table_rows(cells_value)
+        review_rows = [[f"Sheet: {sheet_name}"], *rows]
+        text = "\n".join(
+                line
+                for line in [
+                    f"Sheet: {sheet_name}",
+                    *_xlsx_sheet_cell_reference_lines(cells_value),
+                ]
+                if line
+            )
+        records.append(
+            {
+                "page_number": index,
+                "extractor": "xlsx",
+                "text": text,
+                "rows": review_rows,
+                "source_priority": 0,
+            }
+        )
+    return records
+
+
+def _xlsx_sheet_table_rows(cells_value: Any) -> list[list[str]]:
+    positioned_cells: dict[int, dict[int, str]] = {}
+    fallback_rows: list[list[str]] = []
+    for cell_value in _parser_output_fragment_list(cells_value):
+        if not isinstance(cell_value, dict):
+            continue
+        value = cell_value.get("value")
+        if value is None or str(value) == "":
+            continue
+        coordinates = _xlsx_cell_coordinates(str(cell_value.get("ref") or ""))
+        if coordinates is None:
+            fallback_rows.append([str(value)])
+            continue
+        row, column = coordinates
+        positioned_cells.setdefault(row, {})[column] = str(value)
+    if not positioned_cells:
+        return fallback_rows
+
+    occupied_columns = [
+        column for row_cells in positioned_cells.values() for column in row_cells
+    ]
+    last_column = max(occupied_columns)
+    last_row = max(positioned_cells)
+    column_span = last_column
+    row_span = last_row
+    if column_span <= XLSX_ROW_GAP_PRESERVE_MAX_COLUMNS:
+        if row_span <= XLSX_ROW_GAP_PRESERVE_MAX_ROWS:
+            rows = [
+                [
+                    positioned_cells.get(row, {}).get(column, "")
+                    for column in range(1, last_column + 1)
+                ]
+                for row in range(1, last_row + 1)
+            ]
+        else:
+            rows = [
+                [
+                    row_cells.get(column, "")
+                    for column in range(1, last_column + 1)
+                ]
+                for _row, row_cells in sorted(positioned_cells.items())
+            ]
+    else:
+        rows = [
+            [row_cells[column] for column in sorted(row_cells)]
+            for _row, row_cells in sorted(positioned_cells.items())
+        ]
+    rows.extend(fallback_rows)
+    return rows
+
+
+def _xlsx_sheet_cell_reference_lines(cells_value: Any) -> list[str]:
+    lines: list[str] = []
+    for cell_value in _parser_output_fragment_list(cells_value):
+        if not isinstance(cell_value, dict):
+            continue
+        value = cell_value.get("value")
+        if value is None or str(value) == "":
+            continue
+        ref = str(cell_value.get("ref") or "")
+        if _xlsx_cell_coordinates(ref) is None:
+            lines.append(f"Unreferenced cell: {value}")
+        else:
+            lines.append(f"{ref}: {value}")
+    return lines
+
+
+def _xlsx_cell_coordinates(ref: str) -> tuple[int, int] | None:
+    match = re.fullmatch(r"([A-Za-z]+)([1-9][0-9]*)", ref)
+    if match is None:
+        return None
+    column_text, row_text = match.groups()
+    column = 0
+    for character in column_text.upper():
+        column = (column * 26) + (ord(character) - ord("A") + 1)
+    return int(row_text), column
 
 
 def _parser_output_page_table_row_records(

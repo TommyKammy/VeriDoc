@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, is_dataclass
 import math
+import re
 from typing import Any, List, Optional
 
 
@@ -11,6 +12,9 @@ BLOCK_TYPES = {"heading", "paragraph", "table", "field", "footnote", "list_item"
 UNITS = {"pt", "px", "mm"}
 DEFAULT_PAGE_WIDTH_PT = 612.0
 DEFAULT_PAGE_HEIGHT_PT = 792.0
+XLSX_CELL_REF_RE = re.compile(r"([A-Za-z]+)([1-9][0-9]*)\Z")
+XLSX_ROW_GAP_PRESERVE_MAX_COLUMNS = 256
+XLSX_ROW_GAP_PRESERVE_MAX_ROWS = 1024
 
 
 @dataclass(frozen=True)
@@ -60,6 +64,7 @@ class DocumentBlock:
     extractor: ExtractorRef
     confidence: float
     review: ReviewState
+    rows: Optional[List[List[str]]] = None
 
 
 @dataclass(frozen=True)
@@ -71,7 +76,7 @@ class DocumentIRV1:
     warnings: List[str]
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return _drop_none_values(asdict(self))
 
 
 @dataclass(frozen=True)
@@ -258,6 +263,7 @@ def _block_from_fragment(
         extractor=_extractor_ref(data, fallback_extractor),
         confidence=confidence,
         review=ReviewState(requires_review=requires_review, warnings=review_warnings),
+        rows=_rows_value(data.get("rows")),
     )
 
 
@@ -290,6 +296,28 @@ def _to_mapping(value: Any) -> dict[str, Any]:
 
 def _list_value(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
+
+
+def _drop_none_values(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _drop_none_values(item)
+            for key, item in value.items()
+            if item is not None
+        }
+    if isinstance(value, list):
+        return [_drop_none_values(item) for item in value]
+    return value
+
+
+def _rows_value(value: Any) -> Optional[List[List[str]]]:
+    rows: List[List[str]] = []
+    for row in _list_value(value):
+        if isinstance(row, list):
+            rows.append(["" if cell is None else str(cell) for cell in row])
+        else:
+            rows.append(["" if row is None else str(row)])
+    return rows or None
 
 
 def _parser_pages(data: dict[str, Any], source_type: str) -> list[Any]:
@@ -600,21 +628,99 @@ def _extractor_name_value(value: Any, *, default: str) -> str:
 def _xlsx_sheet_page(sheet_data: Any, page_number: int) -> dict[str, Any]:
     sheet = _to_mapping(sheet_data)
     cells = [_to_mapping(cell) for cell in _list_value(sheet.get("cells"))]
-    text_lines = []
-    for cell in cells:
-        value = cell.get("value")
-        if value is None or str(value) == "":
-            continue
-        ref = str(cell.get("ref") or "")
-        text_lines.append(f"{ref}: {value}" if ref else str(value))
-    text = "\n".join(text_lines) or str(sheet.get("name") or f"Sheet {page_number}")
+    sheet_name = str(sheet.get("name") or f"Sheet {page_number}")
+    rows = _xlsx_sheet_rows(cells)
+    review_rows = [[f"Sheet: {sheet_name}"], *rows]
+    text_lines = [f"Sheet: {sheet_name}", *_xlsx_sheet_cell_reference_lines(cells)]
+    text = "\n".join(line for line in text_lines if line)
+    fragment: dict[str, Any] = {"kind": "table", "text": text, "extractor": "xlsx"}
+    fragment["rows"] = review_rows
     return {
         "page_number": page_number,
         "width": DEFAULT_PAGE_WIDTH_PT,
         "height": max(DEFAULT_PAGE_HEIGHT_PT, 72.0 + (18.0 * max(len(text_lines), 1))),
         "unit": "pt",
-        "fragments": [{"kind": "table", "text": text, "extractor": "xlsx"}],
+        "fragments": [fragment],
     }
+
+
+def _xlsx_sheet_cell_reference_lines(cells: list[dict[str, Any]]) -> list[str]:
+    lines: list[str] = []
+    for cell in cells:
+        ref = str(cell.get("ref") or "")
+        value = cell.get("value")
+        if value is None or str(value) == "":
+            continue
+        if _xlsx_cell_coordinates(ref) is None:
+            lines.append(f"Unreferenced cell: {value}")
+        else:
+            lines.append(f"{ref}: {value}")
+    return lines
+
+
+def _xlsx_sheet_rows(cells: list[dict[str, Any]]) -> list[list[str]]:
+    positioned_cells: dict[int, dict[int, str]] = {}
+    fallback_rows: list[list[str]] = []
+    for cell in cells:
+        value = cell.get("value")
+        if value is None or str(value) == "":
+            continue
+        text = str(value)
+        coordinates = _xlsx_cell_coordinates(str(cell.get("ref") or ""))
+        if coordinates is None:
+            fallback_rows.append([text])
+            continue
+        row, column = coordinates
+        positioned_cells.setdefault(row, {})[column] = text
+    if not positioned_cells:
+        return fallback_rows
+
+    occupied_columns = [
+        column for row_cells in positioned_cells.values() for column in row_cells
+    ]
+    last_column = max(occupied_columns)
+    last_row = max(positioned_cells)
+    column_span = last_column
+    row_span = last_row
+    if column_span <= XLSX_ROW_GAP_PRESERVE_MAX_COLUMNS:
+        if row_span <= XLSX_ROW_GAP_PRESERVE_MAX_ROWS:
+            rows = [
+                [
+                    positioned_cells.get(row, {}).get(column, "")
+                    for column in range(1, last_column + 1)
+                ]
+                for row in range(1, last_row + 1)
+            ]
+        else:
+            rows = [
+                [
+                    row_cells.get(column, "")
+                    for column in range(1, last_column + 1)
+                ]
+                for _row, row_cells in sorted(positioned_cells.items())
+            ]
+    else:
+        rows = [
+            [row_cells[column] for column in sorted(row_cells)]
+            for _row, row_cells in sorted(positioned_cells.items())
+        ]
+    rows.extend(fallback_rows)
+    return rows
+
+
+def _xlsx_cell_coordinates(ref: str) -> tuple[int, int] | None:
+    match = XLSX_CELL_REF_RE.fullmatch(ref)
+    if match is None:
+        return None
+    column_text, row_text = match.groups()
+    return int(row_text), _xlsx_column_index(column_text.upper())
+
+
+def _xlsx_column_index(column_text: str) -> int:
+    value = 0
+    for character in column_text:
+        value = (value * 26) + (ord(character) - ord("A") + 1)
+    return value
 
 
 def _pdf_table_report_pages(data: dict[str, Any]) -> list[Any]:
