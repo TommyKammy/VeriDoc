@@ -3552,6 +3552,40 @@ def test_convert_uploaded_phase0_json_preserves_xlsx_column_gaps() -> None:
     ]
 
 
+def test_convert_uploaded_phase0_json_accepts_lowercase_xlsx_refs(tmp_path: Path) -> None:
+    parser_output = {
+        "source_path": "lowercase-refs-output.xlsx",
+        "sheets": [
+            {
+                "name": "Lowercase Refs",
+                "cells": [
+                    {"ref": "a1", "value": "Left"},
+                    {"ref": "c1", "value": "Right"},
+                ],
+            }
+        ],
+    }
+
+    result = convert_uploaded_document(
+        filename="lowercase-refs-output.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+        conversion_mode="excel_to_word",
+    )
+
+    assert result["document_ir"]["blocks"][0]["rows"] == [
+        ["Sheet: Lowercase Refs"],
+        ["Left", "", "Right"],
+    ]
+
+    primary_artifact = result["artifacts"][0]
+    primary_path = tmp_path / primary_artifact["filename"]
+    primary_path.write_bytes(primary_artifact["content"])
+
+    docx = extract_docx_structure(primary_path)
+    table_blocks = [block for block in docx.blocks if block.kind == "table"]
+    assert table_blocks[0].rows[1] == ["Left", "", "Right"]
+
+
 def test_convert_uploaded_phase0_json_preserves_reasonable_wide_column_gaps(
     tmp_path: Path,
 ) -> None:

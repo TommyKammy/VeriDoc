@@ -12,7 +12,7 @@ BLOCK_TYPES = {"heading", "paragraph", "table", "field", "footnote", "list_item"
 UNITS = {"pt", "px", "mm"}
 DEFAULT_PAGE_WIDTH_PT = 612.0
 DEFAULT_PAGE_HEIGHT_PT = 792.0
-XLSX_CELL_REF_RE = re.compile(r"([A-Z]+)([1-9][0-9]*)\Z")
+XLSX_CELL_REF_RE = re.compile(r"([A-Za-z]+)([1-9][0-9]*)\Z")
 XLSX_ROW_GAP_PRESERVE_MAX_COLUMNS = 256
 XLSX_ROW_GAP_PRESERVE_MAX_ROWS = 1024
 
@@ -715,7 +715,7 @@ def _xlsx_cell_coordinates(ref: str) -> tuple[int, int] | None:
     if match is None:
         return None
     column_text, row_text = match.groups()
-    return int(row_text), _xlsx_column_index(column_text)
+    return int(row_text), _xlsx_column_index(column_text.upper())
 
 
 def _xlsx_column_index(column_text: str) -> int:

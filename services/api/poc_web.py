@@ -2471,12 +2471,12 @@ def _xlsx_sheet_cell_reference_lines(cells_value: Any) -> list[str]:
 
 
 def _xlsx_cell_coordinates(ref: str) -> tuple[int, int] | None:
-    match = re.fullmatch(r"([A-Z]+)([1-9][0-9]*)", ref)
+    match = re.fullmatch(r"([A-Za-z]+)([1-9][0-9]*)", ref)
     if match is None:
         return None
     column_text, row_text = match.groups()
     column = 0
-    for character in column_text:
+    for character in column_text.upper():
         column = (column * 26) + (ord(character) - ord("A") + 1)
     return int(row_text), column
 

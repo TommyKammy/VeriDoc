@@ -964,6 +964,35 @@ class DocumentIrV1Test(unittest.TestCase):
             document_ir.blocks[0].rows,
         )
 
+    def test_xlsx_parser_output_accepts_lowercase_cell_refs(self) -> None:
+        document_ir = from_parser_output(
+            {
+                "source_path": "fixtures/lowercase-refs.xlsx",
+                "sheets": [
+                    {
+                        "name": "Lowercase Refs",
+                        "cells": [
+                            {"ref": "a1", "value": "Left"},
+                            {"ref": "c1", "value": "Right"},
+                        ],
+                    }
+                ],
+            },
+            document_id="lowercase-refs-xlsx",
+            title="Lowercase Refs XLSX",
+            source_type="xlsx",
+        )
+
+        self.assertEqual(
+            [
+                ["Sheet: Lowercase Refs"],
+                ["Left", "", "Right"],
+            ],
+            document_ir.blocks[0].rows,
+        )
+        self.assertIn("a1: Left", document_ir.blocks[0].text)
+        self.assertIn("c1: Right", document_ir.blocks[0].text)
+
     def test_xlsx_parser_output_preserves_reasonable_wide_column_gaps(self) -> None:
         document_ir = from_parser_output(
             {
