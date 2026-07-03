@@ -3581,6 +3581,44 @@ def test_convert_uploaded_phase0_json_preserves_xlsx_row_gaps() -> None:
     ]
 
 
+def test_convert_uploaded_phase0_json_preserves_sparse_column_gaps_after_row_cap(
+    tmp_path: Path,
+) -> None:
+    parser_output = {
+        "source_path": "sparse-row-column-gap.xlsx",
+        "sheets": [
+            {
+                "name": "Sparse Columns",
+                "cells": [
+                    {"ref": "A1", "value": "Top"},
+                    {"ref": "C300", "value": "Total"},
+                ],
+            }
+        ],
+    }
+
+    result = convert_uploaded_document(
+        filename="sparse-row-column-gap.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+        conversion_mode="excel_to_word",
+    )
+
+    expected_rows = [
+        ["Sheet: Sparse Columns"],
+        ["Top", "", ""],
+        ["", "", "Total"],
+    ]
+    assert result["document_ir"]["blocks"][0]["rows"] == expected_rows
+
+    primary_artifact = result["artifacts"][0]
+    primary_path = tmp_path / primary_artifact["filename"]
+    primary_path.write_bytes(primary_artifact["content"])
+
+    docx = extract_docx_structure(primary_path)
+    table_blocks = [block for block in docx.blocks if block.kind == "table"]
+    assert table_blocks[0].rows == expected_rows
+
+
 def test_convert_uploaded_xlsx_json_keeps_page_table_rows_over_sheet_records() -> None:
     parser_output = {
         "source_path": "mixed-parser.xlsx",
