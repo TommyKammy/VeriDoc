@@ -3,6 +3,7 @@ import hashlib
 from io import BytesIO
 import json
 import re
+import tempfile
 from http.client import HTTPConnection
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -3451,6 +3452,26 @@ def test_convert_uploaded_phase0_json_infers_xlsx_source_type_from_source_path()
         ["Sheet: Document IR"],
         ["Lot", "SAMPLE-001"],
     ]
+    with tempfile.TemporaryDirectory() as temp_dir:
+        document_path = Path(temp_dir) / "api-emitted-document-ir-v1.json"
+        document_path.write_text(json.dumps(result["document_ir"]), encoding="utf-8")
+
+        validation_result = subprocess.run(
+            [
+                sys.executable,
+                "scripts/ci/validate_document_ir.py",
+                "--schema",
+                "core/ir/document-ir-v1.schema.json",
+                "--document",
+                str(document_path),
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+    assert validation_result.returncode == 0, validation_result.stderr
 
 
 def test_convert_uploaded_xlsx_json_keeps_page_table_rows_over_sheet_records() -> None:
