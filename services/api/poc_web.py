@@ -93,6 +93,10 @@ CONVERSION_MODE_SOURCE_TYPES = {
     "word_to_excel": "docx",
     "excel_to_word": "xlsx",
 }
+UNSUPPORTED_CONVERSION_SETTING_WARNINGS = {
+    "use_llm": "LLM conversion setting is not implemented in the local PoC API",
+    "use_ocr": "OCR conversion setting is not implemented in the local PoC API",
+}
 LOCAL_AUTH_TOKENS_ENV = "VERIDOC_LOCAL_AUTH_TOKENS"
 ROLES = {"viewer", "reviewer", "approver", "admin"}
 ROLE_PERMISSIONS = {
@@ -573,11 +577,17 @@ LLM_INFERENCE_PROFILE_FIELDS = ("id", "label", "provider", "model_family", "reco
 
 
 def convert_uploaded_document(
-    *, filename: str, content: bytes, conversion_mode: str = "auto"
+    *,
+    filename: str,
+    content: bytes,
+    conversion_mode: str = "auto",
+    use_llm: bool = False,
+    use_ocr: bool = False,
 ) -> dict[str, Any]:
     """Convert one uploaded PoC document into IR, review details, and download bytes."""
     safe_filename = _safe_filename(filename)
     selected_conversion_mode = _validate_conversion_mode(conversion_mode)
+    conversion_settings = _conversion_settings(use_llm=use_llm, use_ocr=use_ocr)
     conversion_id = _conversion_id()
     source_sha256 = _sha256_hex(content)
     parser_output, input_warnings = _parser_output_from_upload(
@@ -597,7 +607,12 @@ def convert_uploaded_document(
     document_ir_dict = _document_ir_with_parser_table_rows(document_ir.to_dict(), parser_output)
     validation = validate_document_ir_v1(document_ir)
     review_items = _review_items(document_ir)
-    warnings = [*input_warnings, *mode_warnings, *validation.warnings]
+    warnings = [
+        *input_warnings,
+        *mode_warnings,
+        *_conversion_setting_warnings(conversion_settings),
+        *validation.warnings,
+    ]
     primary_artifact: dict[str, Any] | None = None
     primary_warning: str | None = None
     if validation.ok:
@@ -616,6 +631,7 @@ def convert_uploaded_document(
         "source_filename": safe_filename,
         "source_sha256": source_sha256,
         "conversion_mode": selected_conversion_mode,
+        "conversion_settings": conversion_settings,
     }
     download_payload = {
         "document_ir": document_ir_dict,
@@ -786,6 +802,8 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             filename = str(request.get("filename") or "upload.txt")
             content = _decode_request_content(request)
             conversion_mode = _validate_conversion_mode(request.get("conversion_mode"))
+            use_llm = _validate_conversion_setting_boolean(request, "use_llm")
+            use_ocr = _validate_conversion_setting_boolean(request, "use_ocr")
             if len(content) > MAX_UPLOAD_BYTES:
                 self._send_json({"error": "upload_too_large"}, status=413)
                 return
@@ -793,6 +811,8 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 filename=filename,
                 content=content,
                 conversion_mode=conversion_mode,
+                use_llm=use_llm,
+                use_ocr=use_ocr,
             )
         except PocServerDependencyError as exc:
             self._send_json(
@@ -3515,6 +3535,38 @@ def _validate_conversion_mode(value: Any) -> str:
     if mode not in CONVERSION_MODE_SOURCE_TYPES:
         raise ValueError(f"unsupported conversion_mode: {mode}")
     return mode
+
+
+def _validate_conversion_setting_boolean(request: dict[str, Any], field_name: str) -> bool:
+    requested = request.get(field_name, False)
+    if isinstance(requested, bool):
+        return requested
+    raise ValueError(f"{field_name} must be boolean")
+
+
+def _conversion_settings(*, use_llm: bool, use_ocr: bool) -> dict[str, dict[str, Any]]:
+    return {
+        "use_llm": _unsupported_conversion_setting(use_llm),
+        "use_ocr": _unsupported_conversion_setting(use_ocr),
+    }
+
+
+def _unsupported_conversion_setting(requested: bool) -> dict[str, Any]:
+    return {
+        "requested": requested,
+        "enabled": False,
+        "status": "unsupported" if requested else "disabled",
+    }
+
+
+def _conversion_setting_warnings(
+    conversion_settings: dict[str, dict[str, Any]]
+) -> list[str]:
+    return [
+        UNSUPPORTED_CONVERSION_SETTING_WARNINGS[name]
+        for name, setting in conversion_settings.items()
+        if setting["requested"]
+    ]
 
 
 def _validate_conversion_mode_source_type(conversion_mode: str, source_type: str) -> None:

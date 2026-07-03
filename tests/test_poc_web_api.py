@@ -289,6 +289,10 @@ def test_convert_uploaded_document_returns_artifact_manifest_contract() -> None:
         "source_filename": "phase0-output.json",
         "source_sha256": result["hashes"]["source_sha256"],
         "conversion_mode": "auto",
+        "conversion_settings": {
+            "use_llm": {"requested": False, "enabled": False, "status": "disabled"},
+            "use_ocr": {"requested": False, "enabled": False, "status": "disabled"},
+        },
     }
 
     assert result["artifacts"] == [
@@ -9463,6 +9467,83 @@ def test_poc_http_api_rejects_unknown_conversion_mode() -> None:
     }
 
 
+def test_poc_http_api_reflects_unsupported_llm_and_ocr_settings() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = json.dumps(
+            {
+                "filename": "phase0-output.json",
+                "content": json.dumps(
+                    {
+                        "pages": [
+                            {
+                                "page_number": 1,
+                                "width": 320,
+                                "height": 240,
+                                "unit": "pt",
+                                "fragments": [{"text": "Lot: SAMPLE-001", "confidence": 0.95}],
+                            }
+                        ]
+                    }
+                ),
+                "conversion_mode": "auto",
+                "use_llm": True,
+                "use_ocr": True,
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/convert",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 200
+    assert body["audit"]["conversion_settings"] == {
+        "use_llm": {"requested": True, "enabled": False, "status": "unsupported"},
+        "use_ocr": {"requested": True, "enabled": False, "status": "unsupported"},
+    }
+    assert "LLM conversion setting is not implemented in the local PoC API" in body["warnings"]
+    assert "OCR conversion setting is not implemented in the local PoC API" in body["warnings"]
+
+
+def test_poc_http_api_rejects_non_boolean_conversion_settings() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = json.dumps(
+            {
+                "filename": "upload.txt",
+                "content": "Unstructured OCR fallback text",
+                "use_llm": "true",
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/convert",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 400
+    assert body == {"error": "invalid_upload", "message": "use_llm must be boolean"}
+
+
 def test_poc_http_api_rejects_too_long_binary_filename_as_json_error() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     thread = Thread(target=server.serve_forever, daemon=True)
@@ -9631,11 +9712,15 @@ def test_readme_documents_local_poc_api_startup_and_smoke_contract() -> None:
         "GET /",
         "POST /api/convert",
         '"conversion_mode": "auto"',
+        '"use_llm": false',
+        '"use_ocr": false',
         "PoC API smoke check passed",
         "`pdf_to_excel`",
         "`pdf_to_word`",
         "`word_to_excel`",
         "`excel_to_word`",
+        "`audit.conversion_settings`",
+        "not yet implemented in the local PoC API",
         "Renderer-backed DOCX and XLSX primary artifacts are returned",
         "metadata.download.field",
         "exact PDF layout, fonts, coordinates, columns, footnotes,",
@@ -9668,6 +9753,21 @@ def test_web_direct_convert_selects_and_posts_conversion_mode() -> None:
     assert '<option value="excel_to_word">excel_to_word</option>' in html
     assert "const directConversionMode = document.querySelector(\"#direct-conversion-mode\")" in html
     assert "conversion_mode: directConversionMode.value" in html
+
+
+def test_web_direct_convert_selects_and_posts_llm_ocr_settings() -> None:
+    html = Path("apps/web/index.html").read_text(encoding="utf-8")
+    parser = _PocUiRegionParser()
+    parser.feed(html)
+
+    assert 'id="direct-use-llm"' in html
+    assert 'id="direct-use-ocr"' in html
+    assert "const directUseLlm = document.querySelector(\"#direct-use-llm\")" in html
+    assert "const directUseOcr = document.querySelector(\"#direct-use-ocr\")" in html
+    assert "use_llm: directUseLlm.checked" in html
+    assert "use_ocr: directUseOcr.checked" in html
+    assert "use_llm" in parser.region_fields["conversion-settings"]
+    assert "use_ocr" in parser.region_fields["conversion-settings"]
 
 
 def test_web_direct_convert_defines_phase6_review_information_architecture() -> None:
