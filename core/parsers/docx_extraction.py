@@ -16,6 +16,8 @@ class DocxBlock:
     text: str
     style: Optional[str] = None
     rows: Optional[List[List[str]]] = None
+    requires_review: bool = False
+    warnings: Optional[List[str]] = None
 
 
 @dataclass(frozen=True)
@@ -48,7 +50,16 @@ def extract_docx_structure(docx_path: Union[str, Path]) -> DocxStructure:
             rows = _table_rows(element)
             if rows:
                 text = "\n".join("\t".join(cell for cell in row) for row in rows)
-                blocks.append(DocxBlock(kind="table", text=text, rows=rows))
+                warnings = _table_warnings(element)
+                blocks.append(
+                    DocxBlock(
+                        kind="table",
+                        text=text,
+                        rows=rows,
+                        requires_review=bool(warnings),
+                        warnings=warnings or None,
+                    )
+                )
 
     return DocxStructure(source_path=str(source), blocks=blocks)
 
@@ -109,6 +120,36 @@ def _table_rows(table: ElementTree.Element) -> List[List[str]]:
         if cells:
             rows.append(cells)
     return rows
+
+
+def _table_warnings(table: ElementTree.Element) -> List[str]:
+    warnings: List[str] = []
+    if any(_table_cell_has_merge_markup(cell) for cell in table.findall(f".//{WORD_NS}tc")):
+        warnings.append("DOCX table contains merged cells; xlsx artifact requires review")
+    return warnings
+
+
+def _table_cell_has_merge_markup(cell: ElementTree.Element) -> bool:
+    tc_properties = cell.find(f"{WORD_NS}tcPr")
+    if tc_properties is None:
+        return False
+    if tc_properties.find(f"{WORD_NS}vMerge") is not None:
+        return True
+    if tc_properties.find(f"{WORD_NS}hMerge") is not None:
+        return True
+    return _table_cell_properties_have_grid_span_merge(tc_properties)
+
+
+def _table_cell_properties_have_grid_span_merge(
+    tc_properties: ElementTree.Element,
+) -> bool:
+    grid_span = tc_properties.find(f"{WORD_NS}gridSpan")
+    if grid_span is None:
+        return False
+    try:
+        return int(grid_span.attrib.get(f"{WORD_NS}val", "1")) > 1
+    except ValueError:
+        return False
 
 
 def _table_cell_text(cell: ElementTree.Element) -> str:
