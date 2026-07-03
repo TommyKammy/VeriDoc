@@ -1,5 +1,6 @@
 import base64
 import hashlib
+from html.parser import HTMLParser
 from io import BytesIO
 import json
 import re
@@ -32,6 +33,70 @@ from services.api.poc_web import (
     ReviewAuditEventStore,
     convert_uploaded_document,
 )
+
+
+_HTML_VOID_TAGS = {
+    "area",
+    "base",
+    "br",
+    "col",
+    "embed",
+    "hr",
+    "img",
+    "input",
+    "link",
+    "meta",
+    "param",
+    "source",
+    "track",
+    "wbr",
+}
+
+
+class _PocUiRegionParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.region_fields: dict[str, set[str]] = {}
+        self.element_regions: dict[str, tuple[str, ...]] = {}
+        self._stack: list[tuple[str, Optional[str]]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self._record_element(tag, attrs, should_push=tag not in _HTML_VOID_TAGS)
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self._record_element(tag, attrs, should_push=False)
+
+    def handle_endtag(self, tag: str) -> None:
+        for index in range(len(self._stack) - 1, -1, -1):
+            if self._stack[index][0] == tag:
+                del self._stack[index:]
+                return
+
+    def _record_element(
+        self,
+        tag: str,
+        attrs: list[tuple[str, str | None]],
+        *,
+        should_push: bool,
+    ) -> None:
+        attrs_by_name = dict(attrs)
+        region = attrs_by_name.get("data-poc-ui-region")
+        if region:
+            self.region_fields[region] = set(
+                (attrs_by_name.get("data-api-fields") or "").split()
+            )
+        active_regions = tuple(
+            stack_region
+            for _, stack_region in self._stack
+            if stack_region is not None
+        )
+        if region:
+            active_regions = (*active_regions, region)
+        element_id = attrs_by_name.get("id")
+        if element_id:
+            self.element_regions[element_id] = active_regions
+        if should_push:
+            self._stack.append((tag, region))
 
 
 def _write_docx(path: Path, document_xml: str) -> None:
@@ -9603,6 +9668,70 @@ def test_web_direct_convert_selects_and_posts_conversion_mode() -> None:
     assert '<option value="excel_to_word">excel_to_word</option>' in html
     assert "const directConversionMode = document.querySelector(\"#direct-conversion-mode\")" in html
     assert "conversion_mode: directConversionMode.value" in html
+
+
+def test_web_direct_convert_defines_phase6_review_information_architecture() -> None:
+    html = Path("apps/web/index.html").read_text(encoding="utf-8")
+    readme = Path("README.md").read_text(encoding="utf-8")
+    parser = _PocUiRegionParser()
+    parser.feed(html)
+
+    expected_regions = {
+        "upload": ["content_base64", "document_ir"],
+        "conversion-settings": ["conversion_mode"],
+        "review": ["review_items", "warnings", "document_ir"],
+        "artifact-downloads": ["artifacts[]", "download", "audit"],
+        "detail-json": ["document_ir", "review_items", "warnings", "artifacts[]", "audit"],
+    }
+
+    for region, fields in expected_regions.items():
+        marker = f'data-poc-ui-region="{region}"'
+        assert marker in html
+        for field in fields:
+            assert field in parser.region_fields[region]
+
+    for element_id in [
+        "top-level-warnings",
+        "review-list",
+        "review-action-status",
+        "pdf-preview-panel",
+        "bbox-layer",
+    ]:
+        assert "review" in parser.element_regions[element_id]
+    assert 'function renderTopLevelWarnings(warnings)' in html
+    assert "renderTopLevelWarnings(result.warnings || [])" in html
+    for element_id in [
+        "artifact-summary",
+        "download-link",
+        "debug-download-link",
+    ]:
+        assert "artifact-downloads" in parser.element_regions[element_id]
+    assert "detail-json" in parser.element_regions["raw-result"]
+
+    assert html.index('data-poc-ui-region="review"') < html.index(
+        'data-poc-ui-region="detail-json"'
+    )
+    assert "JSON is for detail and audit inspection, not the primary review workflow." in html
+    assert (
+        "Review decisions are made from warnings, review items, source locations, and artifact actions."
+        in html
+    )
+
+    for snippet in [
+        "## PoC review UI information architecture",
+        "Upload",
+        "Conversion settings",
+        "Review",
+        "Artifact downloads",
+        "Detail JSON",
+        "JSON is retained for detail and audit inspection, not as the primary review workflow.",
+        "`document_ir`",
+        "`review_items`",
+        "`warnings`",
+        "`artifacts[]`",
+        "`audit`",
+    ]:
+        assert snippet in readme
 
 
 def test_web_direct_convert_download_uses_primary_artifact_before_debug_json() -> None:
