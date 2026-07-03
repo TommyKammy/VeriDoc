@@ -964,6 +964,60 @@ class DocumentIrV1Test(unittest.TestCase):
             document_ir.blocks[0].rows,
         )
 
+    def test_xlsx_parser_output_preserves_bounded_row_gaps(self) -> None:
+        document_ir = from_parser_output(
+            {
+                "source_path": "fixtures/row-gapped.xlsx",
+                "sheets": [
+                    {
+                        "name": "Row Gapped",
+                        "cells": [
+                            {"ref": "A1", "value": "Header"},
+                            {"ref": "A3", "value": "Footer"},
+                            {"ref": "C3", "value": "Total"},
+                        ],
+                    }
+                ],
+            },
+            document_id="row-gapped-xlsx",
+            title="Row Gapped XLSX",
+            source_type="xlsx",
+        )
+
+        self.assertEqual(
+            [
+                ["Sheet: Row Gapped"],
+                ["Header", "", ""],
+                ["", "", ""],
+                ["Footer", "", "Total"],
+            ],
+            document_ir.blocks[0].rows,
+        )
+
+    def test_xlsx_parser_output_keeps_extreme_row_gaps_sparse(self) -> None:
+        document_ir = from_parser_output(
+            {
+                "source_path": "fixtures/extreme-row-gap.xlsx",
+                "sheets": [
+                    {
+                        "name": "Sparse Rows",
+                        "cells": [
+                            {"ref": "A1", "value": "Top"},
+                            {"ref": "A1048576", "value": "Bottom"},
+                        ],
+                    }
+                ],
+            },
+            document_id="sparse-row-xlsx",
+            title="Sparse Row XLSX",
+            source_type="xlsx",
+        )
+
+        self.assertEqual(
+            [["Sheet: Sparse Rows"], ["Top"], ["Bottom"]],
+            document_ir.blocks[0].rows,
+        )
+
     def test_ocr_regions_convert_to_document_ir_v1_blocks(self) -> None:
         document_ir = from_parser_output(
             {

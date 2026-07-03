@@ -3500,6 +3500,35 @@ def test_convert_uploaded_phase0_json_preserves_xlsx_column_gaps() -> None:
     ]
 
 
+def test_convert_uploaded_phase0_json_preserves_xlsx_row_gaps() -> None:
+    parser_output = {
+        "source_path": "row-gapped-output.xlsx",
+        "sheets": [
+            {
+                "name": "Row Gapped",
+                "cells": [
+                    {"ref": "A1", "value": "Header"},
+                    {"ref": "A3", "value": "Footer"},
+                    {"ref": "C3", "value": "Total"},
+                ],
+            }
+        ],
+    }
+
+    result = convert_uploaded_document(
+        filename="row-gapped-output.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+        conversion_mode="excel_to_word",
+    )
+
+    assert result["document_ir"]["blocks"][0]["rows"] == [
+        ["Sheet: Row Gapped"],
+        ["Header", "", ""],
+        ["", "", ""],
+        ["Footer", "", "Total"],
+    ]
+
+
 def test_convert_uploaded_xlsx_json_keeps_page_table_rows_over_sheet_records() -> None:
     parser_output = {
         "source_path": "mixed-parser.xlsx",

@@ -14,6 +14,7 @@ DEFAULT_PAGE_WIDTH_PT = 612.0
 DEFAULT_PAGE_HEIGHT_PT = 792.0
 XLSX_CELL_REF_RE = re.compile(r"([A-Z]+)([1-9][0-9]*)\Z")
 XLSX_ROW_GAP_PRESERVE_MAX_COLUMNS = 64
+XLSX_ROW_GAP_PRESERVE_MAX_ROWS = 256
 
 
 @dataclass(frozen=True)
@@ -680,13 +681,19 @@ def _xlsx_sheet_rows(cells: list[dict[str, Any]]) -> list[list[str]]:
     first_column = min(occupied_columns)
     last_column = max(occupied_columns)
     column_span = last_column - first_column + 1
-    if column_span <= XLSX_ROW_GAP_PRESERVE_MAX_COLUMNS:
+    first_row = min(positioned_cells)
+    last_row = max(positioned_cells)
+    row_span = last_row - first_row + 1
+    if (
+        column_span <= XLSX_ROW_GAP_PRESERVE_MAX_COLUMNS
+        and row_span <= XLSX_ROW_GAP_PRESERVE_MAX_ROWS
+    ):
         rows = [
             [
-                row_cells.get(column, "")
+                positioned_cells.get(row, {}).get(column, "")
                 for column in range(first_column, last_column + 1)
             ]
-            for _row, row_cells in sorted(positioned_cells.items())
+            for row in range(first_row, last_row + 1)
         ]
     else:
         rows = [
