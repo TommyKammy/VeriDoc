@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import unittest
 from pathlib import Path
+from xml.etree import ElementTree
+from zipfile import ZipFile
 
 from core.ir.document_ir_v1 import (
     BoundingBox,
@@ -23,6 +25,17 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = REPO_ROOT / "datasets" / "fixtures" / "manifest.json"
 GOLD_LABELS_PATH = REPO_ROOT / "datasets" / "gold" / "high_risk_labels_v0.json"
 TEMPLATE_REGRESSION_PATH = REPO_ROOT / "datasets" / "gold" / "template_regression_v0.json"
+REQUIRED_DOCX_PACKAGE_PARTS = {
+    "[Content_Types].xml",
+    "_rels/.rels",
+    "word/document.xml",
+    "word/_rels/document.xml.rels",
+}
+CONTENT_TYPE_NS = "{http://schemas.openxmlformats.org/package/2006/content-types}"
+PACKAGE_REL_NS = "{http://schemas.openxmlformats.org/package/2006/relationships}"
+OFFICE_DOCUMENT_RELATIONSHIP = (
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument"
+)
 
 
 class DatasetFixturesTest(unittest.TestCase):
@@ -49,6 +62,48 @@ class DatasetFixturesTest(unittest.TestCase):
                 relpath = Path(fixture["path"])
                 self.assertFalse(relpath.is_absolute(), msg=f"fixture path must be repo-relative: {relpath}")
                 self.assertTrue((REPO_ROOT / relpath).is_file(), msg=f"missing fixture file: {relpath}")
+
+    def test_manifest_docx_fixtures_are_reusable_ooxml_packages(self) -> None:
+        manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+
+        for fixture in manifest["fixtures"]:
+            if fixture["path"] is None or fixture["format"] != "docx":
+                continue
+
+            relpath = Path(fixture["path"])
+            with self.subTest(fixture=fixture["id"]):
+                with ZipFile(REPO_ROOT / relpath) as archive:
+                    package_parts = set(archive.namelist())
+                    content_types = ElementTree.fromstring(archive.read("[Content_Types].xml"))
+                    package_relationships = ElementTree.fromstring(archive.read("_rels/.rels"))
+
+                self.assertTrue(
+                    REQUIRED_DOCX_PACKAGE_PARTS.issubset(package_parts),
+                    msg=f"{relpath} is missing reusable DOCX package parts",
+                )
+                rel_defaults = {
+                    node.attrib.get("Extension"): node.attrib.get("ContentType")
+                    for node in content_types.findall(f"{CONTENT_TYPE_NS}Default")
+                }
+                overrides = {
+                    node.attrib.get("PartName"): node.attrib.get("ContentType")
+                    for node in content_types.findall(f"{CONTENT_TYPE_NS}Override")
+                }
+                office_document_targets = {
+                    node.attrib.get("Target")
+                    for node in package_relationships.findall(f"{PACKAGE_REL_NS}Relationship")
+                    if node.attrib.get("Type") == OFFICE_DOCUMENT_RELATIONSHIP
+                }
+
+                self.assertEqual(
+                    "application/vnd.openxmlformats-package.relationships+xml",
+                    rel_defaults.get("rels"),
+                )
+                self.assertEqual(
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml",
+                    overrides.get("/word/document.xml"),
+                )
+                self.assertIn("word/document.xml", office_document_targets)
 
     def test_high_risk_gold_labels_are_anchored_to_public_fixtures(self) -> None:
         manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
