@@ -36,6 +36,7 @@ from core.ir.document_ir_v1 import (
     from_parser_output,
     validate_document_ir_v1,
 )
+from core.llm.conversion_plan import LocalLLMConfigurationError, LocalLLMConversionPlanAdapter
 from core.parsers.docx_extraction import extract_docx_structure
 from core.parsers.pdf_table_extraction import compare_pdf_table_extractors
 from core.parsers.pdf_text_extraction import MissingPdfExtractorDependency, parse_text_pdf_to_document_ir
@@ -800,10 +801,14 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
         try:
             request = self._read_json_request()
             filename = str(request.get("filename") or "upload.txt")
-            content = _decode_request_content(request)
             conversion_mode = _validate_conversion_mode(request.get("conversion_mode"))
             use_llm = _validate_conversion_setting_boolean(request, "use_llm")
             use_ocr = _validate_conversion_setting_boolean(request, "use_ocr")
+            llm_rejection = _llm_configuration_rejection(use_llm=use_llm)
+            if llm_rejection is not None:
+                self._send_json(llm_rejection, status=400)
+                return
+            content = _decode_request_content(request)
             if len(content) > MAX_UPLOAD_BYTES:
                 self._send_json({"error": "upload_too_large"}, status=413)
                 return
@@ -3591,6 +3596,88 @@ def _unsupported_conversion_setting(requested: bool) -> dict[str, Any]:
         "enabled": False,
         "status": "unsupported" if requested else "disabled",
     }
+
+
+def _blocked_conversion_setting(requested: bool, reason: str) -> dict[str, Any]:
+    return {
+        "requested": requested,
+        "enabled": False,
+        "status": "blocked",
+        "reason": reason,
+    }
+
+
+def _llm_configuration_rejection(*, use_llm: bool) -> dict[str, Any] | None:
+    if not use_llm:
+        return None
+    reason = _configured_llm_rejection_reason()
+    if reason is None:
+        return None
+    return {
+        "error": "llm_configuration_rejected",
+        "message": "LLM conversion is blocked until the configured endpoint is local-only",
+        "warnings": [_llm_configuration_warning(reason)],
+        "audit": {
+            "conversion_settings": {
+                "use_llm": _blocked_conversion_setting(True, reason),
+            }
+        },
+    }
+
+
+def _configured_llm_rejection_reason() -> str | None:
+    try:
+        profiles_config = json.loads(INFERENCE_PROFILES_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return "invalid_configuration"
+    profiles = profiles_config.get("profiles")
+    if not isinstance(profiles, list):
+        return "invalid_configuration"
+    for profile in profiles:
+        if not isinstance(profile, dict):
+            return "invalid_configuration"
+        base_url_env = profile.get("base_url_env")
+        model_env = profile.get("model_env")
+        api_key_env = profile.get("api_key_env")
+        if not isinstance(base_url_env, str) or not base_url_env.strip():
+            return "invalid_configuration"
+        base_url = os.environ.get(base_url_env)
+        if base_url is None or not base_url.strip():
+            continue
+        if not isinstance(model_env, str) or not model_env.strip():
+            return "invalid_configuration"
+        model = os.environ.get(model_env)
+        if model is None or not model.strip():
+            return "missing_required_model"
+        api_key = os.environ.get(api_key_env) if isinstance(api_key_env, str) else None
+        try:
+            LocalLLMConversionPlanAdapter(
+                base_url=base_url,
+                model=model,
+                api_key=api_key,
+            )
+        except LocalLLMConfigurationError as exc:
+            return _llm_rejection_reason_from_error(exc)
+    return None
+
+
+def _llm_rejection_reason_from_error(exc: LocalLLMConfigurationError) -> str:
+    message = str(exc)
+    if "placeholder API keys" in message:
+        return "placeholder_api_key"
+    if "base_url" in message or "local-only" in message:
+        return "non_local_endpoint"
+    return "invalid_configuration"
+
+
+def _llm_configuration_warning(reason: str) -> str:
+    if reason == "non_local_endpoint":
+        return "LLM conversion blocked: configured endpoint must be local-only"
+    if reason == "placeholder_api_key":
+        return "LLM conversion blocked: configured API key is not trusted"
+    if reason == "missing_required_model":
+        return "LLM conversion blocked: configured model is required"
+    return "LLM conversion blocked: configured local LLM profile is invalid"
 
 
 def _conversion_setting_warnings(
