@@ -860,6 +860,69 @@ def test_word_to_excel_representative_docx_fixtures_render_xlsx_artifacts(
             assert warning in result["warnings"], fixture["id"]
 
 
+def test_pdf_to_excel_representative_table_fixture_renders_xlsx_artifact(
+    tmp_path: Path,
+) -> None:
+    manifest = json.loads(FIXTURE_MANIFEST_PATH.read_text(encoding="utf-8"))
+    fixtures = [
+        fixture
+        for fixture in manifest["fixtures"]
+        if fixture["source_type"] == "text_pdf"
+        and fixture.get("pdf_to_excel_representative") is True
+    ]
+
+    assert {fixture["id"] for fixture in fixtures} == {"pdf-to-excel-table-report"}
+
+    for fixture in fixtures:
+        fixture_path = REPO_ROOT / fixture["path"]
+        result = convert_uploaded_document(
+            filename=fixture_path.name,
+            content=fixture_path.read_bytes(),
+            conversion_mode="pdf_to_excel",
+        )
+
+        primary_artifact = result["artifacts"][0]
+        assert primary_artifact["format"] == "xlsx", fixture["id"]
+        assert primary_artifact["filename"].endswith(".veridoc-pdf-to-excel.xlsx")
+        assert primary_artifact["content_type"] == (
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        assert primary_artifact["metadata"]["download"] == {
+            "available": True,
+            "field": "artifacts[0].content_base64",
+        }
+
+        primary_path = tmp_path / primary_artifact["filename"]
+        primary_path.write_bytes(primary_artifact["content"])
+        xlsx = extract_xlsx_structure(primary_path)
+        cells = {cell.ref: (cell.value, cell.value_type) for cell in xlsx.sheets[0].cells}
+
+        expectations = fixture["pdf_to_excel_expectations"]
+        assert xlsx.sheets[0].dimension == expectations["dimension"], fixture["id"]
+        for ref, expected in expectations["cells"].items():
+            assert cells[ref] == (expected["value"], expected["value_type"]), fixture["id"]
+
+        table_refs = [
+            ref
+            for ref in expectations["cells"]
+            if 4 <= _cell_row_index(ref) <= 6
+        ]
+        assert len({_cell_row_index(ref) for ref in table_refs}) == (
+            expectations["table_row_count"]
+        ), fixture["id"]
+        assert len({_cell_column_label(ref) for ref in table_refs}) == (
+            expectations["table_column_count"]
+        ), fixture["id"]
+
+        for warning in expectations["warnings"]:
+            assert warning in result["warnings"], fixture["id"]
+
+        with ZipFile(primary_path) as archive:
+            comments_xml = archive.read("xl/comments1.xml").decode("utf-8")
+        for expected_text in expectations["source_comment"]["contains"]:
+            assert expected_text in comments_xml, fixture["id"]
+
+
 def _cell_row_index(cell_ref: str) -> int:
     match = re.fullmatch(r"[A-Z]+([0-9]+)", cell_ref)
     assert match is not None

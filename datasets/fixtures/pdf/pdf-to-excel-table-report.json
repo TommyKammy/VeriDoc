@@ -1,0 +1,56 @@
+{
+  "source_type": "pdf",
+  "source_path": "datasets/fixtures/pdf/pdf-to-excel-table.pdf",
+  "candidates": [
+    {
+      "extractor": "camelot",
+      "flavor": "lattice",
+      "version": "synthetic-fixture",
+      "status": "ok",
+      "tables": [
+        {
+          "extractor": "camelot",
+          "flavor": "lattice",
+          "page_number": 1,
+          "rows": [
+            ["Lot ID", "Assay %", "Disposition", "Reviewer Note"],
+            ["PDF-0007", "12.5", "Pass", ""],
+            ["PDF-0008", "98.1", "Hold", "Needs QA review"]
+          ],
+          "cell_bboxes": [
+            [
+              {"x": 36, "y": 96, "width": 72, "height": 18, "unit": "pt"},
+              {"x": 108, "y": 96, "width": 72, "height": 18, "unit": "pt"},
+              {"x": 180, "y": 96, "width": 90, "height": 18, "unit": "pt"},
+              {"x": 270, "y": 96, "width": 126, "height": 18, "unit": "pt"}
+            ],
+            [
+              {"x": 36, "y": 114, "width": 72, "height": 18, "unit": "pt"},
+              {"x": 108, "y": 114, "width": 72, "height": 18, "unit": "pt"},
+              {"x": 180, "y": 114, "width": 90, "height": 18, "unit": "pt"},
+              {"x": 270, "y": 114, "width": 126, "height": 18, "unit": "pt"}
+            ],
+            [
+              {"x": 36, "y": 132, "width": 72, "height": 18, "unit": "pt"},
+              {"x": 108, "y": 132, "width": 72, "height": 18, "unit": "pt"},
+              {"x": 180, "y": 132, "width": 90, "height": 18, "unit": "pt"},
+              {"x": 270, "y": 132, "width": 126, "height": 18, "unit": "pt"}
+            ]
+          ]
+        }
+      ],
+      "notes": "Synthetic representative text-PDF table extraction candidate."
+    },
+    {
+      "extractor": "pdfplumber",
+      "flavor": "table",
+      "version": null,
+      "status": "not-installed",
+      "tables": [],
+      "notes": "Synthetic unavailable comparator keeps representative artifact in review."
+    }
+  ],
+  "mismatches": [],
+  "selected_candidate": "camelot:lattice",
+  "notes": "Synthetic PDF-to-Excel representative table report."
+}

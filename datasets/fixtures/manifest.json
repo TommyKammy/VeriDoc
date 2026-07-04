@@ -65,6 +65,48 @@
       "notes": "Placement rule reserved; add only synthetic or anonymized PDFs."
     },
     {
+      "id": "pdf-to-excel-table-report",
+      "title": "Synthetic PDF-to-Excel table report fixture",
+      "path": "datasets/fixtures/pdf/pdf-to-excel-table-report.json",
+      "source_type": "text_pdf",
+      "format": "pdf_table_report_json",
+      "anonymization": "synthetic",
+      "confidentiality": "public",
+      "public_review_safe": true,
+      "pdf_to_excel_representative": true,
+      "pdf_to_excel_expectations": {
+        "dimension": "A1:D6",
+        "table_row_count": 3,
+        "table_column_count": 4,
+        "cells": {
+          "A4": {"value": "Lot ID", "value_type": "inline_string"},
+          "B4": {"value": "Assay %", "value_type": "inline_string"},
+          "C4": {"value": "Disposition", "value_type": "inline_string"},
+          "D4": {"value": "Reviewer Note", "value_type": "inline_string"},
+          "A5": {"value": "PDF-0007", "value_type": "inline_string"},
+          "B5": {"value": "12.5", "value_type": "number"},
+          "C5": {"value": "Pass", "value_type": "inline_string"},
+          "D5": {"value": "", "value_type": "inline_string"},
+          "A6": {"value": "PDF-0008", "value_type": "inline_string"},
+          "B6": {"value": "98.1", "value_type": "number"},
+          "C6": {"value": "Hold", "value_type": "inline_string"},
+          "D6": {"value": "Needs QA review", "value_type": "inline_string"}
+        },
+        "source_comment": {
+          "cell": "A4",
+          "contains": [
+            "PDF table extraction: camelot:lattice",
+            "source_page=1",
+            "bbox=36.0,96.0,360.0,54.0 pt"
+          ]
+        },
+        "warnings": [
+          "PDF table extraction candidate unavailable: pdfplumber:table; xlsx artifact requires review"
+        ]
+      },
+      "notes": "Synthetic selected text-PDF table report for PDF-to-Excel xlsx artifact checks."
+    },
+    {
       "id": "placeholder-scanned-pdf",
       "title": "Scanned PDF fixture slot",
       "path": null,
