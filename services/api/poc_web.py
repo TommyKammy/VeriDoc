@@ -579,6 +579,13 @@ DEFAULT_JOB_AUDIT_EVENTS = JobAuditEventStore()
 DEFAULT_DESKTOP_SAVE_PROOFS = DesktopSaveProofStore()
 LLM_EXTRACTOR_NAME_TOKENS = ("llm", "gpt", "openai")
 LLM_INFERENCE_PROFILE_FIELDS = ("id", "label", "provider", "model_family", "recommended_model")
+LLM_FALLBACK_WARNING_CODES = {
+    "missing_configured_profile": "llm_fallback_unavailable",
+    "placeholder_api_key": "llm_fallback_untrusted_credential",
+    "non_local_endpoint": "llm_fallback_untrusted_endpoint",
+    "missing_required_model": "llm_fallback_missing_model",
+    "schema_invalid": "llm_fallback_schema_invalid",
+}
 
 
 def convert_uploaded_document(
@@ -617,6 +624,7 @@ def convert_uploaded_document(
     )
     conversion_settings["use_llm"] = conversion_plan_state["setting"]
     review_items = _review_items(document_ir)
+    review_items.extend(_llm_fallback_review_items(document_ir_dict, conversion_plan_state))
     warnings = [
         *input_warnings,
         *mode_warnings,
@@ -721,42 +729,50 @@ def _local_llm_conversion_plan_state(
     adapter, rejection_reason = _configured_llm_conversion_plan_adapter()
     if adapter is None:
         reason = rejection_reason or "missing_configured_profile"
+        warning_code = _llm_fallback_warning_code(reason)
         return {
             "setting": _blocked_conversion_setting(True, reason),
-            "warnings": [_llm_conversion_plan_warning(reason)],
+            "warnings": [_llm_conversion_plan_fallback_warning(reason=reason, warning_code=warning_code)],
             "audit": {
                 "requested": True,
-                "status": "unavailable",
+                "status": "fallback",
                 "adopted": False,
                 "reason": reason,
+                "warning_code": warning_code,
             },
         }
 
     try:
         plan = adapter.create_conversion_plan(_document_ir_synthetic_text(document_ir))
         validate_conversion_plan(plan)
-    except ConversionPlanValidationError as exc:
+    except ConversionPlanValidationError:
         reason = "schema_invalid"
+        warning_code = _llm_fallback_warning_code(reason)
         return {
             "setting": _blocked_conversion_setting(True, reason),
-            "warnings": [f"LLM conversion plan rejected: {exc}"],
+            "warnings": [
+                _llm_conversion_plan_fallback_warning(reason=reason, warning_code=warning_code)
+            ],
             "audit": {
                 "requested": True,
-                "status": "rejected",
+                "status": "fallback",
                 "adopted": False,
                 "reason": reason,
+                "warning_code": warning_code,
             },
         }
     except (LocalLLMConfigurationError, RuntimeError, ValueError) as exc:
         reason = _llm_plan_unavailable_reason(exc)
+        warning_code = _llm_fallback_warning_code(reason)
         return {
             "setting": _blocked_conversion_setting(True, reason),
-            "warnings": [_llm_conversion_plan_warning(reason)],
+            "warnings": [_llm_conversion_plan_fallback_warning(reason=reason, warning_code=warning_code)],
             "audit": {
                 "requested": True,
-                "status": "unavailable",
+                "status": "fallback",
                 "adopted": False,
                 "reason": reason,
+                "warning_code": warning_code,
             },
         }
 
@@ -770,6 +786,52 @@ def _local_llm_conversion_plan_state(
             "plan": deepcopy(plan),
         },
     }
+
+
+def _llm_fallback_review_items(
+    document_ir: dict[str, Any],
+    conversion_plan_state: dict[str, Any],
+) -> list[dict[str, Any]]:
+    audit = conversion_plan_state.get("audit")
+    warnings = conversion_plan_state.get("warnings")
+    if not isinstance(audit, dict) or audit.get("status") != "fallback":
+        return []
+    if not isinstance(warnings, list) or not all(isinstance(warning, str) for warning in warnings):
+        return []
+    document = document_ir.get("document")
+    document_id = document.get("id") if isinstance(document, dict) else None
+    if not isinstance(document_id, str) or not document_id:
+        document_id = "document"
+    source_page = _document_ir_first_source_page(document_ir)
+    return [
+        {
+            "document_id": document_id,
+            "block_id": "__conversion_plan__",
+            "source_id": f"{document_id}:conversion-plan",
+            "source_page": source_page,
+            "source_confidence": None,
+            "text": "",
+            "warnings": list(warnings),
+            "llm_involved": True,
+        }
+    ]
+
+
+def _document_ir_first_source_page(document_ir: dict[str, Any]) -> int | None:
+    pages = document_ir.get("pages")
+    if not isinstance(pages, list):
+        return None
+    for page in pages:
+        if not isinstance(page, dict):
+            continue
+        page_number = page.get("page_number")
+        if (
+            isinstance(page_number, int)
+            and not isinstance(page_number, bool)
+            and page_number >= 1
+        ):
+            return page_number
+    return None
 
 
 def _document_ir_synthetic_text(document_ir: dict[str, Any]) -> str:
@@ -802,7 +864,24 @@ def _llm_conversion_plan_warning(reason: str) -> str:
         return "LLM conversion plan unavailable: configured endpoint must be local-only"
     if reason == "missing_required_model":
         return "LLM conversion plan unavailable: configured model is required"
+    if reason == "schema_invalid":
+        return "LLM conversion plan rejected: schema invalid"
     return "LLM conversion plan unavailable: configured local LLM profile could not be used"
+
+
+def _llm_fallback_warning_code(reason: str) -> str:
+    return LLM_FALLBACK_WARNING_CODES.get(reason, "llm_fallback_unavailable")
+
+
+def _llm_conversion_plan_fallback_warning(
+    *,
+    reason: str,
+    warning_code: str,
+) -> str:
+    return (
+        f"LLM conversion plan fallback {warning_code}: "
+        f"{_llm_conversion_plan_warning(reason)}; deterministic conversion used; requires review"
+    )
 
 
 def _llm_plan_unavailable_reason(exc: Exception) -> str:
