@@ -542,6 +542,10 @@ def _local_base_url(base_url: str) -> _LocalBaseUrl | None:
     return _LocalBaseUrl((base_url,))
 
 
+def is_local_llm_base_url(base_url: str) -> bool:
+    return _local_base_url(base_url) is not None
+
+
 def _local_base_url_for_dns_host(
     parsed: Any,
     hostname: str,

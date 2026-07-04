@@ -523,7 +523,7 @@ def test_convert_uploaded_document_adopts_schema_valid_local_llm_plan(monkeypatc
     synthetic_inputs: list[str] = []
 
     class FakeLocalLLMAdapter:
-        base_url = "http://127.0.0.1:11434/v1"
+        base_url = "http://127.1.2.3:11434/v1"
         model = "fake-local-model"
         timeout_seconds = 30
         max_tokens = 1024
@@ -676,6 +676,77 @@ def test_convert_uploaded_document_falls_back_for_schema_invalid_local_llm_plan(
     downloaded = json.loads(result["download"]["content"])
     assert downloaded["audit"]["conversion_plan"]["status"] == "fallback"
     assert downloaded["review_items"] == result["review_items"]
+
+
+def test_convert_uploaded_document_falls_back_when_local_llm_plan_raises_validation_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parser_output = {
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 320,
+                "height": 240,
+                "unit": "pt",
+                "fragments": [
+                    {
+                        "text": "Lot: SAMPLE-001",
+                        "bbox": {"x": 10, "y": 20, "width": 120, "height": 16, "unit": "pt"},
+                        "confidence": 0.91,
+                    }
+                ],
+            }
+        ]
+    }
+
+    class FakeLocalLLMAdapter:
+        base_url = "http://127.1.2.3:11434/v1"
+        model = "fake-local-model"
+        timeout_seconds = 30
+        max_tokens = 1024
+
+        def create_conversion_plan(self, synthetic_text: str) -> dict[str, object]:
+            raise poc_web.ConversionPlanValidationError("local LLM response body is not valid JSON")
+
+    monkeypatch.setattr(
+        poc_web,
+        "_configured_llm_conversion_plan_adapter",
+        lambda: (FakeLocalLLMAdapter(), None),
+    )
+
+    result = convert_uploaded_document(
+        filename="phase8-output.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+        use_llm=True,
+    )
+
+    assert result["status"] == "requires_review"
+    assert result["warnings"] == [
+        (
+            "LLM conversion plan fallback llm_fallback_schema_invalid: "
+            "LLM conversion plan rejected: schema invalid; "
+            "deterministic conversion used; "
+            "requires review"
+        )
+    ]
+    assert result["audit"]["conversion_settings"]["use_llm"] == {
+        "requested": True,
+        "enabled": False,
+        "status": "blocked",
+        "reason": "schema_invalid",
+    }
+    assert result["audit"]["conversion_plan"] == {
+        "requested": True,
+        "status": "fallback",
+        "adopted": False,
+        "schema_version": 1,
+        "plan_hash": None,
+        "reason": "schema_invalid",
+        "warning_code": "llm_fallback_schema_invalid",
+    }
+    assert result["audit"]["llm"]["base_url_type"] == "local"
+    downloaded = json.loads(result["download"]["content"])
+    assert downloaded["audit"]["conversion_plan"]["plan_hash"] is None
 
 
 def test_convert_uploaded_document_schema_invalid_llm_fallback_is_deterministic(

@@ -40,6 +40,7 @@ from core.llm.conversion_plan import (
     ConversionPlanValidationError,
     LocalLLMConfigurationError,
     LocalLLMConversionPlanAdapter,
+    is_local_llm_base_url,
     validate_conversion_plan,
 )
 from core.llm.audit_parameters import sanitize_audit_parameters
@@ -784,6 +785,7 @@ def _local_llm_conversion_plan_state(
         }
 
     llm_parameters = _llm_adapter_audit_parameters(adapter)
+    plan: Any | None = None
     try:
         plan = adapter.create_conversion_plan(_document_ir_synthetic_text(document_ir))
         validate_conversion_plan(plan)
@@ -905,9 +907,7 @@ def _llm_adapter_base_url_type(adapter: Any | None) -> str | None:
     base_url = getattr(adapter, "base_url", None)
     if not isinstance(base_url, str) or not base_url.strip():
         return None
-    parsed = urlsplit(base_url.strip())
-    host = parsed.hostname
-    if host in {"127.0.0.1", "::1", "localhost"}:
+    if is_local_llm_base_url(base_url.strip()):
         return "local"
     return "configured"
 
