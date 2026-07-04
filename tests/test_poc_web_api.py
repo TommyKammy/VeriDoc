@@ -232,6 +232,7 @@ def test_convert_uploaded_document_surfaces_review_items_and_download_payload() 
             "block_id": "block-0001",
             "source_id": "phase0-output:block-0001",
             "source_page": 1,
+            "source_confidence": 0.41,
             "source_bbox": {
                 "x": 10.0,
                 "y": 20.0,
@@ -1465,6 +1466,7 @@ def test_word_to_excel_docx_upload_flags_merged_table_cells(tmp_path: Path) -> N
         "block_id": "block-0001",
         "source_id": "merged-report:block-0001",
         "source_page": 1,
+        "source_confidence": 0.0,
         "text": "Merged Header\nLot\t0007",
         "warnings": [
             "blocks[0].bbox missing; block marked requires_review",
@@ -2965,6 +2967,7 @@ def test_convert_uploaded_document_omits_synthetic_missing_bbox_from_review_item
             "block_id": "block-0001",
             "source_id": "phase0-output:block-0001",
             "source_page": 1,
+            "source_confidence": 0.0,
             "text": "Missing bbox",
             "warnings": [
                 "blocks[0].bbox missing; block marked requires_review",
@@ -3011,6 +3014,7 @@ def test_convert_uploaded_document_warns_when_review_item_source_jump_is_incompl
             "block_id": "block-0001",
             "source_id": "sample-document-001:block-0001",
             "source_page": 1,
+            "source_confidence": 0.0,
             "text": "Assay result: 99.8%",
             "warnings": [
                 "blocks[0].bbox missing; block marked requires_review",
@@ -3059,6 +3063,7 @@ def test_convert_uploaded_document_omits_unsupported_unit_review_bbox() -> None:
             "block_id": "block-0001",
             "source_id": "phase0-output:block-0001",
             "source_page": 1,
+            "source_confidence": 0.41,
             "text": "Unsupported unit",
             "warnings": [
                 "blocks[0].low confidence; block marked requires_review",
@@ -3130,6 +3135,7 @@ def test_convert_uploaded_pdf_adapts_phase0_document_ir_v0_blocks(monkeypatch) -
             "block_id": "block-0001",
             "source_id": "batch-record:block-0001",
             "source_page": 1,
+            "source_confidence": 0.6,
             "source_bbox": {
                 "x": 72.0,
                 "y": 72.0,
@@ -3356,6 +3362,15 @@ def test_convert_uploaded_phase0_json_marks_missing_v0_confidence_for_review() -
     assert result["status"] == "requires_review"
     assert result["validation"]["errors"] == []
     assert result["document_ir"]["blocks"][0]["confidence"] == 0.0
+    assert result["review_items"][0]["source_confidence"] is None
+    assert result["review_items"][0]["source_bbox"] == {
+        "x": 72.0,
+        "y": 72.0,
+        "width": 240.0,
+        "height": 24.0,
+        "unit": "pt",
+        "origin": "top-left",
+    }
     assert result["review_items"][0]["warnings"] == [
         "blocks[0].confidence missing; block marked requires_review"
     ]
@@ -8904,11 +8919,23 @@ def test_bundled_web_ui_lists_review_items_with_operator_summary() -> None:
     assert "自動検証上の要確認なし" in render_items.group("body")
     assert "安全を確定するものではありません" in render_items.group("body")
     assert "review-empty" in render_items.group("body")
-    assert "item.source_page ?? \"unknown\"" in render_item.group("body")
+    assert "sourcePageLabel(item)" in render_item.group("body")
+    assert "formatSourceBbox(item.source_bbox)" in render_item.group("body")
+    assert "formatSourceConfidence(item.source_confidence)" in render_item.group("body")
+    assert "sourceAvailabilityLabel(item)" in render_item.group("body")
+    assert "item.source_id || \"unknown source\"" in render_item.group("body")
     assert "item.block_id || \"unknown block\"" in render_item.group("body")
     assert "descriptor.code" in render_item.group("body")
     assert "descriptor.severity" in render_item.group("body")
     assert "warningBadgeDescriptor" in render_item.group("body")
+    assert "function sourceAvailabilityLabel(item)" in html
+    assert "出典不明" in html
+    assert "function formatSourceBbox(bbox)" in html
+    assert "function formatSourceConfidence(value)" in html
+    assert "function sourceConfidenceAvailable(value)" in html
+    assert "sourceConfidenceAvailable(confidence)" in html
+    assert "sourceConfidenceAvailable(value)" in html
+    assert "value >= 0 && value <= 1" in html
     assert "review-item-meta" in html
     assert "review-item-target" in html
 
