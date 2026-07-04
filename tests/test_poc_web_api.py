@@ -10197,6 +10197,173 @@ def test_poc_http_api_reflects_unsupported_llm_and_ocr_settings() -> None:
     assert "OCR conversion setting is not implemented in the local PoC API" in body["warnings"]
 
 
+def test_poc_http_api_rejects_external_llm_endpoint_before_conversion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VERIDOC_STANDARD_OPENAI_BASE_URL", "https://api.openai.com/v1")
+    monkeypatch.setenv("VERIDOC_STANDARD_MODEL", "cloud-model")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = json.dumps(
+            {
+                "filename": "phase0-output.json",
+                "content": json.dumps(
+                    {
+                        "pages": [
+                            {
+                                "page_number": 1,
+                                "width": 320,
+                                "height": 240,
+                                "unit": "pt",
+                                "fragments": [
+                                    {
+                                        "text": "DO-NOT-SEND-DOCUMENT-BODY",
+                                        "confidence": 0.95,
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                ),
+                "conversion_mode": "auto",
+                "use_llm": True,
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/convert",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        response = connection.getresponse()
+        body_text = response.read().decode("utf-8")
+        body = json.loads(body_text)
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 400
+    assert body["error"] == "llm_configuration_rejected"
+    assert body["audit"]["conversion_settings"]["use_llm"] == {
+        "requested": True,
+        "enabled": False,
+        "status": "blocked",
+        "reason": "non_local_endpoint",
+    }
+    assert body["warnings"] == [
+        "LLM conversion blocked: configured endpoint must be local-only"
+    ]
+    assert "api.openai.com" not in body_text
+    assert "DO-NOT-SEND-DOCUMENT-BODY" not in body_text
+
+
+def test_poc_http_api_rejects_placeholder_llm_api_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VERIDOC_STANDARD_OPENAI_BASE_URL", "http://127.0.0.1:8000/v1")
+    monkeypatch.setenv("VERIDOC_STANDARD_MODEL", "local-json-model")
+    monkeypatch.setenv("VERIDOC_STANDARD_OPENAI_API_KEY", "fake-api-key")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = json.dumps(
+            {
+                "filename": "phase0-output.json",
+                "content": json.dumps(
+                    {
+                        "pages": [
+                            {
+                                "page_number": 1,
+                                "width": 320,
+                                "height": 240,
+                                "unit": "pt",
+                                "fragments": [{"text": "Lot: SAMPLE-001", "confidence": 0.95}],
+                            }
+                        ]
+                    }
+                ),
+                "conversion_mode": "auto",
+                "use_llm": True,
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/convert",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        response = connection.getresponse()
+        body_text = response.read().decode("utf-8")
+        body = json.loads(body_text)
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 400
+    assert body["error"] == "llm_configuration_rejected"
+    assert body["audit"]["conversion_settings"]["use_llm"]["reason"] == "placeholder_api_key"
+    assert body["warnings"] == [
+        "LLM conversion blocked: configured API key is not trusted"
+    ]
+    assert "fake-api-key" not in body_text
+
+
+def test_poc_http_api_allows_configured_local_llm_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VERIDOC_STANDARD_OPENAI_BASE_URL", "http://127.0.0.1:8000/v1")
+    monkeypatch.setenv("VERIDOC_STANDARD_MODEL", "local-json-model")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = json.dumps(
+            {
+                "filename": "phase0-output.json",
+                "content": json.dumps(
+                    {
+                        "pages": [
+                            {
+                                "page_number": 1,
+                                "width": 320,
+                                "height": 240,
+                                "unit": "pt",
+                                "fragments": [{"text": "Lot: SAMPLE-001", "confidence": 0.95}],
+                            }
+                        ]
+                    }
+                ),
+                "conversion_mode": "auto",
+                "use_llm": True,
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/convert",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 200
+    assert body["audit"]["conversion_settings"]["use_llm"] == {
+        "requested": True,
+        "enabled": False,
+        "status": "unsupported",
+    }
+    assert "LLM conversion setting is not implemented in the local PoC API" in body["warnings"]
+
+
 def test_poc_http_api_rejects_non_boolean_conversion_settings() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     thread = Thread(target=server.serve_forever, daemon=True)
