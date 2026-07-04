@@ -202,6 +202,129 @@ def _sample_xlsx_bytes() -> bytes:
     return output.getvalue()
 
 
+def _representative_excel_to_word_xlsx_bytes() -> bytes:
+    output = BytesIO()
+    with ZipFile(output, "w", ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "[Content_Types].xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/worksheets/sheet3.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+</Types>
+""",
+        )
+        archive.writestr(
+            "xl/workbook.xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="WBS" sheetId="1" r:id="rId1"/>
+    <sheet name="Issue Log" sheetId="2" r:id="rId2"/>
+    <sheet name="Ledger" sheetId="3" r:id="rId3"/>
+  </sheets>
+</workbook>
+""",
+        )
+        archive.writestr(
+            "xl/_rels/workbook.xml.rels",
+            """<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet3.xml"/>
+  <Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>
+""",
+        )
+        archive.writestr(
+            "xl/styles.xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <numFmts count="1"><numFmt numFmtId="164" formatCode="00000"/></numFmts>
+  <cellXfs count="2">
+    <xf numFmtId="0"/>
+    <xf numFmtId="164" applyNumberFormat="1"/>
+  </cellXfs>
+</styleSheet>
+""",
+        )
+        archive.writestr(
+            "xl/worksheets/sheet1.xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <dimension ref="A1:D3"/>
+  <sheetData>
+    <row r="1">
+      <c r="A1" t="inlineStr"><is><t>WBS ID</t></is></c>
+      <c r="B1" t="inlineStr"><is><t>Task</t></is></c>
+      <c r="C1" t="inlineStr"><is><t>Due</t></is></c>
+      <c r="D1" t="inlineStr"><is><t>Progress</t></is></c>
+    </row>
+    <row r="2">
+      <c r="A2" s="1"><v>42</v></c>
+      <c r="B2" t="inlineStr"><is><t>Template mapping review</t></is></c>
+      <c r="C2" t="d"><v>2026-07-10</v></c>
+      <c r="D2"><v>0.75</v></c>
+    </row>
+  </sheetData>
+</worksheet>
+""",
+        )
+        archive.writestr(
+            "xl/worksheets/sheet2.xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <dimension ref="A1:E3"/>
+  <sheetData>
+    <row r="1">
+      <c r="A1" t="inlineStr"><is><t>Issue ID</t></is></c>
+      <c r="B1" t="inlineStr"><is><t>Status</t></is></c>
+      <c r="C1" t="inlineStr"><is><t>Opened</t></is></c>
+      <c r="D1" t="inlineStr"><is><t>Severity</t></is></c>
+      <c r="E1" t="inlineStr"><is><t>Owner</t></is></c>
+    </row>
+    <row r="2">
+      <c r="A2" t="inlineStr"><is><t>ISS-001</t></is></c>
+      <c r="B2" t="inlineStr"><is><t>Open</t></is></c>
+      <c r="C2" t="d"><v>2026-07-11</v></c>
+      <c r="D2"><v>3</v></c>
+      <c r="E2" t="inlineStr"><is><t>QA</t></is></c>
+    </row>
+  </sheetData>
+</worksheet>
+""",
+        )
+        archive.writestr(
+            "xl/worksheets/sheet3.xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <dimension ref="A1:D3"/>
+  <sheetData>
+    <row r="1">
+      <c r="A1" t="inlineStr"><is><t>Entry ID</t></is></c>
+      <c r="B1" t="inlineStr"><is><t>Posting Date</t></is></c>
+      <c r="C1" t="inlineStr"><is><t>Amount</t></is></c>
+      <c r="D1" t="inlineStr"><is><t>Cleared</t></is></c>
+    </row>
+    <row r="2">
+      <c r="A2" s="1"><v>17</v></c>
+      <c r="B2" t="d"><v>2026-07-12</v></c>
+      <c r="C2"><v>1234.50</v></c>
+      <c r="D2" t="b"><v>1</v></c>
+    </row>
+  </sheetData>
+</worksheet>
+""",
+        )
+    return output.getvalue()
+
+
 def test_convert_uploaded_document_surfaces_review_items_and_download_payload() -> None:
     parser_output = {
         "pages": [
@@ -466,6 +589,55 @@ def test_excel_to_word_primary_docx_renders_sheet_values_for_review() -> None:
         ["ID", "Task", "Due", "Cost"],
         ["00123", "Template review", "2026-07-03", "12.5"],
     ]
+
+
+def test_excel_to_word_representative_workbook_surfaces_reviewable_tables(
+    tmp_path: Path,
+) -> None:
+    result = convert_uploaded_document(
+        filename="representative.xlsx",
+        content=_representative_excel_to_word_xlsx_bytes(),
+        conversion_mode="excel_to_word",
+    )
+
+    assert result["status"] == "requires_review"
+    primary_artifact = result["artifacts"][0]
+    assert primary_artifact["id"] == "primary-docx"
+    assert primary_artifact["filename"] == "representative.veridoc-excel-to-word.docx"
+    assert primary_artifact["content_type"] == (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    )
+
+    primary_path = tmp_path / primary_artifact["filename"]
+    primary_path.write_bytes(primary_artifact["content"])
+    docx = extract_docx_structure(primary_path)
+    table_rows = [block.rows for block in docx.blocks if block.kind == "table"]
+    assert table_rows == [
+        [
+            ["Sheet: WBS"],
+            ["WBS ID", "Task", "Due", "Progress"],
+            ["00042", "Template mapping review", "2026-07-10", "0.75"],
+        ],
+        [
+            ["Sheet: Issue Log"],
+            ["Issue ID", "Status", "Opened", "Severity", "Owner"],
+            ["ISS-001", "Open", "2026-07-11", "3", "QA"],
+        ],
+        [
+            ["Sheet: Ledger"],
+            ["Entry ID", "Posting Date", "Amount", "Cleared"],
+            ["00017", "2026-07-12", "1234.50", "True"],
+        ],
+    ]
+
+    downloaded = json.loads(result["download"]["content"].decode("utf-8"))
+    table_blocks = [
+        block for block in downloaded["document_ir"]["blocks"] if block["type"] == "table"
+    ]
+    assert [block["rows"] for block in table_blocks] == table_rows
+    assert any("blocks[0].bbox missing" in warning for warning in result["warnings"])
+    assert any("blocks[1].bbox missing" in warning for warning in result["warnings"])
+    assert any("blocks[2].bbox missing" in warning for warning in result["warnings"])
 
 
 def test_excel_to_word_json_prefers_page_table_rows_over_matching_sheet_rows() -> None:
