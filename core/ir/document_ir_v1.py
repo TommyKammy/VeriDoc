@@ -484,7 +484,12 @@ def _fragments_match_rank_for_v0_metadata(
     *,
     fallback_extractor: str,
 ) -> tuple[int, int] | None:
-    if _v0_metadata_fragment_type(target) != _v0_metadata_fragment_type(source):
+    target_type = _explicit_v0_metadata_fragment_type(target)
+    source_type = _v0_metadata_fragment_type(source)
+    if target_type is None:
+        if source_type not in BLOCK_TYPES:
+            return None
+    elif target_type != source_type:
         return None
     if str(target.get("text") or "") != str(source.get("text") or ""):
         return None
@@ -559,6 +564,10 @@ def _fragment_with_v0_metadata(value: Any, source: dict[str, Any]) -> Any:
         output["requires_review"] = True
     if source.get("low_confidence") is True:
         output["low_confidence"] = True
+    if output.get("kind") is None and output.get("type") is None:
+        source_type = _v0_metadata_fragment_type(source)
+        if source_type in BLOCK_TYPES and source_type != "paragraph":
+            output["kind"] = source_type
     if source.get("missing_confidence") is True:
         output["missing_confidence"] = True
         output.pop("confidence", None)
@@ -575,7 +584,13 @@ def _fragment_with_v0_metadata(value: Any, source: dict[str, Any]) -> Any:
 
 
 def _v0_metadata_fragment_type(fragment: dict[str, Any]) -> str:
+    return _explicit_v0_metadata_fragment_type(fragment) or "paragraph"
+
+
+def _explicit_v0_metadata_fragment_type(fragment: dict[str, Any]) -> str | None:
     raw_type = str(fragment.get("kind") or fragment.get("type") or "")
+    if not raw_type:
+        return None
     if raw_type in BLOCK_TYPES:
         return raw_type
     if raw_type and fragment.get("preserve_invalid_type") is True:
