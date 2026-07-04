@@ -526,10 +526,11 @@ def _following_body_font_sizes(
     font_sizes: list[float] = []
     previous_line = page_lines[candidate_index]
     for line in page_lines[candidate_index + 1 :]:
-        if _is_table_line(line):
-            continue
         if not _is_nearby_following_text_line(previous_line, line):
             break
+        if _is_table_line(line):
+            previous_line = line
+            continue
         line_font_size = _line_font_size(line)
         if line_font_size is not None:
             font_sizes.append(line_font_size)
@@ -564,7 +565,7 @@ def _preceding_lines_are_heading_preamble(
         for line_font_size in [_line_font_size(line)]
         if line_font_size is not None
     ]
-    return all(font_size < body_font_size for font_size in preceding_font_sizes)
+    return all(font_size <= body_font_size for font_size in preceding_font_sizes)
 
 
 def _median_high(values: list[float]) -> float:

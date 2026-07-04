@@ -333,6 +333,133 @@ def test_parse_text_pdf_to_document_ir_marks_oversized_heading_after_running_hea
     validate_document_ir_consistency(document_ir)
 
 
+def test_parse_text_pdf_to_document_ir_marks_heading_after_body_sized_running_header(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pdf_path = tmp_path / "body-sized-running-header.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n")
+    extraction = PdfTextExtraction(
+        source_path=str(pdf_path),
+        extractor="pymupdf",
+        pages=[
+            PdfPageText(
+                page_number=1,
+                width_pt=300.0,
+                height_pt=220.0,
+                fragments=[
+                    _fragment(
+                        "VERIDOC QA",
+                        page_number=1,
+                        x=36.0,
+                        y=20.0,
+                        width=72.0,
+                        source_line_index=0,
+                        font_size=12.0,
+                    ),
+                    _fragment(
+                        "Manufacturing Summary",
+                        page_number=1,
+                        x=36.0,
+                        y=52.0,
+                        width=170.0,
+                        height=18.0,
+                        source_line_index=1,
+                        font_size=18.0,
+                    ),
+                    _fragment(
+                        "Batch was inspected before release.",
+                        page_number=1,
+                        x=36.0,
+                        y=86.0,
+                        width=190.0,
+                        source_line_index=2,
+                        font_size=12.0,
+                    ),
+                ],
+            )
+        ],
+    )
+    monkeypatch.setattr(pdf_text_extraction, "extract_pdf_text", lambda _path: extraction)
+
+    document_ir = parse_text_pdf_to_document_ir(pdf_path, document_id="sample-pdf")
+
+    assert [(block["type"], block["text"]) for block in document_ir["blocks"]] == [
+        ("paragraph", "VERIDOC QA"),
+        ("heading", "Manufacturing Summary"),
+        ("paragraph", "Batch was inspected before release."),
+    ]
+    validate_document_ir_consistency(document_ir)
+
+
+def test_parse_text_pdf_to_document_ir_marks_heading_followed_by_table_before_body(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pdf_path = tmp_path / "heading-table-body.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n")
+    extraction = PdfTextExtraction(
+        source_path=str(pdf_path),
+        extractor="pymupdf",
+        pages=[
+            PdfPageText(
+                page_number=1,
+                width_pt=300.0,
+                height_pt=220.0,
+                fragments=[
+                    _fragment(
+                        "Manufacturing Summary",
+                        page_number=1,
+                        x=36.0,
+                        y=40.0,
+                        width=170.0,
+                        height=18.0,
+                        source_line_index=0,
+                        font_size=18.0,
+                    ),
+                    _fragment(
+                        "Lot\tResult",
+                        page_number=1,
+                        x=36.0,
+                        y=75.0,
+                        width=80.0,
+                        source_line_index=1,
+                        font_size=12.0,
+                    ),
+                    _fragment(
+                        "A-001\tPass",
+                        page_number=1,
+                        x=36.0,
+                        y=93.0,
+                        width=82.0,
+                        source_line_index=2,
+                        font_size=12.0,
+                    ),
+                    _fragment(
+                        "Batch was inspected before release.",
+                        page_number=1,
+                        x=36.0,
+                        y=128.0,
+                        width=190.0,
+                        source_line_index=3,
+                        font_size=12.0,
+                    ),
+                ],
+            )
+        ],
+    )
+    monkeypatch.setattr(pdf_text_extraction, "extract_pdf_text", lambda _path: extraction)
+
+    document_ir = parse_text_pdf_to_document_ir(pdf_path, document_id="sample-pdf")
+
+    assert [(block["type"], block["text"]) for block in document_ir["blocks"]] == [
+        ("heading", "Manufacturing Summary"),
+        ("table", "Lot\tResult\nA-001\tPass"),
+        ("paragraph", "Batch was inspected before release."),
+    ]
+    validate_document_ir_consistency(document_ir)
+
+
 def test_parse_text_pdf_to_document_ir_preserves_spaces_between_same_line_fragments(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -701,6 +828,7 @@ def _fragment(
     width: float,
     height: float = 12.0,
     source_line_index: int | None = None,
+    font_size: float | None = None,
 ) -> TextFragment:
     return TextFragment(
         text=text,
@@ -708,4 +836,5 @@ def _fragment(
         bbox=TextBBox(x=x, y=y, width=width, height=height),
         extractor="pymupdf",
         source_line_index=source_line_index,
+        font_size=font_size,
     )
