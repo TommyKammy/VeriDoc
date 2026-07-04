@@ -478,20 +478,78 @@ def _is_heading_line_group(
     line_group: list[list[TextFragment]],
     page_lines: list[list[TextFragment]],
 ) -> bool:
-    if len(line_group) != 1 or not page_lines or line_group[0] is not page_lines[0]:
+    if len(line_group) != 1 or not page_lines or _is_table_line_group(line_group):
         return False
-    font_size = _line_font_size(line_group[0])
-    page_font_sizes = [
+    line = line_group[0]
+    line_index = _line_identity_index(page_lines, line)
+    if line_index is None or _non_table_line_position(page_lines, line_index) > 2:
+        return False
+    font_size = _line_font_size(line)
+    body_font_size = _representative_body_font_size(page_lines, candidate_index=line_index)
+    if font_size is None or body_font_size is None:
+        return False
+    if not _preceding_lines_are_heading_preamble(page_lines, line_index, body_font_size):
+        return False
+    return font_size >= body_font_size * 1.2
+
+
+def _line_identity_index(
+    page_lines: list[list[TextFragment]],
+    target_line: list[TextFragment],
+) -> int | None:
+    for index, line in enumerate(page_lines):
+        if line is target_line:
+            return index
+    return None
+
+
+def _non_table_line_position(page_lines: list[list[TextFragment]], line_index: int) -> int:
+    return sum(1 for line in page_lines[:line_index] if not _is_table_line(line))
+
+
+def _representative_body_font_size(
+    page_lines: list[list[TextFragment]],
+    *,
+    candidate_index: int,
+) -> float | None:
+    font_sizes = [
         line_font_size
-        for line in page_lines
+        for line in page_lines[candidate_index + 1 :]
         if not _is_table_line(line)
         for line_font_size in [_line_font_size(line)]
         if line_font_size is not None
     ]
-    if font_size is None or len(page_font_sizes) < 2:
-        return False
-    baseline_font_size = min(page_font_sizes)
-    return font_size >= baseline_font_size * 1.2
+    if not font_sizes:
+        font_sizes = [
+            line_font_size
+            for index, line in enumerate(page_lines)
+            if index != candidate_index and not _is_table_line(line)
+            for line_font_size in [_line_font_size(line)]
+            if line_font_size is not None
+        ]
+    if not font_sizes:
+        return None
+    return _median_high(font_sizes)
+
+
+def _preceding_lines_are_heading_preamble(
+    page_lines: list[list[TextFragment]],
+    candidate_index: int,
+    body_font_size: float,
+) -> bool:
+    preceding_font_sizes = [
+        line_font_size
+        for line in page_lines[:candidate_index]
+        if not _is_table_line(line)
+        for line_font_size in [_line_font_size(line)]
+        if line_font_size is not None
+    ]
+    return all(font_size < body_font_size for font_size in preceding_font_sizes)
+
+
+def _median_high(values: list[float]) -> float:
+    ordered = sorted(values)
+    return ordered[len(ordered) // 2]
 
 
 def _line_font_size(line: list[TextFragment]) -> float | None:

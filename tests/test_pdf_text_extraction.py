@@ -269,6 +269,50 @@ def test_parse_text_pdf_to_document_ir_marks_oversized_first_line_as_heading(
     validate_document_ir_consistency(document_ir)
 
 
+def test_parse_text_pdf_to_document_ir_does_not_use_small_footer_as_heading_baseline(
+    tmp_path: Path,
+) -> None:
+    pdf_path = tmp_path / "body-with-footer.pdf"
+    document = fitz.open()
+    page = document.new_page(width=300, height=220)
+    page.insert_text((36, 48), "Batch was inspected before release.", fontsize=12)
+    page.insert_text((36, 78), "All reviewed records were complete.", fontsize=12)
+    page.insert_text((36, 194), "Confidential footer", fontsize=8)
+    document.save(pdf_path)
+    document.close()
+
+    document_ir = parse_text_pdf_to_document_ir(pdf_path, document_id="sample-pdf")
+
+    assert [(block["type"], block["text"]) for block in document_ir["blocks"]] == [
+        ("paragraph", "Batch was inspected before release."),
+        ("paragraph", "All reviewed records were complete."),
+        ("paragraph", "Confidential footer"),
+    ]
+    validate_document_ir_consistency(document_ir)
+
+
+def test_parse_text_pdf_to_document_ir_marks_oversized_heading_after_running_header(
+    tmp_path: Path,
+) -> None:
+    pdf_path = tmp_path / "running-header-before-heading.pdf"
+    document = fitz.open()
+    page = document.new_page(width=300, height=220)
+    page.insert_text((36, 28), "VERIDOC QA", fontsize=8)
+    page.insert_text((36, 58), "Manufacturing Summary", fontsize=18)
+    page.insert_text((36, 88), "Batch was inspected before release.", fontsize=12)
+    document.save(pdf_path)
+    document.close()
+
+    document_ir = parse_text_pdf_to_document_ir(pdf_path, document_id="sample-pdf")
+
+    assert [(block["type"], block["text"]) for block in document_ir["blocks"]] == [
+        ("paragraph", "VERIDOC QA"),
+        ("heading", "Manufacturing Summary"),
+        ("paragraph", "Batch was inspected before release."),
+    ]
+    validate_document_ir_consistency(document_ir)
+
+
 def test_parse_text_pdf_to_document_ir_preserves_spaces_between_same_line_fragments(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

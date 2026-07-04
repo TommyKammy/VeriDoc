@@ -661,6 +661,8 @@ def test_excel_to_word_representative_workbook_surfaces_reviewable_tables(
 def test_pdf_to_word_representative_text_pdf_surfaces_editable_docx(
     tmp_path: Path,
 ) -> None:
+    pytest.importorskip("pymupdf", reason="PyMuPDF eval dependency is not installed")
+
     manifest = json.loads(FIXTURE_MANIFEST_PATH.read_text(encoding="utf-8"))
     fixtures = [
         fixture
