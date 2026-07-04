@@ -749,6 +749,92 @@ def test_convert_uploaded_document_falls_back_when_local_llm_plan_raises_validat
     assert downloaded["audit"]["conversion_plan"]["plan_hash"] is None
 
 
+def test_convert_uploaded_document_hashes_rejected_real_local_llm_plan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parser_output = {
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 320,
+                "height": 240,
+                "unit": "pt",
+                "fragments": [
+                    {
+                        "text": "Lot: SAMPLE-001",
+                        "bbox": {"x": 10, "y": 20, "width": 120, "height": 16, "unit": "pt"},
+                        "confidence": 0.91,
+                    }
+                ],
+            }
+        ]
+    }
+    rejected_plan = {
+        "schema_version": 1,
+        "source_kind": "synthetic_text",
+        "operations": [
+            {
+                "id": "send-out",
+                "action": "extract_field",
+                "inputs": ["Lot: SAMPLE-001"],
+                "output": "lot_number",
+                "rationale": "Rejected plans still need deterministic audit fingerprints.",
+            }
+        ],
+        "constraints": {"external_transmission": True},
+    }
+    payloads: list[dict[str, object]] = []
+
+    def transport(
+        url: str,
+        payload: dict[str, object],
+        headers: dict[str, str],
+        timeout_seconds: float,
+    ) -> dict[str, object]:
+        payloads.append(payload)
+        return {"choices": [{"message": {"content": rejected_plan}}]}
+
+    adapter = poc_web.LocalLLMConversionPlanAdapter(
+        base_url="http://127.0.0.1:8000/v1",
+        model="fake-local-model",
+        transport=transport,
+    )
+    monkeypatch.setattr(
+        poc_web,
+        "_configured_llm_conversion_plan_adapter",
+        lambda: (adapter, None),
+    )
+
+    result = convert_uploaded_document(
+        filename="phase8-output.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+        use_llm=True,
+    )
+
+    expected_plan_hash = hashlib.sha256(
+        json.dumps(
+            rejected_plan,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    assert len(payloads) == 2
+    assert result["status"] == "requires_review"
+    assert result["audit"]["conversion_plan"] == {
+        "requested": True,
+        "status": "fallback",
+        "adopted": False,
+        "schema_version": 1,
+        "plan_hash": expected_plan_hash,
+        "reason": "schema_invalid",
+        "warning_code": "llm_fallback_schema_invalid",
+    }
+    assert result["audit"]["llm"]["base_url_type"] == "local"
+    downloaded = json.loads(result["download"]["content"])
+    assert downloaded["audit"]["conversion_plan"]["plan_hash"] == expected_plan_hash
+
+
 def test_convert_uploaded_document_schema_invalid_llm_fallback_is_deterministic(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

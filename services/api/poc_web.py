@@ -789,9 +789,10 @@ def _local_llm_conversion_plan_state(
     try:
         plan = adapter.create_conversion_plan(_document_ir_synthetic_text(document_ir))
         validate_conversion_plan(plan)
-    except ConversionPlanValidationError:
+    except ConversionPlanValidationError as exc:
         reason = "schema_invalid"
         warning_code = _llm_fallback_warning_code(reason)
+        rejected_plan = exc.plan if isinstance(exc.plan, dict) else plan
         return {
             "setting": _blocked_conversion_setting(True, reason),
             "warnings": [
@@ -803,7 +804,7 @@ def _local_llm_conversion_plan_state(
                 adopted=False,
                 reason=reason,
                 warning_code=warning_code,
-                plan=plan if isinstance(plan, dict) else None,
+                plan=rejected_plan if isinstance(rejected_plan, dict) else None,
             ),
             "llm_audit": _llm_audit(
                 setting=_blocked_conversion_setting(True, reason),
