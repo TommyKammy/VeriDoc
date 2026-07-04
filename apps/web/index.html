@@ -2224,7 +2224,7 @@
         if (sourcePageLabel(item) === "出典不明") return "出典不明（ページ不足）";
         if (!validReviewBboxShape(item?.source_bbox)) return "出典不明（座標不足）";
         const confidence = item?.source_confidence;
-        if (!Number.isFinite(confidence)) return "出典不明（信頼度不足）";
+        if (!sourceConfidenceAvailable(confidence)) return "出典不明（信頼度不足）";
         if (confidence < 0.8) return "低信頼度（要確認）";
         return "出典確認可能";
       }
@@ -2248,8 +2248,12 @@
         return `x=${bbox.x}, y=${bbox.y}, width=${bbox.width}, height=${bbox.height} ${bbox.unit}`;
       }
 
+      function sourceConfidenceAvailable(value) {
+        return Number.isFinite(value) && value >= 0 && value <= 1;
+      }
+
       function formatSourceConfidence(value) {
-        if (!Number.isFinite(value)) return "出典不明";
+        if (!sourceConfidenceAvailable(value)) return "出典不明";
         return `${Math.round(value * 100)}%`;
       }
 

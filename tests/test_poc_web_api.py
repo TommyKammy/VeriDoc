@@ -3362,6 +3362,15 @@ def test_convert_uploaded_phase0_json_marks_missing_v0_confidence_for_review() -
     assert result["status"] == "requires_review"
     assert result["validation"]["errors"] == []
     assert result["document_ir"]["blocks"][0]["confidence"] == 0.0
+    assert result["review_items"][0]["source_confidence"] is None
+    assert result["review_items"][0]["source_bbox"] == {
+        "x": 72.0,
+        "y": 72.0,
+        "width": 240.0,
+        "height": 24.0,
+        "unit": "pt",
+        "origin": "top-left",
+    }
     assert result["review_items"][0]["warnings"] == [
         "blocks[0].confidence missing; block marked requires_review"
     ]
@@ -8923,6 +8932,10 @@ def test_bundled_web_ui_lists_review_items_with_operator_summary() -> None:
     assert "出典不明" in html
     assert "function formatSourceBbox(bbox)" in html
     assert "function formatSourceConfidence(value)" in html
+    assert "function sourceConfidenceAvailable(value)" in html
+    assert "sourceConfidenceAvailable(confidence)" in html
+    assert "sourceConfidenceAvailable(value)" in html
+    assert "value >= 0 && value <= 1" in html
     assert "review-item-meta" in html
     assert "review-item-target" in html
 

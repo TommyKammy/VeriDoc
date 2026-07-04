@@ -3320,7 +3320,7 @@ def _review_items(document_ir: DocumentIRV1) -> list[dict[str, Any]]:
             "block_id": block.id,
             "source_id": f"{document_ir.document.id}:{block.id}",
             "source_page": block.source_page,
-            "source_confidence": block.confidence,
+            "source_confidence": _review_source_confidence(block, block_index),
             "text": block.text,
             "warnings": list(block.review.warnings),
         }
@@ -3338,6 +3338,16 @@ def _review_items(document_ir: DocumentIRV1) -> list[dict[str, Any]]:
             ]
         items.append(item)
     return items
+
+
+def _review_source_confidence(block: Any, block_index: int) -> float | None:
+    confidence_missing = f"blocks[{block_index}].confidence missing; block marked requires_review"
+    confidence_invalid = f"blocks[{block_index}].confidence invalid; block marked requires_review"
+    if confidence_missing in block.review.warnings or confidence_invalid in block.review.warnings:
+        return None
+    if not math.isfinite(block.confidence) or block.confidence < 0 or block.confidence > 1:
+        return None
+    return block.confidence
 
 
 def _pdf_table_warning_review_items(
