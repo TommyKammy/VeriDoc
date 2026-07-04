@@ -89,6 +89,97 @@
           "text",
           "value_metadata"
         ],
+        "allOf": [
+          {
+            "anyOf": [
+              {
+                "properties": {
+                  "value_metadata": {
+                    "required": [
+                      "requires_review"
+                    ]
+                  }
+                },
+                "required": [
+                  "value_metadata"
+                ]
+              },
+              {
+                "properties": {
+                  "value_metadata": {
+                    "properties": {
+                      "low_confidence": {
+                        "const": true
+                      }
+                    },
+                    "required": [
+                      "low_confidence"
+                    ]
+                  }
+                },
+                "required": [
+                  "value_metadata"
+                ]
+              },
+              {
+                "properties": {
+                  "low_confidence": {
+                    "const": true
+                  }
+                },
+                "required": [
+                  "low_confidence"
+                ]
+              }
+            ]
+          },
+          {
+            "if": {
+              "anyOf": [
+                {
+                  "properties": {
+                    "value_metadata": {
+                      "properties": {
+                        "low_confidence": {
+                          "const": true
+                        }
+                      },
+                      "required": [
+                        "low_confidence"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "value_metadata"
+                  ]
+                },
+                {
+                  "properties": {
+                    "low_confidence": {
+                      "const": true
+                    }
+                  },
+                  "required": [
+                    "low_confidence"
+                  ]
+                }
+              ]
+            },
+            "then": {},
+            "else": {
+              "properties": {
+                "value_metadata": {
+                  "required": [
+                    "confidence"
+                  ]
+                }
+              },
+              "required": [
+                "value_metadata"
+              ]
+            }
+          }
+        ],
         "properties": {
           "id": {
             "type": "string"
@@ -106,15 +197,16 @@
           "text": {
             "type": "string"
           },
+          "low_confidence": {
+            "type": "boolean"
+          },
           "value_metadata": {
             "type": "object",
             "additionalProperties": false,
             "required": [
               "source_page",
               "bbox",
-              "extractor",
-              "confidence",
-              "requires_review"
+              "extractor"
             ],
             "properties": {
               "source_page": {
@@ -172,6 +264,9 @@
                 "maximum": 1
               },
               "requires_review": {
+                "type": "boolean"
+              },
+              "low_confidence": {
                 "type": "boolean"
               }
             }

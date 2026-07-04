@@ -791,6 +791,419 @@ class DocumentIrV1Test(unittest.TestCase):
         self.assertEqual([["Field", "Value"], ["Lot", "0099"]], second_fragment["rows"])
         self.assertEqual(["second table warning"], second_fragment["warnings"])
 
+    def test_document_ir_v0_low_confidence_merges_into_existing_fragment(self) -> None:
+        parser_output = {
+            "schema_version": "document-ir/v0",
+            "extractor": "scanned_pdf_ocr",
+            "pages": [
+                {
+                    "page_number": 1,
+                    "width": 320,
+                    "height": 240,
+                    "unit": "px",
+                    "fragments": [
+                        {
+                            "kind": "field",
+                            "text": "LOT-O0I",
+                            "bbox": {"x": 10, "y": 20, "width": 70, "height": 18, "unit": "px"},
+                            "confidence": 0.95,
+                        }
+                    ],
+                }
+            ],
+            "blocks": [
+                {
+                    "type": "field",
+                    "text": "LOT-O0I",
+                    "value_metadata": {
+                        "source_page": 1,
+                        "bbox": {"x": 10, "y": 20, "width": 70, "height": 18, "unit": "px"},
+                        "extractor": {"name": "scanned_pdf_ocr", "version": "0.test"},
+                        "confidence": 0.41,
+                        "low_confidence": True,
+                    },
+                }
+            ],
+        }
+
+        adapted = adapt_document_ir_v0_blocks(parser_output)
+        document_ir = from_parser_output(
+            parser_output,
+            document_id="scanned-batch-record",
+            title="Scanned batch record",
+            source_type="pdf",
+        )
+
+        fragment = adapted["pages"][0]["fragments"][0]
+        self.assertIs(fragment["low_confidence"], True)
+        self.assertEqual(0.41, fragment["confidence"])
+        self.assertTrue(document_ir.blocks[0].review.requires_review)
+        self.assertEqual(0.41, document_ir.blocks[0].confidence)
+        self.assertEqual(
+            ["blocks[0].low confidence; block marked requires_review"],
+            document_ir.blocks[0].review.warnings,
+        )
+
+    def test_document_ir_v0_low_confidence_matches_untyped_existing_fragment(self) -> None:
+        parser_output = {
+            "schema_version": "document-ir/v0",
+            "extractor": "scanned_pdf_ocr",
+            "pages": [
+                {
+                    "page_number": 1,
+                    "width": 320,
+                    "height": 240,
+                    "unit": "px",
+                    "fragments": [
+                        {
+                            "text": "Scanned note",
+                            "bbox": {"x": 10, "y": 20, "width": 70, "height": 18, "unit": "px"},
+                        }
+                    ],
+                }
+            ],
+            "blocks": [
+                {
+                    "type": "paragraph",
+                    "text": "Scanned note",
+                    "value_metadata": {
+                        "source_page": 1,
+                        "bbox": {"x": 10, "y": 20, "width": 70, "height": 18, "unit": "px"},
+                        "extractor": {"name": "scanned_pdf_ocr", "version": "0.test"},
+                        "confidence": 0.39,
+                        "low_confidence": True,
+                    },
+                }
+            ],
+        }
+
+        adapted = adapt_document_ir_v0_blocks(parser_output)
+        document_ir = from_parser_output(
+            parser_output,
+            document_id="scanned-note",
+            title="Scanned note",
+            source_type="pdf",
+        )
+
+        fragment = adapted["pages"][0]["fragments"][0]
+        self.assertEqual("Scanned note", fragment["text"])
+        self.assertIs(fragment["low_confidence"], True)
+        self.assertEqual(0.39, fragment["confidence"])
+        self.assertEqual("paragraph", document_ir.blocks[0].type)
+        self.assertTrue(document_ir.blocks[0].review.requires_review)
+        self.assertEqual(0.39, document_ir.blocks[0].confidence)
+
+    def test_document_ir_v0_low_confidence_matches_untyped_existing_field_fragment(self) -> None:
+        parser_output = {
+            "schema_version": "document-ir/v0",
+            "extractor": "scanned_pdf_ocr",
+            "pages": [
+                {
+                    "page_number": 1,
+                    "width": 320,
+                    "height": 240,
+                    "unit": "px",
+                    "fragments": [
+                        {
+                            "text": "Lot: O0I",
+                            "bbox": {"x": 10, "y": 20, "width": 70, "height": 18, "unit": "px"},
+                        }
+                    ],
+                }
+            ],
+            "blocks": [
+                {
+                    "type": "field",
+                    "text": "Lot: O0I",
+                    "value_metadata": {
+                        "source_page": 1,
+                        "bbox": {"x": 10, "y": 20, "width": 70, "height": 18, "unit": "px"},
+                        "extractor": {"name": "scanned_pdf_ocr", "version": "0.test"},
+                        "confidence": 0.34,
+                        "low_confidence": True,
+                    },
+                }
+            ],
+        }
+
+        adapted = adapt_document_ir_v0_blocks(parser_output)
+        document_ir = from_parser_output(
+            parser_output,
+            document_id="scanned-field",
+            title="Scanned field",
+            source_type="pdf",
+        )
+
+        fragment = adapted["pages"][0]["fragments"][0]
+        self.assertEqual("field", fragment["kind"])
+        self.assertIs(fragment["low_confidence"], True)
+        self.assertEqual(0.34, fragment["confidence"])
+        self.assertEqual("field", document_ir.blocks[0].type)
+        self.assertTrue(document_ir.blocks[0].review.requires_review)
+        self.assertEqual(0.34, document_ir.blocks[0].confidence)
+
+    def test_document_ir_v0_low_confidence_merge_keeps_normalized_confidence(self) -> None:
+        parser_output = {
+            "schema_version": "document-ir/v0",
+            "extractor": "scanned_pdf_ocr",
+            "pages": [
+                {
+                    "page_number": 1,
+                    "width": 320,
+                    "height": 240,
+                    "unit": "px",
+                    "fragments": [
+                        {
+                            "kind": "field",
+                            "text": "LOT-O0I",
+                            "bbox": {"x": 10, "y": 20, "width": 70, "height": 18, "unit": "px"},
+                            "confidence": 91.5,
+                            "engine": "tesseract",
+                        }
+                    ],
+                }
+            ],
+            "blocks": [
+                {
+                    "type": "field",
+                    "text": "LOT-O0I",
+                    "value_metadata": {
+                        "source_page": 1,
+                        "bbox": {"x": 10, "y": 20, "width": 70, "height": 18, "unit": "px"},
+                        "extractor": {"name": "tesseract", "version": "0.test"},
+                        "confidence": 0.41,
+                        "low_confidence": True,
+                    },
+                }
+            ],
+        }
+
+        adapted = adapt_document_ir_v0_blocks(parser_output)
+        document_ir = from_parser_output(
+            parser_output,
+            document_id="scanned-batch-record",
+            title="Scanned batch record",
+            source_type="pdf",
+        )
+
+        fragment = adapted["pages"][0]["fragments"][0]
+        self.assertEqual(0.41, fragment["confidence"])
+        self.assertNotIn("engine", fragment)
+        self.assertEqual({"name": "tesseract", "version": "0.test"}, fragment["extractor"])
+        self.assertEqual(0.41, document_ir.blocks[0].confidence)
+        self.assertEqual("tesseract", document_ir.blocks[0].extractor.name)
+
+    def test_document_ir_v0_low_confidence_merges_into_existing_ocr_region(self) -> None:
+        parser_output = {
+            "schema_version": "document-ir/v0",
+            "extractor": "scanned_pdf_ocr",
+            "pages": [
+                {
+                    "page_number": 1,
+                    "width": 320,
+                    "height": 240,
+                    "unit": "px",
+                    "regions": [
+                        {
+                            "kind": "field",
+                            "text": "LOT-O0I",
+                            "bbox": {"x": 10, "y": 20, "width": 70, "height": 18, "unit": "px"},
+                            "confidence": 91.5,
+                            "engine": "tesseract",
+                        }
+                    ],
+                }
+            ],
+            "blocks": [
+                {
+                    "type": "field",
+                    "text": "LOT-O0I",
+                    "value_metadata": {
+                        "source_page": 1,
+                        "bbox": {"x": 10, "y": 20, "width": 70, "height": 18, "unit": "px"},
+                        "extractor": {"name": "tesseract", "version": "0.test"},
+                        "confidence": 0.41,
+                        "low_confidence": True,
+                    },
+                }
+            ],
+        }
+
+        adapted = adapt_document_ir_v0_blocks(parser_output)
+        document_ir = from_parser_output(
+            parser_output,
+            document_id="scanned-batch-region",
+            title="Scanned batch region",
+            source_type="pdf",
+        )
+
+        region = adapted["pages"][0]["regions"][0]
+        self.assertIs(region["low_confidence"], True)
+        self.assertEqual(0.41, region["confidence"])
+        self.assertNotIn("engine", region)
+        self.assertEqual({"name": "tesseract", "version": "0.test"}, region["extractor"])
+        self.assertTrue(document_ir.blocks[0].review.requires_review)
+        self.assertEqual(0.41, document_ir.blocks[0].confidence)
+        self.assertEqual("tesseract", document_ir.blocks[0].extractor.name)
+
+    def test_document_ir_v0_review_merge_keeps_normalized_confidence(self) -> None:
+        parser_output = {
+            "schema_version": "document-ir/v0",
+            "extractor": "scanned_pdf_ocr",
+            "pages": [
+                {
+                    "page_number": 1,
+                    "width": 320,
+                    "height": 240,
+                    "unit": "px",
+                    "fragments": [
+                        {
+                            "kind": "field",
+                            "text": "LOT-O0I",
+                            "bbox": {"x": 10, "y": 20, "width": 70, "height": 18, "unit": "px"},
+                            "engine": "tesseract",
+                        }
+                    ],
+                }
+            ],
+            "blocks": [
+                {
+                    "type": "field",
+                    "text": "LOT-O0I",
+                    "warnings": ["OCR confidence requires review"],
+                    "value_metadata": {
+                        "source_page": 1,
+                        "bbox": {"x": 10, "y": 20, "width": 70, "height": 18, "unit": "px"},
+                        "extractor": {"name": "tesseract", "version": "0.test"},
+                        "confidence": 0.6,
+                        "requires_review": True,
+                    },
+                }
+            ],
+        }
+
+        adapted = adapt_document_ir_v0_blocks(parser_output)
+        document_ir = from_parser_output(
+            parser_output,
+            document_id="scanned-batch-record",
+            title="Scanned batch record",
+            source_type="pdf",
+        )
+
+        fragment = adapted["pages"][0]["fragments"][0]
+        self.assertEqual(0.6, fragment["confidence"])
+        self.assertNotIn("engine", fragment)
+        self.assertEqual({"name": "tesseract", "version": "0.test"}, fragment["extractor"])
+        self.assertEqual(0.6, document_ir.blocks[0].confidence)
+        self.assertEqual("tesseract", document_ir.blocks[0].extractor.name)
+        self.assertTrue(document_ir.blocks[0].review.requires_review)
+        self.assertEqual(
+            [
+                "blocks[0].parser marked block requires_review",
+                "OCR confidence requires review",
+            ],
+            document_ir.blocks[0].review.warnings,
+        )
+
+    def test_document_ir_v0_low_confidence_merge_preserves_missing_confidence(self) -> None:
+        parser_output = {
+            "schema_version": "document-ir/v0",
+            "extractor": "scanned_pdf_ocr",
+            "pages": [
+                {
+                    "page_number": 1,
+                    "width": 320,
+                    "height": 240,
+                    "unit": "px",
+                    "fragments": [
+                        {
+                            "kind": "field",
+                            "text": "LOT-O0I",
+                            "bbox": {"x": 10, "y": 20, "width": 70, "height": 18, "unit": "px"},
+                            "confidence": 0.95,
+                        }
+                    ],
+                }
+            ],
+            "blocks": [
+                {
+                    "type": "field",
+                    "text": "LOT-O0I",
+                    "value_metadata": {
+                        "source_page": 1,
+                        "bbox": {"x": 10, "y": 20, "width": 70, "height": 18, "unit": "px"},
+                        "extractor": {"name": "scanned_pdf_ocr", "version": "0.test"},
+                        "low_confidence": True,
+                    },
+                }
+            ],
+        }
+
+        adapted = adapt_document_ir_v0_blocks(parser_output)
+        document_ir = from_parser_output(
+            parser_output,
+            document_id="scanned-batch-record",
+            title="Scanned batch record",
+            source_type="pdf",
+        )
+
+        fragment = adapted["pages"][0]["fragments"][0]
+        self.assertIs(fragment["low_confidence"], True)
+        self.assertIs(fragment["missing_confidence"], True)
+        self.assertNotIn("confidence", fragment)
+        self.assertTrue(document_ir.blocks[0].review.requires_review)
+        self.assertEqual(0.0, document_ir.blocks[0].confidence)
+        self.assertEqual(
+            [
+                "blocks[0].confidence missing; block marked requires_review",
+                "blocks[0].low confidence; block marked requires_review",
+            ],
+            document_ir.blocks[0].review.warnings,
+        )
+
+    def test_document_ir_v0_low_confidence_matches_kind_before_legacy_type(self) -> None:
+        parser_output = {
+            "schema_version": "document-ir/v0",
+            "extractor": "scanned_pdf_ocr",
+            "pages": [
+                {
+                    "page_number": 1,
+                    "width": 320,
+                    "height": 240,
+                    "unit": "px",
+                    "fragments": [
+                        {
+                            "kind": "field",
+                            "type": "paragraph",
+                            "text": "Lot: 0007",
+                            "bbox": {"x": 10, "y": 20, "width": 70, "height": 18, "unit": "px"},
+                            "confidence": 0.95,
+                        }
+                    ],
+                }
+            ],
+            "blocks": [
+                {
+                    "type": "field",
+                    "text": "Lot: 0007",
+                    "value_metadata": {
+                        "source_page": 1,
+                        "bbox": {"x": 10, "y": 20, "width": 70, "height": 18, "unit": "px"},
+                        "extractor": {"name": "scanned_pdf_ocr", "version": "0.test"},
+                        "confidence": 0.42,
+                        "low_confidence": True,
+                    },
+                }
+            ],
+        }
+
+        adapted = adapt_document_ir_v0_blocks(parser_output)
+
+        fragments = adapted["pages"][0]["fragments"]
+        self.assertEqual(1, len(fragments))
+        self.assertIs(fragments[0]["low_confidence"], True)
+        self.assertEqual(0.42, fragments[0]["confidence"])
+
     def test_document_ir_v0_top_level_rows_do_not_override_existing_fragment_rows(
         self,
     ) -> None:

@@ -468,6 +468,7 @@ def _merge_v0_metadata_into_fragment_list(
 def _fragment_has_v0_merge_metadata(fragment: dict[str, Any]) -> bool:
     return (
         fragment.get("requires_review") is True
+        or fragment.get("low_confidence") is True
         or bool(_fragment_warnings(fragment))
         or bool(_list_value(fragment.get("rows")))
     )
@@ -483,7 +484,12 @@ def _fragments_match_rank_for_v0_metadata(
     *,
     fallback_extractor: str,
 ) -> tuple[int, int] | None:
-    if (target.get("kind") or target.get("type")) != (source.get("kind") or source.get("type")):
+    target_type = _explicit_v0_metadata_fragment_type(target)
+    source_type = _v0_metadata_fragment_type(source)
+    if target_type is None:
+        if source_type not in BLOCK_TYPES:
+            return None
+    elif target_type != source_type:
         return None
     if str(target.get("text") or "") != str(source.get("text") or ""):
         return None
@@ -556,10 +562,54 @@ def _fragment_with_v0_metadata(value: Any, source: dict[str, Any]) -> Any:
             output["rows"] = rows
     if source.get("requires_review") is True:
         output["requires_review"] = True
+    if source.get("low_confidence") is True:
+        output["low_confidence"] = True
+    if output.get("kind") is None and output.get("type") is None:
+        source_type = _v0_metadata_fragment_type(source)
+        if source_type in BLOCK_TYPES and source_type != "paragraph":
+            output["kind"] = source_type
+    if source.get("missing_confidence") is True:
+        output["missing_confidence"] = True
+        output.pop("confidence", None)
+    elif source.get("low_confidence") is True and source.get("confidence") is not None:
+        output["confidence"] = source["confidence"]
+        _preserve_normalized_v0_confidence(output, source)
+    elif output.get("confidence") is None and source.get("confidence") is not None:
+        output["confidence"] = source["confidence"]
+        _preserve_normalized_v0_confidence(output, source)
     warnings = [*dict.fromkeys([*_fragment_warnings(output), *_fragment_warnings(source)])]
     if warnings:
         output["warnings"] = warnings
     return output
+
+
+def _v0_metadata_fragment_type(fragment: dict[str, Any]) -> str:
+    return _explicit_v0_metadata_fragment_type(fragment) or "paragraph"
+
+
+def _explicit_v0_metadata_fragment_type(fragment: dict[str, Any]) -> str | None:
+    raw_type = str(fragment.get("kind") or fragment.get("type") or "")
+    if not raw_type:
+        return None
+    if raw_type in BLOCK_TYPES:
+        return raw_type
+    if raw_type and fragment.get("preserve_invalid_type") is True:
+        return raw_type
+    return "paragraph"
+
+
+def _preserve_normalized_v0_confidence(output: dict[str, Any], source: dict[str, Any]) -> None:
+    if output.get("engine") is None:
+        return
+
+    if output.get("extractor") is None:
+        extractor = source.get("extractor") or source.get("engine") or output.get("engine")
+        if isinstance(extractor, dict):
+            output["extractor"] = dict(extractor)
+        elif extractor is not None:
+            output["extractor"] = str(extractor)
+
+    output.pop("engine", None)
 
 
 def _document_ir_v0_block_fragment(
@@ -606,6 +656,8 @@ def _document_ir_v0_block_fragment(
 
     if metadata.get("requires_review") is True:
         fragment["requires_review"] = True
+    if metadata.get("low_confidence") is True or block.get("low_confidence") is True:
+        fragment["low_confidence"] = True
     warnings = [str(warning) for warning in _list_value(block.get("warnings")) if str(warning)]
     if warnings:
         fragment["warnings"] = warnings
