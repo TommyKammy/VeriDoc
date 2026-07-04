@@ -594,50 +594,59 @@ def test_excel_to_word_primary_docx_renders_sheet_values_for_review() -> None:
 def test_excel_to_word_representative_workbook_surfaces_reviewable_tables(
     tmp_path: Path,
 ) -> None:
-    result = convert_uploaded_document(
-        filename="representative.xlsx",
-        content=_representative_excel_to_word_xlsx_bytes(),
-        conversion_mode="excel_to_word",
-    )
-
-    assert result["status"] == "requires_review"
-    primary_artifact = result["artifacts"][0]
-    assert primary_artifact["id"] == "primary-docx"
-    assert primary_artifact["filename"] == "representative.veridoc-excel-to-word.docx"
-    assert primary_artifact["content_type"] == (
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    )
-
-    primary_path = tmp_path / primary_artifact["filename"]
-    primary_path.write_bytes(primary_artifact["content"])
-    docx = extract_docx_structure(primary_path)
-    table_rows = [block.rows for block in docx.blocks if block.kind == "table"]
-    assert table_rows == [
-        [
-            ["Sheet: WBS"],
-            ["WBS ID", "Task", "Due", "Progress"],
-            ["00042", "Template mapping review", "2026-07-10", "0.75"],
-        ],
-        [
-            ["Sheet: Issue Log"],
-            ["Issue ID", "Status", "Opened", "Severity", "Owner"],
-            ["ISS-001", "Open", "2026-07-11", "3", "QA"],
-        ],
-        [
-            ["Sheet: Ledger"],
-            ["Entry ID", "Posting Date", "Amount", "Cleared"],
-            ["00017", "2026-07-12", "1234.50", "True"],
-        ],
+    manifest = json.loads(FIXTURE_MANIFEST_PATH.read_text(encoding="utf-8"))
+    fixtures = [
+        fixture
+        for fixture in manifest["fixtures"]
+        if fixture["source_type"] == "excel"
+        and fixture.get("excel_to_word_representative") is True
     ]
 
-    downloaded = json.loads(result["download"]["content"].decode("utf-8"))
-    table_blocks = [
-        block for block in downloaded["document_ir"]["blocks"] if block["type"] == "table"
-    ]
-    assert [block["rows"] for block in table_blocks] == table_rows
-    assert any("blocks[0].bbox missing" in warning for warning in result["warnings"])
-    assert any("blocks[1].bbox missing" in warning for warning in result["warnings"])
-    assert any("blocks[2].bbox missing" in warning for warning in result["warnings"])
+    assert {fixture["id"] for fixture in fixtures} == {"excel-to-word-representative"}
+
+    for fixture in fixtures:
+        fixture_relative_path = Path(fixture["path"])
+        assert not fixture_relative_path.is_absolute(), fixture["id"]
+        assert _repo_tracks_path(fixture_relative_path), fixture["id"]
+        fixture_path = REPO_ROOT / fixture_relative_path
+        assert fixture_path.is_file(), fixture["id"]
+
+        result = convert_uploaded_document(
+            filename=fixture_path.name,
+            content=fixture_path.read_bytes(),
+            conversion_mode="excel_to_word",
+        )
+
+        assert result["status"] == "requires_review"
+        primary_artifact = result["artifacts"][0]
+        assert primary_artifact["id"] == "primary-docx", fixture["id"]
+        assert primary_artifact["filename"] == (
+            "excel-to-word-representative.veridoc-excel-to-word.docx"
+        )
+        assert primary_artifact["content_type"] == (
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
+        assert primary_artifact["metadata"]["download"] == {
+            "available": True,
+            "field": "artifacts[0].content_base64",
+        }
+
+        primary_path = tmp_path / primary_artifact["filename"]
+        primary_path.write_bytes(primary_artifact["content"])
+        docx = extract_docx_structure(primary_path)
+        table_rows = [block.rows for block in docx.blocks if block.kind == "table"]
+        expectations = fixture["excel_to_word_expectations"]
+        assert table_rows == expectations["table_rows"], fixture["id"]
+
+        downloaded = json.loads(result["download"]["content"].decode("utf-8"))
+        table_blocks = [
+            block
+            for block in downloaded["document_ir"]["blocks"]
+            if block["type"] == "table"
+        ]
+        assert [block["rows"] for block in table_blocks] == table_rows, fixture["id"]
+        for warning in expectations["warnings"]:
+            assert warning in result["warnings"], fixture["id"]
 
 
 def test_excel_to_word_json_prefers_page_table_rows_over_matching_sheet_rows() -> None:

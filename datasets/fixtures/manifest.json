@@ -204,15 +204,40 @@
       "notes": "Synthetic application sample with gridSpan merge markup preserved as review warning."
     },
     {
-      "id": "placeholder-excel",
-      "title": "Excel fixture slot",
-      "path": null,
+      "id": "excel-to-word-representative",
+      "title": "Synthetic Excel-to-Word representative fixture",
+      "path": "datasets/fixtures/excel/excel-to-word-representative.xlsx",
       "source_type": "excel",
       "format": "xlsx",
-      "anonymization": "pending_synthetic_fixture",
+      "anonymization": "synthetic",
       "confidentiality": "public",
       "public_review_safe": true,
-      "notes": "Placement rule reserved; add only synthetic or anonymized Excel files."
+      "excel_to_word_representative": true,
+      "excel_to_word_expectations": {
+        "table_rows": [
+          [
+            ["Sheet: WBS"],
+            ["WBS ID", "Task", "Due", "Progress"],
+            ["00042", "Template mapping review", "2026-07-10", "0.75"]
+          ],
+          [
+            ["Sheet: Issue Log"],
+            ["Issue ID", "Status", "Opened", "Severity", "Owner"],
+            ["ISS-001", "Open", "2026-07-11", "3", "QA"]
+          ],
+          [
+            ["Sheet: Ledger"],
+            ["Entry ID", "Posting Date", "Amount", "Cleared"],
+            ["00017", "2026-07-12", "1234.50", "True"]
+          ]
+        ],
+        "warnings": [
+          "blocks[0].bbox missing; block marked requires_review",
+          "blocks[1].bbox missing; block marked requires_review",
+          "blocks[2].bbox missing; block marked requires_review"
+        ]
+      },
+      "notes": "Synthetic multi-sheet workbook covering WBS, issue-log, and ledger-like Excel-to-Word artifact checks."
     }
   ]
 }
