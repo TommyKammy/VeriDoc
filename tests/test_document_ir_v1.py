@@ -791,6 +791,57 @@ class DocumentIrV1Test(unittest.TestCase):
         self.assertEqual([["Field", "Value"], ["Lot", "0099"]], second_fragment["rows"])
         self.assertEqual(["second table warning"], second_fragment["warnings"])
 
+    def test_document_ir_v0_low_confidence_merges_into_existing_fragment(self) -> None:
+        parser_output = {
+            "schema_version": "document-ir/v0",
+            "extractor": "scanned_pdf_ocr",
+            "pages": [
+                {
+                    "page_number": 1,
+                    "width": 320,
+                    "height": 240,
+                    "unit": "px",
+                    "fragments": [
+                        {
+                            "kind": "field",
+                            "text": "LOT-O0I",
+                            "bbox": {"x": 10, "y": 20, "width": 70, "height": 18, "unit": "px"},
+                            "confidence": 0.41,
+                        }
+                    ],
+                }
+            ],
+            "blocks": [
+                {
+                    "type": "field",
+                    "text": "LOT-O0I",
+                    "value_metadata": {
+                        "source_page": 1,
+                        "bbox": {"x": 10, "y": 20, "width": 70, "height": 18, "unit": "px"},
+                        "extractor": {"name": "scanned_pdf_ocr", "version": "0.test"},
+                        "confidence": 0.41,
+                        "low_confidence": True,
+                    },
+                }
+            ],
+        }
+
+        adapted = adapt_document_ir_v0_blocks(parser_output)
+        document_ir = from_parser_output(
+            parser_output,
+            document_id="scanned-batch-record",
+            title="Scanned batch record",
+            source_type="pdf",
+        )
+
+        fragment = adapted["pages"][0]["fragments"][0]
+        self.assertIs(fragment["low_confidence"], True)
+        self.assertTrue(document_ir.blocks[0].review.requires_review)
+        self.assertEqual(
+            ["blocks[0].low confidence; block marked requires_review"],
+            document_ir.blocks[0].review.warnings,
+        )
+
     def test_document_ir_v0_top_level_rows_do_not_override_existing_fragment_rows(
         self,
     ) -> None:

@@ -468,6 +468,7 @@ def _merge_v0_metadata_into_fragment_list(
 def _fragment_has_v0_merge_metadata(fragment: dict[str, Any]) -> bool:
     return (
         fragment.get("requires_review") is True
+        or fragment.get("low_confidence") is True
         or bool(_fragment_warnings(fragment))
         or bool(_list_value(fragment.get("rows")))
     )
@@ -556,6 +557,8 @@ def _fragment_with_v0_metadata(value: Any, source: dict[str, Any]) -> Any:
             output["rows"] = rows
     if source.get("requires_review") is True:
         output["requires_review"] = True
+    if source.get("low_confidence") is True:
+        output["low_confidence"] = True
     warnings = [*dict.fromkeys([*_fragment_warnings(output), *_fragment_warnings(source)])]
     if warnings:
         output["warnings"] = warnings
