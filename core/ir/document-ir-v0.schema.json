@@ -116,8 +116,7 @@
               "source_page",
               "bbox",
               "extractor",
-              "confidence",
-              "requires_review"
+              "confidence"
             ],
             "properties": {
               "source_page": {

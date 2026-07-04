@@ -806,6 +806,7 @@ class DocumentIrV1Test(unittest.TestCase):
                             "kind": "field",
                             "text": "LOT-O0I",
                             "bbox": {"x": 10, "y": 20, "width": 70, "height": 18, "unit": "px"},
+                            "confidence": 0.95,
                         }
                     ],
                 }

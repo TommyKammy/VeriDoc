@@ -559,7 +559,9 @@ def _fragment_with_v0_metadata(value: Any, source: dict[str, Any]) -> Any:
         output["requires_review"] = True
     if source.get("low_confidence") is True:
         output["low_confidence"] = True
-    if output.get("confidence") is None and source.get("confidence") is not None:
+    if source.get("low_confidence") is True and source.get("confidence") is not None:
+        output["confidence"] = source["confidence"]
+    elif output.get("confidence") is None and source.get("confidence") is not None:
         output["confidence"] = source["confidence"]
     warnings = [*dict.fromkeys([*_fragment_warnings(output), *_fragment_warnings(source)])]
     if warnings:
