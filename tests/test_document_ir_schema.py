@@ -75,7 +75,8 @@ class DocumentIrSchemaTest(unittest.TestCase):
 
     def test_value_metadata_fields_are_required_on_blocks(self) -> None:
         schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
-        block_metadata = schema["properties"]["blocks"]["items"]["properties"]["value_metadata"]
+        block_schema = schema["properties"]["blocks"]["items"]
+        block_metadata = block_schema["properties"]["value_metadata"]
 
         self.assertEqual(
             {
@@ -85,7 +86,7 @@ class DocumentIrSchemaTest(unittest.TestCase):
             },
             set(block_metadata["required"]),
         )
-        self.assertIn("allOf", block_metadata)
+        self.assertIn("allOf", block_schema)
 
     def test_validator_accepts_low_confidence_v0_metadata(self) -> None:
         document = json.loads(SAMPLE_PATH.read_text(encoding="utf-8"))
@@ -190,6 +191,42 @@ class DocumentIrSchemaTest(unittest.TestCase):
             ),
         )
 
+    def test_validator_accepts_top_level_low_confidence_as_v0_review_signal(self) -> None:
+        document = json.loads(SAMPLE_PATH.read_text(encoding="utf-8"))
+        document["blocks"][0]["low_confidence"] = True
+        document["blocks"][0]["value_metadata"].pop("requires_review", None)
+        document["blocks"][0]["value_metadata"].pop("low_confidence", None)
+        document["blocks"][0]["value_metadata"]["confidence"] = 0.41
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            document_path = Path(temp_dir) / "top-level-low-confidence-document-ir.json"
+            document_path.write_text(json.dumps(document), encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(VALIDATOR_PATH),
+                    "--schema",
+                    str(SCHEMA_PATH),
+                    "--document",
+                    str(document_path),
+                ],
+                cwd=REPO_ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+        self.assertEqual(
+            result.returncode,
+            0,
+            msg=(
+                "validator rejected top-level low_confidence review signal\n"
+                f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+            ),
+        )
+
     def test_validator_rejects_v0_metadata_without_review_signal(self) -> None:
         document = json.loads(SAMPLE_PATH.read_text(encoding="utf-8"))
         document["blocks"][0]["value_metadata"].pop("requires_review", None)
@@ -219,6 +256,38 @@ class DocumentIrSchemaTest(unittest.TestCase):
             result.returncode,
             0,
             msg="validator accepted v0 metadata without requires_review or low_confidence",
+        )
+
+    def test_validator_rejects_false_low_confidence_without_review_signal(self) -> None:
+        document = json.loads(SAMPLE_PATH.read_text(encoding="utf-8"))
+        document["blocks"][0]["value_metadata"].pop("requires_review", None)
+        document["blocks"][0]["value_metadata"]["confidence"] = 0.41
+        document["blocks"][0]["value_metadata"]["low_confidence"] = False
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            document_path = Path(temp_dir) / "false-low-confidence-document-ir.json"
+            document_path.write_text(json.dumps(document), encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(VALIDATOR_PATH),
+                    "--schema",
+                    str(SCHEMA_PATH),
+                    "--document",
+                    str(document_path),
+                ],
+                cwd=REPO_ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+        self.assertNotEqual(
+            result.returncode,
+            0,
+            msg="validator accepted false low_confidence without requires_review",
         )
 
     def test_validator_rejects_non_finite_json_numbers(self) -> None:
