@@ -9871,6 +9871,34 @@ def test_web_direct_convert_download_uses_primary_artifact_before_debug_json() -
     assert "JSON is retained for validation and audit details." in html
 
 
+def test_web_direct_convert_artifact_region_lists_metadata_without_payloads() -> None:
+    html = Path("apps/web/index.html").read_text(encoding="utf-8")
+    parser = _PocUiRegionParser()
+    parser.feed(html)
+    renderer = re.search(
+        r"function renderArtifactListItem\(artifact\) \{(?P<body>.*?)\n      \}",
+        html,
+        re.DOTALL,
+    )
+
+    assert "artifact-downloads" in parser.element_regions["artifact-list"]
+    assert 'id="artifact-list"' in html
+    assert "renderArtifactList(result.artifacts || [])" in html
+    assert "function renderArtifactList(artifacts)" in html
+    assert renderer is not None
+    renderer_body = renderer.group("body")
+    assert "artifact.metadata?.role" in renderer_body
+    assert "artifact.filename" in renderer_body
+    assert "artifact.content_type" in renderer_body
+    assert "artifact.kind" in renderer_body
+    assert "artifact.format" in renderer_body
+    assert "artifact.size_bytes" in renderer_body
+    assert "content_base64" not in renderer_body
+    assert re.search(r"artifact\.content(?!_type)", renderer_body) is None
+    assert "content_base64" in html
+    assert "artifactForDetail" in html
+
+
 def test_web_job_detail_actions_perform_download_and_retry_side_effects() -> None:
     html = Path("apps/web/index.html").read_text(encoding="utf-8")
 

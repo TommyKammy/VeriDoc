@@ -358,6 +358,34 @@
         margin-bottom: 4px;
       }
 
+      .artifact-list {
+        display: grid;
+        gap: 8px;
+        margin: 12px 0 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .artifact-list li {
+        display: grid;
+        gap: 4px;
+        padding: 10px;
+        border: 1px solid #e5e9f0;
+        border-radius: 8px;
+        background: #f8fafc;
+      }
+
+      .artifact-list strong {
+        color: #263243;
+        font-size: 14px;
+      }
+
+      .artifact-meta {
+        color: var(--muted);
+        font-size: 13px;
+        overflow-wrap: anywhere;
+      }
+
       .review-item button {
         margin-top: 8px;
       }
@@ -792,6 +820,7 @@
             <a id="download-link" download hidden>Download primary DOCX/XLSX</a>
             <a id="debug-download-link" download hidden>Download audit/debug JSON</a>
           </div>
+          <ul id="artifact-list" class="artifact-list"></ul>
         </div>
         <div
           id="raw-panel"
@@ -939,6 +968,7 @@
       const artifactSummary = document.querySelector("#artifact-summary");
       const downloadLink = document.querySelector("#download-link");
       const debugDownloadLink = document.querySelector("#debug-download-link");
+      const artifactList = document.querySelector("#artifact-list");
       const rawResult = document.querySelector("#raw-result");
       const refreshAudit = document.querySelector("#refresh-audit");
       const exportAudit = document.querySelector("#export-audit");
@@ -1679,6 +1709,7 @@
           primaryDownloadArtifact(result),
           debugDownloadArtifact(result)
         );
+        renderArtifactList(result.artifacts || []);
         rawResult.textContent = JSON.stringify(
           {
             document_ir: result.document_ir,
@@ -1725,6 +1756,40 @@
           : "No primary DOCX/XLSX artifact for this mode. JSON is retained for validation and audit details.";
       }
 
+      function renderArtifactList(artifacts) {
+        if (!artifacts.length) {
+          const item = document.createElement("li");
+          item.textContent = "No artifacts were returned. Check warnings and detail JSON for generation failure details.";
+          artifactList.replaceChildren(item);
+          return;
+        }
+        artifactList.replaceChildren(...artifacts.map(renderArtifactListItem));
+      }
+
+      function renderArtifactListItem(artifact) {
+        const item = document.createElement("li");
+        const title = document.createElement("strong");
+        const artifactRole = artifact.metadata?.role || artifact.kind;
+        const role = artifactRole === "primary" ? "Primary artifact" : "Audit/debug artifact";
+        const format = typeof artifact.format === "string" ? artifact.format.toUpperCase() : "UNKNOWN";
+        title.textContent = `${role}: ${format}`;
+
+        const filename = document.createElement("div");
+        filename.className = "artifact-meta";
+        filename.textContent = `Filename: ${artifact.filename || "not provided"}`;
+
+        const type = document.createElement("div");
+        type.className = "artifact-meta";
+        type.textContent = `Content type: ${artifact.content_type || "not provided"}`;
+
+        const metadata = document.createElement("div");
+        metadata.className = "artifact-meta";
+        metadata.textContent = `Role: ${artifactRole || "unknown"}; Kind: ${artifact.kind || "unknown"}; Size: ${artifact.size_bytes || 0} bytes`;
+
+        item.replaceChildren(title, filename, type, metadata);
+        return item;
+      }
+
       function primaryDownloadArtifact(result) {
         return (result.artifacts || []).find(
           (artifact) =>
@@ -1764,6 +1829,7 @@
         debugDownloadLink.removeAttribute("href");
         debugDownloadLink.removeAttribute("download");
         artifactSummary.textContent = "";
+        artifactList.replaceChildren();
         artifactDownloadsPanel.hidden = true;
         downloadLink.hidden = true;
         debugDownloadLink.hidden = true;
