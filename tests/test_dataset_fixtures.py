@@ -31,6 +31,12 @@ REQUIRED_DOCX_PACKAGE_PARTS = {
     "word/document.xml",
     "word/_rels/document.xml.rels",
 }
+REQUIRED_XLSX_PACKAGE_PARTS = {
+    "[Content_Types].xml",
+    "_rels/.rels",
+    "xl/workbook.xml",
+    "xl/_rels/workbook.xml.rels",
+}
 CONTENT_TYPE_NS = "{http://schemas.openxmlformats.org/package/2006/content-types}"
 PACKAGE_REL_NS = "{http://schemas.openxmlformats.org/package/2006/relationships}"
 OFFICE_DOCUMENT_RELATIONSHIP = (
@@ -104,6 +110,48 @@ class DatasetFixturesTest(unittest.TestCase):
                     overrides.get("/word/document.xml"),
                 )
                 self.assertIn("word/document.xml", office_document_targets)
+
+    def test_manifest_xlsx_fixtures_are_reusable_ooxml_packages(self) -> None:
+        manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+
+        for fixture in manifest["fixtures"]:
+            if fixture["path"] is None or fixture["format"] != "xlsx":
+                continue
+
+            relpath = Path(fixture["path"])
+            with self.subTest(fixture=fixture["id"]):
+                with ZipFile(REPO_ROOT / relpath) as archive:
+                    package_parts = set(archive.namelist())
+                    content_types = ElementTree.fromstring(archive.read("[Content_Types].xml"))
+                    package_relationships = ElementTree.fromstring(archive.read("_rels/.rels"))
+
+                self.assertTrue(
+                    REQUIRED_XLSX_PACKAGE_PARTS.issubset(package_parts),
+                    msg=f"{relpath} is missing reusable XLSX package parts",
+                )
+                rel_defaults = {
+                    node.attrib.get("Extension"): node.attrib.get("ContentType")
+                    for node in content_types.findall(f"{CONTENT_TYPE_NS}Default")
+                }
+                overrides = {
+                    node.attrib.get("PartName"): node.attrib.get("ContentType")
+                    for node in content_types.findall(f"{CONTENT_TYPE_NS}Override")
+                }
+                office_document_targets = {
+                    node.attrib.get("Target")
+                    for node in package_relationships.findall(f"{PACKAGE_REL_NS}Relationship")
+                    if node.attrib.get("Type") == OFFICE_DOCUMENT_RELATIONSHIP
+                }
+
+                self.assertEqual(
+                    "application/vnd.openxmlformats-package.relationships+xml",
+                    rel_defaults.get("rels"),
+                )
+                self.assertEqual(
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml",
+                    overrides.get("/xl/workbook.xml"),
+                )
+                self.assertIn("xl/workbook.xml", office_document_targets)
 
     def test_high_risk_gold_labels_are_anchored_to_public_fixtures(self) -> None:
         manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
