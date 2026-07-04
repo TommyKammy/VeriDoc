@@ -36,7 +36,12 @@ from core.ir.document_ir_v1 import (
     from_parser_output,
     validate_document_ir_v1,
 )
-from core.llm.conversion_plan import LocalLLMConfigurationError, LocalLLMConversionPlanAdapter
+from core.llm.conversion_plan import (
+    ConversionPlanValidationError,
+    LocalLLMConfigurationError,
+    LocalLLMConversionPlanAdapter,
+    validate_conversion_plan,
+)
 from core.parsers.docx_extraction import extract_docx_structure
 from core.parsers.pdf_table_extraction import compare_pdf_table_extractors
 from core.parsers.pdf_text_extraction import MissingPdfExtractorDependency, parse_text_pdf_to_document_ir
@@ -95,7 +100,6 @@ CONVERSION_MODE_SOURCE_TYPES = {
     "excel_to_word": "xlsx",
 }
 UNSUPPORTED_CONVERSION_SETTING_WARNINGS = {
-    "use_llm": "LLM conversion setting is not implemented in the local PoC API",
     "use_ocr": "OCR conversion setting is not implemented in the local PoC API",
 }
 LOCAL_AUTH_TOKENS_ENV = "VERIDOC_LOCAL_AUTH_TOKENS"
@@ -607,11 +611,17 @@ def convert_uploaded_document(
     )
     document_ir_dict = _document_ir_with_parser_table_rows(document_ir.to_dict(), parser_output)
     validation = validate_document_ir_v1(document_ir)
+    conversion_plan_state = _local_llm_conversion_plan_state(
+        document_ir_dict,
+        use_llm=use_llm,
+    )
+    conversion_settings["use_llm"] = conversion_plan_state["setting"]
     review_items = _review_items(document_ir)
     warnings = [
         *input_warnings,
         *mode_warnings,
         *_conversion_setting_warnings(conversion_settings),
+        *conversion_plan_state["warnings"],
         *validation.warnings,
     ]
     primary_artifact: dict[str, Any] | None = None
@@ -633,6 +643,7 @@ def convert_uploaded_document(
         "source_sha256": source_sha256,
         "conversion_mode": selected_conversion_mode,
         "conversion_settings": conversion_settings,
+        "conversion_plan": conversion_plan_state["audit"],
     }
     download_payload = {
         "document_ir": document_ir_dict,
@@ -692,6 +703,112 @@ def convert_uploaded_document(
             "content": download_content,
         },
     }
+
+
+def _local_llm_conversion_plan_state(
+    document_ir: dict[str, Any],
+    *,
+    use_llm: bool,
+) -> dict[str, Any]:
+    disabled_setting = {"requested": False, "enabled": False, "status": "disabled"}
+    if not use_llm:
+        return {
+            "setting": disabled_setting,
+            "warnings": [],
+            "audit": {"requested": False, "status": "disabled", "adopted": False},
+        }
+
+    adapter, rejection_reason = _configured_llm_conversion_plan_adapter()
+    if adapter is None:
+        reason = rejection_reason or "missing_configured_profile"
+        return {
+            "setting": _blocked_conversion_setting(True, reason),
+            "warnings": [_llm_conversion_plan_warning(reason)],
+            "audit": {
+                "requested": True,
+                "status": "unavailable",
+                "adopted": False,
+                "reason": reason,
+            },
+        }
+
+    try:
+        plan = adapter.create_conversion_plan(_document_ir_synthetic_text(document_ir))
+        validate_conversion_plan(plan)
+    except ConversionPlanValidationError as exc:
+        reason = "schema_invalid"
+        return {
+            "setting": _blocked_conversion_setting(True, reason),
+            "warnings": [f"LLM conversion plan rejected: {exc}"],
+            "audit": {
+                "requested": True,
+                "status": "rejected",
+                "adopted": False,
+                "reason": reason,
+            },
+        }
+    except (LocalLLMConfigurationError, RuntimeError, ValueError) as exc:
+        reason = _llm_plan_unavailable_reason(exc)
+        return {
+            "setting": _blocked_conversion_setting(True, reason),
+            "warnings": [_llm_conversion_plan_warning(reason)],
+            "audit": {
+                "requested": True,
+                "status": "unavailable",
+                "adopted": False,
+                "reason": reason,
+            },
+        }
+
+    return {
+        "setting": {"requested": True, "enabled": True, "status": "enabled"},
+        "warnings": [],
+        "audit": {
+            "requested": True,
+            "status": "adopted",
+            "adopted": True,
+            "plan": deepcopy(plan),
+        },
+    }
+
+
+def _document_ir_synthetic_text(document_ir: dict[str, Any]) -> str:
+    document = document_ir.get("document")
+    document_id = document.get("id") if isinstance(document, dict) else None
+    source_type = document.get("source_type") if isinstance(document, dict) else None
+    lines = [
+        f"schema_version: {document_ir.get('schema_version')}",
+        f"document_id: {document_id}",
+        f"source_type: {source_type}",
+    ]
+    blocks = document_ir.get("blocks")
+    if isinstance(blocks, list):
+        for index, block in enumerate(blocks):
+            if not isinstance(block, dict):
+                continue
+            block_id = block.get("id")
+            block_type = block.get("type")
+            text = str(block.get("text") or "")
+            lines.append(f"block[{index}] id={block_id} type={block_type} text={text}")
+    return "\n".join(lines)
+
+
+def _llm_conversion_plan_warning(reason: str) -> str:
+    if reason == "missing_configured_profile":
+        return "LLM conversion plan unavailable: no configured local LLM profile"
+    if reason == "placeholder_api_key":
+        return "LLM conversion plan unavailable: configured API key is not trusted"
+    if reason == "non_local_endpoint":
+        return "LLM conversion plan unavailable: configured endpoint must be local-only"
+    if reason == "missing_required_model":
+        return "LLM conversion plan unavailable: configured model is required"
+    return "LLM conversion plan unavailable: configured local LLM profile could not be used"
+
+
+def _llm_plan_unavailable_reason(exc: Exception) -> str:
+    if isinstance(exc, LocalLLMConfigurationError):
+        return _llm_rejection_reason_from_error(exc)
+    return "runtime_unavailable"
 
 
 def run(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> None:
@@ -3585,7 +3702,11 @@ def _conversion_settings(*, use_llm: bool, use_ocr: bool) -> dict[str, dict[str,
     validated_use_llm = _validate_conversion_setting_value(use_llm, "use_llm")
     validated_use_ocr = _validate_conversion_setting_value(use_ocr, "use_ocr")
     return {
-        "use_llm": _unsupported_conversion_setting(validated_use_llm),
+        "use_llm": {
+            "requested": validated_use_llm,
+            "enabled": False,
+            "status": "requested" if validated_use_llm else "disabled",
+        },
         "use_ocr": _unsupported_conversion_setting(validated_use_ocr),
     }
 
@@ -3611,7 +3732,7 @@ def _llm_configuration_rejection(*, use_llm: bool) -> dict[str, Any] | None:
     if not use_llm:
         return None
     reason = _configured_llm_rejection_reason()
-    if reason is None:
+    if reason is None or reason == "missing_configured_profile":
         return None
     return {
         "error": "llm_configuration_rejected",
@@ -3626,38 +3747,90 @@ def _llm_configuration_rejection(*, use_llm: bool) -> dict[str, Any] | None:
 
 
 def _configured_llm_rejection_reason() -> str | None:
+    _adapter, reason = _configured_llm_conversion_plan_adapter()
+    return reason
+
+
+def _configured_llm_conversion_plan_adapter() -> tuple[LocalLLMConversionPlanAdapter | None, str | None]:
     try:
         profiles_config = json.loads(INFERENCE_PROFILES_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, TypeError):
-        return "invalid_configuration"
+        return None, "invalid_configuration"
     profiles = profiles_config.get("profiles")
     if not isinstance(profiles, list):
-        return "invalid_configuration"
+        return None, "invalid_configuration"
+    selected_adapter: LocalLLMConversionPlanAdapter | None = None
     for profile in profiles:
         if not isinstance(profile, dict):
-            return "invalid_configuration"
+            return None, "invalid_configuration"
         base_url_env = profile.get("base_url_env")
         model_env = profile.get("model_env")
         api_key_env = profile.get("api_key_env")
         if not isinstance(base_url_env, str) or not base_url_env.strip():
-            return "invalid_configuration"
+            return None, "invalid_configuration"
         base_url = os.environ.get(base_url_env)
         if base_url is None or not base_url.strip():
             continue
         if not isinstance(model_env, str) or not model_env.strip():
-            return "invalid_configuration"
+            return None, "invalid_configuration"
         model = os.environ.get(model_env)
         if model is None or not model.strip():
-            return "missing_required_model"
+            return None, "missing_required_model"
         api_key = os.environ.get(api_key_env) if isinstance(api_key_env, str) else None
         try:
-            LocalLLMConversionPlanAdapter(
+            timeout_seconds = _llm_float_env(profile.get("optional_env"), "TIMEOUT_SECONDS", default=30)
+            max_tokens = _llm_int_env(profile.get("optional_env"), "MAX_TOKENS", default=1024)
+            adapter = LocalLLMConversionPlanAdapter(
                 base_url=base_url,
                 model=model,
                 api_key=api_key,
+                timeout_seconds=timeout_seconds,
+                max_tokens=max_tokens,
             )
         except LocalLLMConfigurationError as exc:
-            return _llm_rejection_reason_from_error(exc)
+            return None, _llm_rejection_reason_from_error(exc)
+        if selected_adapter is None:
+            selected_adapter = adapter
+    if selected_adapter is not None:
+        return selected_adapter, None
+    return None, "missing_configured_profile"
+
+
+def _llm_float_env(optional_env: Any, suffix: str, *, default: float) -> float:
+    env_name = _llm_optional_env_name(optional_env, suffix)
+    if env_name is None:
+        return default
+    raw_value = os.environ.get(env_name)
+    if raw_value is None or not raw_value.strip():
+        return default
+    try:
+        value = float(raw_value)
+    except ValueError as exc:
+        raise LocalLLMConfigurationError(f"{env_name} must be numeric") from exc
+    if not math.isfinite(value):
+        raise LocalLLMConfigurationError(f"{env_name} must be finite")
+    return value
+
+
+def _llm_int_env(optional_env: Any, suffix: str, *, default: int) -> int:
+    env_name = _llm_optional_env_name(optional_env, suffix)
+    if env_name is None:
+        return default
+    raw_value = os.environ.get(env_name)
+    if raw_value is None or not raw_value.strip():
+        return default
+    try:
+        return int(raw_value)
+    except ValueError as exc:
+        raise LocalLLMConfigurationError(f"{env_name} must be an integer") from exc
+
+
+def _llm_optional_env_name(optional_env: Any, suffix: str) -> str | None:
+    if not isinstance(optional_env, list):
+        return None
+    for item in optional_env:
+        if isinstance(item, str) and item.endswith(suffix):
+            return item
     return None
 
 
@@ -3686,7 +3859,7 @@ def _conversion_setting_warnings(
     return [
         UNSUPPORTED_CONVERSION_SETTING_WARNINGS[name]
         for name, setting in conversion_settings.items()
-        if setting["requested"]
+        if setting["requested"] and name in UNSUPPORTED_CONVERSION_SETTING_WARNINGS
     ]
 
 
