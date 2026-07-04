@@ -249,6 +249,26 @@ def test_parse_text_pdf_to_document_ir_emits_paragraphs_tables_and_coordinates(
     validate_document_ir_consistency(document_ir)
 
 
+def test_parse_text_pdf_to_document_ir_marks_oversized_first_line_as_heading(
+    tmp_path: Path,
+) -> None:
+    pdf_path = tmp_path / "summary-heading.pdf"
+    document = fitz.open()
+    page = document.new_page(width=300, height=200)
+    page.insert_text((36, 48), "Manufacturing Summary", fontsize=18)
+    page.insert_text((36, 78), "Batch was inspected before release.", fontsize=12)
+    document.save(pdf_path)
+    document.close()
+
+    document_ir = parse_text_pdf_to_document_ir(pdf_path, document_id="sample-pdf")
+
+    assert [(block["type"], block["text"]) for block in document_ir["blocks"]] == [
+        ("heading", "Manufacturing Summary"),
+        ("paragraph", "Batch was inspected before release."),
+    ]
+    validate_document_ir_consistency(document_ir)
+
+
 def test_parse_text_pdf_to_document_ir_preserves_spaces_between_same_line_fragments(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

@@ -2516,6 +2516,8 @@ def _parser_output_page_table_row_records(
             continue
         rows = _pdf_table_structured_rows(fragment.get("rows"))
         if not rows:
+            rows = _pdf_table_rows_from_text(fragment.get("text"))
+        if not rows:
             continue
         records.append(
             {
@@ -2539,6 +2541,8 @@ def _parser_output_top_level_table_row_records(
         if not isinstance(block, dict) or not _parser_output_table_kind(block):
             continue
         rows = _pdf_table_structured_rows(block.get("rows"))
+        if not rows:
+            rows = _pdf_table_rows_from_text(block.get("text"))
         if not rows:
             continue
         records.append(
@@ -3028,6 +3032,18 @@ def _pdf_table_structured_rows(rows_value: Any) -> list[list[str]]:
         if not isinstance(row, list):
             continue
         rows.append(["" if cell is None else str(cell) for cell in row])
+    return rows
+
+
+def _pdf_table_rows_from_text(text_value: Any) -> list[list[str]]:
+    if not isinstance(text_value, str) or "\t" not in text_value:
+        return []
+    rows: list[list[str]] = []
+    for line in text_value.splitlines():
+        cells = line.split("\t")
+        if len(cells) < 2:
+            return []
+        rows.append(cells)
     return rows
 
 

@@ -23,6 +23,7 @@ class TextFragment:
     bbox: TextBBox
     extractor: str
     source_line_index: int | None = None
+    font_size: float | None = None
 
 
 @dataclass(frozen=True)
@@ -87,7 +88,7 @@ def parse_text_pdf_to_document_ir(
             )
             continue
         for line_group in _group_table_lines(page_lines):
-            block_type = "table" if _is_table_line_group(line_group) else "paragraph"
+            block_type = _line_group_block_type(line_group, page_lines)
             text = "\n".join(_line_text(line) for line in line_group)
             bbox = _union_text_bboxes(fragment for line in line_group for fragment in line)
             if bbox is None:
@@ -201,6 +202,7 @@ def extract_pdf_text(pdf_path: str | Path) -> PdfTextExtraction:
                                 bbox=bbox,
                                 extractor="pymupdf",
                                 source_line_index=source_line_index,
+                                font_size=_span_font_size(span.get("size")),
                             )
                         )
                     source_line_index += 1
@@ -459,6 +461,52 @@ def _group_table_lines(lines: list[list[TextFragment]]) -> list[list[list[TextFr
 
 def _is_table_line_group(line_group: list[list[TextFragment]]) -> bool:
     return bool(line_group) and all(_is_table_line(line) for line in line_group)
+
+
+def _line_group_block_type(
+    line_group: list[list[TextFragment]],
+    page_lines: list[list[TextFragment]],
+) -> str:
+    if _is_table_line_group(line_group):
+        return "table"
+    if _is_heading_line_group(line_group, page_lines):
+        return "heading"
+    return "paragraph"
+
+
+def _is_heading_line_group(
+    line_group: list[list[TextFragment]],
+    page_lines: list[list[TextFragment]],
+) -> bool:
+    if len(line_group) != 1 or not page_lines or line_group[0] is not page_lines[0]:
+        return False
+    font_size = _line_font_size(line_group[0])
+    page_font_sizes = [
+        line_font_size
+        for line in page_lines
+        if not _is_table_line(line)
+        for line_font_size in [_line_font_size(line)]
+        if line_font_size is not None
+    ]
+    if font_size is None or len(page_font_sizes) < 2:
+        return False
+    baseline_font_size = min(page_font_sizes)
+    return font_size >= baseline_font_size * 1.2
+
+
+def _line_font_size(line: list[TextFragment]) -> float | None:
+    font_sizes = [fragment.font_size for fragment in line if fragment.font_size is not None]
+    if not font_sizes:
+        return None
+    return max(font_sizes)
+
+
+def _span_font_size(value: Any) -> float | None:
+    try:
+        font_size = float(value)
+    except (TypeError, ValueError):
+        return None
+    return font_size if font_size > 0 else None
 
 
 def _are_vertically_adjacent_table_lines(

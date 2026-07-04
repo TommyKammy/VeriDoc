@@ -658,6 +658,68 @@ def test_excel_to_word_representative_workbook_surfaces_reviewable_tables(
             assert warning in result["warnings"], fixture["id"]
 
 
+def test_pdf_to_word_representative_text_pdf_surfaces_editable_docx(
+    tmp_path: Path,
+) -> None:
+    manifest = json.loads(FIXTURE_MANIFEST_PATH.read_text(encoding="utf-8"))
+    fixtures = [
+        fixture
+        for fixture in manifest["fixtures"]
+        if fixture["source_type"] == "text_pdf"
+        and fixture.get("pdf_to_word_representative") is True
+    ]
+
+    assert {fixture["id"] for fixture in fixtures} == {"pdf-to-word-representative"}
+
+    for fixture in fixtures:
+        fixture_relative_path = Path(fixture["path"])
+        assert not fixture_relative_path.is_absolute(), fixture["id"]
+        assert _repo_tracks_path(fixture_relative_path), fixture["id"]
+        fixture_path = REPO_ROOT / fixture_relative_path
+        assert fixture_path.is_file(), fixture["id"]
+
+        result = convert_uploaded_document(
+            filename=fixture_path.name,
+            content=fixture_path.read_bytes(),
+            conversion_mode="pdf_to_word",
+        )
+
+        assert result["status"] == "requires_review"
+        primary_artifact = result["artifacts"][0]
+        assert primary_artifact["id"] == "primary-docx", fixture["id"]
+        assert primary_artifact["filename"] == (
+            "pdf-to-word-representative.veridoc-pdf-to-word.docx"
+        )
+        assert primary_artifact["content_type"] == (
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
+        assert primary_artifact["metadata"]["download"] == {
+            "available": True,
+            "field": "artifacts[0].content_base64",
+        }
+
+        primary_path = tmp_path / primary_artifact["filename"]
+        primary_path.write_bytes(primary_artifact["content"])
+        docx = extract_docx_structure(primary_path)
+        expectations = fixture["pdf_to_word_expectations"]
+        headings = [block.text for block in docx.blocks if block.kind == "heading"]
+        paragraphs = [block.text for block in docx.blocks if block.kind == "paragraph"]
+        table_rows = [block.rows for block in docx.blocks if block.kind == "table"]
+        assert expectations["heading_texts"] == headings, fixture["id"]
+        assert expectations["paragraph_texts"] == paragraphs[: len(expectations["paragraph_texts"])]
+        assert table_rows == expectations["table_rows"], fixture["id"]
+
+        downloaded = json.loads(result["download"]["content"].decode("utf-8"))
+        table_blocks = [
+            block
+            for block in downloaded["document_ir"]["blocks"]
+            if block["type"] == "table"
+        ]
+        assert [block["rows"] for block in table_blocks] == table_rows, fixture["id"]
+        for warning in expectations["warnings"]:
+            assert warning in result["warnings"], fixture["id"]
+
+
 def test_excel_to_word_json_prefers_page_table_rows_over_matching_sheet_rows() -> None:
     parser_output = {
         "source_type": "xlsx",

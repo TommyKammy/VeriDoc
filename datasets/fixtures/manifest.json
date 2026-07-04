@@ -65,6 +65,38 @@
       "notes": "Placement rule reserved; add only synthetic or anonymized PDFs."
     },
     {
+      "id": "pdf-to-word-representative",
+      "title": "Synthetic PDF-to-Word representative fixture",
+      "path": "datasets/fixtures/pdf/pdf-to-word-representative.pdf",
+      "source_type": "text_pdf",
+      "format": "pdf",
+      "anonymization": "synthetic",
+      "confidentiality": "public",
+      "public_review_safe": true,
+      "pdf_to_word_representative": true,
+      "pdf_to_word_expectations": {
+        "heading_texts": [
+          "pdf-to-word-representative.pdf",
+          "Manufacturing Summary"
+        ],
+        "paragraph_texts": [
+          "Batch PDF-0007 was inspected before release."
+        ],
+        "table_rows": [
+          [
+            ["Lot", "Result", "Reviewer"],
+            ["PDF-0007", "Pass", "QA"]
+          ]
+        ],
+        "warnings": [
+          "conversion mode pdf_to_word selected",
+          "pdf_to_word reconstruction preserves editable text structure for review; exact PDF layout, fonts, coordinates, columns, footnotes, and OCR fidelity are not guaranteed",
+          "blocks[2].parser marked block requires_review"
+        ]
+      },
+      "notes": "Synthetic text-PDF sample for PDF-to-Word editable DOCX checks; layout fidelity is intentionally out of scope."
+    },
+    {
       "id": "pdf-to-excel-table-report",
       "title": "Synthetic PDF-to-Excel table report fixture",
       "path": "datasets/fixtures/pdf/pdf-to-excel-table-report.json",
