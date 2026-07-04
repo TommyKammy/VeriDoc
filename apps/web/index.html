@@ -191,6 +191,16 @@
         font-size: 13px;
       }
 
+      .setting-toggle {
+        flex: 0 1 130px;
+      }
+
+      .setting-toggle input[type="checkbox"] {
+        width: 18px;
+        min-height: 18px;
+        padding: 0;
+      }
+
       .table-wrap {
         overflow: auto;
         margin-top: 14px;
@@ -714,7 +724,7 @@
           <div
             class="field"
             data-poc-ui-region="conversion-settings"
-            data-api-fields="conversion_mode"
+            data-api-fields="conversion_mode use_llm use_ocr"
           >
             <label for="direct-conversion-mode">Conversion mode</label>
             <select id="direct-conversion-mode">
@@ -724,6 +734,14 @@
               <option value="word_to_excel">word_to_excel</option>
               <option value="excel_to_word">excel_to_word</option>
             </select>
+          </div>
+          <div class="field setting-toggle" data-api-fields="use_llm">
+            <label for="direct-use-llm">Use LLM</label>
+            <input id="direct-use-llm" type="checkbox" />
+          </div>
+          <div class="field setting-toggle" data-api-fields="use_ocr">
+            <label for="direct-use-ocr">Use OCR</label>
+            <input id="direct-use-ocr" type="checkbox" />
           </div>
           <button id="convert-button" type="button">Convert now</button>
         </div>
@@ -908,6 +926,8 @@
 
       const input = document.querySelector("#document-file");
       const directConversionMode = document.querySelector("#direct-conversion-mode");
+      const directUseLlm = document.querySelector("#direct-use-llm");
+      const directUseOcr = document.querySelector("#direct-use-ocr");
       const button = document.querySelector("#convert-button");
       const resultPanel = document.querySelector("#result-panel");
       const rawPanel = document.querySelector("#raw-panel");
@@ -1000,6 +1020,8 @@
               filename: file.name,
               content_base64: contentBase64,
               conversion_mode: directConversionMode.value,
+              use_llm: directUseLlm.checked,
+              use_ocr: directUseOcr.checked,
             }),
           });
           const result = await response.json();
