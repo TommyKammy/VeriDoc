@@ -3538,16 +3538,23 @@ def _validate_conversion_mode(value: Any) -> str:
 
 
 def _validate_conversion_setting_boolean(request: dict[str, Any], field_name: str) -> bool:
-    requested = request.get(field_name, False)
+    requested = _validate_conversion_setting_value(request.get(field_name, False), field_name)
+    return requested
+
+
+def _validate_conversion_setting_value(value: Any, field_name: str) -> bool:
+    requested = value
     if isinstance(requested, bool):
         return requested
     raise ValueError(f"{field_name} must be boolean")
 
 
 def _conversion_settings(*, use_llm: bool, use_ocr: bool) -> dict[str, dict[str, Any]]:
+    validated_use_llm = _validate_conversion_setting_value(use_llm, "use_llm")
+    validated_use_ocr = _validate_conversion_setting_value(use_ocr, "use_ocr")
     return {
-        "use_llm": _unsupported_conversion_setting(use_llm),
-        "use_ocr": _unsupported_conversion_setting(use_ocr),
+        "use_llm": _unsupported_conversion_setting(validated_use_llm),
+        "use_ocr": _unsupported_conversion_setting(validated_use_ocr),
     }
 
 

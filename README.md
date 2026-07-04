@@ -81,8 +81,8 @@ payload = {
         ).encode("utf-8")
     ).decode("ascii"),
     "conversion_mode": "auto",
-    "use_llm": false,
-    "use_ocr": false,
+    "use_llm": False,
+    "use_ocr": False,
 }
 request = Request(
     base_url + "/api/convert",

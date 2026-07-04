@@ -2852,6 +2852,25 @@ def test_convert_uploaded_document_rejects_unknown_conversion_mode() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("field_name", "kwargs"),
+    [
+        ("use_llm", {"use_llm": "true"}),
+        ("use_ocr", {"use_ocr": 1}),
+    ],
+)
+def test_convert_uploaded_document_rejects_non_boolean_conversion_settings(
+    field_name: str,
+    kwargs: dict[str, object],
+) -> None:
+    with pytest.raises(ValueError, match=f"{field_name} must be boolean"):
+        convert_uploaded_document(
+            filename="upload.txt",
+            content=b"fallback text",
+            **kwargs,
+        )
+
+
 def test_convert_uploaded_document_rejects_mismatched_conversion_mode() -> None:
     parser_output = {
         "source_type": "pdf",
@@ -9712,8 +9731,8 @@ def test_readme_documents_local_poc_api_startup_and_smoke_contract() -> None:
         "GET /",
         "POST /api/convert",
         '"conversion_mode": "auto"',
-        '"use_llm": false',
-        '"use_ocr": false',
+        '"use_llm": False',
+        '"use_ocr": False',
         "PoC API smoke check passed",
         "`pdf_to_excel`",
         "`pdf_to_word`",
