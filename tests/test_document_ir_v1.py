@@ -944,6 +944,65 @@ class DocumentIrV1Test(unittest.TestCase):
         self.assertEqual(0.41, document_ir.blocks[0].confidence)
         self.assertEqual("tesseract", document_ir.blocks[0].extractor.name)
 
+    def test_document_ir_v0_review_merge_keeps_normalized_confidence(self) -> None:
+        parser_output = {
+            "schema_version": "document-ir/v0",
+            "extractor": "scanned_pdf_ocr",
+            "pages": [
+                {
+                    "page_number": 1,
+                    "width": 320,
+                    "height": 240,
+                    "unit": "px",
+                    "fragments": [
+                        {
+                            "kind": "field",
+                            "text": "LOT-O0I",
+                            "bbox": {"x": 10, "y": 20, "width": 70, "height": 18, "unit": "px"},
+                            "engine": "tesseract",
+                        }
+                    ],
+                }
+            ],
+            "blocks": [
+                {
+                    "type": "field",
+                    "text": "LOT-O0I",
+                    "warnings": ["OCR confidence requires review"],
+                    "value_metadata": {
+                        "source_page": 1,
+                        "bbox": {"x": 10, "y": 20, "width": 70, "height": 18, "unit": "px"},
+                        "extractor": {"name": "tesseract", "version": "0.test"},
+                        "confidence": 0.6,
+                        "requires_review": True,
+                    },
+                }
+            ],
+        }
+
+        adapted = adapt_document_ir_v0_blocks(parser_output)
+        document_ir = from_parser_output(
+            parser_output,
+            document_id="scanned-batch-record",
+            title="Scanned batch record",
+            source_type="pdf",
+        )
+
+        fragment = adapted["pages"][0]["fragments"][0]
+        self.assertEqual(0.6, fragment["confidence"])
+        self.assertNotIn("engine", fragment)
+        self.assertEqual({"name": "tesseract", "version": "0.test"}, fragment["extractor"])
+        self.assertEqual(0.6, document_ir.blocks[0].confidence)
+        self.assertEqual("tesseract", document_ir.blocks[0].extractor.name)
+        self.assertTrue(document_ir.blocks[0].review.requires_review)
+        self.assertEqual(
+            [
+                "blocks[0].parser marked block requires_review",
+                "OCR confidence requires review",
+            ],
+            document_ir.blocks[0].review.warnings,
+        )
+
     def test_document_ir_v0_low_confidence_merge_preserves_missing_confidence(self) -> None:
         parser_output = {
             "schema_version": "document-ir/v0",
