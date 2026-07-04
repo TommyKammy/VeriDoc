@@ -140,6 +140,10 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertEqual(3, metrics.run_count)
         self.assertEqual(2 / 3, metrics.plan_agreement_rate)
         self.assertEqual(2 / 3, metrics.confirmed_value_agreement_rate)
+        self.assertEqual(2 / 3, metrics.schema_failure_rate)
+        self.assertEqual(1 / 2, metrics.repair_success_rate)
+        self.assertEqual(1 / 3, metrics.deterministic_fallback_rate)
+        self.assertEqual(0, metrics.external_ai_api_guard_violation_count)
         self.assertEqual(2, metrics.distinct_plan_count)
         self.assertEqual(2, metrics.distinct_confirmed_value_count)
         self.assertEqual(2, metrics.unstable_example_count)
@@ -175,6 +179,39 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertEqual(
             ["no_llm", "standard", "high_quality"],
             [mode["mode"] for mode in metrics.as_dict()["modes"]],
+        )
+        self.assertEqual([2, 1, 0], [mode["warning_count"] for mode in metrics.as_dict()["modes"]])
+        self.assertEqual(
+            [
+                {
+                    "baseline_mode": "no_llm",
+                    "candidate_mode": "standard",
+                    "review_item_added_count": 0,
+                    "review_item_removed_count": 0,
+                    "warning_added_count": 0,
+                    "warning_removed_count": 1,
+                    "added_review_items": [],
+                    "removed_review_items": [],
+                    "added_warnings": [],
+                    "removed_warnings": ["lot-number-mismatch"],
+                },
+                {
+                    "baseline_mode": "no_llm",
+                    "candidate_mode": "high_quality",
+                    "review_item_added_count": 0,
+                    "review_item_removed_count": 0,
+                    "warning_added_count": 0,
+                    "warning_removed_count": 2,
+                    "added_review_items": [],
+                    "removed_review_items": [],
+                    "added_warnings": [],
+                    "removed_warnings": [
+                        "lot-number-mismatch",
+                        "missing-source-anchor",
+                    ],
+                },
+            ],
+            metrics.as_dict()["mode_diffs"],
         )
         high_quality = metrics.as_dict()["modes"][2]
         self.assertEqual(1.0, high_quality["cell_match_rate"])
@@ -1162,6 +1199,27 @@ class EvaluateDatasetTest(unittest.TestCase):
         with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "conversion_plan"):
             evaluate_dataset.evaluate_llm_stability(data)
 
+    def test_llm_stability_rejects_schema_failure_without_repair_or_fallback(self) -> None:
+        data = self.valid_llm_stability_data()
+        data["runs"][1]["outcome"] = {
+            "schema_validation_passed": False,
+            "repair_attempted": True,
+            "repair_succeeded": False,
+            "deterministic_fallback_used": False,
+            "external_ai_api_transmission_attempted": False,
+        }
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "repaired or use"):
+            evaluate_dataset.evaluate_llm_stability(data)
+
+    def test_llm_stability_counts_external_ai_api_guard_violations(self) -> None:
+        data = self.valid_llm_stability_data()
+        data["runs"][0]["outcome"]["external_ai_api_transmission_attempted"] = True
+
+        metrics = evaluate_dataset.evaluate_llm_stability(data)
+
+        self.assertEqual(1, metrics.external_ai_api_guard_violation_count)
+
     def test_missing_actual_cell_counts_as_missing_source_link(self) -> None:
         data = self.valid_cases_data()
         case = data["cases"][0]
@@ -1625,6 +1683,10 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertEqual(3, metrics["run_count"])
         self.assertEqual(2 / 3, metrics["plan_agreement_rate"])
         self.assertEqual(2 / 3, metrics["confirmed_value_agreement_rate"])
+        self.assertEqual(2 / 3, metrics["schema_failure_rate"])
+        self.assertEqual(1 / 2, metrics["repair_success_rate"])
+        self.assertEqual(1 / 3, metrics["deterministic_fallback_rate"])
+        self.assertEqual(0, metrics["external_ai_api_guard_violation_count"])
         self.assertEqual(2, metrics["unstable_example_count"])
 
     def test_cli_emits_poc_mode_comparison_for_phase1_acceptance(self) -> None:
@@ -1649,7 +1711,42 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertEqual(0, metrics["high_risk_false_auto_confirmed_count"])
         self.assertEqual(7.0, metrics["manual_correction_time"]["reduction_minutes"])
         self.assertEqual(7 / 12, metrics["manual_correction_time"]["reduction_rate"])
+        self.assertEqual(2, metrics["mode_diffs"][1]["warning_removed_count"])
         self.assertTrue(metrics["target_met"])
+
+    def test_cli_emits_llm_stability_report_for_phase9_handoff(self) -> None:
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT_PATH),
+                "--llm-stability-report",
+            ],
+            cwd=REPO_ROOT,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        self.assertEqual("", proc.stderr)
+        self.assertEqual(0, proc.returncode)
+        report = json.loads(proc.stdout)
+        self.assertEqual(
+            "veridoc-llm-stability-evaluation/v0",
+            report["schema_version"],
+        )
+        self.assertEqual(
+            0,
+            report["llm_stability"]["external_ai_api_guard_violation_count"],
+        )
+        self.assertEqual(
+            2,
+            report["poc_mode_comparison"]["mode_diffs"][1]["warning_removed_count"],
+        )
+        self.assertEqual(
+            "datasets/gold/llm_stability_runs_v0.json",
+            report["phase9_handoff"]["stability_source"],
+        )
 
     def test_cli_emits_gmp_acceptance_for_phase0_acceptance(self) -> None:
         proc = subprocess.run(

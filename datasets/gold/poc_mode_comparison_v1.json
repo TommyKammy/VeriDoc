@@ -22,6 +22,10 @@
     {
       "mode": "no_llm",
       "description": "Rule-only baseline from the public synthetic fixture.",
+      "warnings": [
+        "lot-number-mismatch",
+        "missing-source-anchor"
+      ],
       "metrics": {
         "table_extraction_rate": 1.0,
         "cell_match_rate": 0.5,
@@ -90,6 +94,9 @@
     {
       "mode": "standard",
       "description": "Standard prompt result captured from public synthetic input.",
+      "warnings": [
+        "missing-source-anchor"
+      ],
       "metrics": {
         "table_extraction_rate": 1.0,
         "cell_match_rate": 1.0,
@@ -158,6 +165,7 @@
     {
       "mode": "high_quality",
       "description": "High-quality prompt result captured from public synthetic input.",
+      "warnings": [],
       "metrics": {
         "table_extraction_rate": 1.0,
         "cell_match_rate": 1.0,

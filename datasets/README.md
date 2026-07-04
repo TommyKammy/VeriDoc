@@ -49,7 +49,9 @@ python3 scripts/evaluate_dataset.py --llm-stability-runs datasets/gold/llm_stabi
 
 The stability harness emits JSON metrics for same-input N-run plan agreement,
 confirmed-value agreement, distinct output counts, and anonymized representative
-unstable examples.
+unstable examples. It also reports schema failure rate, repair success rate,
+deterministic fallback rate, and external AI API guard violation count from
+public synthetic run outcome records.
 
 MVP acceptance comparison harness:
 
@@ -58,8 +60,19 @@ python3 scripts/evaluate_dataset.py --poc-comparison datasets/gold/poc_mode_comp
 ```
 
 The comparison harness emits JSON metrics for required PoC modes, high-risk
-false auto-confirmed count, and manual correction-time reduction for the public
-synthetic representative template.
+false auto-confirmed count, review item and warning deltas, and manual
+correction-time reduction for the public synthetic representative template.
+
+Phase8 LLM stability evaluation handoff:
+
+```sh
+python3 scripts/evaluate_dataset.py --llm-stability-report
+```
+
+The report combines the stability and PoC mode comparison records into a
+machine-readable `veridoc-llm-stability-evaluation/v0` JSON object that Phase9
+can inherit without requiring real confidential records or external AI API
+transmission.
 
 This dataset is only a Phase 0 evaluation fixture set. It does not claim GMP
 fitness, production readiness, or suitability for business use.

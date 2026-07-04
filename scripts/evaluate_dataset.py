@@ -126,6 +126,10 @@ class LLMStabilityMetrics:
     run_count: int
     plan_agreement_rate: float
     confirmed_value_agreement_rate: float
+    schema_failure_rate: float
+    repair_success_rate: float
+    deterministic_fallback_rate: float
+    external_ai_api_guard_violation_count: int
     distinct_plan_count: int
     distinct_confirmed_value_count: int
     unstable_example_count: int
@@ -137,6 +141,12 @@ class LLMStabilityMetrics:
             "run_count": self.run_count,
             "plan_agreement_rate": self.plan_agreement_rate,
             "confirmed_value_agreement_rate": self.confirmed_value_agreement_rate,
+            "schema_failure_rate": self.schema_failure_rate,
+            "repair_success_rate": self.repair_success_rate,
+            "deterministic_fallback_rate": self.deterministic_fallback_rate,
+            "external_ai_api_guard_violation_count": (
+                self.external_ai_api_guard_violation_count
+            ),
             "distinct_plan_count": self.distinct_plan_count,
             "distinct_confirmed_value_count": self.distinct_confirmed_value_count,
             "unstable_example_count": self.unstable_example_count,
@@ -152,6 +162,7 @@ class PoCModeMetrics:
     source_linkage_rate: float
     high_risk_false_auto_confirmed_count: int
     requires_review_count: int
+    warning_count: int
 
     def as_dict(self) -> dict[str, int | float | str]:
         return {
@@ -161,6 +172,7 @@ class PoCModeMetrics:
             "source_linkage_rate": self.source_linkage_rate,
             "high_risk_false_auto_confirmed_count": self.high_risk_false_auto_confirmed_count,
             "requires_review_count": self.requires_review_count,
+            "warning_count": self.warning_count,
         }
 
 
@@ -194,6 +206,7 @@ class PoCComparisonMetrics:
     target_met: bool
     manual_correction_time: ManualCorrectionTimeMetrics
     modes: tuple[PoCModeMetrics, ...]
+    mode_diffs: tuple[dict[str, object], ...]
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -204,6 +217,29 @@ class PoCComparisonMetrics:
             "target_met": self.target_met,
             "manual_correction_time": self.manual_correction_time.as_dict(),
             "modes": [mode.as_dict() for mode in self.modes],
+            "mode_diffs": list(self.mode_diffs),
+        }
+
+
+@dataclass(frozen=True)
+class LLMStabilityEvaluationReport:
+    llm_stability: LLMStabilityMetrics
+    poc_mode_comparison: PoCComparisonMetrics
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": "veridoc-llm-stability-evaluation/v0",
+            "phase9_handoff": {
+                "stability_source": str(DEFAULT_LLM_STABILITY_RUNS),
+                "poc_comparison_source": str(DEFAULT_POC_COMPARISON),
+                "notes": (
+                    "Public synthetic minimal harness for plan drift, schema/repair/"
+                    "fallback rates, review/warning diffs, and external AI API guard "
+                    "violations."
+                ),
+            },
+            "llm_stability": self.llm_stability.as_dict(),
+            "poc_mode_comparison": self.poc_mode_comparison.as_dict(),
         }
 
 
@@ -874,6 +910,53 @@ def validate_llm_stability_source_kind(conversion_plan: dict[str, Any], run_cont
         )
 
 
+def validate_llm_run_outcome(run: dict[str, Any], run_context: str) -> dict[str, bool]:
+    outcome = run.get("outcome")
+    if outcome is None:
+        return {
+            "schema_validation_passed": True,
+            "repair_attempted": False,
+            "repair_succeeded": False,
+            "deterministic_fallback_used": False,
+            "external_ai_api_transmission_attempted": False,
+        }
+    if not isinstance(outcome, dict):
+        raise EvaluationCaseError(f"{run_context}.outcome must be an object")
+
+    normalized: dict[str, bool] = {}
+    for field in (
+        "schema_validation_passed",
+        "repair_attempted",
+        "repair_succeeded",
+        "deterministic_fallback_used",
+        "external_ai_api_transmission_attempted",
+    ):
+        value = outcome.get(field)
+        if not isinstance(value, bool):
+            raise EvaluationCaseError(f"{run_context}.outcome.{field} must be a boolean")
+        normalized[field] = value
+
+    if normalized["repair_succeeded"] and not normalized["repair_attempted"]:
+        raise EvaluationCaseError(
+            f"{run_context}.outcome.repair_succeeded requires repair_attempted"
+        )
+    if normalized["schema_validation_passed"] and (
+        normalized["repair_attempted"] or normalized["repair_succeeded"]
+    ):
+        raise EvaluationCaseError(
+            f"{run_context}.outcome repair fields require a schema validation failure"
+        )
+    if (
+        not normalized["schema_validation_passed"]
+        and not normalized["repair_succeeded"]
+        and not normalized["deterministic_fallback_used"]
+    ):
+        raise EvaluationCaseError(
+            f"{run_context}.outcome schema failures must be repaired or use deterministic fallback"
+        )
+    return normalized
+
+
 def evaluate_llm_stability(data: dict[str, Any]) -> LLMStabilityMetrics:
     if data.get("schema_version") != LLM_STABILITY_RUNS_SCHEMA_VERSION:
         raise EvaluationCaseError(
@@ -896,6 +979,11 @@ def evaluate_llm_stability(data: dict[str, Any]) -> LLMStabilityMetrics:
     seen_run_ids: set[str] = set()
     plan_fingerprints: list[str] = []
     value_fingerprints: list[str] = []
+    schema_failure_count = 0
+    repair_attempt_count = 0
+    repair_success_count = 0
+    deterministic_fallback_count = 0
+    external_ai_api_guard_violation_count = 0
     for index, run in enumerate(runs):
         run_context = f"run[{index}]"
         if not isinstance(run, dict):
@@ -918,6 +1006,17 @@ def evaluate_llm_stability(data: dict[str, Any]) -> LLMStabilityMetrics:
         value_fingerprints.append(
             confirmed_values_fingerprint(run.get("confirmed_values"), run_context)
         )
+        outcome = validate_llm_run_outcome(run, run_context)
+        if not outcome["schema_validation_passed"]:
+            schema_failure_count += 1
+        if outcome["repair_attempted"]:
+            repair_attempt_count += 1
+        if outcome["repair_succeeded"]:
+            repair_success_count += 1
+        if outcome["deterministic_fallback_used"]:
+            deterministic_fallback_count += 1
+        if outcome["external_ai_api_transmission_attempted"]:
+            external_ai_api_guard_violation_count += 1
 
     reference_plan = most_common_fingerprint(plan_fingerprints)
     reference_values = most_common_fingerprint(value_fingerprints)
@@ -956,6 +1055,12 @@ def evaluate_llm_stability(data: dict[str, Any]) -> LLMStabilityMetrics:
         run_count=expected_run_count,
         plan_agreement_rate=ratio(plan_matches, expected_run_count),
         confirmed_value_agreement_rate=ratio(value_matches, expected_run_count),
+        schema_failure_rate=ratio(schema_failure_count, expected_run_count),
+        repair_success_rate=ratio(repair_success_count, repair_attempt_count),
+        deterministic_fallback_rate=ratio(
+            deterministic_fallback_count, expected_run_count
+        ),
+        external_ai_api_guard_violation_count=external_ai_api_guard_violation_count,
         distinct_plan_count=len(set(plan_fingerprints)),
         distinct_confirmed_value_count=len(set(value_fingerprints)),
         unstable_example_count=len(unstable_examples),
@@ -1427,6 +1532,8 @@ def evaluate_poc_mode_comparison(
 
     seen_modes: set[str] = set()
     mode_metrics: list[PoCModeMetrics] = []
+    mode_review_keys: dict[str, set[str]] = {}
+    mode_warnings: dict[str, set[str]] = {}
     total_high_risk_false_auto_confirmed = 0
     for index, mode_record in enumerate(modes):
         context = f"modes[{index}]"
@@ -1461,8 +1568,12 @@ def evaluate_poc_mode_comparison(
         high_risk_items = mode_record.get("high_risk_items")
         if not isinstance(high_risk_items, list) or not high_risk_items:
             raise EvaluationCaseError(f"{context}.high_risk_items must list high-risk checks")
+        warning_ids = validate_optional_text_list(
+            mode_record.get("warnings"), f"{context}.warnings"
+        )
 
         mode_label_keys: set[tuple[str, str]] = set()
+        diff_review_keys: set[str] = set()
         requires_review_count = 0
         reported_auto_confirmed_labels: set[HighRiskLabelKey] = set()
         for item_index, item in enumerate(high_risk_items):
@@ -1499,6 +1610,7 @@ def evaluate_poc_mode_comparison(
                 raise EvaluationCaseError(f"{item_context}.auto_confirmed must be a boolean")
             if item.get("status") == "requires_review":
                 requires_review_count += 1
+                diff_review_keys.add(review_key_for_diff(label_key))
             if auto_confirmed:
                 reported_auto_confirmed_labels.add(label_key)
 
@@ -1539,8 +1651,11 @@ def evaluate_poc_mode_comparison(
                 source_linkage_rate=source_linkage_rate,
                 high_risk_false_auto_confirmed_count=high_risk_false_auto_confirmed_count,
                 requires_review_count=requires_review_count,
+                warning_count=len(warning_ids),
             )
         )
+        mode_review_keys[mode] = diff_review_keys
+        mode_warnings[mode] = set(warning_ids)
 
     if tuple(sorted(seen_modes)) != tuple(sorted(REQUIRED_POC_MODES)):
         raise EvaluationCaseError(
@@ -1548,6 +1663,19 @@ def evaluate_poc_mode_comparison(
         )
 
     mode_order = {mode: index for index, mode in enumerate(REQUIRED_POC_MODES)}
+    baseline_mode = "no_llm"
+    mode_diffs = tuple(
+        mode_diff_summary(
+            baseline_mode,
+            candidate_mode,
+            mode_review_keys[baseline_mode],
+            mode_review_keys[candidate_mode],
+            mode_warnings[baseline_mode],
+            mode_warnings[candidate_mode],
+        )
+        for candidate_mode in REQUIRED_POC_MODES
+        if candidate_mode != baseline_mode
+    )
     return PoCComparisonMetrics(
         mode_count=len(mode_metrics),
         high_risk_false_auto_confirmed_count=total_high_risk_false_auto_confirmed,
@@ -1558,6 +1686,7 @@ def evaluate_poc_mode_comparison(
         ),
         manual_correction_time=manual_correction_time,
         modes=tuple(sorted(mode_metrics, key=lambda item: mode_order[item.mode])),
+        mode_diffs=mode_diffs,
     )
 
 
@@ -1575,6 +1704,50 @@ def validate_text_list(value: object, context: str) -> tuple[str, ...]:
             raise EvaluationCaseError(f"{context}[{index}] must be repo-relative or generic")
         items.append(normalized_text(item))
     return tuple(items)
+
+
+def validate_optional_text_list(value: object, context: str) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise EvaluationCaseError(f"{context} must be a list")
+    items: list[str] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, str) or not normalized_text(item):
+            raise EvaluationCaseError(f"{context}[{index}] must be a non-empty string")
+        items.append(normalized_text(item))
+    return tuple(items)
+
+
+def review_key_for_diff(label_key: HighRiskLabelKey) -> str:
+    fixture_id, block_id, label_id = label_key
+    return f"{fixture_id}:{block_id}:{label_id}"
+
+
+def mode_diff_summary(
+    baseline_mode: str,
+    candidate_mode: str,
+    baseline_review_keys: set[str],
+    candidate_review_keys: set[str],
+    baseline_warnings: set[str],
+    candidate_warnings: set[str],
+) -> dict[str, object]:
+    added_review_items = sorted(candidate_review_keys - baseline_review_keys)
+    removed_review_items = sorted(baseline_review_keys - candidate_review_keys)
+    added_warnings = sorted(candidate_warnings - baseline_warnings)
+    removed_warnings = sorted(baseline_warnings - candidate_warnings)
+    return {
+        "baseline_mode": baseline_mode,
+        "candidate_mode": candidate_mode,
+        "review_item_added_count": len(added_review_items),
+        "review_item_removed_count": len(removed_review_items),
+        "warning_added_count": len(added_warnings),
+        "warning_removed_count": len(removed_warnings),
+        "added_review_items": added_review_items,
+        "removed_review_items": removed_review_items,
+        "added_warnings": added_warnings,
+        "removed_warnings": removed_warnings,
+    }
 
 
 def validate_repo_relative_file_refs(
@@ -1992,9 +2165,33 @@ def evaluate_gmp_acceptance(
     )
 
 
+def evaluate_llm_stability_report(
+    llm_stability_runs_path: Path,
+    poc_comparison_path: Path,
+) -> LLMStabilityEvaluationReport:
+    resolved_stability_path = llm_stability_runs_path.resolve()
+    resolved_comparison_path = poc_comparison_path.resolve()
+    poc_repo_root = repository_root_for_gold_path(resolved_comparison_path)
+    return LLMStabilityEvaluationReport(
+        llm_stability=evaluate_llm_stability(load_json(resolved_stability_path)),
+        poc_mode_comparison=evaluate_poc_mode_comparison(
+            load_json(resolved_comparison_path),
+            repo_root=poc_repo_root,
+        ),
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cases", type=Path, default=DEFAULT_EVALUATION_CASES)
+    parser.add_argument(
+        "--llm-stability-report",
+        action="store_true",
+        help=(
+            "Emit the minimal Phase8 LLM stability evaluation handoff report from "
+            "public synthetic gold records."
+        ),
+    )
     parser.add_argument(
         "--llm-stability-runs",
         type=Path,
@@ -2018,6 +2215,11 @@ def main() -> int:
             metrics = evaluate_gmp_acceptance(
                 load_json(gmp_acceptance_path),
                 repo_root=repository_root_for_gold_path(gmp_acceptance_path),
+            )
+        elif args.llm_stability_report:
+            metrics = evaluate_llm_stability_report(
+                args.llm_stability_runs or DEFAULT_LLM_STABILITY_RUNS,
+                args.poc_comparison or DEFAULT_POC_COMPARISON,
             )
         elif args.poc_comparison is not None:
             poc_comparison_path = args.poc_comparison.resolve()
