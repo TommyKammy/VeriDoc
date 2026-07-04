@@ -342,6 +342,11 @@
         border-top: 1px solid #e5e9f0;
       }
 
+      .review-empty {
+        margin-top: 10px;
+        color: var(--muted);
+      }
+
       .top-level-warnings {
         margin-top: 10px;
         padding-top: 10px;
@@ -351,6 +356,28 @@
       .review-item strong {
         display: block;
         margin-bottom: 4px;
+      }
+
+      .review-item-meta {
+        display: grid;
+        grid-template-columns: max-content minmax(0, 1fr);
+        gap: 4px 10px;
+        margin: 8px 0;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .review-item-meta dt {
+        font-weight: 680;
+      }
+
+      .review-item-meta dd {
+        margin: 0;
+        overflow-wrap: anywhere;
+      }
+
+      .review-item-target {
+        overflow-wrap: anywhere;
       }
 
       .top-level-warnings strong {
@@ -1702,7 +1729,7 @@
         status.textContent = result.status;
         status.className = `status ${result.status}`;
         renderTopLevelWarnings(result.warnings || []);
-        reviewList.replaceChildren(...result.review_items.map(renderReviewItem));
+        renderReviewItems(result.review_items || []);
         clearDownload();
         renderDownloadLinks(
           result,
@@ -2107,21 +2134,48 @@
         return bytes;
       }
 
+      function renderReviewItems(items) {
+        if (!items.length) {
+          const empty = document.createElement("p");
+          empty.className = "review-empty";
+          empty.textContent =
+            "自動検証上の要確認なし。これは安全を確定するものではありません。必要に応じて詳細JSONと原本を確認してください。";
+          reviewList.replaceChildren(empty);
+          return;
+        }
+        reviewList.replaceChildren(...items.map(renderReviewItem));
+      }
+
       function renderReviewItem(item) {
+        const descriptors = (item.warnings || []).map(warningBadgeDescriptor);
+        const blockId = item.block_id || "unknown block";
+        const sourcePage = item.source_page ?? "unknown";
+        const reviewCodes = descriptors.map((descriptor) => descriptor.code).join(", ") || "none";
+        const reviewSeverities = descriptors.map((descriptor) => descriptor.severity).join(", ") || "unknown";
         const wrapper = document.createElement("div");
         wrapper.className = "review-item";
-        wrapper.dataset.blockId = item.block_id;
+        wrapper.dataset.blockId = blockId;
+        wrapper.dataset.reviewCode = reviewCodes;
+        wrapper.dataset.reviewSeverity = reviewSeverities;
+        wrapper.dataset.sourcePage = String(sourcePage);
         const title = document.createElement("strong");
-        title.textContent = `${item.block_id} / page ${item.source_page}`;
+        title.textContent = `${blockId} / page ${sourcePage}`;
+        const meta = document.createElement("dl");
+        meta.className = "review-item-meta";
+        appendReviewMeta(meta, "Code", reviewCodes);
+        appendReviewMeta(meta, "Severity", reviewSeverities);
+        appendReviewMeta(meta, "Page", String(sourcePage));
+        appendReviewMeta(meta, "Block ID", blockId);
         const text = document.createElement("div");
-        text.dataset.reviewTextFor = item.block_id;
-        text.textContent = item.text;
-        const badges = renderWarningBadges(item);
+        text.className = "review-item-target";
+        text.dataset.reviewTextFor = blockId;
+        text.textContent = item.text || "No target text returned.";
+        const badges = renderWarningBadges(item, descriptors);
         const edit = document.createElement("textarea");
         edit.className = "review-edit";
-        edit.dataset.reviewEditFor = item.block_id;
+        edit.dataset.reviewEditFor = blockId;
         edit.value = item.text;
-        edit.setAttribute("aria-label", `${item.block_id} revised text`);
+        edit.setAttribute("aria-label", `${blockId} revised text`);
         const jump = document.createElement("button");
         jump.className = "secondary";
         jump.type = "button";
@@ -2146,14 +2200,21 @@
         const actions = document.createElement("div");
         actions.className = "review-actions";
         actions.append(jump, requestEdit, approve);
-        wrapper.append(title, text, badges, edit, actions);
+        wrapper.append(title, meta, text, badges, edit, actions);
         return wrapper;
       }
 
-      function renderWarningBadges(item) {
+      function appendReviewMeta(meta, label, value) {
+        const term = document.createElement("dt");
+        term.textContent = label;
+        const description = document.createElement("dd");
+        description.textContent = value;
+        meta.append(term, description);
+      }
+
+      function renderWarningBadges(item, descriptors = (item.warnings || []).map(warningBadgeDescriptor)) {
         const badges = document.createElement("div");
         badges.className = "warning-badges";
-        const descriptors = (item.warnings || []).map(warningBadgeDescriptor);
         for (const descriptor of descriptors) {
           const badge = document.createElement("span");
           badge.className = `warning-badge ${severityClass(descriptor.severity)}`;
