@@ -484,7 +484,7 @@ def _fragments_match_rank_for_v0_metadata(
     *,
     fallback_extractor: str,
 ) -> tuple[int, int] | None:
-    if _block_type(target, "") != _block_type(source, ""):
+    if _v0_metadata_fragment_type(target) != _v0_metadata_fragment_type(source):
         return None
     if str(target.get("text") or "") != str(source.get("text") or ""):
         return None
@@ -561,12 +561,36 @@ def _fragment_with_v0_metadata(value: Any, source: dict[str, Any]) -> Any:
         output["low_confidence"] = True
     if source.get("low_confidence") is True and source.get("confidence") is not None:
         output["confidence"] = source["confidence"]
+        _preserve_normalized_v0_confidence(output, source)
     elif output.get("confidence") is None and source.get("confidence") is not None:
         output["confidence"] = source["confidence"]
     warnings = [*dict.fromkeys([*_fragment_warnings(output), *_fragment_warnings(source)])]
     if warnings:
         output["warnings"] = warnings
     return output
+
+
+def _v0_metadata_fragment_type(fragment: dict[str, Any]) -> str:
+    raw_type = str(fragment.get("kind") or fragment.get("type") or "")
+    if raw_type in BLOCK_TYPES:
+        return raw_type
+    if raw_type and fragment.get("preserve_invalid_type") is True:
+        return raw_type
+    return "paragraph"
+
+
+def _preserve_normalized_v0_confidence(output: dict[str, Any], source: dict[str, Any]) -> None:
+    if output.get("engine") is None:
+        return
+
+    if output.get("extractor") is None:
+        extractor = source.get("extractor") or source.get("engine") or output.get("engine")
+        if isinstance(extractor, dict):
+            output["extractor"] = dict(extractor)
+        elif extractor is not None:
+            output["extractor"] = str(extractor)
+
+    output.pop("engine", None)
 
 
 def _document_ir_v0_block_fragment(

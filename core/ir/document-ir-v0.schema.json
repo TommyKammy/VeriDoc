@@ -115,8 +115,41 @@
             "required": [
               "source_page",
               "bbox",
-              "extractor",
-              "confidence"
+              "extractor"
+            ],
+            "allOf": [
+              {
+                "anyOf": [
+                  {
+                    "required": [
+                      "requires_review"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "low_confidence"
+                    ]
+                  }
+                ]
+              },
+              {
+                "if": {
+                  "properties": {
+                    "low_confidence": {
+                      "const": true
+                    }
+                  },
+                  "required": [
+                    "low_confidence"
+                  ]
+                },
+                "then": {},
+                "else": {
+                  "required": [
+                    "confidence"
+                  ]
+                }
+              }
             ],
             "properties": {
               "source_page": {

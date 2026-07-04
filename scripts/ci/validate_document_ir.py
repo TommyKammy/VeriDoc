@@ -29,9 +29,13 @@ ANNOTATION_KEYS = {"$schema", "$id", "title", "description"}
 SUPPORTED_KEYS = {
     *ANNOTATION_KEYS,
     "additionalProperties",
+    "allOf",
+    "anyOf",
     "const",
+    "else",
     "enum",
     "exclusiveMinimum",
+    "if",
     "items",
     "maximum",
     "minimum",
@@ -39,6 +43,7 @@ SUPPORTED_KEYS = {
     "pattern",
     "properties",
     "required",
+    "then",
     "type",
 }
 
@@ -79,10 +84,38 @@ def format_path(path: tuple[str, ...]) -> str:
     return "$" + "".join(path)
 
 
+def schema_matches(schema: dict[str, Any], value: Any, path: tuple[str, ...]) -> tuple[bool, str]:
+    try:
+        validate(schema, value, path)
+    except ValidationError as exc:
+        return False, str(exc)
+    return True, ""
+
+
 def validate(schema: dict[str, Any], value: Any, path: tuple[str, ...] = ()) -> None:
     unknown = set(schema) - SUPPORTED_KEYS
     if unknown:
         raise ValidationError(f"{format_path(path)}: unsupported schema keyword(s): {', '.join(sorted(unknown))}")
+
+    for index, subschema in enumerate(schema.get("allOf", [])):
+        validate(subschema, value, (*path, f".allOf[{index}]"))
+
+    if "anyOf" in schema:
+        failures: list[str] = []
+        for subschema in schema["anyOf"]:
+            matches, failure = schema_matches(subschema, value, path)
+            if matches:
+                break
+            failures.append(failure)
+        else:
+            details = "; ".join(failures)
+            raise ValidationError(f"{format_path(path)}: did not match any allowed schema ({details})")
+
+    if "if" in schema:
+        matches, _ = schema_matches(schema["if"], value, path)
+        branch = schema.get("then") if matches else schema.get("else")
+        if branch is not None:
+            validate(branch, value, path)
 
     if "const" in schema and value != schema["const"]:
         raise ValidationError(f"{format_path(path)}: expected constant {schema['const']!r}")
