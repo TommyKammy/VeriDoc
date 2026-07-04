@@ -1,6 +1,6 @@
 {
   "source_type": "pdf",
-  "source_path": "datasets/fixtures/pdf/pdf-to-excel-table.pdf",
+  "source_path": "datasets/fixtures/pdf/pdf-to-excel-ruled-table.pdf",
   "candidates": [
     {
       "extractor": "camelot",
@@ -51,6 +51,7 @@
     }
   ],
   "mismatches": [],
+  "selection_basis": "tracked ruled PDF fixture with source text inside declared lattice cell bboxes",
   "selected_candidate": "camelot:lattice",
   "notes": "Synthetic ruled PDF-to-Excel representative table report."
 }
