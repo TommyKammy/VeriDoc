@@ -19,22 +19,22 @@
           ],
           "cell_bboxes": [
             [
-              {"x": 36, "y": 96, "width": 72, "height": 18, "unit": "pt"},
-              {"x": 108, "y": 96, "width": 72, "height": 18, "unit": "pt"},
-              {"x": 180, "y": 96, "width": 90, "height": 18, "unit": "pt"},
-              {"x": 270, "y": 96, "width": 126, "height": 18, "unit": "pt"}
+              {"x": 36, "y": 678, "width": 72, "height": 18, "unit": "pt", "origin": "bottom-left"},
+              {"x": 108, "y": 678, "width": 72, "height": 18, "unit": "pt", "origin": "bottom-left"},
+              {"x": 180, "y": 678, "width": 90, "height": 18, "unit": "pt", "origin": "bottom-left"},
+              {"x": 270, "y": 678, "width": 126, "height": 18, "unit": "pt", "origin": "bottom-left"}
             ],
             [
-              {"x": 36, "y": 114, "width": 72, "height": 18, "unit": "pt"},
-              {"x": 108, "y": 114, "width": 72, "height": 18, "unit": "pt"},
-              {"x": 180, "y": 114, "width": 90, "height": 18, "unit": "pt"},
-              {"x": 270, "y": 114, "width": 126, "height": 18, "unit": "pt"}
+              {"x": 36, "y": 660, "width": 72, "height": 18, "unit": "pt", "origin": "bottom-left"},
+              {"x": 108, "y": 660, "width": 72, "height": 18, "unit": "pt", "origin": "bottom-left"},
+              {"x": 180, "y": 660, "width": 90, "height": 18, "unit": "pt", "origin": "bottom-left"},
+              {"x": 270, "y": 660, "width": 126, "height": 18, "unit": "pt", "origin": "bottom-left"}
             ],
             [
-              {"x": 36, "y": 132, "width": 72, "height": 18, "unit": "pt"},
-              {"x": 108, "y": 132, "width": 72, "height": 18, "unit": "pt"},
-              {"x": 180, "y": 132, "width": 90, "height": 18, "unit": "pt"},
-              {"x": 270, "y": 132, "width": 126, "height": 18, "unit": "pt"}
+              {"x": 36, "y": 642, "width": 72, "height": 18, "unit": "pt", "origin": "bottom-left"},
+              {"x": 108, "y": 642, "width": 72, "height": 18, "unit": "pt", "origin": "bottom-left"},
+              {"x": 180, "y": 642, "width": 90, "height": 18, "unit": "pt", "origin": "bottom-left"},
+              {"x": 270, "y": 642, "width": 126, "height": 18, "unit": "pt", "origin": "bottom-left"}
             ]
           ]
         }

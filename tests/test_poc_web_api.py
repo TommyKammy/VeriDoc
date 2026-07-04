@@ -875,6 +875,21 @@ def test_pdf_to_excel_representative_table_fixture_renders_xlsx_artifact(
 
     for fixture in fixtures:
         fixture_path = REPO_ROOT / fixture["path"]
+        report = json.loads(fixture_path.read_text(encoding="utf-8"))
+        source_path = REPO_ROOT / report["source_path"]
+        assert source_path.is_file(), fixture["id"]
+        selected_candidate = next(
+            candidate
+            for candidate in report["candidates"]
+            if f"{candidate['extractor']}:{candidate['flavor']}" == report["selected_candidate"]
+        )
+        selected_cell_bboxes = selected_candidate["tables"][0]["cell_bboxes"]
+        assert all(
+            cell["origin"] == "bottom-left"
+            for row in selected_cell_bboxes
+            for cell in row
+        ), fixture["id"]
+
         result = convert_uploaded_document(
             filename=fixture_path.name,
             content=fixture_path.read_bytes(),
