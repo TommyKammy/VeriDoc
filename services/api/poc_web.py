@@ -3320,6 +3320,7 @@ def _review_items(document_ir: DocumentIRV1) -> list[dict[str, Any]]:
             "block_id": block.id,
             "source_id": f"{document_ir.document.id}:{block.id}",
             "source_page": block.source_page,
+            "source_confidence": block.confidence,
             "text": block.text,
             "warnings": list(block.review.warnings),
         }

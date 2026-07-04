@@ -2149,7 +2149,11 @@
       function renderReviewItem(item) {
         const descriptors = (item.warnings || []).map(warningBadgeDescriptor);
         const blockId = item.block_id || "unknown block";
-        const sourcePage = item.source_page ?? "unknown";
+        const sourcePage = sourcePageLabel(item);
+        const sourceId = item.source_id || "unknown source";
+        const sourceStatus = sourceAvailabilityLabel(item);
+        const sourceBbox = formatSourceBbox(item.source_bbox);
+        const sourceConfidence = formatSourceConfidence(item.source_confidence);
         const reviewCodes = descriptors.map((descriptor) => descriptor.code).join(", ") || "none";
         const reviewSeverities = descriptors.map((descriptor) => descriptor.severity).join(", ") || "unknown";
         const wrapper = document.createElement("div");
@@ -2164,7 +2168,11 @@
         meta.className = "review-item-meta";
         appendReviewMeta(meta, "Code", reviewCodes);
         appendReviewMeta(meta, "Severity", reviewSeverities);
+        appendReviewMeta(meta, "Source status", sourceStatus);
+        appendReviewMeta(meta, "Source ID", sourceId);
         appendReviewMeta(meta, "Page", String(sourcePage));
+        appendReviewMeta(meta, "BBox", sourceBbox);
+        appendReviewMeta(meta, "Confidence", sourceConfidence);
         appendReviewMeta(meta, "Block ID", blockId);
         const text = document.createElement("div");
         text.className = "review-item-target";
@@ -2204,6 +2212,45 @@
         wrapper.append(title, text, badges, edit, actions);
         wrapper.insertBefore(meta, text);
         return wrapper;
+      }
+
+      function sourcePageLabel(item) {
+        return Number.isInteger(item?.source_page) && item.source_page > 0
+          ? String(item.source_page)
+          : "出典不明";
+      }
+
+      function sourceAvailabilityLabel(item) {
+        if (sourcePageLabel(item) === "出典不明") return "出典不明（ページ不足）";
+        if (!validReviewBboxShape(item?.source_bbox)) return "出典不明（座標不足）";
+        const confidence = item?.source_confidence;
+        if (!Number.isFinite(confidence)) return "出典不明（信頼度不足）";
+        if (confidence < 0.8) return "低信頼度（要確認）";
+        return "出典確認可能";
+      }
+
+      function validReviewBboxShape(bbox) {
+        if (!bbox || bbox.origin !== "top-left" || !["pt", "px", "mm"].includes(bbox.unit)) {
+          return false;
+        }
+        const values = [bbox.x, bbox.y, bbox.width, bbox.height];
+        return (
+          values.every((value) => Number.isFinite(value)) &&
+          bbox.x >= 0 &&
+          bbox.y >= 0 &&
+          bbox.width > 0 &&
+          bbox.height > 0
+        );
+      }
+
+      function formatSourceBbox(bbox) {
+        if (!validReviewBboxShape(bbox)) return "出典不明";
+        return `x=${bbox.x}, y=${bbox.y}, width=${bbox.width}, height=${bbox.height} ${bbox.unit}`;
+      }
+
+      function formatSourceConfidence(value) {
+        if (!Number.isFinite(value)) return "出典不明";
+        return `${Math.round(value * 100)}%`;
       }
 
       function appendReviewMeta(meta, label, value) {
