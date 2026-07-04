@@ -9961,6 +9961,44 @@ def test_web_direct_convert_artifact_region_lists_metadata_without_payloads() ->
     assert "artifactForDetail" in html
 
 
+def test_web_direct_convert_renders_sanitized_error_region() -> None:
+    html = Path("apps/web/index.html").read_text(encoding="utf-8")
+    parser = _PocUiRegionParser()
+    parser.feed(html)
+    click_handler = re.search(
+        r'button\.addEventListener\("click", async \(\) => \{(?P<body>.*?)\n      \}\);',
+        html,
+        re.DOTALL,
+    )
+    error_renderer = re.search(
+        r"function renderDirectConvertError\(errorPayload\) \{(?P<body>.*?)\n      \}",
+        html,
+        re.DOTALL,
+    )
+
+    assert "review" in parser.element_regions["direct-convert-error"]
+    assert 'id="direct-convert-error"' in html
+    assert 'role="alert"' in html
+    assert 'data-api-fields="error message warnings artifacts[] download"' in html
+    assert click_handler is not None
+    assert "throw new Error" not in click_handler.group("body")
+    assert "renderDirectConvertError(result)" in click_handler.group("body")
+    assert error_renderer is not None
+    renderer_body = error_renderer.group("body")
+    assert "sanitizedUserMessage" in renderer_body
+    assert "renderTopLevelWarnings(warnings)" in renderer_body
+    assert "renderArtifactList(errorPayload.artifacts || [])" in renderer_body
+    assert "clearDownload()" in renderer_body
+    assert "rawPanel.hidden = true" in renderer_body
+    assert "errorPayload.stack" not in renderer_body
+    assert "function containsInternalDetail(message)" in html
+    assert "function hasLocalPathPrefix(message)" in html
+    assert 'homeRoots = ["Users", "home", "private"]' in html
+    assert "/Users/" not in html
+    assert r"\/Users\/" not in html
+    assert r"\\/Users\\/" not in html
+
+
 def test_web_job_detail_actions_perform_download_and_retry_side_effects() -> None:
     html = Path("apps/web/index.html").read_text(encoding="utf-8")
 
