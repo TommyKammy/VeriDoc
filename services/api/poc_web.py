@@ -745,17 +745,13 @@ def _local_llm_conversion_plan_state(
     try:
         plan = adapter.create_conversion_plan(_document_ir_synthetic_text(document_ir))
         validate_conversion_plan(plan)
-    except ConversionPlanValidationError as exc:
+    except ConversionPlanValidationError:
         reason = "schema_invalid"
         warning_code = _llm_fallback_warning_code(reason)
         return {
             "setting": _blocked_conversion_setting(True, reason),
             "warnings": [
-                _llm_conversion_plan_fallback_warning(
-                    reason=reason,
-                    warning_code=warning_code,
-                    detail=str(exc),
-                )
+                _llm_conversion_plan_fallback_warning(reason=reason, warning_code=warning_code)
             ],
             "audit": {
                 "requested": True,
@@ -806,18 +802,36 @@ def _llm_fallback_review_items(
     document_id = document.get("id") if isinstance(document, dict) else None
     if not isinstance(document_id, str) or not document_id:
         document_id = "document"
+    source_page = _document_ir_first_source_page(document_ir)
     return [
         {
             "document_id": document_id,
             "block_id": "__conversion_plan__",
             "source_id": f"{document_id}:conversion-plan",
-            "source_page": None,
+            "source_page": source_page,
             "source_confidence": None,
             "text": "",
             "warnings": list(warnings),
             "llm_involved": True,
         }
     ]
+
+
+def _document_ir_first_source_page(document_ir: dict[str, Any]) -> int | None:
+    pages = document_ir.get("pages")
+    if not isinstance(pages, list):
+        return None
+    for page in pages:
+        if not isinstance(page, dict):
+            continue
+        page_number = page.get("page_number")
+        if (
+            isinstance(page_number, int)
+            and not isinstance(page_number, bool)
+            and page_number >= 1
+        ):
+            return page_number
+    return None
 
 
 def _document_ir_synthetic_text(document_ir: dict[str, Any]) -> str:
@@ -850,6 +864,8 @@ def _llm_conversion_plan_warning(reason: str) -> str:
         return "LLM conversion plan unavailable: configured endpoint must be local-only"
     if reason == "missing_required_model":
         return "LLM conversion plan unavailable: configured model is required"
+    if reason == "schema_invalid":
+        return "LLM conversion plan rejected: schema invalid"
     return "LLM conversion plan unavailable: configured local LLM profile could not be used"
 
 
@@ -861,13 +877,7 @@ def _llm_conversion_plan_fallback_warning(
     *,
     reason: str,
     warning_code: str,
-    detail: str | None = None,
 ) -> str:
-    if detail:
-        return (
-            f"LLM conversion plan fallback {warning_code}: {detail}; "
-            "deterministic conversion used; requires review"
-        )
     return (
         f"LLM conversion plan fallback {warning_code}: "
         f"{_llm_conversion_plan_warning(reason)}; deterministic conversion used; requires review"

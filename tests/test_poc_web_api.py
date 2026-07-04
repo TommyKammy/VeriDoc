@@ -579,7 +579,8 @@ def test_convert_uploaded_document_falls_back_for_schema_invalid_local_llm_plan(
     assert result["warnings"] == [
         (
             "LLM conversion plan fallback llm_fallback_schema_invalid: "
-            "$.constraints.external_transmission must be false; deterministic conversion used; "
+            "LLM conversion plan rejected: schema invalid; "
+            "deterministic conversion used; "
             "requires review"
         )
     ]
@@ -587,7 +588,7 @@ def test_convert_uploaded_document_falls_back_for_schema_invalid_local_llm_plan(
         "document_id": "phase8-output",
         "block_id": "__conversion_plan__",
         "source_id": "phase8-output:conversion-plan",
-        "source_page": None,
+        "source_page": 1,
         "source_confidence": None,
         "text": "",
         "warnings": result["warnings"],
@@ -610,6 +611,84 @@ def test_convert_uploaded_document_falls_back_for_schema_invalid_local_llm_plan(
     downloaded = json.loads(result["download"]["content"])
     assert downloaded["audit"]["conversion_plan"]["status"] == "fallback"
     assert downloaded["review_items"] == result["review_items"]
+
+
+def test_convert_uploaded_document_schema_invalid_llm_fallback_is_deterministic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parser_output = {
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 320,
+                "height": 240,
+                "unit": "pt",
+                "fragments": [
+                    {
+                        "text": "Lot: SAMPLE-001",
+                        "bbox": {"x": 10, "y": 20, "width": 120, "height": 16, "unit": "pt"},
+                        "confidence": 0.91,
+                    }
+                ],
+            }
+        ]
+    }
+    invalid_plans = [
+        {
+            "schema_version": 1,
+            "source_kind": "synthetic_text",
+            "operations": [
+                {
+                    "id": "send-out",
+                    "action": "extract_field",
+                    "inputs": ["Lot: SAMPLE-001"],
+                    "output": "lot_number",
+                    "rationale": "Unsafe plan must be rejected.",
+                }
+            ],
+            "constraints": {"external_transmission": True},
+        },
+        {
+            "schema_version": 1,
+            "source_kind": "synthetic_text",
+            "operations": [
+                {
+                    "id": "unsupported-action",
+                    "action": "invent_field",
+                    "inputs": ["Lot: SAMPLE-001"],
+                    "output": "lot_number",
+                    "rationale": "Unsupported action must be rejected.",
+                }
+            ],
+            "constraints": {"external_transmission": False},
+        },
+    ]
+    results = []
+    monkeypatch.setattr(poc_web, "_conversion_id", lambda: "conversion-fixed")
+
+    for plan in invalid_plans:
+        class FakeLocalLLMAdapter:
+            def create_conversion_plan(self, synthetic_text: str) -> dict[str, object]:
+                return plan
+
+        monkeypatch.setattr(
+            poc_web,
+            "_configured_llm_conversion_plan_adapter",
+            lambda: (FakeLocalLLMAdapter(), None),
+        )
+        results.append(
+            convert_uploaded_document(
+                filename="phase8-output.json",
+                content=json.dumps(parser_output).encode("utf-8"),
+                use_llm=True,
+            )
+        )
+
+    assert results[0]["warnings"] == results[1]["warnings"]
+    assert results[0]["review_items"] == results[1]["review_items"]
+    assert results[0]["audit"]["conversion_plan"] == results[1]["audit"]["conversion_plan"]
+    assert results[0]["hashes"]["output_sha256"] == results[1]["hashes"]["output_sha256"]
+    assert results[0]["download"]["content"] == results[1]["download"]["content"]
 
 
 def test_configured_llm_adapter_validates_later_configured_profiles(
