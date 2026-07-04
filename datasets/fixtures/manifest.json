@@ -76,15 +76,90 @@
       "notes": "Placement rule reserved; add only synthetic or anonymized scans."
     },
     {
-      "id": "placeholder-word",
-      "title": "Word fixture slot",
-      "path": null,
+      "id": "word-to-excel-meeting-minutes",
+      "title": "Synthetic meeting minutes Word-to-Excel fixture",
+      "path": "datasets/fixtures/word/word-to-excel-meeting-minutes.docx",
       "source_type": "word",
       "format": "docx",
-      "anonymization": "pending_synthetic_fixture",
+      "anonymization": "synthetic",
       "confidentiality": "public",
       "public_review_safe": true,
-      "notes": "Placement rule reserved; add only synthetic or anonymized Word files."
+      "word_to_excel_representative": true,
+      "word_to_excel_expectations": {
+        "dimension": "A1:D8",
+        "row_count": 7,
+        "min_column_count": 4,
+        "cells": {
+          "A5": {"value": "Agenda ID", "value_type": "inline_string"},
+          "B5": {"value": "Owner", "value_type": "inline_string"},
+          "C5": {"value": "Due Date", "value_type": "inline_string"},
+          "D5": {"value": "Decision", "value_type": "inline_string"},
+          "A6": {"value": "0001", "value_type": "inline_string"},
+          "C6": {"value": "2026-07-04", "value_type": "inline_string"},
+          "D7": {"value": "", "value_type": "inline_string"}
+        },
+        "warnings": []
+      },
+      "notes": "Synthetic table-backed meeting minutes sample for Word-to-Excel artifact checks."
+    },
+    {
+      "id": "word-to-excel-report",
+      "title": "Synthetic report Word-to-Excel fixture",
+      "path": "datasets/fixtures/word/word-to-excel-report.docx",
+      "source_type": "word",
+      "format": "docx",
+      "anonymization": "synthetic",
+      "confidentiality": "public",
+      "public_review_safe": true,
+      "word_to_excel_representative": true,
+      "word_to_excel_expectations": {
+        "dimension": "A1:D8",
+        "row_count": 7,
+        "min_column_count": 4,
+        "cells": {
+          "A5": {"value": "Sample ID", "value_type": "inline_string"},
+          "B5": {"value": "Assay", "value_type": "inline_string"},
+          "C5": {"value": "Report Date", "value_type": "inline_string"},
+          "A6": {"value": "RPT-0007", "value_type": "inline_string"},
+          "B6": {"value": "12.5", "value_type": "number"},
+          "C6": {"value": "2026-06-30", "value_type": "inline_string"},
+          "D7": {"value": "", "value_type": "inline_string"},
+          "B8": {"value": "100.25", "value_type": "number"}
+        },
+        "warnings": []
+      },
+      "notes": "Synthetic report sample with numeric values, date text, and blank note cells."
+    },
+    {
+      "id": "word-to-excel-application",
+      "title": "Synthetic application form Word-to-Excel fixture",
+      "path": "datasets/fixtures/word/word-to-excel-application.docx",
+      "source_type": "word",
+      "format": "docx",
+      "anonymization": "synthetic",
+      "confidentiality": "public",
+      "public_review_safe": true,
+      "word_to_excel_representative": true,
+      "word_to_excel_expectations": {
+        "dimension": "A1:D8",
+        "row_count": 7,
+        "min_column_count": 4,
+        "cells": {
+          "A5": {"value": "Application Summary", "value_type": "inline_string"},
+          "A6": {"value": "Applicant ID", "value_type": "inline_string"},
+          "B6": {"value": "Submitted", "value_type": "inline_string"},
+          "C6": {"value": "Amount", "value_type": "inline_string"},
+          "A7": {"value": "00042", "value_type": "inline_string"},
+          "B7": {"value": "2026-07-03", "value_type": "inline_string"},
+          "C7": {"value": 2500, "value_type": "number"},
+          "D7": {"value": "", "value_type": "inline_string"},
+          "C8": {"value": "125.75", "value_type": "number"}
+        },
+        "warnings": [
+          "DOCX table contains merged cells; xlsx artifact requires review"
+        ]
+      },
+      "notes": "Synthetic application sample with gridSpan merge markup preserved as review warning."
     },
     {
       "id": "placeholder-excel",
