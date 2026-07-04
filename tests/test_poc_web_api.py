@@ -430,6 +430,7 @@ def test_convert_uploaded_document_returns_artifact_manifest_contract() -> None:
             "use_llm": {"requested": False, "enabled": False, "status": "disabled"},
             "use_ocr": {"requested": False, "enabled": False, "status": "disabled"},
         },
+        "conversion_plan": {"requested": False, "status": "disabled", "adopted": False},
     }
 
     assert result["artifacts"] == [
@@ -452,6 +453,144 @@ def test_convert_uploaded_document_returns_artifact_manifest_contract() -> None:
             },
         }
     ]
+
+
+def test_convert_uploaded_document_adopts_schema_valid_local_llm_plan(monkeypatch: pytest.MonkeyPatch) -> None:
+    parser_output = {
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 320,
+                "height": 240,
+                "unit": "pt",
+                "fragments": [
+                    {
+                        "text": "Lot: SAMPLE-001",
+                        "bbox": {"x": 10, "y": 20, "width": 120, "height": 16, "unit": "pt"},
+                        "confidence": 0.91,
+                    }
+                ],
+            }
+        ]
+    }
+    plan = {
+        "schema_version": 1,
+        "source_kind": "synthetic_text",
+        "operations": [
+            {
+                "id": "extract-lot",
+                "action": "extract_field",
+                "inputs": ["Lot: SAMPLE-001"],
+                "output": "lot_number",
+                "rationale": "The lot value is explicitly present in the source text.",
+            }
+        ],
+        "constraints": {"external_transmission": False},
+    }
+    synthetic_inputs: list[str] = []
+
+    class FakeLocalLLMAdapter:
+        def create_conversion_plan(self, synthetic_text: str) -> dict[str, object]:
+            synthetic_inputs.append(synthetic_text)
+            return plan
+
+    monkeypatch.setattr(
+        poc_web,
+        "_configured_llm_conversion_plan_adapter",
+        lambda: (FakeLocalLLMAdapter(), None),
+    )
+
+    result = convert_uploaded_document(
+        filename="phase8-output.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+        use_llm=True,
+    )
+
+    assert synthetic_inputs
+    assert "Lot: SAMPLE-001" in synthetic_inputs[0]
+    assert result["warnings"] == []
+    assert result["audit"]["conversion_settings"]["use_llm"] == {
+        "requested": True,
+        "enabled": True,
+        "status": "enabled",
+    }
+    assert result["audit"]["conversion_plan"] == {
+        "requested": True,
+        "status": "adopted",
+        "adopted": True,
+        "plan": plan,
+    }
+    assert result["document_ir"]["blocks"][0]["text"] == "Lot: SAMPLE-001"
+    downloaded = json.loads(result["download"]["content"])
+    assert downloaded["audit"]["conversion_plan"]["status"] == "adopted"
+
+
+def test_convert_uploaded_document_rejects_schema_invalid_local_llm_plan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parser_output = {
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 320,
+                "height": 240,
+                "unit": "pt",
+                "fragments": [
+                    {
+                        "text": "Lot: SAMPLE-001",
+                        "bbox": {"x": 10, "y": 20, "width": 120, "height": 16, "unit": "pt"},
+                        "confidence": 0.91,
+                    }
+                ],
+            }
+        ]
+    }
+
+    class FakeLocalLLMAdapter:
+        def create_conversion_plan(self, synthetic_text: str) -> dict[str, object]:
+            return {
+                "schema_version": 1,
+                "source_kind": "synthetic_text",
+                "operations": [
+                    {
+                        "id": "send-out",
+                        "action": "extract_field",
+                        "inputs": ["Lot: SAMPLE-001"],
+                        "output": "lot_number",
+                        "rationale": "Unsafe plan must be rejected.",
+                    }
+                ],
+                "constraints": {"external_transmission": True},
+            }
+
+    monkeypatch.setattr(
+        poc_web,
+        "_configured_llm_conversion_plan_adapter",
+        lambda: (FakeLocalLLMAdapter(), None),
+    )
+
+    result = convert_uploaded_document(
+        filename="phase8-output.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+        use_llm=True,
+    )
+
+    assert result["warnings"] == [
+        "LLM conversion plan rejected: $.constraints.external_transmission must be false"
+    ]
+    assert result["audit"]["conversion_settings"]["use_llm"] == {
+        "requested": True,
+        "enabled": False,
+        "status": "blocked",
+        "reason": "schema_invalid",
+    }
+    assert result["audit"]["conversion_plan"] == {
+        "requested": True,
+        "status": "rejected",
+        "adopted": False,
+        "reason": "schema_invalid",
+    }
+    assert result["document_ir"]["blocks"][0]["text"] == "Lot: SAMPLE-001"
 
 
 @pytest.mark.parametrize(
@@ -10149,7 +10288,11 @@ def test_poc_http_api_rejects_unknown_conversion_mode() -> None:
     }
 
 
-def test_poc_http_api_reflects_unsupported_llm_and_ocr_settings() -> None:
+def test_poc_http_api_reflects_unavailable_llm_and_unsupported_ocr_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("VERIDOC_STANDARD_OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("VERIDOC_HIGH_QUALITY_OPENAI_BASE_URL", raising=False)
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -10190,11 +10333,22 @@ def test_poc_http_api_reflects_unsupported_llm_and_ocr_settings() -> None:
 
     assert response.status == 200
     assert body["audit"]["conversion_settings"] == {
-        "use_llm": {"requested": True, "enabled": False, "status": "unsupported"},
+        "use_llm": {
+            "requested": True,
+            "enabled": False,
+            "status": "blocked",
+            "reason": "missing_configured_profile",
+        },
         "use_ocr": {"requested": True, "enabled": False, "status": "unsupported"},
     }
-    assert "LLM conversion setting is not implemented in the local PoC API" in body["warnings"]
+    assert "LLM conversion plan unavailable: no configured local LLM profile" in body["warnings"]
     assert "OCR conversion setting is not implemented in the local PoC API" in body["warnings"]
+    assert body["audit"]["conversion_plan"] == {
+        "requested": True,
+        "status": "unavailable",
+        "adopted": False,
+        "reason": "missing_configured_profile",
+    }
 
 
 def test_poc_http_api_rejects_external_llm_endpoint_before_conversion(
@@ -10318,6 +10472,30 @@ def test_poc_http_api_allows_configured_local_llm_endpoint(
 ) -> None:
     monkeypatch.setenv("VERIDOC_STANDARD_OPENAI_BASE_URL", "http://127.0.0.1:8000/v1")
     monkeypatch.setenv("VERIDOC_STANDARD_MODEL", "local-json-model")
+    plan = {
+        "schema_version": 1,
+        "source_kind": "synthetic_text",
+        "operations": [
+            {
+                "id": "extract-lot",
+                "action": "extract_field",
+                "inputs": ["Lot: SAMPLE-001"],
+                "output": "lot_number",
+                "rationale": "The lot value is explicitly present in the source text.",
+            }
+        ],
+        "constraints": {"external_transmission": False},
+    }
+
+    class FakeLocalLLMAdapter:
+        def create_conversion_plan(self, synthetic_text: str) -> dict[str, object]:
+            return plan
+
+    monkeypatch.setattr(
+        poc_web,
+        "_configured_llm_conversion_plan_adapter",
+        lambda: (FakeLocalLLMAdapter(), None),
+    )
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -10358,10 +10536,11 @@ def test_poc_http_api_allows_configured_local_llm_endpoint(
     assert response.status == 200
     assert body["audit"]["conversion_settings"]["use_llm"] == {
         "requested": True,
-        "enabled": False,
-        "status": "unsupported",
+        "enabled": True,
+        "status": "enabled",
     }
-    assert "LLM conversion setting is not implemented in the local PoC API" in body["warnings"]
+    assert body["audit"]["conversion_plan"]["status"] == "adopted"
+    assert body["audit"]["conversion_plan"]["plan"] == plan
 
 
 def test_poc_http_api_rejects_non_boolean_conversion_settings() -> None:
