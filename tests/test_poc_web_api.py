@@ -8878,6 +8878,41 @@ def test_bundled_web_ui_scopes_review_actions_from_api_permissions() -> None:
     assert "control.dataset.reviewActionName" in pending_handler.group("body")
 
 
+def test_bundled_web_ui_lists_review_items_with_operator_summary() -> None:
+    html = Path("apps/web/index.html").read_text(encoding="utf-8")
+
+    render_result = re.search(
+        r"function renderResult\(result\) \{(?P<body>.*?)\n      \}",
+        html,
+        re.DOTALL,
+    )
+    render_items = re.search(
+        r"function renderReviewItems\(items\) \{(?P<body>.*?)\n      \}",
+        html,
+        re.DOTALL,
+    )
+    render_item = re.search(
+        r"function renderReviewItem\(item\) \{(?P<body>.*?)\n      \}",
+        html,
+        re.DOTALL,
+    )
+
+    assert render_result is not None
+    assert render_items is not None
+    assert render_item is not None
+    assert "renderReviewItems(result.review_items || [])" in render_result.group("body")
+    assert "自動検証上の要確認なし" in render_items.group("body")
+    assert "安全を確定するものではありません" in render_items.group("body")
+    assert "review-empty" in render_items.group("body")
+    assert "item.source_page ?? \"unknown\"" in render_item.group("body")
+    assert "item.block_id || \"unknown block\"" in render_item.group("body")
+    assert "descriptor.code" in render_item.group("body")
+    assert "descriptor.severity" in render_item.group("body")
+    assert "warningBadgeDescriptor" in render_item.group("body")
+    assert "review-item-meta" in html
+    assert "review-item-target" in html
+
+
 def test_poc_http_api_sanitizes_succeeded_job_result_and_downloads_result() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     server.job_queue = JobQueue()
