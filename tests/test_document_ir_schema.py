@@ -88,6 +88,37 @@ class DocumentIrSchemaTest(unittest.TestCase):
             set(block_metadata["required"]),
         )
 
+    def test_validator_accepts_low_confidence_v0_metadata(self) -> None:
+        document = json.loads(SAMPLE_PATH.read_text(encoding="utf-8"))
+        document["blocks"][0]["low_confidence"] = True
+        document["blocks"][0]["value_metadata"]["low_confidence"] = True
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            document_path = Path(temp_dir) / "low-confidence-document-ir.json"
+            document_path.write_text(json.dumps(document), encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(VALIDATOR_PATH),
+                    "--schema",
+                    str(SCHEMA_PATH),
+                    "--document",
+                    str(document_path),
+                ],
+                cwd=REPO_ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+        self.assertEqual(
+            result.returncode,
+            0,
+            msg=f"validator rejected low_confidence metadata\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+        )
+
     def test_validator_rejects_non_finite_json_numbers(self) -> None:
         document = json.loads(SAMPLE_PATH.read_text(encoding="utf-8"))
         document["blocks"][0]["value_metadata"]["confidence"] = float("nan")

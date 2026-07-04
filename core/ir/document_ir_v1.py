@@ -484,7 +484,7 @@ def _fragments_match_rank_for_v0_metadata(
     *,
     fallback_extractor: str,
 ) -> tuple[int, int] | None:
-    if (target.get("kind") or target.get("type")) != (source.get("kind") or source.get("type")):
+    if _block_type(target, "") != _block_type(source, ""):
         return None
     if str(target.get("text") or "") != str(source.get("text") or ""):
         return None
@@ -559,6 +559,8 @@ def _fragment_with_v0_metadata(value: Any, source: dict[str, Any]) -> Any:
         output["requires_review"] = True
     if source.get("low_confidence") is True:
         output["low_confidence"] = True
+    if output.get("confidence") is None and source.get("confidence") is not None:
+        output["confidence"] = source["confidence"]
     warnings = [*dict.fromkeys([*_fragment_warnings(output), *_fragment_warnings(source)])]
     if warnings:
         output["warnings"] = warnings
