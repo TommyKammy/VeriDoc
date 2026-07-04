@@ -39,7 +39,7 @@
           ]
         }
       ],
-      "notes": "Synthetic representative text-PDF table extraction candidate."
+      "notes": "Synthetic representative ruled text-PDF table extraction candidate."
     },
     {
       "extractor": "pdfplumber",
@@ -52,5 +52,5 @@
   ],
   "mismatches": [],
   "selected_candidate": "camelot:lattice",
-  "notes": "Synthetic PDF-to-Excel representative table report."
+  "notes": "Synthetic ruled PDF-to-Excel representative table report."
 }

@@ -12,21 +12,31 @@ endobj
 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
 endobj
 5 0 obj
-<< /Length 264 >>
+<< /Length 571 >>
 stream
+0.75 w
+36 642 m 36 696 l S
+108 642 m 108 696 l S
+180 642 m 180 696 l S
+270 642 m 270 696 l S
+396 642 m 396 696 l S
+36 642 m 396 642 l S
+36 660 m 396 660 l S
+36 678 m 396 678 l S
+36 696 m 396 696 l S
 BT
 /F1 10 Tf
-36 710 Td (Lot ID) Tj
-72 0 Td (Assay %) Tj
-72 0 Td (Disposition) Tj
-90 0 Td (Reviewer Note) Tj
--234 -18 Td (PDF-0007) Tj
-72 0 Td (12.5) Tj
-72 0 Td (Pass) Tj
--144 -18 Td (PDF-0008) Tj
-72 0 Td (98.1) Tj
-72 0 Td (Hold) Tj
-90 0 Td (Needs QA review) Tj
+1 0 0 1 40 683 Tm (Lot ID) Tj
+1 0 0 1 112 683 Tm (Assay %) Tj
+1 0 0 1 184 683 Tm (Disposition) Tj
+1 0 0 1 274 683 Tm (Reviewer Note) Tj
+1 0 0 1 40 665 Tm (PDF-0007) Tj
+1 0 0 1 112 665 Tm (12.5) Tj
+1 0 0 1 184 665 Tm (Pass) Tj
+1 0 0 1 40 647 Tm (PDF-0008) Tj
+1 0 0 1 112 647 Tm (98.1) Tj
+1 0 0 1 184 647 Tm (Hold) Tj
+1 0 0 1 274 647 Tm (Needs QA review) Tj
 ET
 endstream
 endobj
@@ -41,5 +51,5 @@ xref
 trailer
 << /Size 6 /Root 1 0 R >>
 startxref
-625
+932
 %%EOF

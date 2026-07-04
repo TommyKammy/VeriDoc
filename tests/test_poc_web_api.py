@@ -12,6 +12,7 @@ import subprocess
 import sys
 from threading import Barrier, Event, Lock, Thread
 from typing import Optional
+from xml.etree import ElementTree
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
@@ -932,10 +933,29 @@ def test_pdf_to_excel_representative_table_fixture_renders_xlsx_artifact(
         for warning in expectations["warnings"]:
             assert warning in result["warnings"], fixture["id"]
 
-        with ZipFile(primary_path) as archive:
-            comments_xml = archive.read("xl/comments1.xml").decode("utf-8")
+        comments_by_ref = _xlsx_comments_by_ref(primary_path)
+        expected_comment_ref = expectations["source_comment"]["cell"]
+        assert expected_comment_ref in comments_by_ref, fixture["id"]
+        source_comment = comments_by_ref[expected_comment_ref]
         for expected_text in expectations["source_comment"]["contains"]:
-            assert expected_text in comments_xml, fixture["id"]
+            assert expected_text in source_comment, fixture["id"]
+
+
+def _xlsx_comments_by_ref(xlsx_path: Path) -> dict[str, str]:
+    namespace = {"xlsx": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    with ZipFile(xlsx_path) as archive:
+        comments_xml = archive.read("xl/comments1.xml")
+    root = ElementTree.fromstring(comments_xml)
+    comments_by_ref: dict[str, str] = {}
+    for comment in root.findall(".//xlsx:comment", namespace):
+        ref = comment.attrib.get("ref")
+        if ref is None:
+            continue
+        comments_by_ref[ref] = "".join(
+            text_node.text or ""
+            for text_node in comment.findall(".//xlsx:t", namespace)
+        )
+    return comments_by_ref
 
 
 def _cell_row_index(cell_ref: str) -> int:
