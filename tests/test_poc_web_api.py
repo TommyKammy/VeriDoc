@@ -34,6 +34,8 @@ from services.api.poc_web import (
     convert_uploaded_document,
 )
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+FIXTURE_MANIFEST_PATH = REPO_ROOT / "datasets" / "fixtures" / "manifest.json"
 
 _HTML_VOID_TAGS = {
     "area",
@@ -800,6 +802,74 @@ def test_word_to_excel_docx_upload_preserves_structured_table_cells(tmp_path: Pa
     assert cells["A6"] == ("0007", "inline_string")
     assert cells["B6"] == ("12.5", "number")
     assert cells["C6"] == ("", "inline_string")
+
+
+def test_word_to_excel_representative_docx_fixtures_render_xlsx_artifacts(
+    tmp_path: Path,
+) -> None:
+    manifest = json.loads(FIXTURE_MANIFEST_PATH.read_text(encoding="utf-8"))
+    fixtures = [
+        fixture
+        for fixture in manifest["fixtures"]
+        if fixture["source_type"] == "word"
+        and fixture.get("word_to_excel_representative") is True
+    ]
+
+    assert {fixture["id"] for fixture in fixtures} == {
+        "word-to-excel-meeting-minutes",
+        "word-to-excel-report",
+        "word-to-excel-application",
+    }
+
+    for fixture in fixtures:
+        fixture_path = REPO_ROOT / fixture["path"]
+        result = convert_uploaded_document(
+            filename=fixture_path.name,
+            content=fixture_path.read_bytes(),
+            conversion_mode="word_to_excel",
+        )
+
+        primary_artifact = result["artifacts"][0]
+        assert primary_artifact["format"] == "xlsx", fixture["id"]
+        assert primary_artifact["filename"].endswith(".veridoc-word-to-excel.xlsx")
+        assert primary_artifact["content_type"] == (
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        assert primary_artifact["metadata"]["download"] == {
+            "available": True,
+            "field": "artifacts[0].content_base64",
+        }
+
+        primary_path = tmp_path / primary_artifact["filename"]
+        primary_path.write_bytes(primary_artifact["content"])
+        xlsx = extract_xlsx_structure(primary_path)
+        cells = {cell.ref: (cell.value, cell.value_type) for cell in xlsx.sheets[0].cells}
+
+        expectations = fixture["word_to_excel_expectations"]
+        for ref, expected in expectations["cells"].items():
+            assert cells[ref] == (expected["value"], expected["value_type"]), fixture["id"]
+
+        assert xlsx.sheets[0].dimension == expectations["dimension"], fixture["id"]
+        assert len({_cell_row_index(cell.ref) for cell in xlsx.sheets[0].cells}) == (
+            expectations["row_count"]
+        ), fixture["id"]
+        assert len({_cell_column_label(cell.ref) for cell in xlsx.sheets[0].cells}) >= (
+            expectations["min_column_count"]
+        ), fixture["id"]
+        for warning in expectations.get("warnings", []):
+            assert warning in result["warnings"], fixture["id"]
+
+
+def _cell_row_index(cell_ref: str) -> int:
+    match = re.fullmatch(r"[A-Z]+([0-9]+)", cell_ref)
+    assert match is not None
+    return int(match.group(1))
+
+
+def _cell_column_label(cell_ref: str) -> str:
+    match = re.fullmatch(r"([A-Z]+)[0-9]+", cell_ref)
+    assert match is not None
+    return match.group(1)
 
 
 def test_word_to_excel_phase0_json_preserves_v0_table_block_rows(tmp_path: Path) -> None:
