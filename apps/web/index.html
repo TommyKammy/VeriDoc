@@ -2168,9 +2168,10 @@
         appendReviewMeta(meta, "Block ID", blockId);
         const text = document.createElement("div");
         text.className = "review-item-target";
-        text.dataset.reviewTextFor = blockId;
+        text.dataset.reviewTextFor = item.block_id;
+        if (!item.block_id) text.dataset.reviewTextFor = blockId;
         text.textContent = item.text || "No target text returned.";
-        const badges = renderWarningBadges(item, descriptors);
+        const badges = renderWarningBadges(item);
         const edit = document.createElement("textarea");
         edit.className = "review-edit";
         edit.dataset.reviewEditFor = blockId;
@@ -2200,7 +2201,8 @@
         const actions = document.createElement("div");
         actions.className = "review-actions";
         actions.append(jump, requestEdit, approve);
-        wrapper.append(title, meta, text, badges, edit, actions);
+        wrapper.append(title, text, badges, edit, actions);
+        wrapper.insertBefore(meta, text);
         return wrapper;
       }
 
@@ -2212,9 +2214,10 @@
         meta.append(term, description);
       }
 
-      function renderWarningBadges(item, descriptors = (item.warnings || []).map(warningBadgeDescriptor)) {
+      function renderWarningBadges(item) {
         const badges = document.createElement("div");
         badges.className = "warning-badges";
+        const descriptors = (item.warnings || []).map(warningBadgeDescriptor);
         for (const descriptor of descriptors) {
           const badge = document.createElement("span");
           badge.className = `warning-badge ${severityClass(descriptor.severity)}`;
