@@ -944,6 +944,62 @@ class DocumentIrV1Test(unittest.TestCase):
         self.assertEqual(0.41, document_ir.blocks[0].confidence)
         self.assertEqual("tesseract", document_ir.blocks[0].extractor.name)
 
+    def test_document_ir_v0_low_confidence_merge_preserves_missing_confidence(self) -> None:
+        parser_output = {
+            "schema_version": "document-ir/v0",
+            "extractor": "scanned_pdf_ocr",
+            "pages": [
+                {
+                    "page_number": 1,
+                    "width": 320,
+                    "height": 240,
+                    "unit": "px",
+                    "fragments": [
+                        {
+                            "kind": "field",
+                            "text": "LOT-O0I",
+                            "bbox": {"x": 10, "y": 20, "width": 70, "height": 18, "unit": "px"},
+                            "confidence": 0.95,
+                        }
+                    ],
+                }
+            ],
+            "blocks": [
+                {
+                    "type": "field",
+                    "text": "LOT-O0I",
+                    "value_metadata": {
+                        "source_page": 1,
+                        "bbox": {"x": 10, "y": 20, "width": 70, "height": 18, "unit": "px"},
+                        "extractor": {"name": "scanned_pdf_ocr", "version": "0.test"},
+                        "low_confidence": True,
+                    },
+                }
+            ],
+        }
+
+        adapted = adapt_document_ir_v0_blocks(parser_output)
+        document_ir = from_parser_output(
+            parser_output,
+            document_id="scanned-batch-record",
+            title="Scanned batch record",
+            source_type="pdf",
+        )
+
+        fragment = adapted["pages"][0]["fragments"][0]
+        self.assertIs(fragment["low_confidence"], True)
+        self.assertIs(fragment["missing_confidence"], True)
+        self.assertNotIn("confidence", fragment)
+        self.assertTrue(document_ir.blocks[0].review.requires_review)
+        self.assertEqual(0.0, document_ir.blocks[0].confidence)
+        self.assertEqual(
+            [
+                "blocks[0].confidence missing; block marked requires_review",
+                "blocks[0].low confidence; block marked requires_review",
+            ],
+            document_ir.blocks[0].review.warnings,
+        )
+
     def test_document_ir_v0_low_confidence_matches_kind_before_legacy_type(self) -> None:
         parser_output = {
             "schema_version": "document-ir/v0",

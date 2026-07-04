@@ -559,7 +559,10 @@ def _fragment_with_v0_metadata(value: Any, source: dict[str, Any]) -> Any:
         output["requires_review"] = True
     if source.get("low_confidence") is True:
         output["low_confidence"] = True
-    if source.get("low_confidence") is True and source.get("confidence") is not None:
+    if source.get("missing_confidence") is True:
+        output["missing_confidence"] = True
+        output.pop("confidence", None)
+    elif source.get("low_confidence") is True and source.get("confidence") is not None:
         output["confidence"] = source["confidence"]
         _preserve_normalized_v0_confidence(output, source)
     elif output.get("confidence") is None and source.get("confidence") is not None:
