@@ -291,6 +291,26 @@ def test_parse_text_pdf_to_document_ir_does_not_use_small_footer_as_heading_base
     validate_document_ir_consistency(document_ir)
 
 
+def test_parse_text_pdf_to_document_ir_requires_body_baseline_before_heading(
+    tmp_path: Path,
+) -> None:
+    pdf_path = tmp_path / "heading-candidate-without-body.pdf"
+    document = fitz.open()
+    page = document.new_page(width=300, height=220)
+    page.insert_text((36, 48), "Manufacturing Summary", fontsize=18)
+    page.insert_text((36, 194), "Confidential footer", fontsize=8)
+    document.save(pdf_path)
+    document.close()
+
+    document_ir = parse_text_pdf_to_document_ir(pdf_path, document_id="sample-pdf")
+
+    assert [(block["type"], block["text"]) for block in document_ir["blocks"]] == [
+        ("paragraph", "Manufacturing Summary"),
+        ("paragraph", "Confidential footer"),
+    ]
+    validate_document_ir_consistency(document_ir)
+
+
 def test_parse_text_pdf_to_document_ir_marks_oversized_heading_after_running_header(
     tmp_path: Path,
 ) -> None:

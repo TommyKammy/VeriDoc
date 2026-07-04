@@ -512,24 +512,44 @@ def _representative_body_font_size(
     *,
     candidate_index: int,
 ) -> float | None:
-    font_sizes = [
-        line_font_size
-        for line in page_lines[candidate_index + 1 :]
-        if not _is_table_line(line)
-        for line_font_size in [_line_font_size(line)]
-        if line_font_size is not None
-    ]
-    if not font_sizes:
-        font_sizes = [
-            line_font_size
-            for index, line in enumerate(page_lines)
-            if index != candidate_index and not _is_table_line(line)
-            for line_font_size in [_line_font_size(line)]
-            if line_font_size is not None
-        ]
+    font_sizes = _following_body_font_sizes(page_lines, candidate_index=candidate_index)
     if not font_sizes:
         return None
     return _median_high(font_sizes)
+
+
+def _following_body_font_sizes(
+    page_lines: list[list[TextFragment]],
+    *,
+    candidate_index: int,
+) -> list[float]:
+    font_sizes: list[float] = []
+    previous_line = page_lines[candidate_index]
+    for line in page_lines[candidate_index + 1 :]:
+        if _is_table_line(line):
+            continue
+        if not _is_nearby_following_text_line(previous_line, line):
+            break
+        line_font_size = _line_font_size(line)
+        if line_font_size is not None:
+            font_sizes.append(line_font_size)
+        previous_line = line
+    return font_sizes
+
+
+def _is_nearby_following_text_line(
+    previous_line: list[TextFragment],
+    next_line: list[TextFragment],
+) -> bool:
+    previous_bbox = _union_text_bboxes(previous_line)
+    next_bbox = _union_text_bboxes(next_line)
+    if previous_bbox is None or next_bbox is None:
+        return False
+    if _bbox_center_y(next_bbox) <= _bbox_center_y(previous_bbox):
+        return False
+    vertical_gap = next_bbox.y - (previous_bbox.y + previous_bbox.height)
+    max_height = max(previous_bbox.height, next_bbox.height)
+    return vertical_gap <= max_height * 3.0
 
 
 def _preceding_lines_are_heading_preamble(
