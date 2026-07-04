@@ -12,6 +12,8 @@ import subprocess
 import sys
 from threading import Barrier, Event, Lock, Thread
 from typing import Optional
+from xml.etree import ElementTree
+import zlib
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
@@ -858,6 +860,209 @@ def test_word_to_excel_representative_docx_fixtures_render_xlsx_artifacts(
         ), fixture["id"]
         for warning in expectations.get("warnings", []):
             assert warning in result["warnings"], fixture["id"]
+
+
+def test_pdf_to_excel_representative_table_fixture_renders_xlsx_artifact(
+    tmp_path: Path,
+) -> None:
+    manifest = json.loads(FIXTURE_MANIFEST_PATH.read_text(encoding="utf-8"))
+    fixtures = [
+        fixture
+        for fixture in manifest["fixtures"]
+        if fixture["source_type"] == "text_pdf"
+        and fixture.get("pdf_to_excel_representative") is True
+    ]
+
+    assert {fixture["id"] for fixture in fixtures} == {"pdf-to-excel-table-report"}
+
+    for fixture in fixtures:
+        fixture_path = REPO_ROOT / fixture["path"]
+        report = json.loads(fixture_path.read_text(encoding="utf-8"))
+        source_relative_path = Path(report["source_path"])
+        assert not source_relative_path.is_absolute(), fixture["id"]
+        assert _repo_tracks_path(source_relative_path), fixture["id"]
+        source_path = REPO_ROOT / source_relative_path
+        assert source_path.is_file(), fixture["id"]
+        selected_candidate = next(
+            candidate
+            for candidate in report["candidates"]
+            if f"{candidate['extractor']}:{candidate['flavor']}" == report["selected_candidate"]
+        )
+        selected_table = selected_candidate["tables"][0]
+        selected_cell_bboxes = selected_table["cell_bboxes"]
+        assert all(
+            cell["origin"] == "bottom-left"
+            for row in selected_cell_bboxes
+            for cell in row
+        ), fixture["id"]
+        _assert_pdf_fixture_has_ruled_table(source_path, selected_cell_bboxes)
+        _assert_pdf_fixture_text_is_inside_bboxes(
+            source_path,
+            selected_table["rows"],
+            selected_cell_bboxes,
+        )
+
+        result = convert_uploaded_document(
+            filename=fixture_path.name,
+            content=fixture_path.read_bytes(),
+            conversion_mode="pdf_to_excel",
+        )
+
+        primary_artifact = result["artifacts"][0]
+        assert primary_artifact["format"] == "xlsx", fixture["id"]
+        assert primary_artifact["filename"].endswith(".veridoc-pdf-to-excel.xlsx")
+        assert primary_artifact["content_type"] == (
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        assert primary_artifact["metadata"]["download"] == {
+            "available": True,
+            "field": "artifacts[0].content_base64",
+        }
+
+        primary_path = tmp_path / primary_artifact["filename"]
+        primary_path.write_bytes(primary_artifact["content"])
+        xlsx = extract_xlsx_structure(primary_path)
+        cells = {cell.ref: (cell.value, cell.value_type) for cell in xlsx.sheets[0].cells}
+
+        expectations = fixture["pdf_to_excel_expectations"]
+        assert xlsx.sheets[0].dimension == expectations["dimension"], fixture["id"]
+        for ref, expected in expectations["cells"].items():
+            assert cells[ref] == (expected["value"], expected["value_type"]), fixture["id"]
+
+        table_refs = [
+            ref
+            for ref in expectations["cells"]
+            if 4 <= _cell_row_index(ref) <= 6
+        ]
+        assert len({_cell_row_index(ref) for ref in table_refs}) == (
+            expectations["table_row_count"]
+        ), fixture["id"]
+        assert len({_cell_column_label(ref) for ref in table_refs}) == (
+            expectations["table_column_count"]
+        ), fixture["id"]
+
+        for warning in expectations["warnings"]:
+            assert warning in result["warnings"], fixture["id"]
+
+        comments_by_ref = _xlsx_comments_by_ref(primary_path)
+        expected_comment_ref = expectations["source_comment"]["cell"]
+        assert expected_comment_ref in comments_by_ref, fixture["id"]
+        source_comment = comments_by_ref[expected_comment_ref]
+        for expected_text in expectations["source_comment"]["contains"]:
+            assert expected_text in source_comment, fixture["id"]
+
+
+def _xlsx_comments_by_ref(xlsx_path: Path) -> dict[str, str]:
+    namespace = {"xlsx": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    with ZipFile(xlsx_path) as archive:
+        comments_xml = archive.read("xl/comments1.xml")
+    root = ElementTree.fromstring(comments_xml)
+    comments_by_ref: dict[str, str] = {}
+    for comment in root.findall(".//xlsx:comment", namespace):
+        ref = comment.attrib.get("ref")
+        if ref is None:
+            continue
+        comments_by_ref[ref] = "".join(
+            text_node.text or ""
+            for text_node in comment.findall(".//xlsx:t", namespace)
+        )
+    return comments_by_ref
+
+
+def _repo_tracks_path(path: Path) -> bool:
+    if not (REPO_ROOT / ".git").exists():
+        return True
+    result = subprocess.run(
+        ["git", "ls-files", "--error-unmatch", "--", path.as_posix()],
+        cwd=REPO_ROOT,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def _pdf_fixture_content_stream_text(pdf_path: Path) -> str:
+    raw_pdf = pdf_path.read_bytes()
+    streams: list[str] = []
+    for match in re.finditer(rb"stream\r?\n(.*?)\r?\nendstream", raw_pdf, re.DOTALL):
+        stream_data = match.group(1)
+        try:
+            stream_data = zlib.decompress(stream_data)
+        except zlib.error:
+            pass
+        streams.append(stream_data.decode("latin-1", errors="replace"))
+    assert streams, pdf_path
+    return "\n".join(streams)
+
+
+def _assert_pdf_fixture_has_ruled_table(
+    pdf_path: Path,
+    cell_bboxes: list[list[dict[str, object]]],
+) -> None:
+    content_stream = _pdf_fixture_content_stream_text(pdf_path)
+    line_segments = {
+        tuple(float(value) for value in match)
+        for match in re.findall(
+            r"([0-9.]+) ([0-9.]+) m ([0-9.]+) ([0-9.]+) l S",
+            content_stream,
+        )
+    }
+    left_edges = {
+        float(cell["x"])
+        for row in cell_bboxes
+        for cell in row
+    }
+    right_edge = max(
+        float(cell["x"]) + float(cell["width"])
+        for row in cell_bboxes
+        for cell in row
+    )
+    bottom_edges = {
+        float(cell["y"])
+        for row in cell_bboxes
+        for cell in row
+    }
+    top_edge = max(
+        float(cell["y"]) + float(cell["height"])
+        for row in cell_bboxes
+        for cell in row
+    )
+    min_x = min(left_edges)
+    min_y = min(bottom_edges)
+    for x in sorted({*left_edges, right_edge}):
+        assert (x, min_y, x, top_edge) in line_segments
+    for y in sorted({*bottom_edges, top_edge}):
+        assert (min_x, y, right_edge, y) in line_segments
+
+
+def _assert_pdf_fixture_text_is_inside_bboxes(
+    pdf_path: Path,
+    rows: list[list[str]],
+    cell_bboxes: list[list[dict[str, object]]],
+) -> None:
+    content_stream = _pdf_fixture_content_stream_text(pdf_path)
+    text_positions = {
+        text: (float(x), float(y))
+        for x, y, text in re.findall(
+            r"1 0 0 1 ([0-9.]+) ([0-9.]+) Tm \(([^)]*)\) Tj",
+            content_stream,
+        )
+    }
+    assert text_positions, pdf_path
+    for row_index, row in enumerate(rows):
+        for column_index, text in enumerate(row):
+            if not text:
+                continue
+            assert text in text_positions
+            x, y = text_positions[text]
+            bbox = cell_bboxes[row_index][column_index]
+            left = float(bbox["x"])
+            bottom = float(bbox["y"])
+            right = left + float(bbox["width"])
+            top = bottom + float(bbox["height"])
+            assert left <= x <= right, text
+            assert bottom <= y <= top, text
 
 
 def _cell_row_index(cell_ref: str) -> int:

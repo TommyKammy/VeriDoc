@@ -1,0 +1,57 @@
+{
+  "source_type": "pdf",
+  "source_path": "datasets/fixtures/pdf/pdf-to-excel-ruled-table.pdf",
+  "candidates": [
+    {
+      "extractor": "camelot",
+      "flavor": "lattice",
+      "version": "synthetic-fixture",
+      "status": "ok",
+      "tables": [
+        {
+          "extractor": "camelot",
+          "flavor": "lattice",
+          "page_number": 1,
+          "rows": [
+            ["Lot ID", "Assay %", "Disposition", "Reviewer Note"],
+            ["PDF-0007", "12.5", "Pass", ""],
+            ["PDF-0008", "98.1", "Hold", "Needs QA review"]
+          ],
+          "cell_bboxes": [
+            [
+              {"x": 36, "y": 678, "width": 72, "height": 18, "unit": "pt", "origin": "bottom-left"},
+              {"x": 108, "y": 678, "width": 72, "height": 18, "unit": "pt", "origin": "bottom-left"},
+              {"x": 180, "y": 678, "width": 90, "height": 18, "unit": "pt", "origin": "bottom-left"},
+              {"x": 270, "y": 678, "width": 126, "height": 18, "unit": "pt", "origin": "bottom-left"}
+            ],
+            [
+              {"x": 36, "y": 660, "width": 72, "height": 18, "unit": "pt", "origin": "bottom-left"},
+              {"x": 108, "y": 660, "width": 72, "height": 18, "unit": "pt", "origin": "bottom-left"},
+              {"x": 180, "y": 660, "width": 90, "height": 18, "unit": "pt", "origin": "bottom-left"},
+              {"x": 270, "y": 660, "width": 126, "height": 18, "unit": "pt", "origin": "bottom-left"}
+            ],
+            [
+              {"x": 36, "y": 642, "width": 72, "height": 18, "unit": "pt", "origin": "bottom-left"},
+              {"x": 108, "y": 642, "width": 72, "height": 18, "unit": "pt", "origin": "bottom-left"},
+              {"x": 180, "y": 642, "width": 90, "height": 18, "unit": "pt", "origin": "bottom-left"},
+              {"x": 270, "y": 642, "width": 126, "height": 18, "unit": "pt", "origin": "bottom-left"}
+            ]
+          ]
+        }
+      ],
+      "notes": "Synthetic representative ruled text-PDF table extraction candidate."
+    },
+    {
+      "extractor": "pdfplumber",
+      "flavor": "table",
+      "version": null,
+      "status": "not-installed",
+      "tables": [],
+      "notes": "Synthetic unavailable comparator keeps representative artifact in review."
+    }
+  ],
+  "mismatches": [],
+  "selection_basis": "tracked ruled PDF fixture with source text inside declared lattice cell bboxes",
+  "selected_candidate": "camelot:lattice",
+  "notes": "Synthetic ruled PDF-to-Excel representative table report."
+}

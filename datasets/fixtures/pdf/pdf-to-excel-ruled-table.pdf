@@ -1,0 +1,55 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+5 0 obj
+<< /Length 571 >>
+stream
+0.75 w
+36 642 m 36 696 l S
+108 642 m 108 696 l S
+180 642 m 180 696 l S
+270 642 m 270 696 l S
+396 642 m 396 696 l S
+36 642 m 396 642 l S
+36 660 m 396 660 l S
+36 678 m 396 678 l S
+36 696 m 396 696 l S
+BT
+/F1 10 Tf
+1 0 0 1 40 683 Tm (Lot ID) Tj
+1 0 0 1 112 683 Tm (Assay %) Tj
+1 0 0 1 184 683 Tm (Disposition) Tj
+1 0 0 1 274 683 Tm (Reviewer Note) Tj
+1 0 0 1 40 665 Tm (PDF-0007) Tj
+1 0 0 1 112 665 Tm (12.5) Tj
+1 0 0 1 184 665 Tm (Pass) Tj
+1 0 0 1 40 647 Tm (PDF-0008) Tj
+1 0 0 1 112 647 Tm (98.1) Tj
+1 0 0 1 184 647 Tm (Hold) Tj
+1 0 0 1 274 647 Tm (Needs QA review) Tj
+ET
+endstream
+endobj
+xref
+0 6
+0000000000 65535 f
+0000000009 00000 n
+0000000058 00000 n
+0000000115 00000 n
+0000000241 00000 n
+0000000311 00000 n
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+932
+%%EOF
