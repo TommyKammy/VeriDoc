@@ -593,6 +593,72 @@ def test_convert_uploaded_document_rejects_schema_invalid_local_llm_plan(
     assert result["document_ir"]["blocks"][0]["text"] == "Lot: SAMPLE-001"
 
 
+def test_configured_llm_adapter_validates_later_configured_profiles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profiles_path = tmp_path / "inference_profiles.json"
+    profiles_path.write_text(
+        json.dumps(
+            {
+                "profiles": [
+                    {
+                        "base_url_env": "VERIDOC_STANDARD_OPENAI_BASE_URL",
+                        "model_env": "VERIDOC_STANDARD_MODEL",
+                        "optional_env": [],
+                    },
+                    {
+                        "base_url_env": "VERIDOC_HIGH_QUALITY_OPENAI_BASE_URL",
+                        "model_env": "VERIDOC_HIGH_QUALITY_MODEL",
+                        "optional_env": [],
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(poc_web, "INFERENCE_PROFILES_PATH", profiles_path)
+    monkeypatch.setenv("VERIDOC_STANDARD_OPENAI_BASE_URL", "http://127.0.0.1:8000/v1")
+    monkeypatch.setenv("VERIDOC_STANDARD_MODEL", "local-json-model")
+    monkeypatch.setenv("VERIDOC_HIGH_QUALITY_OPENAI_BASE_URL", "http://127.0.0.1:9000/v1")
+    monkeypatch.delenv("VERIDOC_HIGH_QUALITY_MODEL", raising=False)
+
+    adapter, reason = poc_web._configured_llm_conversion_plan_adapter()
+
+    assert adapter is None
+    assert reason == "missing_required_model"
+
+
+def test_configured_llm_adapter_rejects_non_finite_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profiles_path = tmp_path / "inference_profiles.json"
+    profiles_path.write_text(
+        json.dumps(
+            {
+                "profiles": [
+                    {
+                        "base_url_env": "VERIDOC_STANDARD_OPENAI_BASE_URL",
+                        "model_env": "VERIDOC_STANDARD_MODEL",
+                        "optional_env": ["VERIDOC_STANDARD_TIMEOUT_SECONDS"],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(poc_web, "INFERENCE_PROFILES_PATH", profiles_path)
+    monkeypatch.setenv("VERIDOC_STANDARD_OPENAI_BASE_URL", "http://127.0.0.1:8000/v1")
+    monkeypatch.setenv("VERIDOC_STANDARD_MODEL", "local-json-model")
+    monkeypatch.setenv("VERIDOC_STANDARD_TIMEOUT_SECONDS", "inf")
+
+    adapter, reason = poc_web._configured_llm_conversion_plan_adapter()
+
+    assert adapter is None
+    assert reason == "invalid_configuration"
+
+
 @pytest.mark.parametrize(
     ("conversion_mode", "artifact_format", "artifact_content_type"),
     (

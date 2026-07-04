@@ -3759,6 +3759,7 @@ def _configured_llm_conversion_plan_adapter() -> tuple[LocalLLMConversionPlanAda
     profiles = profiles_config.get("profiles")
     if not isinstance(profiles, list):
         return None, "invalid_configuration"
+    selected_adapter: LocalLLMConversionPlanAdapter | None = None
     for profile in profiles:
         if not isinstance(profile, dict):
             return None, "invalid_configuration"
@@ -3788,7 +3789,10 @@ def _configured_llm_conversion_plan_adapter() -> tuple[LocalLLMConversionPlanAda
             )
         except LocalLLMConfigurationError as exc:
             return None, _llm_rejection_reason_from_error(exc)
-        return adapter, None
+        if selected_adapter is None:
+            selected_adapter = adapter
+    if selected_adapter is not None:
+        return selected_adapter, None
     return None, "missing_configured_profile"
 
 
@@ -3800,9 +3804,12 @@ def _llm_float_env(optional_env: Any, suffix: str, *, default: float) -> float:
     if raw_value is None or not raw_value.strip():
         return default
     try:
-        return float(raw_value)
+        value = float(raw_value)
     except ValueError as exc:
         raise LocalLLMConfigurationError(f"{env_name} must be numeric") from exc
+    if not math.isfinite(value):
+        raise LocalLLMConfigurationError(f"{env_name} must be finite")
+    return value
 
 
 def _llm_int_env(optional_env: Any, suffix: str, *, default: int) -> int:
