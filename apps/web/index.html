@@ -809,6 +809,13 @@
             <div class="page-status">
               Review decisions are made from warnings, review items, source locations, and artifact actions.
             </div>
+            <div
+              id="direct-convert-error"
+              class="error"
+              role="alert"
+              data-api-fields="error message warnings artifacts[] download"
+              hidden
+            ></div>
             <div id="top-level-warnings" class="top-level-warnings" data-api-fields="warnings" hidden></div>
             <div id="review-list"></div>
             <div id="review-action-status" class="page-status" role="status"></div>
@@ -988,6 +995,7 @@
       const resultPanel = document.querySelector("#result-panel");
       const rawPanel = document.querySelector("#raw-panel");
       const status = document.querySelector("#status");
+      const directConvertError = document.querySelector("#direct-convert-error");
       const topLevelWarnings = document.querySelector("#top-level-warnings");
       const reviewList = document.querySelector("#review-list");
       const reviewActionStatus = document.querySelector("#review-action-status");
@@ -1083,19 +1091,20 @@
           });
           const result = await response.json();
           if (!isActiveDirectConversion(conversionToken)) return;
-          if (!response.ok) throw new Error(result.message || result.error || "convert failed");
+          if (!response.ok) {
+            renderDirectConvertError(result);
+            setPageStatus("Direct conversion failed.", true);
+            return;
+          }
           renderResult(result);
           setPageStatus("Direct conversion finished.");
         } catch (error) {
           if (!isActiveDirectConversion(conversionToken)) return;
-          status.textContent = `blocked: ${error.message}`;
-          clearTopLevelWarnings();
-          reviewList.replaceChildren();
-          clearDownload();
-          clearPreview();
-          resultPanel.hidden = false;
-          rawPanel.hidden = true;
-          setPageStatus(error.message, true);
+          renderDirectConvertError({
+            error: "network_error",
+            message: error.message || "Direct conversion failed.",
+          });
+          setPageStatus("Direct conversion failed.", true);
         } finally {
           if (isActiveDirectConversion(conversionToken)) {
             button.disabled = false;
@@ -1726,6 +1735,7 @@
         state.availableReviewActions = Array.isArray(result.available_review_actions)
           ? result.available_review_actions.filter((action) => typeof action === "string")
           : [];
+        clearDirectConvertError();
         status.textContent = result.status;
         status.className = `status ${result.status}`;
         renderTopLevelWarnings(result.warnings || []);
@@ -1753,6 +1763,62 @@
         resultPanel.hidden = false;
         rawPanel.hidden = false;
         renderSourcePreview(result);
+      }
+
+      function renderDirectConvertError(errorPayload) {
+        state.latestResult = null;
+        state.availableReviewActions = [];
+        const warnings = Array.isArray(errorPayload?.warnings) ? errorPayload.warnings : [];
+        status.textContent = "failed";
+        status.className = "status blocked";
+        directConvertError.textContent = sanitizedUserMessage(errorPayload);
+        directConvertError.hidden = false;
+        renderTopLevelWarnings(warnings);
+        reviewList.replaceChildren();
+        reviewActionStatus.textContent = "";
+        clearDownload();
+        renderArtifactList(errorPayload.artifacts || []);
+        if (Array.isArray(errorPayload?.artifacts) && errorPayload.artifacts.length) {
+          artifactDownloadsPanel.hidden = false;
+          artifactSummary.textContent = "Partial artifacts were returned. Review warnings before using them.";
+        }
+        clearPreview();
+        resultPanel.hidden = false;
+        rawPanel.hidden = true;
+      }
+
+      function sanitizedUserMessage(errorPayload) {
+        const code = typeof errorPayload?.error === "string" ? errorPayload.error : "";
+        const message =
+          typeof errorPayload?.message === "string" && errorPayload.message.trim()
+            ? errorPayload.message.trim()
+            : code || "Direct conversion failed.";
+        if (code === "upload_too_large") {
+          return "Upload is over the 2 MiB limit. Choose a smaller file and try again.";
+        }
+        if (code === "server_dependency_unavailable") {
+          return "PDF parsing is unavailable in this local PoC environment. Install the PDF evaluation dependencies before converting PDF files.";
+        }
+        if (containsInternalDetail(message)) {
+          return "Direct conversion failed. Check the selected file format and conversion mode, then try again.";
+        }
+        return message;
+      }
+
+      function containsInternalDetail(message) {
+        return (
+          /Traceback|\n\s*at\s+|(?:^|\s)at\s+\S+:\d+:\d+/.test(message) ||
+          hasLocalPathPrefix(message)
+        );
+      }
+
+      function hasLocalPathPrefix(message) {
+        const homeRoots = ["Users", "home", "private"];
+        return (
+          /(?:^|\s)[A-Za-z]:\\/.test(message) ||
+          homeRoots.some((root) => message.includes(`/${root}/`)) ||
+          message.includes("/var/folders/")
+        );
       }
 
       function renderDownloadLinks(result, primaryArtifact, debugArtifact) {
@@ -1899,6 +1965,7 @@
 
       function clearReviewResult() {
         clearPreview();
+        clearDirectConvertError();
         clearTopLevelWarnings();
         reviewList.replaceChildren();
         state.reviewAuditEvents = [];
@@ -1910,6 +1977,11 @@
         clearDownload();
         resultPanel.hidden = true;
         rawPanel.hidden = true;
+      }
+
+      function clearDirectConvertError() {
+        directConvertError.textContent = "";
+        directConvertError.hidden = true;
       }
 
       function clearTopLevelWarnings() {
