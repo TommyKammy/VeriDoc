@@ -606,6 +606,8 @@ def _document_ir_v0_block_fragment(
 
     if metadata.get("requires_review") is True:
         fragment["requires_review"] = True
+    if metadata.get("low_confidence") is True or block.get("low_confidence") is True:
+        fragment["low_confidence"] = True
     warnings = [str(warning) for warning in _list_value(block.get("warnings")) if str(warning)]
     if warnings:
         fragment["warnings"] = warnings

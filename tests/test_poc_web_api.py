@@ -3685,6 +3685,78 @@ def test_convert_uploaded_pdf_adapts_phase0_document_ir_v0_blocks(monkeypatch) -
     ]
 
 
+def test_convert_uploaded_pdf_preserves_ocr_low_confidence_from_v0_metadata(
+    monkeypatch,
+) -> None:
+    def fake_parse_text_pdf_to_document_ir(upload_path: Path, *, document_id: str) -> dict:
+        assert upload_path.read_bytes() == b"%PDF scanned sample bytes"
+        return {
+            "schema_version": "document-ir/v0",
+            "document": {
+                "id": document_id,
+                "title": upload_path.name,
+                "source_type": "pdf",
+            },
+            "pages": [{"page_number": 1, "width": 320, "height": 240, "unit": "px"}],
+            "blocks": [
+                {
+                    "id": "block-001",
+                    "type": "field",
+                    "text": "LOT-O0I",
+                    "value_metadata": {
+                        "source_page": 1,
+                        "bbox": {"x": 10, "y": 20, "width": 70, "height": 18, "unit": "px"},
+                        "extractor": {"name": "scanned_pdf_ocr", "version": "0.test"},
+                        "confidence": 0.41,
+                        "low_confidence": True,
+                    },
+                }
+            ],
+        }
+
+    monkeypatch.setattr(poc_web, "parse_text_pdf_to_document_ir", fake_parse_text_pdf_to_document_ir)
+
+    result = convert_uploaded_document(
+        filename="scanned-batch-record.pdf",
+        content=b"%PDF scanned sample bytes",
+    )
+
+    assert result["status"] == "requires_review"
+    assert result["validation"]["errors"] == []
+    assert result["audit"]["conversion_settings"]["use_ocr"] == {
+        "requested": False,
+        "enabled": False,
+        "status": "disabled",
+    }
+    assert result["document_ir"]["blocks"][0]["extractor"]["name"] == "scanned_pdf_ocr"
+    assert result["document_ir"]["blocks"][0]["review"]["requires_review"] is True
+    assert result["review_items"] == [
+        {
+            "document_id": "scanned-batch-record",
+            "block_id": "block-0001",
+            "source_id": "scanned-batch-record:block-0001",
+            "source_page": 1,
+            "source_confidence": 0.41,
+            "source_bbox": {
+                "x": 10.0,
+                "y": 20.0,
+                "width": 70.0,
+                "height": 18.0,
+                "unit": "px",
+                "origin": "top-left",
+            },
+            "source_page_geometry": {
+                "page_number": 1,
+                "width": 320.0,
+                "height": 240.0,
+                "unit": "px",
+            },
+            "text": "LOT-O0I",
+            "warnings": ["blocks[0].low confidence; block marked requires_review"],
+        }
+    ]
+
+
 def test_binary_pdf_parser_output_adapts_blocks_before_v1_conversion(monkeypatch) -> None:
     def fake_parse_text_pdf_to_document_ir(upload_path: Path, *, document_id: str) -> dict:
         assert upload_path.read_bytes() == b"%PDF sample bytes"
