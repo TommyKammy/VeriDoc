@@ -2031,8 +2031,9 @@ def test_adapter_rejects_when_repaired_plan_remains_invalid() -> None:
         transport=transport,
     )
 
-    with pytest.raises(ConversionPlanValidationError, match="external_transmission must be false"):
+    with pytest.raises(ConversionPlanValidationError, match="external_transmission must be false") as exc_info:
         adapter.create_conversion_plan("Lot: ABC-123")
+    assert exc_info.value.plan == invalid_plan
 
 
 @pytest.mark.parametrize("finish_reason", ["length", "content_filter"])

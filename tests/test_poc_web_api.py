@@ -422,15 +422,42 @@ def test_convert_uploaded_document_returns_artifact_manifest_contract() -> None:
     assert result["review_items"] == []
     assert result["warnings"] == []
     assert result["audit"] == {
+        "schema_version": "veridoc-poc-conversion-audit/v1",
         "conversion_id": result["conversion_id"],
+        "input": {
+            "filename": "phase0-output.json",
+            "source_type": "unknown",
+            "sha256": result["hashes"]["source_sha256"],
+            "conversion_mode": "auto",
+        },
         "source_filename": "phase0-output.json",
+        "source_type": "unknown",
         "source_sha256": result["hashes"]["source_sha256"],
         "conversion_mode": "auto",
         "conversion_settings": {
             "use_llm": {"requested": False, "enabled": False, "status": "disabled"},
             "use_ocr": {"requested": False, "enabled": False, "status": "disabled"},
         },
-        "conversion_plan": {"requested": False, "status": "disabled", "adopted": False},
+        "llm": {
+            "requested": False,
+            "enabled": False,
+            "status": "disabled",
+            "model": None,
+            "base_url_type": None,
+            "prompt": {"id": "veridoc_conversion_plan", "version": "poc-08"},
+            "schema_version": 1,
+            "parameters": {},
+        },
+        "conversion_plan": {
+            "requested": False,
+            "status": "disabled",
+            "adopted": False,
+            "schema_version": 1,
+            "plan_hash": None,
+        },
+        "validation": {"ok": True, "requires_review": False, "warning_count": 0},
+        "warnings": {"count": 0},
+        "review_items": {"count": 0},
     }
 
     assert result["artifacts"] == [
@@ -446,6 +473,12 @@ def test_convert_uploaded_document_returns_artifact_manifest_contract() -> None:
                 "role": "debug",
                 "conversion_mode": "auto",
                 "source_filename": "phase0-output.json",
+                "source_type": "unknown",
+                "source_sha256": result["hashes"]["source_sha256"],
+                "output_sha256": result["hashes"]["output_sha256"],
+                "validation": {"ok": True, "requires_review": False, "warning_count": 0},
+                "warnings": {"count": 0},
+                "review_items": {"count": 0},
                 "download": {
                     "available": True,
                     "field": "download",
@@ -490,6 +523,11 @@ def test_convert_uploaded_document_adopts_schema_valid_local_llm_plan(monkeypatc
     synthetic_inputs: list[str] = []
 
     class FakeLocalLLMAdapter:
+        base_url = "http://127.1.2.3:11434/v1"
+        model = "fake-local-model"
+        timeout_seconds = 30
+        max_tokens = 1024
+
         def create_conversion_plan(self, synthetic_text: str) -> dict[str, object]:
             synthetic_inputs.append(synthetic_text)
             return plan
@@ -518,7 +556,23 @@ def test_convert_uploaded_document_adopts_schema_valid_local_llm_plan(monkeypatc
         "requested": True,
         "status": "adopted",
         "adopted": True,
+        "schema_version": 1,
+        "plan_hash": hashlib.sha256(
+            json.dumps(plan, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode(
+                "utf-8"
+            )
+        ).hexdigest(),
         "plan": plan,
+    }
+    assert result["audit"]["llm"] == {
+        "requested": True,
+        "enabled": True,
+        "status": "enabled",
+        "model": "fake-local-model",
+        "base_url_type": "local",
+        "prompt": {"id": "veridoc_conversion_plan", "version": "poc-08"},
+        "schema_version": 1,
+        "parameters": {"max_tokens": 1024, "timeout_seconds": 30},
     }
     assert result["document_ir"]["blocks"][0]["text"] == "Lot: SAMPLE-001"
     downloaded = json.loads(result["download"]["content"])
@@ -546,22 +600,24 @@ def test_convert_uploaded_document_falls_back_for_schema_invalid_local_llm_plan(
         ]
     }
 
+    invalid_plan = {
+        "schema_version": 1,
+        "source_kind": "synthetic_text",
+        "operations": [
+            {
+                "id": "send-out",
+                "action": "extract_field",
+                "inputs": ["Lot: SAMPLE-001"],
+                "output": "lot_number",
+                "rationale": "Unsafe plan must be rejected.",
+            }
+        ],
+        "constraints": {"external_transmission": True},
+    }
+
     class FakeLocalLLMAdapter:
         def create_conversion_plan(self, synthetic_text: str) -> dict[str, object]:
-            return {
-                "schema_version": 1,
-                "source_kind": "synthetic_text",
-                "operations": [
-                    {
-                        "id": "send-out",
-                        "action": "extract_field",
-                        "inputs": ["Lot: SAMPLE-001"],
-                        "output": "lot_number",
-                        "rationale": "Unsafe plan must be rejected.",
-                    }
-                ],
-                "constraints": {"external_transmission": True},
-            }
+            return invalid_plan
 
     monkeypatch.setattr(
         poc_web,
@@ -604,6 +660,15 @@ def test_convert_uploaded_document_falls_back_for_schema_invalid_local_llm_plan(
         "requested": True,
         "status": "fallback",
         "adopted": False,
+        "schema_version": 1,
+        "plan_hash": hashlib.sha256(
+            json.dumps(
+                invalid_plan,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest(),
         "reason": "schema_invalid",
         "warning_code": "llm_fallback_schema_invalid",
     }
@@ -611,6 +676,163 @@ def test_convert_uploaded_document_falls_back_for_schema_invalid_local_llm_plan(
     downloaded = json.loads(result["download"]["content"])
     assert downloaded["audit"]["conversion_plan"]["status"] == "fallback"
     assert downloaded["review_items"] == result["review_items"]
+
+
+def test_convert_uploaded_document_falls_back_when_local_llm_plan_raises_validation_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parser_output = {
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 320,
+                "height": 240,
+                "unit": "pt",
+                "fragments": [
+                    {
+                        "text": "Lot: SAMPLE-001",
+                        "bbox": {"x": 10, "y": 20, "width": 120, "height": 16, "unit": "pt"},
+                        "confidence": 0.91,
+                    }
+                ],
+            }
+        ]
+    }
+
+    class FakeLocalLLMAdapter:
+        base_url = "http://127.1.2.3:11434/v1"
+        model = "fake-local-model"
+        timeout_seconds = 30
+        max_tokens = 1024
+
+        def create_conversion_plan(self, synthetic_text: str) -> dict[str, object]:
+            raise poc_web.ConversionPlanValidationError("local LLM response body is not valid JSON")
+
+    monkeypatch.setattr(
+        poc_web,
+        "_configured_llm_conversion_plan_adapter",
+        lambda: (FakeLocalLLMAdapter(), None),
+    )
+
+    result = convert_uploaded_document(
+        filename="phase8-output.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+        use_llm=True,
+    )
+
+    assert result["status"] == "requires_review"
+    assert result["warnings"] == [
+        (
+            "LLM conversion plan fallback llm_fallback_schema_invalid: "
+            "LLM conversion plan rejected: schema invalid; "
+            "deterministic conversion used; "
+            "requires review"
+        )
+    ]
+    assert result["audit"]["conversion_settings"]["use_llm"] == {
+        "requested": True,
+        "enabled": False,
+        "status": "blocked",
+        "reason": "schema_invalid",
+    }
+    assert result["audit"]["conversion_plan"] == {
+        "requested": True,
+        "status": "fallback",
+        "adopted": False,
+        "schema_version": 1,
+        "plan_hash": None,
+        "reason": "schema_invalid",
+        "warning_code": "llm_fallback_schema_invalid",
+    }
+    assert result["audit"]["llm"]["base_url_type"] == "local"
+    downloaded = json.loads(result["download"]["content"])
+    assert downloaded["audit"]["conversion_plan"]["plan_hash"] is None
+
+
+def test_convert_uploaded_document_hashes_rejected_real_local_llm_plan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parser_output = {
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 320,
+                "height": 240,
+                "unit": "pt",
+                "fragments": [
+                    {
+                        "text": "Lot: SAMPLE-001",
+                        "bbox": {"x": 10, "y": 20, "width": 120, "height": 16, "unit": "pt"},
+                        "confidence": 0.91,
+                    }
+                ],
+            }
+        ]
+    }
+    rejected_plan = {
+        "schema_version": 1,
+        "source_kind": "synthetic_text",
+        "operations": [
+            {
+                "id": "send-out",
+                "action": "extract_field",
+                "inputs": ["Lot: SAMPLE-001"],
+                "output": "lot_number",
+                "rationale": "Rejected plans still need deterministic audit fingerprints.",
+            }
+        ],
+        "constraints": {"external_transmission": True},
+    }
+    payloads: list[dict[str, object]] = []
+
+    def transport(
+        url: str,
+        payload: dict[str, object],
+        headers: dict[str, str],
+        timeout_seconds: float,
+    ) -> dict[str, object]:
+        payloads.append(payload)
+        return {"choices": [{"message": {"content": rejected_plan}}]}
+
+    adapter = poc_web.LocalLLMConversionPlanAdapter(
+        base_url="http://127.0.0.1:8000/v1",
+        model="fake-local-model",
+        transport=transport,
+    )
+    monkeypatch.setattr(
+        poc_web,
+        "_configured_llm_conversion_plan_adapter",
+        lambda: (adapter, None),
+    )
+
+    result = convert_uploaded_document(
+        filename="phase8-output.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+        use_llm=True,
+    )
+
+    expected_plan_hash = hashlib.sha256(
+        json.dumps(
+            rejected_plan,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    assert len(payloads) == 2
+    assert result["status"] == "requires_review"
+    assert result["audit"]["conversion_plan"] == {
+        "requested": True,
+        "status": "fallback",
+        "adopted": False,
+        "schema_version": 1,
+        "plan_hash": expected_plan_hash,
+        "reason": "schema_invalid",
+        "warning_code": "llm_fallback_schema_invalid",
+    }
+    assert result["audit"]["llm"]["base_url_type"] == "local"
+    downloaded = json.loads(result["download"]["content"])
+    assert downloaded["audit"]["conversion_plan"]["plan_hash"] == expected_plan_hash
 
 
 def test_convert_uploaded_document_schema_invalid_llm_fallback_is_deterministic(
@@ -686,9 +908,29 @@ def test_convert_uploaded_document_schema_invalid_llm_fallback_is_deterministic(
 
     assert results[0]["warnings"] == results[1]["warnings"]
     assert results[0]["review_items"] == results[1]["review_items"]
-    assert results[0]["audit"]["conversion_plan"] == results[1]["audit"]["conversion_plan"]
-    assert results[0]["hashes"]["output_sha256"] == results[1]["hashes"]["output_sha256"]
-    assert results[0]["download"]["content"] == results[1]["download"]["content"]
+    first_plan_audit = dict(results[0]["audit"]["conversion_plan"])
+    second_plan_audit = dict(results[1]["audit"]["conversion_plan"])
+    first_plan_hash = first_plan_audit.pop("plan_hash")
+    second_plan_hash = second_plan_audit.pop("plan_hash")
+    assert first_plan_audit == second_plan_audit
+    assert first_plan_hash == hashlib.sha256(
+        json.dumps(
+            invalid_plans[0],
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    assert second_plan_hash == hashlib.sha256(
+        json.dumps(
+            invalid_plans[1],
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    assert results[0]["hashes"]["output_sha256"] != results[1]["hashes"]["output_sha256"]
+    assert results[0]["download"]["content"] != results[1]["download"]["content"]
 
 
 def test_configured_llm_adapter_validates_later_configured_profiles(
@@ -813,6 +1055,12 @@ def test_convert_uploaded_document_manifest_names_mode_artifacts_safely(
             "role": "primary",
             "conversion_mode": conversion_mode,
             "source_filename": "CON report:name.json",
+            "source_type": "pdf",
+            "source_sha256": result["hashes"]["source_sha256"],
+            "output_sha256": primary_artifact["sha256"],
+            "validation": result["audit"]["validation"],
+            "warnings": {"count": len(result["warnings"])},
+            "review_items": {"count": len(result["review_items"])},
             "download": {
                 "available": True,
                 "field": "artifacts[0].content_base64",
@@ -837,6 +1085,12 @@ def test_convert_uploaded_document_manifest_names_mode_artifacts_safely(
             "role": "debug",
             "conversion_mode": conversion_mode,
             "source_filename": "CON report:name.json",
+            "source_type": "pdf",
+            "source_sha256": result["hashes"]["source_sha256"],
+            "output_sha256": debug_artifact["sha256"],
+            "validation": result["audit"]["validation"],
+            "warnings": {"count": len(result["warnings"])},
+            "review_items": {"count": len(result["review_items"])},
             "download": {
                 "available": True,
                 "field": "download",
@@ -875,6 +1129,12 @@ def test_excel_to_word_primary_docx_renders_sheet_values_for_review() -> None:
             "role": "primary",
             "conversion_mode": "excel_to_word",
             "source_filename": "wbs.xlsx",
+            "source_type": "xlsx",
+            "source_sha256": result["hashes"]["source_sha256"],
+            "output_sha256": primary_artifact["sha256"],
+            "validation": result["audit"]["validation"],
+            "warnings": {"count": len(result["warnings"])},
+            "review_items": {"count": len(result["review_items"])},
             "download": {
                 "available": True,
                 "field": "artifacts[0].content_base64",
@@ -10515,6 +10775,8 @@ def test_poc_http_api_reflects_unavailable_llm_and_unsupported_ocr_settings(
         "requested": True,
         "status": "fallback",
         "adopted": False,
+        "schema_version": 1,
+        "plan_hash": None,
         "reason": "missing_configured_profile",
         "warning_code": "llm_fallback_unavailable",
     }

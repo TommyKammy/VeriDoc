@@ -113,6 +113,10 @@ CONVERSION_TASK_PROMPTS = {
 class ConversionPlanValidationError(ValueError):
     """Raised when local LLM output is not an acceptable conversion plan."""
 
+    def __init__(self, message: str, *, plan: JsonObject | None = None) -> None:
+        super().__init__(message)
+        self.plan = plan
+
 
 class LocalLLMConfigurationError(ValueError):
     """Raised when the local LLM adapter would violate the local-only boundary."""
@@ -297,25 +301,30 @@ def validate_conversion_plan(plan: object) -> None:
     if not isinstance(plan, dict):
         raise ConversionPlanValidationError("conversion plan must be a JSON object")
 
-    _require_exact_keys(plan, {"schema_version", "source_kind", "operations", "constraints"}, "$")
-    schema_version = plan["schema_version"]
-    if not isinstance(schema_version, int) or isinstance(schema_version, bool) or schema_version != 1:
-        raise ConversionPlanValidationError("$.schema_version must be 1")
-    if not _non_empty_string(plan["source_kind"]):
-        raise ConversionPlanValidationError("$.source_kind must be a non-empty string")
+    try:
+        _require_exact_keys(plan, {"schema_version", "source_kind", "operations", "constraints"}, "$")
+        schema_version = plan["schema_version"]
+        if not isinstance(schema_version, int) or isinstance(schema_version, bool) or schema_version != 1:
+            raise ConversionPlanValidationError("$.schema_version must be 1")
+        if not _non_empty_string(plan["source_kind"]):
+            raise ConversionPlanValidationError("$.source_kind must be a non-empty string")
 
-    operations = plan["operations"]
-    if not isinstance(operations, list) or not operations:
-        raise ConversionPlanValidationError("$.operations must be a non-empty array")
-    for index, operation in enumerate(operations):
-        _validate_operation(operation, f"$.operations[{index}]")
+        operations = plan["operations"]
+        if not isinstance(operations, list) or not operations:
+            raise ConversionPlanValidationError("$.operations must be a non-empty array")
+        for index, operation in enumerate(operations):
+            _validate_operation(operation, f"$.operations[{index}]")
 
-    constraints = plan["constraints"]
-    if not isinstance(constraints, dict):
-        raise ConversionPlanValidationError("$.constraints must be an object")
-    _require_exact_keys(constraints, {"external_transmission"}, "$.constraints")
-    if constraints["external_transmission"] is not False:
-        raise ConversionPlanValidationError("$.constraints.external_transmission must be false")
+        constraints = plan["constraints"]
+        if not isinstance(constraints, dict):
+            raise ConversionPlanValidationError("$.constraints must be an object")
+        _require_exact_keys(constraints, {"external_transmission"}, "$.constraints")
+        if constraints["external_transmission"] is not False:
+            raise ConversionPlanValidationError("$.constraints.external_transmission must be false")
+    except ConversionPlanValidationError as exc:
+        if exc.plan is None:
+            raise ConversionPlanValidationError(str(exc), plan=plan) from exc
+        raise
 
 
 def _validate_operation(operation: object, path: str) -> None:
@@ -540,6 +549,10 @@ def _local_base_url(base_url: str) -> _LocalBaseUrl | None:
     if not _is_local_runtime_address(address):
         return None
     return _LocalBaseUrl((base_url,))
+
+
+def is_local_llm_base_url(base_url: str) -> bool:
+    return _local_base_url(base_url) is not None
 
 
 def _local_base_url_for_dns_host(

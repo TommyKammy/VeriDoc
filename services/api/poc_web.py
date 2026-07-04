@@ -40,8 +40,10 @@ from core.llm.conversion_plan import (
     ConversionPlanValidationError,
     LocalLLMConfigurationError,
     LocalLLMConversionPlanAdapter,
+    is_local_llm_base_url,
     validate_conversion_plan,
 )
+from core.llm.audit_parameters import sanitize_audit_parameters
 from core.parsers.docx_extraction import extract_docx_structure
 from core.parsers.pdf_table_extraction import compare_pdf_table_extractors
 from core.parsers.pdf_text_extraction import MissingPdfExtractorDependency, parse_text_pdf_to_document_ir
@@ -66,6 +68,10 @@ ARTIFACT_CONTENT_TYPES = {
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 }
+CONVERSION_AUDIT_SCHEMA_VERSION = "veridoc-poc-conversion-audit/v1"
+CONVERSION_PLAN_PROMPT_ID = "veridoc_conversion_plan"
+CONVERSION_PLAN_PROMPT_VERSION = "poc-08"
+CONVERSION_PLAN_SCHEMA_VERSION = 1
 PRIMARY_ARTIFACT_FORMAT_BY_CONVERSION_MODE = {
     "pdf_to_excel": "xlsx",
     "pdf_to_word": "docx",
@@ -646,12 +652,24 @@ def convert_uploaded_document(
         warnings.append(primary_warning)
     review_items.extend(_pdf_table_warning_review_items(document_ir, warnings))
     audit = {
+        "schema_version": CONVERSION_AUDIT_SCHEMA_VERSION,
         "conversion_id": conversion_id,
+        "input": {
+            "filename": safe_filename,
+            "source_type": source_type,
+            "sha256": source_sha256,
+            "conversion_mode": selected_conversion_mode,
+        },
         "source_filename": safe_filename,
+        "source_type": source_type,
         "source_sha256": source_sha256,
         "conversion_mode": selected_conversion_mode,
         "conversion_settings": conversion_settings,
+        "llm": conversion_plan_state["llm_audit"],
         "conversion_plan": conversion_plan_state["audit"],
+        "validation": _conversion_validation_audit(validation),
+        "warnings": {"count": len(warnings)},
+        "review_items": {"count": len(review_items)},
     }
     download_payload = {
         "document_ir": document_ir_dict,
@@ -671,11 +689,16 @@ def convert_uploaded_document(
     download_content_type = ARTIFACT_CONTENT_TYPES["json"]
     artifacts = _conversion_artifacts(
         source_filename=safe_filename,
+        source_type=source_type,
+        source_sha256=source_sha256,
         conversion_mode=selected_conversion_mode,
         debug_filename=download_filename,
         debug_content_type=download_content_type,
         debug_size_bytes=len(download_content),
         debug_sha256=output_sha256,
+        validation_audit=audit["validation"],
+        warning_count=len(warnings),
+        review_item_count=len(review_items),
         primary_artifact=primary_artifact,
     )
     review_required = validation.requires_review or _warnings_require_review(warnings)
@@ -723,7 +746,16 @@ def _local_llm_conversion_plan_state(
         return {
             "setting": disabled_setting,
             "warnings": [],
-            "audit": {"requested": False, "status": "disabled", "adopted": False},
+            "audit": _conversion_plan_audit(
+                requested=False,
+                status="disabled",
+                adopted=False,
+            ),
+            "llm_audit": _llm_audit(
+                setting=disabled_setting,
+                adapter=None,
+                parameters={},
+            ),
         }
 
     adapter, rejection_reason = _configured_llm_conversion_plan_adapter()
@@ -733,33 +765,52 @@ def _local_llm_conversion_plan_state(
         return {
             "setting": _blocked_conversion_setting(True, reason),
             "warnings": [_llm_conversion_plan_fallback_warning(reason=reason, warning_code=warning_code)],
-            "audit": {
-                "requested": True,
-                "status": "fallback",
-                "adopted": False,
-                "reason": reason,
-                "warning_code": warning_code,
-            },
+            "audit": _conversion_plan_audit(
+                requested=True,
+                status="fallback",
+                adopted=False,
+                reason=reason,
+                warning_code=warning_code,
+            ),
+            "llm_audit": _llm_audit(
+                setting={
+                    "requested": True,
+                    "enabled": False,
+                    "status": "blocked",
+                    "reason": reason,
+                },
+                adapter=None,
+                parameters={},
+            ),
         }
 
+    llm_parameters = _llm_adapter_audit_parameters(adapter)
+    plan: Any | None = None
     try:
         plan = adapter.create_conversion_plan(_document_ir_synthetic_text(document_ir))
         validate_conversion_plan(plan)
-    except ConversionPlanValidationError:
+    except ConversionPlanValidationError as exc:
         reason = "schema_invalid"
         warning_code = _llm_fallback_warning_code(reason)
+        rejected_plan = exc.plan if isinstance(exc.plan, dict) else plan
         return {
             "setting": _blocked_conversion_setting(True, reason),
             "warnings": [
                 _llm_conversion_plan_fallback_warning(reason=reason, warning_code=warning_code)
             ],
-            "audit": {
-                "requested": True,
-                "status": "fallback",
-                "adopted": False,
-                "reason": reason,
-                "warning_code": warning_code,
-            },
+            "audit": _conversion_plan_audit(
+                requested=True,
+                status="fallback",
+                adopted=False,
+                reason=reason,
+                warning_code=warning_code,
+                plan=rejected_plan if isinstance(rejected_plan, dict) else None,
+            ),
+            "llm_audit": _llm_audit(
+                setting=_blocked_conversion_setting(True, reason),
+                adapter=adapter,
+                parameters=llm_parameters,
+            ),
         }
     except (LocalLLMConfigurationError, RuntimeError, ValueError) as exc:
         reason = _llm_plan_unavailable_reason(exc)
@@ -767,25 +818,129 @@ def _local_llm_conversion_plan_state(
         return {
             "setting": _blocked_conversion_setting(True, reason),
             "warnings": [_llm_conversion_plan_fallback_warning(reason=reason, warning_code=warning_code)],
-            "audit": {
-                "requested": True,
-                "status": "fallback",
-                "adopted": False,
-                "reason": reason,
-                "warning_code": warning_code,
-            },
+            "audit": _conversion_plan_audit(
+                requested=True,
+                status="fallback",
+                adopted=False,
+                reason=reason,
+                warning_code=warning_code,
+            ),
+            "llm_audit": _llm_audit(
+                setting=_blocked_conversion_setting(True, reason),
+                adapter=adapter,
+                parameters=llm_parameters,
+            ),
         }
 
     return {
         "setting": {"requested": True, "enabled": True, "status": "enabled"},
         "warnings": [],
-        "audit": {
-            "requested": True,
-            "status": "adopted",
-            "adopted": True,
-            "plan": deepcopy(plan),
-        },
+        "audit": _conversion_plan_audit(
+            requested=True,
+            status="adopted",
+            adopted=True,
+            plan=plan,
+            include_plan=True,
+        ),
+        "llm_audit": _llm_audit(
+            setting={"requested": True, "enabled": True, "status": "enabled"},
+            adapter=adapter,
+            parameters=llm_parameters,
+        ),
     }
+
+
+def _conversion_plan_audit(
+    *,
+    requested: bool,
+    status: str,
+    adopted: bool,
+    reason: str | None = None,
+    warning_code: str | None = None,
+    plan: dict[str, Any] | None = None,
+    include_plan: bool = False,
+) -> dict[str, Any]:
+    audit: dict[str, Any] = {
+        "requested": requested,
+        "status": status,
+        "adopted": adopted,
+        "schema_version": CONVERSION_PLAN_SCHEMA_VERSION,
+        "plan_hash": _canonical_json_sha256(plan) if plan is not None else None,
+    }
+    if reason is not None:
+        audit["reason"] = reason
+    if warning_code is not None:
+        audit["warning_code"] = warning_code
+    if include_plan and plan is not None:
+        audit["plan"] = deepcopy(plan)
+    return audit
+
+
+def _llm_audit(
+    *,
+    setting: dict[str, Any],
+    adapter: Any | None,
+    parameters: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "requested": setting.get("requested") is True,
+        "enabled": setting.get("enabled") is True,
+        "status": setting.get("status"),
+        "model": _llm_adapter_model(adapter),
+        "base_url_type": _llm_adapter_base_url_type(adapter),
+        "prompt": {
+            "id": CONVERSION_PLAN_PROMPT_ID,
+            "version": CONVERSION_PLAN_PROMPT_VERSION,
+        },
+        "schema_version": CONVERSION_PLAN_SCHEMA_VERSION,
+        "parameters": sanitize_audit_parameters(parameters),
+    }
+
+
+def _llm_adapter_model(adapter: Any | None) -> str | None:
+    model = getattr(adapter, "model", None)
+    if isinstance(model, str) and model.strip():
+        return model.strip()
+    return None
+
+
+def _llm_adapter_base_url_type(adapter: Any | None) -> str | None:
+    base_url = getattr(adapter, "base_url", None)
+    if not isinstance(base_url, str) or not base_url.strip():
+        return None
+    if is_local_llm_base_url(base_url.strip()):
+        return "local"
+    return "configured"
+
+
+def _llm_adapter_audit_parameters(adapter: Any) -> dict[str, Any]:
+    parameters: dict[str, Any] = {}
+    max_tokens = getattr(adapter, "max_tokens", None)
+    if isinstance(max_tokens, int) and not isinstance(max_tokens, bool):
+        parameters["max_tokens"] = max_tokens
+    timeout_seconds = getattr(adapter, "timeout_seconds", None)
+    if isinstance(timeout_seconds, (int, float)) and not isinstance(timeout_seconds, bool):
+        parameters["timeout_seconds"] = timeout_seconds
+    return parameters
+
+
+def _conversion_validation_audit(validation: Any) -> dict[str, Any]:
+    return {
+        "ok": validation.ok,
+        "requires_review": validation.requires_review,
+        "warning_count": len(validation.warnings),
+    }
+
+
+def _canonical_json_sha256(value: Any) -> str:
+    canonical = json.dumps(
+        _json_safe(value),
+        allow_nan=False,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return _sha256_hex(canonical)
 
 
 def _llm_fallback_review_items(
@@ -2424,15 +2579,33 @@ def _sha256_hex(content: bytes) -> str:
 def _conversion_artifacts(
     *,
     source_filename: str,
+    source_type: str,
+    source_sha256: str,
     conversion_mode: str,
     debug_filename: str,
     debug_content_type: str,
     debug_size_bytes: int,
     debug_sha256: str,
+    validation_audit: dict[str, Any],
+    warning_count: int,
+    review_item_count: int,
     primary_artifact: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     artifacts: list[dict[str, Any]] = []
     if primary_artifact is not None:
+        primary_artifact = deepcopy(primary_artifact)
+        primary_artifact["metadata"] = {
+            **primary_artifact.get("metadata", {}),
+            **_artifact_audit_metadata(
+                source_filename=source_filename,
+                source_type=source_type,
+                source_sha256=source_sha256,
+                output_sha256=primary_artifact["sha256"],
+                validation_audit=validation_audit,
+                warning_count=warning_count,
+                review_item_count=review_item_count,
+            ),
+        }
         artifacts.append(primary_artifact)
     artifacts.append(
         {
@@ -2447,6 +2620,15 @@ def _conversion_artifacts(
                 "role": "debug",
                 "conversion_mode": conversion_mode,
                 "source_filename": source_filename,
+                **_artifact_audit_metadata(
+                    source_filename=source_filename,
+                    source_type=source_type,
+                    source_sha256=source_sha256,
+                    output_sha256=debug_sha256,
+                    validation_audit=validation_audit,
+                    warning_count=warning_count,
+                    review_item_count=review_item_count,
+                ),
                 "download": {
                     "available": True,
                     "field": "download",
@@ -2455,6 +2637,27 @@ def _conversion_artifacts(
         }
     )
     return artifacts
+
+
+def _artifact_audit_metadata(
+    *,
+    source_filename: str,
+    source_type: str,
+    source_sha256: str,
+    output_sha256: str,
+    validation_audit: dict[str, Any],
+    warning_count: int,
+    review_item_count: int,
+) -> dict[str, Any]:
+    return {
+        "source_filename": source_filename,
+        "source_type": source_type,
+        "source_sha256": source_sha256,
+        "output_sha256": output_sha256,
+        "validation": deepcopy(validation_audit),
+        "warnings": {"count": warning_count},
+        "review_items": {"count": review_item_count},
+    }
 
 
 def _render_primary_artifact(
