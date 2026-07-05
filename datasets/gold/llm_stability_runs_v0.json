@@ -15,6 +15,13 @@
   "runs": [
     {
       "run_id": "run-001",
+      "outcome": {
+        "schema_validation_passed": true,
+        "repair_attempted": false,
+        "repair_succeeded": false,
+        "deterministic_fallback_used": false,
+        "external_ai_api_transmission_attempted": false
+      },
       "conversion_plan": {
         "schema_version": 1,
         "source_kind": "synthetic_text",
@@ -57,6 +64,13 @@
     },
     {
       "run_id": "run-002",
+      "outcome": {
+        "schema_validation_passed": false,
+        "repair_attempted": true,
+        "repair_succeeded": true,
+        "deterministic_fallback_used": false,
+        "external_ai_api_transmission_attempted": false
+      },
       "conversion_plan": {
         "schema_version": 1,
         "source_kind": "synthetic_text",
@@ -99,6 +113,13 @@
     },
     {
       "run_id": "run-003",
+      "outcome": {
+        "schema_validation_passed": false,
+        "repair_attempted": true,
+        "repair_succeeded": false,
+        "deterministic_fallback_used": true,
+        "external_ai_api_transmission_attempted": false
+      },
       "conversion_plan": {
         "schema_version": 1,
         "source_kind": "synthetic_text",
