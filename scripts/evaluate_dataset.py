@@ -827,7 +827,9 @@ def p9_external_ai_api_guard_violation(audit: dict[str, Any] | None) -> bool:
 def p9_expectations_for_conversion(
     fixture: dict[str, Any], conversion_mode: str
 ) -> dict[str, Any] | None:
-    key = f"{conversion_mode}_expectations"
+    key = P9_EXPECTATION_KEYS_BY_MODE.get(conversion_mode)
+    if key is None:
+        return None
     expectations = fixture.get(key)
     return expectations if isinstance(expectations, dict) else None
 
@@ -983,18 +985,21 @@ def p9_validate_artifact_expectations(
             if isinstance(expected_warning, str) and expected_warning not in warning_list:
                 failures.append(f"expected warning {expected_warning!r} was not emitted")
     suffix = f".{artifact_format}" if isinstance(artifact_format, str) else ""
-    with tempfile.NamedTemporaryFile(suffix=suffix) as artifact_file:
-        artifact_file.write(artifact_content)
-        artifact_file.flush()
-        artifact_path = Path(artifact_file.name)
-        if artifact_format == "xlsx":
-            failures.extend(
-                p9_validate_xlsx_artifact(
-                    artifact_path, expectations, fixture.get("id")
+    try:
+        with tempfile.NamedTemporaryFile(suffix=suffix) as artifact_file:
+            artifact_file.write(artifact_content)
+            artifact_file.flush()
+            artifact_path = Path(artifact_file.name)
+            if artifact_format == "xlsx":
+                failures.extend(
+                    p9_validate_xlsx_artifact(
+                        artifact_path, expectations, fixture.get("id")
+                    )
                 )
-            )
-        elif artifact_format == "docx":
-            failures.extend(p9_validate_docx_artifact(artifact_path, expectations))
+            elif artifact_format == "docx":
+                failures.extend(p9_validate_docx_artifact(artifact_path, expectations))
+    except Exception as exc:
+        failures.append(f"artifact validation failed: {type(exc).__name__}: {exc}")
     return failures
 
 
@@ -2796,6 +2801,8 @@ def main() -> int:
         ),
     )
     args = parser.parse_args()
+    if args.p9_harness is not None and args.gmp_acceptance is not None:
+        parser.error("--p9-harness cannot be combined with --gmp-acceptance")
 
     try:
         if args.p9_harness is not None:

@@ -350,36 +350,29 @@ class EvaluateDatasetTest(unittest.TestCase):
                 "word_to_excel_expectations": {"warnings": []},
             }
 
-            with (
-                mock.patch(
-                    "services.api.poc_web.convert_uploaded_document",
-                    return_value={
-                        "status": "converted",
-                        "document_ir": {"document": {"title": "mismatch"}},
-                        "artifacts": [
-                            {
-                                "kind": "primary",
-                                "id": "primary-xlsx",
-                                "format": "xlsx",
-                                "content": b"not-an-xlsx",
-                            }
-                        ],
-                        "warnings": [],
-                        "review_items": [],
-                        "audit": {
-                            "conversion_settings": {
-                                "use_llm": {"status": "disabled"},
-                                "use_ocr": {"status": "disabled"},
-                            },
-                            "conversion_plan": {"status": "disabled"},
+            with mock.patch(
+                "services.api.poc_web.convert_uploaded_document",
+                return_value={
+                    "status": "converted",
+                    "document_ir": {"document": {"title": "mismatch"}},
+                    "artifacts": [
+                        {
+                            "kind": "primary",
+                            "id": "primary-xlsx",
+                            "format": "xlsx",
+                            "content": b"not-an-xlsx",
+                        }
+                    ],
+                    "warnings": [],
+                    "review_items": [],
+                    "audit": {
+                        "conversion_settings": {
+                            "use_llm": {"status": "disabled"},
+                            "use_ocr": {"status": "disabled"},
                         },
+                        "conversion_plan": {"status": "disabled"},
                     },
-                ),
-                mock.patch.object(
-                    evaluate_dataset,
-                    "p9_validate_artifact_expectations",
-                    return_value=["expected cell A1 did not match"],
-                ),
+                },
             ):
                 result = evaluate_dataset.p9_conversion_result(
                     fixture,
@@ -390,10 +383,11 @@ class EvaluateDatasetTest(unittest.TestCase):
 
         self.assertFalse(result["ok"])
         self.assertFalse(result["artifact_expectations_met"])
-        self.assertEqual(["expected cell A1 did not match"], result["artifact_expectation_failures"])
+        self.assertEqual(1, len(result["artifact_expectation_failures"]))
+        self.assertIn("artifact validation failed", result["artifact_expectation_failures"][0])
         self.assertIn("artifact expectation mismatch", str(result["failure_reason"]))
 
-    def test_p9_harness_with_gmp_acceptance_flag_does_not_crash(self) -> None:
+    def test_p9_harness_rejects_gmp_acceptance_flag_combination(self) -> None:
         completed = subprocess.run(
             [
                 sys.executable,
@@ -403,15 +397,14 @@ class EvaluateDatasetTest(unittest.TestCase):
                 str(GMP_ACCEPTANCE_PATH),
             ],
             cwd=REPO_ROOT,
-            check=True,
             capture_output=True,
             text=True,
         )
 
-        payload = json.loads(completed.stdout)
-
-        self.assertEqual(
-            "veridoc-p9-poc-evaluation-harness/v0", payload["schema_version"]
+        self.assertEqual(2, completed.returncode)
+        self.assertIn(
+            "--p9-harness cannot be combined with --gmp-acceptance",
+            completed.stderr,
         )
 
     def test_poc_mode_comparison_rejects_missing_required_mode_before_scoring(self) -> None:
