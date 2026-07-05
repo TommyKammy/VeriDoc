@@ -72,6 +72,7 @@ class DatasetFixturesTest(unittest.TestCase):
         usable_fixture_paths_by_category: dict[str, set[str]] = {
             category: set() for category in expected_ranges
         }
+        record_pdf_gold_labels = self._gold_label_fixture_ids_by_source_type("record_excerpt")
         real_fixture_links = set()
 
         for sample in poc_manifest["samples"]:
@@ -99,9 +100,16 @@ class DatasetFixturesTest(unittest.TestCase):
                     if category == "record_pdf":
                         self.assertEqual("pdf", fixture["format"])
                         self.assertTrue(fixture["path"].endswith(".pdf"))
+                        self.assertIn(fixture_id, record_pdf_gold_labels)
                 else:
                     self.assertIsNone(fixture_id)
-                    self.assertEqual("pending_synthetic_or_anonymized_fixture", sample["availability_reason"])
+                    self.assertIn(
+                        sample["availability_reason"],
+                        {
+                            "pending_synthetic_or_anonymized_fixture",
+                            "pending_public_fixture_labels",
+                        },
+                    )
 
         self.assertGreaterEqual(len(real_fixture_links), 1)
         self.assertTrue(
@@ -112,6 +120,18 @@ class DatasetFixturesTest(unittest.TestCase):
         for category, (minimum, maximum) in expected_ranges.items():
             self.assertGreaterEqual(category_counts[category], minimum)
             self.assertLessEqual(category_counts[category], maximum)
+
+    def _gold_label_fixture_ids_by_source_type(self, source_type: str) -> set[str]:
+        manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+        fixture_source_types = {
+            fixture["id"]: fixture["source_type"] for fixture in manifest["fixtures"]
+        }
+        labels = json.loads(GOLD_LABELS_PATH.read_text(encoding="utf-8"))
+        return {
+            item["fixture_id"]
+            for item in labels["items"]
+            if fixture_source_types.get(item["fixture_id"]) == source_type
+        }
 
     def test_manifest_defines_public_fixture_policy_and_source_slots(self) -> None:
         manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))

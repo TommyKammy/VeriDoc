@@ -267,8 +267,9 @@
     {
       "id": "p9-record-pdf-001",
       "category": "record_pdf",
-      "fixture_id": "record-pdf-representative",
-      "dataset_status": "usable_fixture",
+      "fixture_id": null,
+      "dataset_status": "manifest_placeholder",
+      "availability_reason": "pending_public_fixture_labels",
       "source_classification": "synthetic",
       "conversion_mode": "pdf_to_word",
       "evaluation_focus": ["record excerpt field evidence", "high-risk label anchoring"],

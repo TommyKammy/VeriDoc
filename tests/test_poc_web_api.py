@@ -1680,6 +1680,7 @@ def test_word_to_excel_representative_docx_fixtures_render_xlsx_artifacts(
 
 
 def test_pdf_to_excel_representative_table_fixture_renders_xlsx_artifact(
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     manifest = json.loads(FIXTURE_MANIFEST_PATH.read_text(encoding="utf-8"))
@@ -1721,9 +1722,43 @@ def test_pdf_to_excel_representative_table_fixture_renders_xlsx_artifact(
             selected_cell_bboxes,
         )
 
+        def fake_parse_text_pdf_to_document_ir(
+            pdf_path: Path, *, document_id: str | None = None
+        ) -> dict:
+            assert pdf_path.name == fixture_path.name
+            assert pdf_path.read_bytes() == fixture_path.read_bytes()
+            return {
+                "source_type": "pdf",
+                "pages": [
+                    {
+                        "page_number": 1,
+                        "width": 612,
+                        "height": 792,
+                        "unit": "pt",
+                        "fragments": [],
+                    }
+                ],
+            }
+
+        def fake_compare_pdf_table_extractors(pdf_path: Path) -> dict:
+            assert pdf_path.name == fixture_path.name
+            assert pdf_path.read_bytes() == fixture_path.read_bytes()
+            return report
+
+        monkeypatch.setattr(
+            poc_web,
+            "parse_text_pdf_to_document_ir",
+            fake_parse_text_pdf_to_document_ir,
+        )
+        monkeypatch.setattr(
+            poc_web,
+            "compare_pdf_table_extractors",
+            fake_compare_pdf_table_extractors,
+        )
+
         result = convert_uploaded_document(
-            filename=report_path.name,
-            content=report_path.read_bytes(),
+            filename=fixture_path.name,
+            content=fixture_path.read_bytes(),
             conversion_mode="pdf_to_excel",
         )
 
