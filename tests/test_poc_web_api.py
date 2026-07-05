@@ -1745,7 +1745,7 @@ def test_pdf_to_excel_representative_table_fixture_renders_xlsx_artifact(
                     "reported not-installed."
                 )
             pytest.skip(PDF_EVAL_DEPENDENCY_SKIP_REASON)
-        assert live_report["selected_candidate"] == report["selected_candidate"]
+        assert live_report["selected_candidate"] == report["selected_candidate"], fixture["id"]
         live_selected_candidate = next(
             candidate
             for candidate in live_report["candidates"]
