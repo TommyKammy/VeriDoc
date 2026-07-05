@@ -915,13 +915,7 @@ def validate_llm_stability_source_kind(conversion_plan: dict[str, Any], run_cont
 def validate_llm_run_outcome(run: dict[str, Any], run_context: str) -> dict[str, bool]:
     outcome = run.get("outcome")
     if outcome is None:
-        return {
-            "schema_validation_passed": True,
-            "repair_attempted": False,
-            "repair_succeeded": False,
-            "deterministic_fallback_used": False,
-            "external_ai_api_transmission_attempted": False,
-        }
+        raise EvaluationCaseError(f"{run_context}.outcome must be an object")
     if not isinstance(outcome, dict):
         raise EvaluationCaseError(f"{run_context}.outcome must be an object")
 
@@ -947,6 +941,10 @@ def validate_llm_run_outcome(run: dict[str, Any], run_context: str) -> dict[str,
     ):
         raise EvaluationCaseError(
             f"{run_context}.outcome repair fields require a schema validation failure"
+        )
+    if normalized["schema_validation_passed"] and normalized["deterministic_fallback_used"]:
+        raise EvaluationCaseError(
+            f"{run_context}.outcome deterministic fallback requires a schema validation failure"
         )
     if (
         not normalized["schema_validation_passed"]
@@ -1621,7 +1619,8 @@ def evaluate_poc_mode_comparison(
                 raise EvaluationCaseError(f"{item_context}.auto_confirmed must be a boolean")
             if item.get("status") == "requires_review":
                 requires_review_count += 1
-                diff_review_keys.add(review_key_for_diff(label_key))
+                if not matches_authoritative_value:
+                    diff_review_keys.add(review_key_for_diff(label_key))
             if auto_confirmed:
                 reported_auto_confirmed_labels.add(label_key)
 

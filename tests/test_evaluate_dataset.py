@@ -187,11 +187,13 @@ class EvaluateDatasetTest(unittest.TestCase):
                     "baseline_mode": "no_llm",
                     "candidate_mode": "standard",
                     "review_item_added_count": 0,
-                    "review_item_removed_count": 0,
+                    "review_item_removed_count": 1,
                     "warning_added_count": 0,
                     "warning_removed_count": 1,
                     "added_review_items": [],
-                    "removed_review_items": [],
+                    "removed_review_items": [
+                        "sample-document-ir-v0:block-002:lot_number"
+                    ],
                     "added_warnings": [],
                     "removed_warnings": ["lot-number-mismatch"],
                 },
@@ -199,11 +201,13 @@ class EvaluateDatasetTest(unittest.TestCase):
                     "baseline_mode": "no_llm",
                     "candidate_mode": "high_quality",
                     "review_item_added_count": 0,
-                    "review_item_removed_count": 0,
+                    "review_item_removed_count": 1,
                     "warning_added_count": 0,
                     "warning_removed_count": 2,
                     "added_review_items": [],
-                    "removed_review_items": [],
+                    "removed_review_items": [
+                        "sample-document-ir-v0:block-002:lot_number"
+                    ],
                     "added_warnings": [],
                     "removed_warnings": [
                         "lot-number-mismatch",
@@ -1204,6 +1208,22 @@ class EvaluateDatasetTest(unittest.TestCase):
         data["runs"][0]["conversion_plan"]["constraints"]["external_transmission"] = True
 
         with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "conversion_plan"):
+            evaluate_dataset.evaluate_llm_stability(data)
+
+    def test_llm_stability_requires_explicit_run_outcome(self) -> None:
+        data = self.valid_llm_stability_data()
+        data["runs"][0].pop("outcome")
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "outcome"):
+            evaluate_dataset.evaluate_llm_stability(data)
+
+    def test_llm_stability_rejects_schema_passed_fallback(self) -> None:
+        data = self.valid_llm_stability_data()
+        data["runs"][0]["outcome"]["deterministic_fallback_used"] = True
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError, "fallback requires"
+        ):
             evaluate_dataset.evaluate_llm_stability(data)
 
     def test_llm_stability_rejects_schema_failure_without_repair_or_fallback(self) -> None:
