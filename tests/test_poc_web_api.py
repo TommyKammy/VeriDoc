@@ -1,8 +1,10 @@
 import base64
 import hashlib
+import importlib.util
 from html.parser import HTMLParser
 from io import BytesIO
 import json
+import os
 import re
 import tempfile
 from http.client import HTTPConnection
@@ -38,6 +40,7 @@ from services.api.poc_web import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_MANIFEST_PATH = REPO_ROOT / "datasets" / "fixtures" / "manifest.json"
+PDF_EVAL_DEPENDENCY_MODULES = ("camelot", "pdfplumber", "pymupdf")
 
 _HTML_VOID_TAGS = {
     "area",
@@ -1682,6 +1685,18 @@ def test_word_to_excel_representative_docx_fixtures_render_xlsx_artifacts(
 def test_pdf_to_excel_representative_table_fixture_renders_xlsx_artifact(
     tmp_path: Path,
 ) -> None:
+    if os.environ.get("VERIDOC_REQUIRE_PDF_EVAL_DEPS") != "1":
+        missing_modules = [
+            module
+            for module in PDF_EVAL_DEPENDENCY_MODULES
+            if importlib.util.find_spec(module) is None
+        ]
+        if missing_modules:
+            pytest.skip(
+                "PDF eval dependencies are not installed; "
+                "install requirements-pdf-eval.txt"
+            )
+
     manifest = json.loads(FIXTURE_MANIFEST_PATH.read_text(encoding="utf-8"))
     fixtures = [
         fixture
