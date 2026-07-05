@@ -1,6 +1,5 @@
 import base64
 import hashlib
-import importlib.util
 from html.parser import HTMLParser
 from io import BytesIO
 import json
@@ -40,10 +39,6 @@ from services.api.poc_web import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_MANIFEST_PATH = REPO_ROOT / "datasets" / "fixtures" / "manifest.json"
-PDF_EVAL_DEPENDENCY_MODULES = ("camelot", "pdfplumber", "pymupdf")
-PDF_EVAL_DEPENDENCY_SKIP_REASON = (
-    "PDF eval dependencies are not installed; install requirements-pdf-eval.txt"
-)
 
 _HTML_VOID_TAGS = {
     "area",
@@ -1689,14 +1684,6 @@ def test_pdf_to_excel_representative_table_fixture_renders_xlsx_artifact(
     tmp_path: Path,
 ) -> None:
     require_pdf_eval_deps = os.environ.get("VERIDOC_REQUIRE_PDF_EVAL_DEPS") == "1"
-    if not require_pdf_eval_deps:
-        missing_modules = [
-            module
-            for module in PDF_EVAL_DEPENDENCY_MODULES
-            if importlib.util.find_spec(module) is None
-        ]
-        if missing_modules:
-            pytest.skip(PDF_EVAL_DEPENDENCY_SKIP_REASON)
 
     manifest = json.loads(FIXTURE_MANIFEST_PATH.read_text(encoding="utf-8"))
     fixtures = [
@@ -1737,6 +1724,69 @@ def test_pdf_to_excel_representative_table_fixture_renders_xlsx_artifact(
             selected_cell_bboxes,
         )
 
+        result = convert_uploaded_document(
+            filename=report_path.name,
+            content=report_path.read_bytes(),
+            conversion_mode="pdf_to_excel",
+        )
+
+        expectations = fixture["pdf_to_excel_expectations"]
+        primary_artifact = result["artifacts"][0]
+        assert primary_artifact["format"] == "xlsx", fixture["id"]
+        assert primary_artifact["filename"].endswith(".veridoc-pdf-to-excel.xlsx")
+        assert primary_artifact["content_type"] == (
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        assert primary_artifact["metadata"]["download"] == {
+            "available": True,
+            "field": "artifacts[0].content_base64",
+        }
+
+        primary_path = tmp_path / primary_artifact["filename"]
+        primary_path.write_bytes(primary_artifact["content"])
+        xlsx = extract_xlsx_structure(primary_path)
+        cells = {cell.ref: (cell.value, cell.value_type) for cell in xlsx.sheets[0].cells}
+
+        assert xlsx.sheets[0].dimension == "A1:D6", fixture["id"]
+        report_table_refs = (
+            "A4",
+            "B4",
+            "C4",
+            "D4",
+            "A5",
+            "B5",
+            "C5",
+            "D5",
+            "A6",
+            "B6",
+            "C6",
+            "D6",
+        )
+        for ref, expected_ref in zip(report_table_refs, expectations["cells"], strict=True):
+            expected = expectations["cells"][expected_ref]
+            assert cells[ref] == (expected["value"], expected["value_type"]), fixture["id"]
+
+        assert "conversion mode pdf_to_excel selected" in result["warnings"], fixture["id"]
+        assert (
+            "PDF table extraction candidate unavailable: pdfplumber:table; "
+            "xlsx artifact requires review"
+        ) in result["warnings"], fixture["id"]
+
+        table_refs = list(expectations["cells"])
+        assert len({_cell_row_index(ref) for ref in table_refs}) == (
+            expectations["table_row_count"]
+        ), fixture["id"]
+        assert len({_cell_column_label(ref) for ref in table_refs}) == (
+            expectations["table_column_count"]
+        ), fixture["id"]
+
+        comments_by_ref = _xlsx_comments_by_ref(primary_path)
+        expected_comment_ref = "A4"
+        assert expected_comment_ref in comments_by_ref, fixture["id"]
+        source_comment = comments_by_ref[expected_comment_ref]
+        for expected_text in expectations["source_comment"]["contains"]:
+            assert expected_text in source_comment, fixture["id"]
+
         live_report = poc_web.compare_pdf_table_extractors(fixture_path).to_dict()
         if _pdf_table_report_has_only_missing_extractors(live_report):
             if require_pdf_eval_deps:
@@ -1744,7 +1794,7 @@ def test_pdf_to_excel_representative_table_fixture_renders_xlsx_artifact(
                     "PDF eval dependencies were required, but all table extractors "
                     "reported not-installed."
                 )
-            pytest.skip(PDF_EVAL_DEPENDENCY_SKIP_REASON)
+            continue
         assert live_report["selected_candidate"] == report["selected_candidate"], fixture["id"]
         live_selected_candidate = next(
             candidate
@@ -1766,49 +1816,42 @@ def test_pdf_to_excel_representative_table_fixture_renders_xlsx_artifact(
             live_selected_table["cell_bboxes"],
         )
 
-        result = convert_uploaded_document(
+        live_result = convert_uploaded_document(
             filename=fixture_path.name,
             content=fixture_path.read_bytes(),
             conversion_mode="pdf_to_excel",
         )
 
-        primary_artifact = result["artifacts"][0]
-        assert primary_artifact["format"] == "xlsx", fixture["id"]
-        assert primary_artifact["filename"].endswith(".veridoc-pdf-to-excel.xlsx")
-        assert primary_artifact["content_type"] == (
+        live_primary_artifact = live_result["artifacts"][0]
+        assert live_primary_artifact["format"] == "xlsx", fixture["id"]
+        assert live_primary_artifact["filename"].endswith(".veridoc-pdf-to-excel.xlsx")
+        assert live_primary_artifact["content_type"] == (
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-        assert primary_artifact["metadata"]["download"] == {
+        assert live_primary_artifact["metadata"]["download"] == {
             "available": True,
             "field": "artifacts[0].content_base64",
         }
 
-        primary_path = tmp_path / primary_artifact["filename"]
-        primary_path.write_bytes(primary_artifact["content"])
-        xlsx = extract_xlsx_structure(primary_path)
-        cells = {cell.ref: (cell.value, cell.value_type) for cell in xlsx.sheets[0].cells}
+        live_primary_path = tmp_path / live_primary_artifact["filename"]
+        live_primary_path.write_bytes(live_primary_artifact["content"])
+        live_xlsx = extract_xlsx_structure(live_primary_path)
+        live_cells = {
+            cell.ref: (cell.value, cell.value_type) for cell in live_xlsx.sheets[0].cells
+        }
 
-        expectations = fixture["pdf_to_excel_expectations"]
-        assert xlsx.sheets[0].dimension == expectations["dimension"], fixture["id"]
+        assert live_xlsx.sheets[0].dimension == expectations["dimension"], fixture["id"]
         for ref, expected in expectations["cells"].items():
-            assert cells[ref] == (expected["value"], expected["value_type"]), fixture["id"]
+            assert live_cells[ref] == (expected["value"], expected["value_type"]), fixture["id"]
 
-        table_refs = list(expectations["cells"])
-        assert len({_cell_row_index(ref) for ref in table_refs}) == (
-            expectations["table_row_count"]
-        ), fixture["id"]
-        assert len({_cell_column_label(ref) for ref in table_refs}) == (
-            expectations["table_column_count"]
-        ), fixture["id"]
+        assert live_result["warnings"] == expectations["warnings"], fixture["id"]
 
-        assert result["warnings"] == expectations["warnings"], fixture["id"]
-
-        comments_by_ref = _xlsx_comments_by_ref(primary_path)
-        expected_comment_ref = expectations["source_comment"]["cell"]
-        assert expected_comment_ref in comments_by_ref, fixture["id"]
-        source_comment = comments_by_ref[expected_comment_ref]
+        live_comments_by_ref = _xlsx_comments_by_ref(live_primary_path)
+        live_expected_comment_ref = expectations["source_comment"]["cell"]
+        assert live_expected_comment_ref in live_comments_by_ref, fixture["id"]
+        live_source_comment = live_comments_by_ref[live_expected_comment_ref]
         for expected_text in expectations["source_comment"]["contains"]:
-            assert expected_text in source_comment, fixture["id"]
+            assert expected_text in live_source_comment, fixture["id"]
 
 
 def _pdf_table_report_has_only_missing_extractors(report: dict[str, object]) -> bool:
