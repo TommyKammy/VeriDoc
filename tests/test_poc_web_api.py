@@ -1788,11 +1788,14 @@ def test_pdf_to_excel_representative_table_fixture_renders_xlsx_artifact(
             assert expected_text in source_comment, fixture["id"]
 
         live_report = poc_web.compare_pdf_table_extractors(fixture_path).to_dict()
-        if _pdf_table_report_has_only_missing_extractors(live_report):
+        if not _pdf_table_report_can_exercise_strict_live_fixture(
+            live_report,
+            expected_selected_candidate=str(report["selected_candidate"]),
+        ):
             if require_pdf_eval_deps:
                 pytest.fail(
-                    "PDF eval dependencies were required, but all table extractors "
-                    "reported not-installed."
+                    "PDF eval dependencies were required, but live table extractors "
+                    "did not produce a complete strict representative report."
                 )
             continue
         assert live_report["selected_candidate"] == report["selected_candidate"], fixture["id"]
@@ -1854,14 +1857,75 @@ def test_pdf_to_excel_representative_table_fixture_renders_xlsx_artifact(
             assert expected_text in live_source_comment, fixture["id"]
 
 
-def _pdf_table_report_has_only_missing_extractors(report: dict[str, object]) -> bool:
+def test_pdf_table_live_fixture_guard_rejects_partial_extractor_deps() -> None:
+    report = {
+        "selected_candidate": "camelot:lattice",
+        "candidates": [
+            {
+                "extractor": "camelot",
+                "flavor": "lattice",
+                "status": "ok",
+                "tables": [{"rows": [["Lot", "Assay"]]}],
+            },
+            {
+                "extractor": "pdfplumber",
+                "flavor": "table",
+                "status": "failed",
+                "tables": [],
+            },
+        ],
+    }
+
+    assert not _pdf_table_report_can_exercise_strict_live_fixture(
+        report,
+        expected_selected_candidate="camelot:lattice",
+    )
+
+
+def test_pdf_table_live_fixture_guard_accepts_complete_expected_candidate() -> None:
+    report = {
+        "selected_candidate": "camelot:lattice",
+        "candidates": [
+            {
+                "extractor": "camelot",
+                "flavor": "lattice",
+                "status": "ok",
+                "tables": [{"rows": [["Lot", "Assay"]]}],
+            },
+            {
+                "extractor": "pdfplumber",
+                "flavor": "table",
+                "status": "ok",
+                "tables": [{"rows": [["Lot", "Assay"]]}],
+            },
+        ],
+    }
+
+    assert _pdf_table_report_can_exercise_strict_live_fixture(
+        report,
+        expected_selected_candidate="camelot:lattice",
+    )
+
+
+def _pdf_table_report_can_exercise_strict_live_fixture(
+    report: dict[str, object],
+    *,
+    expected_selected_candidate: str,
+) -> bool:
+    if report.get("selected_candidate") != expected_selected_candidate:
+        return False
     candidates = report.get("candidates")
     if not isinstance(candidates, list) or not candidates:
         return False
-    return all(
-        isinstance(candidate, dict) and candidate.get("status") == "not-installed"
-        for candidate in candidates
-    )
+    selected_candidate_has_table = False
+    for candidate in candidates:
+        if not isinstance(candidate, dict) or candidate.get("status") != "ok":
+            return False
+        candidate_name = f"{candidate.get('extractor')}:{candidate.get('flavor')}"
+        if candidate_name == expected_selected_candidate:
+            tables = candidate.get("tables")
+            selected_candidate_has_table = isinstance(tables, list) and bool(tables)
+    return selected_candidate_has_table
 
 
 def _xlsx_comments_by_ref(xlsx_path: Path) -> dict[str, str]:
