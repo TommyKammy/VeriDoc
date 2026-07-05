@@ -19,6 +19,7 @@ HIGH_RISK_LABELS_PATH = REPO_ROOT / "datasets" / "gold" / "high_risk_labels_v0.j
 LLM_STABILITY_RUNS_PATH = REPO_ROOT / "datasets" / "gold" / "llm_stability_runs_v0.json"
 POC_COMPARISON_PATH = REPO_ROOT / "datasets" / "gold" / "poc_mode_comparison_v1.json"
 GMP_ACCEPTANCE_PATH = REPO_ROOT / "datasets" / "gold" / "gmp_acceptance_v1.json"
+FIXTURE_MANIFEST_PATH = REPO_ROOT / "datasets" / "fixtures" / "manifest.json"
 
 
 spec = importlib.util.spec_from_file_location("evaluate_dataset", SCRIPT_PATH)
@@ -217,6 +218,73 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertEqual(1.0, high_quality["cell_match_rate"])
         self.assertEqual(1.0, high_quality["source_linkage_rate"])
         self.assertEqual(2, high_quality["requires_review_count"])
+
+    def test_p9_harness_runs_representative_manifest_entries_and_keeps_failures(
+        self,
+    ) -> None:
+        report = evaluate_dataset.evaluate_p9_harness(FIXTURE_MANIFEST_PATH)
+        payload = report.as_dict()
+
+        self.assertEqual(
+            "veridoc-p9-poc-evaluation-harness/v0", payload["schema_version"]
+        )
+        self.assertEqual(str(FIXTURE_MANIFEST_PATH), payload["dataset_manifest"])
+        self.assertEqual(
+            ["excel_to_word", "pdf_to_excel", "pdf_to_word", "word_to_excel"],
+            payload["summary"]["conversion_modes"],
+        )
+        self.assertEqual(["no_llm", "llm_requested"], payload["summary"]["llm_scenarios"])
+        self.assertGreater(payload["summary"]["completed_count"], 0)
+        self.assertGreater(payload["summary"]["failure_count"], 0)
+        self.assertEqual(0, payload["summary"]["external_ai_api_guard_violation_count"])
+        self.assertIn("phase8_comparison", payload)
+
+        results = payload["results"]
+        self.assertTrue(
+            any(
+                result["conversion_mode"] == "word_to_excel"
+                and result["llm_scenario"] == "no_llm"
+                and result["ir_generated"]
+                and result["artifact_generated"]
+                and result["audit_present"]
+                and result["warnings_count"] >= 0
+                and result["review_items_count"] >= 0
+                and result["failure_reason"] is None
+                for result in results
+            )
+        )
+        self.assertTrue(
+            any(
+                result["llm_scenario"] == "llm_requested"
+                and result["llm_fallback_used"]
+                for result in results
+            )
+        )
+        self.assertTrue(
+            any(
+                result["representative_mode"] == "scanned_pdf_ocr"
+                and not result["ok"]
+                and result["failure_reason"] == "representative fixture path is unavailable"
+                for result in results
+            )
+        )
+
+    def test_p9_harness_cli_emits_machine_readable_report(self) -> None:
+        completed = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "--p9-harness"],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        payload = json.loads(completed.stdout)
+
+        self.assertEqual(
+            "veridoc-p9-poc-evaluation-harness/v0", payload["schema_version"]
+        )
+        self.assertGreater(payload["summary"]["case_count"], 0)
+        self.assertIn("failure_reason", payload["results"][0])
 
     def test_poc_mode_comparison_rejects_missing_required_mode_before_scoring(self) -> None:
         data = self.valid_poc_comparison_data()
