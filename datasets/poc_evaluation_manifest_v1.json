@@ -267,7 +267,7 @@
     {
       "id": "p9-record-pdf-001",
       "category": "record_pdf",
-      "fixture_id": "sample-document-ir-v0",
+      "fixture_id": "record-pdf-representative",
       "dataset_status": "usable_fixture",
       "source_classification": "synthetic",
       "conversion_mode": "pdf_to_word",

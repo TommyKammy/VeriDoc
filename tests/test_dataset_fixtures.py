@@ -49,6 +49,7 @@ class DatasetFixturesTest(unittest.TestCase):
     def test_poc_evaluation_manifest_defines_representative_safe_dataset(self) -> None:
         manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
         fixture_ids = {fixture["id"] for fixture in manifest["fixtures"]}
+        fixtures_by_id = {fixture["id"]: fixture for fixture in manifest["fixtures"]}
         poc_manifest = json.loads(POC_EVALUATION_MANIFEST_PATH.read_text(encoding="utf-8"))
 
         self.assertEqual("veridoc-poc-evaluation-dataset/v1", poc_manifest["schema_version"])
@@ -85,7 +86,11 @@ class DatasetFixturesTest(unittest.TestCase):
                 fixture_id = sample.get("fixture_id")
                 if sample["dataset_status"] == "usable_fixture":
                     self.assertIn(fixture_id, fixture_ids)
+                    fixture = fixtures_by_id[fixture_id]
                     real_fixture_links.add(fixture_id)
+                    if category == "record_pdf":
+                        self.assertEqual("pdf", fixture["format"])
+                        self.assertTrue(fixture["path"].endswith(".pdf"))
                 else:
                     self.assertIsNone(fixture_id)
                     self.assertEqual("pending_synthetic_or_anonymized_fixture", sample["availability_reason"])

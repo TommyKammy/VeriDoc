@@ -97,6 +97,18 @@
       "notes": "Synthetic text-PDF sample for PDF-to-Word editable DOCX checks; layout fidelity is intentionally out of scope."
     },
     {
+      "id": "record-pdf-representative",
+      "title": "Synthetic record PDF representative fixture",
+      "path": "datasets/fixtures/pdf/pdf-to-word-representative.pdf",
+      "source_type": "record_excerpt",
+      "format": "pdf",
+      "anonymization": "synthetic",
+      "confidentiality": "public",
+      "public_review_safe": true,
+      "record_pdf_representative": true,
+      "notes": "Synthetic PDF record excerpt slot for Phase 9 record-PDF PoC evaluation; shares the public PDF fixture until a dedicated safe record PDF is added."
+    },
+    {
       "id": "pdf-to-excel-table-report",
       "title": "Synthetic PDF-to-Excel table report fixture",
       "path": "datasets/fixtures/pdf/pdf-to-excel-table-report.json",
