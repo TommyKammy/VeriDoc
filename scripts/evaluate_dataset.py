@@ -1614,8 +1614,7 @@ def evaluate_poc_mode_comparison(
                 raise EvaluationCaseError(f"{item_context}.auto_confirmed must be a boolean")
             if item.get("status") == "requires_review":
                 requires_review_count += 1
-                if not matches_authoritative_value:
-                    diff_review_keys.add(review_key_for_diff(label_key))
+                diff_review_keys.add(review_key_for_diff(label_key))
             if auto_confirmed:
                 reported_auto_confirmed_labels.add(label_key)
 

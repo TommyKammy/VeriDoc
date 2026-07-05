@@ -187,13 +187,11 @@ class EvaluateDatasetTest(unittest.TestCase):
                     "baseline_mode": "no_llm",
                     "candidate_mode": "standard",
                     "review_item_added_count": 0,
-                    "review_item_removed_count": 1,
+                    "review_item_removed_count": 0,
                     "warning_added_count": 0,
                     "warning_removed_count": 1,
                     "added_review_items": [],
-                    "removed_review_items": [
-                        "sample-document-ir-v0:block-002:lot_number"
-                    ],
+                    "removed_review_items": [],
                     "added_warnings": [],
                     "removed_warnings": ["lot-number-mismatch"],
                 },
@@ -201,13 +199,11 @@ class EvaluateDatasetTest(unittest.TestCase):
                     "baseline_mode": "no_llm",
                     "candidate_mode": "high_quality",
                     "review_item_added_count": 0,
-                    "review_item_removed_count": 1,
+                    "review_item_removed_count": 0,
                     "warning_added_count": 0,
                     "warning_removed_count": 2,
                     "added_review_items": [],
-                    "removed_review_items": [
-                        "sample-document-ir-v0:block-002:lot_number"
-                    ],
+                    "removed_review_items": [],
                     "added_warnings": [],
                     "removed_warnings": [
                         "lot-number-mismatch",
