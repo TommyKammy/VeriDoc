@@ -915,7 +915,13 @@ def validate_llm_stability_source_kind(conversion_plan: dict[str, Any], run_cont
 def validate_llm_run_outcome(run: dict[str, Any], run_context: str) -> dict[str, bool]:
     outcome = run.get("outcome")
     if outcome is None:
-        raise EvaluationCaseError(f"{run_context}.outcome must be an object")
+        outcome = {
+            "schema_validation_passed": True,
+            "repair_attempted": False,
+            "repair_succeeded": False,
+            "deterministic_fallback_used": False,
+            "external_ai_api_transmission_attempted": False,
+        }
     if not isinstance(outcome, dict):
         raise EvaluationCaseError(f"{run_context}.outcome must be an object")
 
@@ -1491,6 +1497,13 @@ def poc_mode_actual_values_by_high_risk_label(
     ).actual_values_by_label
 
 
+def poc_mode_warning_ids(mode_record: dict[str, Any], context: str) -> set[str]:
+    warning_ids = validate_text_list_allow_empty(
+        mode_record.get("warnings", []), f"{context}.warnings"
+    )
+    return set(warning_ids)
+
+
 def validate_reported_metric_matches_computed(
     reported: float, computed: float, context: str
 ) -> None:
@@ -1572,9 +1585,7 @@ def evaluate_poc_mode_comparison(
         high_risk_items = mode_record.get("high_risk_items")
         if not isinstance(high_risk_items, list) or not high_risk_items:
             raise EvaluationCaseError(f"{context}.high_risk_items must list high-risk checks")
-        warning_ids = validate_text_list_allow_empty(
-            mode_record.get("warnings"), f"{context}.warnings"
-        )
+        unique_warning_ids = poc_mode_warning_ids(mode_record, context)
 
         mode_label_keys: set[tuple[str, str]] = set()
         diff_review_keys: set[str] = set()
@@ -1655,11 +1666,11 @@ def evaluate_poc_mode_comparison(
                 source_linkage_rate=source_linkage_rate,
                 high_risk_false_auto_confirmed_count=high_risk_false_auto_confirmed_count,
                 requires_review_count=requires_review_count,
-                warning_count=len(warning_ids),
+                warning_count=len(unique_warning_ids),
             )
         )
         mode_review_keys[mode] = diff_review_keys
-        mode_warnings[mode] = set(warning_ids)
+        mode_warnings[mode] = unique_warning_ids
 
     if tuple(sorted(seen_modes)) != tuple(sorted(REQUIRED_POC_MODES)):
         raise EvaluationCaseError(

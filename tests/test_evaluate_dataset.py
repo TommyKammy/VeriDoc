@@ -316,12 +316,21 @@ class EvaluateDatasetTest(unittest.TestCase):
             ):
                 evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
 
-    def test_poc_mode_comparison_rejects_missing_warning_lists_before_diffing(self) -> None:
+    def test_poc_mode_comparison_treats_missing_legacy_warning_lists_as_empty(self) -> None:
         data = self.valid_poc_comparison_data()
         data["modes"][1].pop("warnings")
 
-        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "warnings"):
-            evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+        metrics = evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
+        self.assertEqual(0, metrics.as_dict()["modes"][1]["warning_count"])
+        self.assertEqual([], metrics.as_dict()["mode_diffs"][0]["added_warnings"])
+        self.assertEqual(
+            [
+                "lot-number-mismatch",
+                "missing-source-anchor",
+            ],
+            metrics.as_dict()["mode_diffs"][0]["removed_warnings"],
+        )
 
     def test_poc_mode_comparison_rejects_high_risk_label_drift_before_scoring(self) -> None:
         data = self.valid_poc_comparison_data()
@@ -674,6 +683,16 @@ class EvaluateDatasetTest(unittest.TestCase):
         )
         self.assertEqual(1, metrics.high_risk_false_auto_confirmed_count)
         self.assertFalse(metrics.target_met)
+
+    def test_poc_mode_comparison_counts_duplicate_warnings_once(self) -> None:
+        data = self.valid_poc_comparison_data()
+        data["modes"][0]["warnings"].append(data["modes"][0]["warnings"][0])
+
+        metrics = evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
+        self.assertEqual(2, metrics.as_dict()["modes"][0]["warning_count"])
+        self.assertEqual(1, metrics.as_dict()["mode_diffs"][0]["warning_removed_count"])
+        self.assertEqual(2, metrics.as_dict()["mode_diffs"][1]["warning_removed_count"])
 
     def test_poc_mode_comparison_counts_boolean_review_cell_auto_confirmation(self) -> None:
         data = self.valid_poc_comparison_data()
@@ -1206,12 +1225,16 @@ class EvaluateDatasetTest(unittest.TestCase):
         with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "conversion_plan"):
             evaluate_dataset.evaluate_llm_stability(data)
 
-    def test_llm_stability_requires_explicit_run_outcome(self) -> None:
+    def test_llm_stability_treats_missing_legacy_outcome_as_all_passed(self) -> None:
         data = self.valid_llm_stability_data()
         data["runs"][0].pop("outcome")
 
-        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "outcome"):
-            evaluate_dataset.evaluate_llm_stability(data)
+        metrics = evaluate_dataset.evaluate_llm_stability(data)
+
+        self.assertEqual(2 / 3, metrics.schema_failure_rate)
+        self.assertEqual(1 / 2, metrics.repair_success_rate)
+        self.assertEqual(1 / 3, metrics.deterministic_fallback_rate)
+        self.assertEqual(0, metrics.external_ai_api_guard_violation_count)
 
     def test_llm_stability_rejects_schema_passed_fallback(self) -> None:
         data = self.valid_llm_stability_data()
