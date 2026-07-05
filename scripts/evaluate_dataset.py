@@ -932,36 +932,31 @@ def validate_llm_run_outcome(run: dict[str, Any], run_context: str) -> dict[str,
             raise EvaluationCaseError(f"{run_context}.outcome.{field} must be a boolean")
         normalized[field] = value
 
-    if normalized["repair_succeeded"] and not normalized["repair_attempted"]:
+    schema_passed = normalized["schema_validation_passed"]
+    repair_attempted = normalized["repair_attempted"]
+    repair_succeeded = normalized["repair_succeeded"]
+    fallback_used = normalized["deterministic_fallback_used"]
+
+    if repair_succeeded and not repair_attempted:
         raise EvaluationCaseError(
             f"{run_context}.outcome.repair_succeeded requires repair_attempted"
         )
-    if normalized["schema_validation_passed"] and (
-        normalized["repair_attempted"] or normalized["repair_succeeded"]
-    ):
+    if schema_passed and (repair_attempted or repair_succeeded):
         raise EvaluationCaseError(
             f"{run_context}.outcome repair fields require a schema validation failure"
         )
-    if normalized["schema_validation_passed"] and normalized["deterministic_fallback_used"]:
+    if schema_passed and fallback_used:
         raise EvaluationCaseError(
             f"{run_context}.outcome deterministic fallback requires a schema validation failure"
         )
-    if (
-        not normalized["schema_validation_passed"]
-        and not normalized["repair_succeeded"]
-        and not normalized["deterministic_fallback_used"]
-    ):
-        raise EvaluationCaseError(
-            f"{run_context}.outcome schema failures must be repaired or use deterministic fallback"
-        )
-    if (
-        not normalized["schema_validation_passed"]
-        and normalized["repair_succeeded"]
-        and normalized["deterministic_fallback_used"]
-    ):
+    if not schema_passed and repair_succeeded and fallback_used:
         raise EvaluationCaseError(
             f"{run_context}.outcome cannot both repair successfully and use "
             "deterministic fallback"
+        )
+    if not schema_passed and not repair_succeeded and not fallback_used:
+        raise EvaluationCaseError(
+            f"{run_context}.outcome schema failures must be repaired or use deterministic fallback"
         )
     return normalized
 
