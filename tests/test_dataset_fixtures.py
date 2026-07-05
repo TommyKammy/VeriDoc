@@ -23,6 +23,7 @@ from core.ir.template_fingerprint import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = REPO_ROOT / "datasets" / "fixtures" / "manifest.json"
+POC_EVALUATION_MANIFEST_PATH = REPO_ROOT / "datasets" / "poc_evaluation_manifest_v1.json"
 GOLD_LABELS_PATH = REPO_ROOT / "datasets" / "gold" / "high_risk_labels_v0.json"
 TEMPLATE_REGRESSION_PATH = REPO_ROOT / "datasets" / "gold" / "template_regression_v0.json"
 REQUIRED_DOCX_PACKAGE_PARTS = {
@@ -45,6 +46,80 @@ OFFICE_DOCUMENT_RELATIONSHIP = (
 
 
 class DatasetFixturesTest(unittest.TestCase):
+    def test_poc_evaluation_manifest_defines_representative_safe_dataset(self) -> None:
+        manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+        fixture_ids = {fixture["id"] for fixture in manifest["fixtures"]}
+        fixtures_by_id = {fixture["id"]: fixture for fixture in manifest["fixtures"]}
+        poc_manifest = json.loads(POC_EVALUATION_MANIFEST_PATH.read_text(encoding="utf-8"))
+
+        self.assertEqual("veridoc-poc-evaluation-dataset/v1", poc_manifest["schema_version"])
+        self.assertEqual("datasets/fixtures/manifest.json", poc_manifest["fixture_manifest"])
+        self.assertEqual("public_synthetic_or_anonymized_only", poc_manifest["source_policy"])
+        self.assertFalse(poc_manifest["confidential_source_documents_allowed"])
+        self.assertEqual(
+            {"word", "excel", "text_pdf", "scanned_pdf", "record_pdf"},
+            set(poc_manifest["required_categories"]),
+        )
+
+        expected_ranges = {
+            "word": (5, 10),
+            "excel": (5, 10),
+            "text_pdf": (10, 10),
+            "scanned_pdf": (3, 5),
+            "record_pdf": (3, 5),
+        }
+        category_counts = {category: 0 for category in expected_ranges}
+        usable_fixture_paths_by_category: dict[str, set[str]] = {
+            category: set() for category in expected_ranges
+        }
+        real_fixture_links = set()
+
+        for sample in poc_manifest["samples"]:
+            with self.subTest(sample=sample["id"]):
+                category = sample["category"]
+                category_counts[category] += 1
+                self.assertIn(sample["dataset_status"], {"usable_fixture", "manifest_placeholder"})
+                self.assertIn(sample["source_classification"], {"public", "synthetic", "anonymized"})
+                self.assertIn(sample["conversion_mode"], {"word_to_excel", "excel_to_word", "pdf_to_word", "pdf_to_excel"})
+                self.assertIsInstance(sample["evaluation_focus"], list)
+                self.assertGreaterEqual(len(sample["evaluation_focus"]), 1)
+                self.assertIsInstance(sample["expected_warning_or_review_focus"], list)
+                self.assertGreaterEqual(len(sample["expected_warning_or_review_focus"]), 1)
+
+                fixture_id = sample.get("fixture_id")
+                if sample["dataset_status"] == "usable_fixture":
+                    self.assertIn(fixture_id, fixture_ids)
+                    fixture = fixtures_by_id[fixture_id]
+                    real_fixture_links.add(fixture_id)
+                    if fixture["path"] is not None:
+                        usable_fixture_paths_by_category[category].add(fixture["path"])
+                    if category == "text_pdf":
+                        self.assertEqual("pdf", fixture["format"])
+                        self.assertTrue(fixture["path"].endswith(".pdf"))
+                    if category == "record_pdf":
+                        self.assertEqual("pdf", fixture["format"])
+                        self.assertTrue(fixture["path"].endswith(".pdf"))
+                        self.assertTrue(fixture.get("record_pdf_representative"))
+                else:
+                    self.assertIsNone(fixture_id)
+                    self.assertIn(
+                        sample["availability_reason"],
+                        {
+                            "pending_synthetic_or_anonymized_fixture",
+                            "pending_public_fixture_labels",
+                        },
+                    )
+
+        self.assertGreaterEqual(len(real_fixture_links), 1)
+        self.assertTrue(
+            usable_fixture_paths_by_category["record_pdf"].isdisjoint(
+                usable_fixture_paths_by_category["text_pdf"]
+            )
+        )
+        for category, (minimum, maximum) in expected_ranges.items():
+            self.assertGreaterEqual(category_counts[category], minimum)
+            self.assertLessEqual(category_counts[category], maximum)
+
     def test_manifest_defines_public_fixture_policy_and_source_slots(self) -> None:
         manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
 

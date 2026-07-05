@@ -8,6 +8,8 @@ Allowed tracked areas:
 
 - `datasets/fixtures/`: curated synthetic or anonymized source fixtures.
 - `datasets/fixtures/manifest.json`: fixture inventory and placement rules.
+- `datasets/poc_evaluation_manifest_v1.json`: Phase 9 representative PoC
+  evaluation input set and placeholder slots for missing safe fixtures.
 - `datasets/gold/`: hand-authored answer data for evaluation.
 
 Blocked areas are enforced by repository hygiene and `.gitignore`:
@@ -23,6 +25,10 @@ Fixture placement rules:
 
 - Text PDFs, scanned PDFs, Word files, Excel files, and record excerpts must be
   listed in `datasets/fixtures/manifest.json` before use in evaluation.
+- Phase 9 PoC evaluation samples must be listed in
+  `datasets/poc_evaluation_manifest_v1.json` with source category, conversion
+  mode, evaluation focus, public/synthetic/anonymized classification, fixture
+  linkage when available, and expected warning or reviewer focus.
 - Evaluation cases may only reference manifest entries with an explicit
   repo-relative fixture path under `datasets/fixtures/`.
 - Placeholder slots document required future source types, but they are not

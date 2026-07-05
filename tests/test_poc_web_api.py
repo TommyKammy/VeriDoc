@@ -3,6 +3,7 @@ import hashlib
 from html.parser import HTMLParser
 from io import BytesIO
 import json
+import os
 import re
 import tempfile
 from http.client import HTTPConnection
@@ -1682,6 +1683,8 @@ def test_word_to_excel_representative_docx_fixtures_render_xlsx_artifacts(
 def test_pdf_to_excel_representative_table_fixture_renders_xlsx_artifact(
     tmp_path: Path,
 ) -> None:
+    require_pdf_eval_deps = os.environ.get("VERIDOC_REQUIRE_PDF_EVAL_DEPS") == "1"
+
     manifest = json.loads(FIXTURE_MANIFEST_PATH.read_text(encoding="utf-8"))
     fixtures = [
         fixture
@@ -1694,12 +1697,14 @@ def test_pdf_to_excel_representative_table_fixture_renders_xlsx_artifact(
 
     for fixture in fixtures:
         fixture_path = REPO_ROOT / fixture["path"]
-        report = json.loads(fixture_path.read_text(encoding="utf-8"))
+        report_path = REPO_ROOT / fixture["report_path"]
+        report = json.loads(report_path.read_text(encoding="utf-8"))
         source_relative_path = Path(report["source_path"])
         assert not source_relative_path.is_absolute(), fixture["id"]
         assert _repo_tracks_path(source_relative_path), fixture["id"]
         source_path = REPO_ROOT / source_relative_path
         assert source_path.is_file(), fixture["id"]
+        assert fixture_path == source_path, fixture["id"]
         selected_candidate = next(
             candidate
             for candidate in report["candidates"]
@@ -1720,11 +1725,12 @@ def test_pdf_to_excel_representative_table_fixture_renders_xlsx_artifact(
         )
 
         result = convert_uploaded_document(
-            filename=fixture_path.name,
-            content=fixture_path.read_bytes(),
+            filename=report_path.name,
+            content=report_path.read_bytes(),
             conversion_mode="pdf_to_excel",
         )
 
+        expectations = fixture["pdf_to_excel_expectations"]
         primary_artifact = result["artifacts"][0]
         assert primary_artifact["format"] == "xlsx", fixture["id"]
         assert primary_artifact["filename"].endswith(".veridoc-pdf-to-excel.xlsx")
@@ -1741,16 +1747,32 @@ def test_pdf_to_excel_representative_table_fixture_renders_xlsx_artifact(
         xlsx = extract_xlsx_structure(primary_path)
         cells = {cell.ref: (cell.value, cell.value_type) for cell in xlsx.sheets[0].cells}
 
-        expectations = fixture["pdf_to_excel_expectations"]
-        assert xlsx.sheets[0].dimension == expectations["dimension"], fixture["id"]
-        for ref, expected in expectations["cells"].items():
+        assert xlsx.sheets[0].dimension == "A1:D6", fixture["id"]
+        report_table_refs = (
+            "A4",
+            "B4",
+            "C4",
+            "D4",
+            "A5",
+            "B5",
+            "C5",
+            "D5",
+            "A6",
+            "B6",
+            "C6",
+            "D6",
+        )
+        for ref, expected_ref in zip(report_table_refs, expectations["cells"], strict=True):
+            expected = expectations["cells"][expected_ref]
             assert cells[ref] == (expected["value"], expected["value_type"]), fixture["id"]
 
-        table_refs = [
-            ref
-            for ref in expectations["cells"]
-            if 4 <= _cell_row_index(ref) <= 6
-        ]
+        assert "conversion mode pdf_to_excel selected" in result["warnings"], fixture["id"]
+        assert (
+            "PDF table extraction candidate unavailable: pdfplumber:table; "
+            "xlsx artifact requires review"
+        ) in result["warnings"], fixture["id"]
+
+        table_refs = list(expectations["cells"])
         assert len({_cell_row_index(ref) for ref in table_refs}) == (
             expectations["table_row_count"]
         ), fixture["id"]
@@ -1758,15 +1780,152 @@ def test_pdf_to_excel_representative_table_fixture_renders_xlsx_artifact(
             expectations["table_column_count"]
         ), fixture["id"]
 
-        for warning in expectations["warnings"]:
-            assert warning in result["warnings"], fixture["id"]
-
         comments_by_ref = _xlsx_comments_by_ref(primary_path)
-        expected_comment_ref = expectations["source_comment"]["cell"]
+        expected_comment_ref = "A4"
         assert expected_comment_ref in comments_by_ref, fixture["id"]
         source_comment = comments_by_ref[expected_comment_ref]
         for expected_text in expectations["source_comment"]["contains"]:
             assert expected_text in source_comment, fixture["id"]
+
+        live_report = poc_web.compare_pdf_table_extractors(fixture_path).to_dict()
+        if not _pdf_table_report_can_exercise_strict_live_fixture(
+            live_report,
+            expected_selected_candidate=str(report["selected_candidate"]),
+        ):
+            if require_pdf_eval_deps:
+                pytest.fail(
+                    "PDF eval dependencies were required, but live table extractors "
+                    "did not produce a complete strict representative report."
+                )
+            continue
+        assert live_report["selected_candidate"] == report["selected_candidate"], fixture["id"]
+        live_selected_candidate = next(
+            candidate
+            for candidate in live_report["candidates"]
+            if f"{candidate['extractor']}:{candidate['flavor']}"
+            == live_report["selected_candidate"]
+        )
+        assert live_selected_candidate["status"] == "ok", fixture["id"]
+        live_selected_table = live_selected_candidate["tables"][0]
+        assert live_selected_table["rows"] == selected_table["rows"], fixture["id"]
+        assert all(
+            cell["origin"] == "bottom-left"
+            for row in live_selected_table["cell_bboxes"]
+            for cell in row
+        ), fixture["id"]
+        _assert_pdf_fixture_text_is_inside_bboxes(
+            source_path,
+            live_selected_table["rows"],
+            live_selected_table["cell_bboxes"],
+        )
+
+        live_result = convert_uploaded_document(
+            filename=fixture_path.name,
+            content=fixture_path.read_bytes(),
+            conversion_mode="pdf_to_excel",
+        )
+
+        live_primary_artifact = live_result["artifacts"][0]
+        assert live_primary_artifact["format"] == "xlsx", fixture["id"]
+        assert live_primary_artifact["filename"].endswith(".veridoc-pdf-to-excel.xlsx")
+        assert live_primary_artifact["content_type"] == (
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        assert live_primary_artifact["metadata"]["download"] == {
+            "available": True,
+            "field": "artifacts[0].content_base64",
+        }
+
+        live_primary_path = tmp_path / live_primary_artifact["filename"]
+        live_primary_path.write_bytes(live_primary_artifact["content"])
+        live_xlsx = extract_xlsx_structure(live_primary_path)
+        live_cells = {
+            cell.ref: (cell.value, cell.value_type) for cell in live_xlsx.sheets[0].cells
+        }
+
+        assert live_xlsx.sheets[0].dimension == expectations["dimension"], fixture["id"]
+        for ref, expected in expectations["cells"].items():
+            assert live_cells[ref] == (expected["value"], expected["value_type"]), fixture["id"]
+
+        assert live_result["warnings"] == expectations["warnings"], fixture["id"]
+
+        live_comments_by_ref = _xlsx_comments_by_ref(live_primary_path)
+        live_expected_comment_ref = expectations["source_comment"]["cell"]
+        assert live_expected_comment_ref in live_comments_by_ref, fixture["id"]
+        live_source_comment = live_comments_by_ref[live_expected_comment_ref]
+        for expected_text in expectations["source_comment"]["contains"]:
+            assert expected_text in live_source_comment, fixture["id"]
+
+
+def test_pdf_table_live_fixture_guard_rejects_partial_extractor_deps() -> None:
+    report = {
+        "selected_candidate": "camelot:lattice",
+        "candidates": [
+            {
+                "extractor": "camelot",
+                "flavor": "lattice",
+                "status": "ok",
+                "tables": [{"rows": [["Lot", "Assay"]]}],
+            },
+            {
+                "extractor": "pdfplumber",
+                "flavor": "table",
+                "status": "failed",
+                "tables": [],
+            },
+        ],
+    }
+
+    assert not _pdf_table_report_can_exercise_strict_live_fixture(
+        report,
+        expected_selected_candidate="camelot:lattice",
+    )
+
+
+def test_pdf_table_live_fixture_guard_accepts_complete_expected_candidate() -> None:
+    report = {
+        "selected_candidate": "camelot:lattice",
+        "candidates": [
+            {
+                "extractor": "camelot",
+                "flavor": "lattice",
+                "status": "ok",
+                "tables": [{"rows": [["Lot", "Assay"]]}],
+            },
+            {
+                "extractor": "pdfplumber",
+                "flavor": "table",
+                "status": "ok",
+                "tables": [{"rows": [["Lot", "Assay"]]}],
+            },
+        ],
+    }
+
+    assert _pdf_table_report_can_exercise_strict_live_fixture(
+        report,
+        expected_selected_candidate="camelot:lattice",
+    )
+
+
+def _pdf_table_report_can_exercise_strict_live_fixture(
+    report: dict[str, object],
+    *,
+    expected_selected_candidate: str,
+) -> bool:
+    if report.get("selected_candidate") != expected_selected_candidate:
+        return False
+    candidates = report.get("candidates")
+    if not isinstance(candidates, list) or not candidates:
+        return False
+    selected_candidate_has_table = False
+    for candidate in candidates:
+        if not isinstance(candidate, dict) or candidate.get("status") != "ok":
+            return False
+        candidate_name = f"{candidate.get('extractor')}:{candidate.get('flavor')}"
+        if candidate_name == expected_selected_candidate:
+            tables = candidate.get("tables")
+            selected_candidate_has_table = isinstance(tables, list) and bool(tables)
+    return selected_candidate_has_table
 
 
 def _xlsx_comments_by_ref(xlsx_path: Path) -> dict[str, str]:
