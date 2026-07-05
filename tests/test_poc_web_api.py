@@ -1680,7 +1680,6 @@ def test_word_to_excel_representative_docx_fixtures_render_xlsx_artifacts(
 
 
 def test_pdf_to_excel_representative_table_fixture_renders_xlsx_artifact(
-    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     manifest = json.loads(FIXTURE_MANIFEST_PATH.read_text(encoding="utf-8"))
@@ -1722,38 +1721,26 @@ def test_pdf_to_excel_representative_table_fixture_renders_xlsx_artifact(
             selected_cell_bboxes,
         )
 
-        def fake_parse_text_pdf_to_document_ir(
-            pdf_path: Path, *, document_id: str | None = None
-        ) -> dict:
-            assert pdf_path.name == fixture_path.name
-            assert pdf_path.read_bytes() == fixture_path.read_bytes()
-            return {
-                "source_type": "pdf",
-                "pages": [
-                    {
-                        "page_number": 1,
-                        "width": 612,
-                        "height": 792,
-                        "unit": "pt",
-                        "fragments": [],
-                    }
-                ],
-            }
-
-        def fake_compare_pdf_table_extractors(pdf_path: Path) -> dict:
-            assert pdf_path.name == fixture_path.name
-            assert pdf_path.read_bytes() == fixture_path.read_bytes()
-            return report
-
-        monkeypatch.setattr(
-            poc_web,
-            "parse_text_pdf_to_document_ir",
-            fake_parse_text_pdf_to_document_ir,
+        live_report = poc_web.compare_pdf_table_extractors(fixture_path).to_dict()
+        assert live_report["selected_candidate"] == report["selected_candidate"]
+        live_selected_candidate = next(
+            candidate
+            for candidate in live_report["candidates"]
+            if f"{candidate['extractor']}:{candidate['flavor']}"
+            == live_report["selected_candidate"]
         )
-        monkeypatch.setattr(
-            poc_web,
-            "compare_pdf_table_extractors",
-            fake_compare_pdf_table_extractors,
+        assert live_selected_candidate["status"] == "ok", fixture["id"]
+        live_selected_table = live_selected_candidate["tables"][0]
+        assert live_selected_table["rows"] == selected_table["rows"], fixture["id"]
+        assert all(
+            cell["origin"] == "bottom-left"
+            for row in live_selected_table["cell_bboxes"]
+            for cell in row
+        ), fixture["id"]
+        _assert_pdf_fixture_text_is_inside_bboxes(
+            source_path,
+            live_selected_table["rows"],
+            live_selected_table["cell_bboxes"],
         )
 
         result = convert_uploaded_document(
@@ -1783,11 +1770,7 @@ def test_pdf_to_excel_representative_table_fixture_renders_xlsx_artifact(
         for ref, expected in expectations["cells"].items():
             assert cells[ref] == (expected["value"], expected["value_type"]), fixture["id"]
 
-        table_refs = [
-            ref
-            for ref in expectations["cells"]
-            if 4 <= _cell_row_index(ref) <= 6
-        ]
+        table_refs = list(expectations["cells"])
         assert len({_cell_row_index(ref) for ref in table_refs}) == (
             expectations["table_row_count"]
         ), fixture["id"]
@@ -1795,8 +1778,7 @@ def test_pdf_to_excel_representative_table_fixture_renders_xlsx_artifact(
             expectations["table_column_count"]
         ), fixture["id"]
 
-        for warning in expectations["warnings"]:
-            assert warning in result["warnings"], fixture["id"]
+        assert result["warnings"] == expectations["warnings"], fixture["id"]
 
         comments_by_ref = _xlsx_comments_by_ref(primary_path)
         expected_comment_ref = expectations["source_comment"]["cell"]
