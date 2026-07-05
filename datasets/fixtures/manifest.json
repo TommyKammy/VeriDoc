@@ -99,14 +99,14 @@
     {
       "id": "record-pdf-representative",
       "title": "Synthetic record PDF representative fixture",
-      "path": "datasets/fixtures/pdf/pdf-to-word-representative.pdf",
+      "path": "datasets/fixtures/pdf/record-pdf-representative.pdf",
       "source_type": "record_excerpt",
       "format": "pdf",
       "anonymization": "synthetic",
       "confidentiality": "public",
       "public_review_safe": true,
       "record_pdf_representative": true,
-      "notes": "Synthetic PDF record excerpt slot for Phase 9 record-PDF PoC evaluation; shares the public PDF fixture until a dedicated safe record PDF is added."
+      "notes": "Dedicated synthetic PDF record excerpt for Phase 9 record-PDF PoC evaluation; contains no confidential source data."
     },
     {
       "id": "pdf-to-excel-table-report",

@@ -69,6 +69,9 @@ class DatasetFixturesTest(unittest.TestCase):
             "record_pdf": (3, 5),
         }
         category_counts = {category: 0 for category in expected_ranges}
+        usable_fixture_paths_by_category: dict[str, set[str]] = {
+            category: set() for category in expected_ranges
+        }
         real_fixture_links = set()
 
         for sample in poc_manifest["samples"]:
@@ -88,6 +91,8 @@ class DatasetFixturesTest(unittest.TestCase):
                     self.assertIn(fixture_id, fixture_ids)
                     fixture = fixtures_by_id[fixture_id]
                     real_fixture_links.add(fixture_id)
+                    if fixture["path"] is not None:
+                        usable_fixture_paths_by_category[category].add(fixture["path"])
                     if category == "record_pdf":
                         self.assertEqual("pdf", fixture["format"])
                         self.assertTrue(fixture["path"].endswith(".pdf"))
@@ -96,6 +101,11 @@ class DatasetFixturesTest(unittest.TestCase):
                     self.assertEqual("pending_synthetic_or_anonymized_fixture", sample["availability_reason"])
 
         self.assertGreaterEqual(len(real_fixture_links), 1)
+        self.assertTrue(
+            usable_fixture_paths_by_category["record_pdf"].isdisjoint(
+                usable_fixture_paths_by_category["text_pdf"]
+            )
+        )
         for category, (minimum, maximum) in expected_ranges.items():
             self.assertGreaterEqual(category_counts[category], minimum)
             self.assertLessEqual(category_counts[category], maximum)
