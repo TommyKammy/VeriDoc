@@ -316,6 +316,13 @@ class EvaluateDatasetTest(unittest.TestCase):
             ):
                 evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
 
+    def test_poc_mode_comparison_rejects_missing_warning_lists_before_diffing(self) -> None:
+        data = self.valid_poc_comparison_data()
+        data["modes"][1].pop("warnings")
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "warnings"):
+            evaluate_dataset.evaluate_poc_mode_comparison(data, repo_root=REPO_ROOT)
+
     def test_poc_mode_comparison_rejects_high_risk_label_drift_before_scoring(self) -> None:
         data = self.valid_poc_comparison_data()
         data["modes"][0]["high_risk_items"][0]["expected_value"] = "SAMPLE-LOT-999"
@@ -1212,6 +1219,19 @@ class EvaluateDatasetTest(unittest.TestCase):
         with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "repaired or use"):
             evaluate_dataset.evaluate_llm_stability(data)
 
+    def test_llm_stability_rejects_repaired_run_that_also_uses_fallback(self) -> None:
+        data = self.valid_llm_stability_data()
+        data["runs"][1]["outcome"] = {
+            "schema_validation_passed": False,
+            "repair_attempted": True,
+            "repair_succeeded": True,
+            "deterministic_fallback_used": True,
+            "external_ai_api_transmission_attempted": False,
+        }
+
+        with self.assertRaisesRegex(evaluate_dataset.EvaluationCaseError, "both repair"):
+            evaluate_dataset.evaluate_llm_stability(data)
+
     def test_llm_stability_counts_external_ai_api_guard_violations(self) -> None:
         data = self.valid_llm_stability_data()
         data["runs"][0]["outcome"]["external_ai_api_transmission_attempted"] = True
@@ -1746,6 +1766,36 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertEqual(
             "datasets/gold/llm_stability_runs_v0.json",
             report["phase9_handoff"]["stability_source"],
+        )
+
+    def test_cli_llm_stability_report_preserves_custom_input_paths(self) -> None:
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT_PATH),
+                "--llm-stability-report",
+                "--llm-stability-runs",
+                "datasets/gold/llm_stability_runs_v0.json",
+                "--poc-comparison",
+                "datasets/gold/poc_mode_comparison_v1.json",
+            ],
+            cwd=REPO_ROOT,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        self.assertEqual("", proc.stderr)
+        self.assertEqual(0, proc.returncode)
+        report = json.loads(proc.stdout)
+        self.assertEqual(
+            "datasets/gold/llm_stability_runs_v0.json",
+            report["phase9_handoff"]["stability_source"],
+        )
+        self.assertEqual(
+            "datasets/gold/poc_mode_comparison_v1.json",
+            report["phase9_handoff"]["poc_comparison_source"],
         )
 
     def test_cli_emits_gmp_acceptance_for_phase0_acceptance(self) -> None:

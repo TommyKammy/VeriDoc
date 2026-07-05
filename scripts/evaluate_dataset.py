@@ -225,13 +225,15 @@ class PoCComparisonMetrics:
 class LLMStabilityEvaluationReport:
     llm_stability: LLMStabilityMetrics
     poc_mode_comparison: PoCComparisonMetrics
+    stability_source: Path
+    poc_comparison_source: Path
 
     def as_dict(self) -> dict[str, object]:
         return {
             "schema_version": "veridoc-llm-stability-evaluation/v0",
             "phase9_handoff": {
-                "stability_source": str(DEFAULT_LLM_STABILITY_RUNS),
-                "poc_comparison_source": str(DEFAULT_POC_COMPARISON),
+                "stability_source": str(self.stability_source),
+                "poc_comparison_source": str(self.poc_comparison_source),
                 "notes": (
                     "Public synthetic minimal harness for plan drift, schema/repair/"
                     "fallback rates, review/warning diffs, and external AI API guard "
@@ -954,6 +956,15 @@ def validate_llm_run_outcome(run: dict[str, Any], run_context: str) -> dict[str,
         raise EvaluationCaseError(
             f"{run_context}.outcome schema failures must be repaired or use deterministic fallback"
         )
+    if (
+        not normalized["schema_validation_passed"]
+        and normalized["repair_succeeded"]
+        and normalized["deterministic_fallback_used"]
+    ):
+        raise EvaluationCaseError(
+            f"{run_context}.outcome cannot both repair successfully and use "
+            "deterministic fallback"
+        )
     return normalized
 
 
@@ -1568,7 +1579,7 @@ def evaluate_poc_mode_comparison(
         high_risk_items = mode_record.get("high_risk_items")
         if not isinstance(high_risk_items, list) or not high_risk_items:
             raise EvaluationCaseError(f"{context}.high_risk_items must list high-risk checks")
-        warning_ids = validate_optional_text_list(
+        warning_ids = validate_text_list_allow_empty(
             mode_record.get("warnings"), f"{context}.warnings"
         )
 
@@ -1706,9 +1717,9 @@ def validate_text_list(value: object, context: str) -> tuple[str, ...]:
     return tuple(items)
 
 
-def validate_optional_text_list(value: object, context: str) -> tuple[str, ...]:
+def validate_text_list_allow_empty(value: object, context: str) -> tuple[str, ...]:
     if value is None:
-        return ()
+        raise EvaluationCaseError(f"{context} must be a list")
     if not isinstance(value, list):
         raise EvaluationCaseError(f"{context} must be a list")
     items: list[str] = []
@@ -2178,6 +2189,8 @@ def evaluate_llm_stability_report(
             load_json(resolved_comparison_path),
             repo_root=poc_repo_root,
         ),
+        stability_source=llm_stability_runs_path,
+        poc_comparison_source=poc_comparison_path,
     )
 
 
