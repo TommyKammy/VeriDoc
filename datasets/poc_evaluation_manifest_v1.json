@@ -1,0 +1,300 @@
+{
+  "schema_version": "veridoc-poc-evaluation-dataset/v1",
+  "title": "Phase 9 PoC representative evaluation dataset",
+  "fixture_manifest": "datasets/fixtures/manifest.json",
+  "source_policy": "public_synthetic_or_anonymized_only",
+  "confidential_source_documents_allowed": false,
+  "required_categories": [
+    "word",
+    "excel",
+    "text_pdf",
+    "scanned_pdf",
+    "record_pdf"
+  ],
+  "notes": [
+    "This manifest fixes the representative input set for Phase 9 PoC evaluation without adding real confidential documents.",
+    "Samples with dataset_status=manifest_placeholder reserve a required slot and must not be scored until a public, synthetic, or anonymized fixture is added.",
+    "The downstream evaluation harness can load this file and then resolve usable_fixture entries through datasets/fixtures/manifest.json."
+  ],
+  "samples": [
+    {
+      "id": "p9-word-001",
+      "category": "word",
+      "fixture_id": "word-to-excel-meeting-minutes",
+      "dataset_status": "usable_fixture",
+      "source_classification": "synthetic",
+      "conversion_mode": "word_to_excel",
+      "evaluation_focus": ["table extraction", "date text preservation", "blank cell handling"],
+      "expected_warning_or_review_focus": ["no warning expected for simple table structure"]
+    },
+    {
+      "id": "p9-word-002",
+      "category": "word",
+      "fixture_id": "word-to-excel-report",
+      "dataset_status": "usable_fixture",
+      "source_classification": "synthetic",
+      "conversion_mode": "word_to_excel",
+      "evaluation_focus": ["numeric value extraction", "date text preservation", "report table shape"],
+      "expected_warning_or_review_focus": ["review numeric coercion and date text"]
+    },
+    {
+      "id": "p9-word-003",
+      "category": "word",
+      "fixture_id": "word-to-excel-application",
+      "dataset_status": "usable_fixture",
+      "source_classification": "synthetic",
+      "conversion_mode": "word_to_excel",
+      "evaluation_focus": ["merged cell handling", "application form table extraction"],
+      "expected_warning_or_review_focus": ["merged cells require reviewer confirmation"]
+    },
+    {
+      "id": "p9-word-004",
+      "category": "word",
+      "fixture_id": null,
+      "dataset_status": "manifest_placeholder",
+      "availability_reason": "pending_synthetic_or_anonymized_fixture",
+      "source_classification": "synthetic",
+      "conversion_mode": "word_to_excel",
+      "evaluation_focus": ["multi-table Word document", "section heading carryover"],
+      "expected_warning_or_review_focus": ["review table boundary detection"]
+    },
+    {
+      "id": "p9-word-005",
+      "category": "word",
+      "fixture_id": null,
+      "dataset_status": "manifest_placeholder",
+      "availability_reason": "pending_synthetic_or_anonymized_fixture",
+      "source_classification": "synthetic",
+      "conversion_mode": "word_to_excel",
+      "evaluation_focus": ["form-like Word layout", "empty field preservation"],
+      "expected_warning_or_review_focus": ["review empty required fields"]
+    },
+    {
+      "id": "p9-excel-001",
+      "category": "excel",
+      "fixture_id": "excel-to-word-representative",
+      "dataset_status": "usable_fixture",
+      "source_classification": "synthetic",
+      "conversion_mode": "excel_to_word",
+      "evaluation_focus": ["multi-sheet workbook conversion", "typed value rendering", "sheet heading preservation"],
+      "expected_warning_or_review_focus": ["missing source bboxes require review"]
+    },
+    {
+      "id": "p9-excel-002",
+      "category": "excel",
+      "fixture_id": null,
+      "dataset_status": "manifest_placeholder",
+      "availability_reason": "pending_synthetic_or_anonymized_fixture",
+      "source_classification": "synthetic",
+      "conversion_mode": "excel_to_word",
+      "evaluation_focus": ["wide table workbook", "column order preservation"],
+      "expected_warning_or_review_focus": ["review truncated wide columns"]
+    },
+    {
+      "id": "p9-excel-003",
+      "category": "excel",
+      "fixture_id": null,
+      "dataset_status": "manifest_placeholder",
+      "availability_reason": "pending_synthetic_or_anonymized_fixture",
+      "source_classification": "synthetic",
+      "conversion_mode": "excel_to_word",
+      "evaluation_focus": ["ledger-style workbook", "numeric formatting preservation"],
+      "expected_warning_or_review_focus": ["review currency and decimal formatting"]
+    },
+    {
+      "id": "p9-excel-004",
+      "category": "excel",
+      "fixture_id": null,
+      "dataset_status": "manifest_placeholder",
+      "availability_reason": "pending_synthetic_or_anonymized_fixture",
+      "source_classification": "synthetic",
+      "conversion_mode": "excel_to_word",
+      "evaluation_focus": ["issue log workbook", "boolean and status value rendering"],
+      "expected_warning_or_review_focus": ["review status vocabulary mapping"]
+    },
+    {
+      "id": "p9-excel-005",
+      "category": "excel",
+      "fixture_id": null,
+      "dataset_status": "manifest_placeholder",
+      "availability_reason": "pending_synthetic_or_anonymized_fixture",
+      "source_classification": "synthetic",
+      "conversion_mode": "excel_to_word",
+      "evaluation_focus": ["sparse workbook", "empty row and column handling"],
+      "expected_warning_or_review_focus": ["review sparse range detection"]
+    },
+    {
+      "id": "p9-text-pdf-001",
+      "category": "text_pdf",
+      "fixture_id": "pdf-to-word-representative",
+      "dataset_status": "usable_fixture",
+      "source_classification": "synthetic",
+      "conversion_mode": "pdf_to_word",
+      "evaluation_focus": ["editable text reconstruction", "heading and paragraph preservation"],
+      "expected_warning_or_review_focus": ["layout fidelity is not guaranteed"]
+    },
+    {
+      "id": "p9-text-pdf-002",
+      "category": "text_pdf",
+      "fixture_id": "pdf-to-excel-table-report",
+      "dataset_status": "usable_fixture",
+      "source_classification": "synthetic",
+      "conversion_mode": "pdf_to_excel",
+      "evaluation_focus": ["ruled table extraction", "source comment preservation"],
+      "expected_warning_or_review_focus": ["xlsx artifact requires review when table candidate is unavailable"]
+    },
+    {
+      "id": "p9-text-pdf-003",
+      "category": "text_pdf",
+      "fixture_id": null,
+      "dataset_status": "manifest_placeholder",
+      "availability_reason": "pending_synthetic_or_anonymized_fixture",
+      "source_classification": "synthetic",
+      "conversion_mode": "pdf_to_word",
+      "evaluation_focus": ["two-page text PDF", "page break preservation"],
+      "expected_warning_or_review_focus": ["review cross-page paragraph joins"]
+    },
+    {
+      "id": "p9-text-pdf-004",
+      "category": "text_pdf",
+      "fixture_id": null,
+      "dataset_status": "manifest_placeholder",
+      "availability_reason": "pending_synthetic_or_anonymized_fixture",
+      "source_classification": "synthetic",
+      "conversion_mode": "pdf_to_excel",
+      "evaluation_focus": ["borderless table PDF", "column detection"],
+      "expected_warning_or_review_focus": ["review inferred table columns"]
+    },
+    {
+      "id": "p9-text-pdf-005",
+      "category": "text_pdf",
+      "fixture_id": null,
+      "dataset_status": "manifest_placeholder",
+      "availability_reason": "pending_synthetic_or_anonymized_fixture",
+      "source_classification": "synthetic",
+      "conversion_mode": "pdf_to_word",
+      "evaluation_focus": ["header and footer text", "body text ordering"],
+      "expected_warning_or_review_focus": ["review repeated header/footer removal"]
+    },
+    {
+      "id": "p9-text-pdf-006",
+      "category": "text_pdf",
+      "fixture_id": null,
+      "dataset_status": "manifest_placeholder",
+      "availability_reason": "pending_synthetic_or_anonymized_fixture",
+      "source_classification": "synthetic",
+      "conversion_mode": "pdf_to_excel",
+      "evaluation_focus": ["numeric PDF table", "decimal precision"],
+      "expected_warning_or_review_focus": ["review numeric coercion"]
+    },
+    {
+      "id": "p9-text-pdf-007",
+      "category": "text_pdf",
+      "fixture_id": null,
+      "dataset_status": "manifest_placeholder",
+      "availability_reason": "pending_synthetic_or_anonymized_fixture",
+      "source_classification": "synthetic",
+      "conversion_mode": "pdf_to_word",
+      "evaluation_focus": ["list-heavy PDF", "bullet ordering"],
+      "expected_warning_or_review_focus": ["review list indentation"]
+    },
+    {
+      "id": "p9-text-pdf-008",
+      "category": "text_pdf",
+      "fixture_id": null,
+      "dataset_status": "manifest_placeholder",
+      "availability_reason": "pending_synthetic_or_anonymized_fixture",
+      "source_classification": "synthetic",
+      "conversion_mode": "pdf_to_excel",
+      "evaluation_focus": ["summary table PDF", "blank cell preservation"],
+      "expected_warning_or_review_focus": ["review blank cells before confirmation"]
+    },
+    {
+      "id": "p9-text-pdf-009",
+      "category": "text_pdf",
+      "fixture_id": null,
+      "dataset_status": "manifest_placeholder",
+      "availability_reason": "pending_synthetic_or_anonymized_fixture",
+      "source_classification": "synthetic",
+      "conversion_mode": "pdf_to_word",
+      "evaluation_focus": ["mixed paragraph and table PDF", "block ordering"],
+      "expected_warning_or_review_focus": ["review table-to-paragraph transitions"]
+    },
+    {
+      "id": "p9-text-pdf-010",
+      "category": "text_pdf",
+      "fixture_id": null,
+      "dataset_status": "manifest_placeholder",
+      "availability_reason": "pending_synthetic_or_anonymized_fixture",
+      "source_classification": "synthetic",
+      "conversion_mode": "pdf_to_excel",
+      "evaluation_focus": ["small-font table PDF", "cell text completeness"],
+      "expected_warning_or_review_focus": ["review low-confidence cells"]
+    },
+    {
+      "id": "p9-scanned-pdf-001",
+      "category": "scanned_pdf",
+      "fixture_id": null,
+      "dataset_status": "manifest_placeholder",
+      "availability_reason": "pending_synthetic_or_anonymized_fixture",
+      "source_classification": "synthetic",
+      "conversion_mode": "pdf_to_word",
+      "evaluation_focus": ["OCR text layer absence", "review-only OCR boundary"],
+      "expected_warning_or_review_focus": ["OCR output must require review"]
+    },
+    {
+      "id": "p9-scanned-pdf-002",
+      "category": "scanned_pdf",
+      "fixture_id": null,
+      "dataset_status": "manifest_placeholder",
+      "availability_reason": "pending_synthetic_or_anonymized_fixture",
+      "source_classification": "synthetic",
+      "conversion_mode": "pdf_to_excel",
+      "evaluation_focus": ["scanned table OCR", "cell confidence propagation"],
+      "expected_warning_or_review_focus": ["low OCR confidence blocks auto-confirm"]
+    },
+    {
+      "id": "p9-scanned-pdf-003",
+      "category": "scanned_pdf",
+      "fixture_id": null,
+      "dataset_status": "manifest_placeholder",
+      "availability_reason": "pending_synthetic_or_anonymized_fixture",
+      "source_classification": "synthetic",
+      "conversion_mode": "pdf_to_word",
+      "evaluation_focus": ["rotated scan page", "page orientation handling"],
+      "expected_warning_or_review_focus": ["review rotated page extraction"]
+    },
+    {
+      "id": "p9-record-pdf-001",
+      "category": "record_pdf",
+      "fixture_id": "sample-document-ir-v0",
+      "dataset_status": "usable_fixture",
+      "source_classification": "synthetic",
+      "conversion_mode": "pdf_to_word",
+      "evaluation_focus": ["record excerpt field evidence", "high-risk label anchoring"],
+      "expected_warning_or_review_focus": ["high-risk fields require review"]
+    },
+    {
+      "id": "p9-record-pdf-002",
+      "category": "record_pdf",
+      "fixture_id": null,
+      "dataset_status": "manifest_placeholder",
+      "availability_reason": "pending_synthetic_or_anonymized_fixture",
+      "source_classification": "synthetic",
+      "conversion_mode": "pdf_to_word",
+      "evaluation_focus": ["batch record PDF", "signature field review"],
+      "expected_warning_or_review_focus": ["signature and approval fields require review"]
+    },
+    {
+      "id": "p9-record-pdf-003",
+      "category": "record_pdf",
+      "fixture_id": null,
+      "dataset_status": "manifest_placeholder",
+      "availability_reason": "pending_synthetic_or_anonymized_fixture",
+      "source_classification": "synthetic",
+      "conversion_mode": "pdf_to_excel",
+      "evaluation_focus": ["record table extraction", "deviation note preservation"],
+      "expected_warning_or_review_focus": ["deviation and exception notes require review"]
+    }
+  ]
+}
