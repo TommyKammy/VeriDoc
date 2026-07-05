@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -20,6 +21,7 @@ LLM_STABILITY_RUNS_PATH = REPO_ROOT / "datasets" / "gold" / "llm_stability_runs_
 POC_COMPARISON_PATH = REPO_ROOT / "datasets" / "gold" / "poc_mode_comparison_v1.json"
 GMP_ACCEPTANCE_PATH = REPO_ROOT / "datasets" / "gold" / "gmp_acceptance_v1.json"
 FIXTURE_MANIFEST_PATH = REPO_ROOT / "datasets" / "fixtures" / "manifest.json"
+POC_EVALUATION_MANIFEST_PATH = REPO_ROOT / "datasets" / "poc_evaluation_manifest_v1.json"
 
 
 spec = importlib.util.spec_from_file_location("evaluate_dataset", SCRIPT_PATH)
@@ -222,13 +224,13 @@ class EvaluateDatasetTest(unittest.TestCase):
     def test_p9_harness_runs_representative_manifest_entries_and_keeps_failures(
         self,
     ) -> None:
-        report = evaluate_dataset.evaluate_p9_harness(FIXTURE_MANIFEST_PATH)
+        report = evaluate_dataset.evaluate_p9_harness(POC_EVALUATION_MANIFEST_PATH)
         payload = report.as_dict()
 
         self.assertEqual(
             "veridoc-p9-poc-evaluation-harness/v0", payload["schema_version"]
         )
-        self.assertEqual(str(FIXTURE_MANIFEST_PATH), payload["dataset_manifest"])
+        self.assertEqual(str(POC_EVALUATION_MANIFEST_PATH), payload["dataset_manifest"])
         self.assertEqual(
             ["excel_to_word", "pdf_to_excel", "pdf_to_word", "word_to_excel"],
             payload["summary"]["conversion_modes"],
@@ -242,11 +244,13 @@ class EvaluateDatasetTest(unittest.TestCase):
         results = payload["results"]
         self.assertTrue(
             any(
-                result["conversion_mode"] == "word_to_excel"
+                result["sample_id"] == "p9-word-001"
+                and result["conversion_mode"] == "word_to_excel"
                 and result["llm_scenario"] == "no_llm"
                 and result["ir_generated"]
                 and result["artifact_generated"]
                 and result["audit_present"]
+                and result["artifact_expectations_met"]
                 and result["warnings_count"] >= 0
                 and result["review_items_count"] >= 0
                 and result["failure_reason"] is None
@@ -264,7 +268,7 @@ class EvaluateDatasetTest(unittest.TestCase):
             any(
                 result["representative_mode"] == "scanned_pdf_ocr"
                 and not result["ok"]
-                and result["failure_reason"] == "representative fixture path is unavailable"
+                and result["failure_reason"] == "pending_synthetic_or_anonymized_fixture"
                 for result in results
             )
         )
@@ -285,6 +289,130 @@ class EvaluateDatasetTest(unittest.TestCase):
         )
         self.assertGreater(payload["summary"]["case_count"], 0)
         self.assertIn("failure_reason", payload["results"][0])
+        self.assertEqual(
+            str(evaluate_dataset.DEFAULT_P9_HARNESS_MANIFEST),
+            payload["dataset_manifest"],
+        )
+
+    def test_p9_harness_counts_blocked_conversion_status_as_failure(self) -> None:
+        with tempfile.NamedTemporaryFile(suffix=".docx") as fixture_file:
+            fixture_file.write(b"fixture")
+            fixture_file.flush()
+            fixture = {
+                "id": "blocked-fixture",
+                "sample_id": "p9-blocked",
+                "path": "datasets/fixtures/word/blocked.docx",
+                "source_type": "word",
+                "format": "docx",
+                "conversion_mode": "word_to_excel",
+            }
+
+            with mock.patch(
+                "services.api.poc_web.convert_uploaded_document",
+                return_value={
+                    "status": "blocked",
+                    "document_ir": {"document": {"title": "blocked"}},
+                    "artifacts": [{"kind": "debug", "id": "debug-json"}],
+                    "warnings": ["primary artifact generation skipped"],
+                    "review_items": [],
+                    "audit": {
+                        "conversion_settings": {
+                            "use_llm": {"status": "disabled"},
+                            "use_ocr": {"status": "disabled"},
+                        },
+                        "conversion_plan": {"status": "disabled"},
+                    },
+                },
+            ):
+                result = evaluate_dataset.p9_conversion_result(
+                    fixture,
+                    fixture_path=Path(fixture_file.name),
+                    mode="word_to_excel",
+                    llm_scenario="no_llm",
+                )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("blocked", result["conversion_status"])
+        self.assertIn("conversion status blocked", str(result["failure_reason"]))
+        self.assertFalse(result["artifact_generated"])
+
+    def test_p9_harness_counts_artifact_expectation_mismatch_as_failure(self) -> None:
+        with tempfile.NamedTemporaryFile(suffix=".docx") as fixture_file:
+            fixture_file.write(b"fixture")
+            fixture_file.flush()
+            fixture = {
+                "id": "mismatch-fixture",
+                "sample_id": "p9-mismatch",
+                "path": "datasets/fixtures/word/mismatch.docx",
+                "source_type": "word",
+                "format": "docx",
+                "conversion_mode": "word_to_excel",
+                "word_to_excel_expectations": {"warnings": []},
+            }
+
+            with (
+                mock.patch(
+                    "services.api.poc_web.convert_uploaded_document",
+                    return_value={
+                        "status": "converted",
+                        "document_ir": {"document": {"title": "mismatch"}},
+                        "artifacts": [
+                            {
+                                "kind": "primary",
+                                "id": "primary-xlsx",
+                                "format": "xlsx",
+                                "content": b"not-an-xlsx",
+                            }
+                        ],
+                        "warnings": [],
+                        "review_items": [],
+                        "audit": {
+                            "conversion_settings": {
+                                "use_llm": {"status": "disabled"},
+                                "use_ocr": {"status": "disabled"},
+                            },
+                            "conversion_plan": {"status": "disabled"},
+                        },
+                    },
+                ),
+                mock.patch.object(
+                    evaluate_dataset,
+                    "p9_validate_artifact_expectations",
+                    return_value=["expected cell A1 did not match"],
+                ),
+            ):
+                result = evaluate_dataset.p9_conversion_result(
+                    fixture,
+                    fixture_path=Path(fixture_file.name),
+                    mode="word_to_excel",
+                    llm_scenario="no_llm",
+                )
+
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["artifact_expectations_met"])
+        self.assertEqual(["expected cell A1 did not match"], result["artifact_expectation_failures"])
+        self.assertIn("artifact expectation mismatch", str(result["failure_reason"]))
+
+    def test_p9_harness_with_gmp_acceptance_flag_does_not_crash(self) -> None:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT_PATH),
+                "--p9-harness",
+                "--gmp-acceptance",
+                str(GMP_ACCEPTANCE_PATH),
+            ],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        payload = json.loads(completed.stdout)
+
+        self.assertEqual(
+            "veridoc-p9-poc-evaluation-harness/v0", payload["schema_version"]
+        )
 
     def test_poc_mode_comparison_rejects_missing_required_mode_before_scoring(self) -> None:
         data = self.valid_poc_comparison_data()
