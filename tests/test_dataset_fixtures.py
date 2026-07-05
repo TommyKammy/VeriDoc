@@ -93,6 +93,9 @@ class DatasetFixturesTest(unittest.TestCase):
                     real_fixture_links.add(fixture_id)
                     if fixture["path"] is not None:
                         usable_fixture_paths_by_category[category].add(fixture["path"])
+                    if category == "text_pdf":
+                        self.assertEqual("pdf", fixture["format"])
+                        self.assertTrue(fixture["path"].endswith(".pdf"))
                     if category == "record_pdf":
                         self.assertEqual("pdf", fixture["format"])
                         self.assertTrue(fixture["path"].endswith(".pdf"))

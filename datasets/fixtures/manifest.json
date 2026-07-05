@@ -111,9 +111,10 @@
     {
       "id": "pdf-to-excel-table-report",
       "title": "Synthetic PDF-to-Excel table report fixture",
-      "path": "datasets/fixtures/pdf/pdf-to-excel-table-report.json",
+      "path": "datasets/fixtures/pdf/pdf-to-excel-ruled-table.pdf",
+      "report_path": "datasets/fixtures/pdf/pdf-to-excel-table-report.json",
       "source_type": "text_pdf",
-      "format": "pdf_table_report_json",
+      "format": "pdf",
       "anonymization": "synthetic",
       "confidentiality": "public",
       "public_review_safe": true,

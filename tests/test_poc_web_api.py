@@ -1694,12 +1694,14 @@ def test_pdf_to_excel_representative_table_fixture_renders_xlsx_artifact(
 
     for fixture in fixtures:
         fixture_path = REPO_ROOT / fixture["path"]
-        report = json.loads(fixture_path.read_text(encoding="utf-8"))
+        report_path = REPO_ROOT / fixture["report_path"]
+        report = json.loads(report_path.read_text(encoding="utf-8"))
         source_relative_path = Path(report["source_path"])
         assert not source_relative_path.is_absolute(), fixture["id"]
         assert _repo_tracks_path(source_relative_path), fixture["id"]
         source_path = REPO_ROOT / source_relative_path
         assert source_path.is_file(), fixture["id"]
+        assert fixture_path == source_path, fixture["id"]
         selected_candidate = next(
             candidate
             for candidate in report["candidates"]
@@ -1720,8 +1722,8 @@ def test_pdf_to_excel_representative_table_fixture_renders_xlsx_artifact(
         )
 
         result = convert_uploaded_document(
-            filename=fixture_path.name,
-            content=fixture_path.read_bytes(),
+            filename=report_path.name,
+            content=report_path.read_bytes(),
             conversion_mode="pdf_to_excel",
         )
 
