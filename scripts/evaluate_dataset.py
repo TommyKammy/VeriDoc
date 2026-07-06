@@ -10,9 +10,13 @@ import math
 import os
 import shlex
 import sys
+import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 from typing import Any
+from xml.etree import ElementTree
+from zipfile import ZipFile
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -25,10 +29,13 @@ DEFAULT_EVALUATION_CASES = Path("datasets/gold/evaluation_cases_v0.json")
 DEFAULT_LLM_STABILITY_RUNS = Path("datasets/gold/llm_stability_runs_v0.json")
 DEFAULT_POC_COMPARISON = Path("datasets/gold/poc_mode_comparison_v1.json")
 DEFAULT_GMP_ACCEPTANCE = Path("datasets/gold/gmp_acceptance_v1.json")
+DEFAULT_P9_HARNESS_MANIFEST = Path("datasets/poc_evaluation_manifest_v1.json")
 EVALUATION_CASES_SCHEMA_VERSION = "veridoc-evaluation-cases/v0"
 LLM_STABILITY_RUNS_SCHEMA_VERSION = "veridoc-llm-stability-runs/v0"
 POC_MODE_COMPARISON_SCHEMA_VERSION = "veridoc-poc-mode-comparison/v1"
 GMP_ACCEPTANCE_SCHEMA_VERSION = "veridoc-gmp-acceptance/v1"
+P9_HARNESS_SCHEMA_VERSION = "veridoc-p9-poc-evaluation-harness/v0"
+P9_EVALUATION_MANIFEST_SCHEMA_VERSION = "veridoc-poc-evaluation-dataset/v1"
 HIGH_RISK_LABELS_SCHEMA_VERSION = "veridoc-high-risk-labels/v0"
 FIXTURE_MANIFEST_SCHEMA_VERSION = "veridoc-eval-fixtures/v0"
 FIXTURE_SCHEMA_VERSION = "veridoc-evaluation-fixture/v0"
@@ -79,6 +86,45 @@ EXPECTED_SCOPE_PHASE = "phase0"
 PUBLIC_FIXTURE_ANONYMIZATION_VALUES = {"anonymized", "synthetic"}
 PUBLIC_LLM_STABILITY_SOURCE_KINDS = {"anonymized_text", "synthetic_text"}
 REQUIRED_POC_MODES = ("no_llm", "standard", "high_quality")
+P9_REPRESENTATIVE_FLAGS_BY_MODE = {
+    "word_to_excel": "word_to_excel_representative",
+    "excel_to_word": "excel_to_word_representative",
+    "pdf_to_excel": "pdf_to_excel_representative",
+    "pdf_to_word": "pdf_to_word_representative",
+    "scanned_pdf_ocr": "scanned_pdf_ocr_representative",
+}
+P9_EXPECTATION_KEYS_BY_MODE = {
+    "word_to_excel": "word_to_excel_expectations",
+    "excel_to_word": "excel_to_word_expectations",
+    "pdf_to_excel": "pdf_to_excel_expectations",
+    "pdf_to_word": "pdf_to_word_expectations",
+    "scanned_pdf_ocr": "scanned_pdf_ocr_expectations",
+}
+P9_CONVERSION_MODE_BY_MODE = {
+    "word_to_excel": "word_to_excel",
+    "excel_to_word": "excel_to_word",
+    "pdf_to_excel": "pdf_to_excel",
+    "pdf_to_word": "pdf_to_word",
+    "scanned_pdf_ocr": "pdf_to_word",
+}
+P9_PRIMARY_ARTIFACT_FORMAT_BY_CONVERSION_MODE = {
+    "word_to_excel": "xlsx",
+    "pdf_to_excel": "xlsx",
+    "excel_to_word": "docx",
+    "pdf_to_word": "docx",
+}
+P9_FIXTURE_SOURCE_TYPES_BY_CATEGORY = {
+    "word": frozenset(("word",)),
+    "excel": frozenset(("excel",)),
+    "text_pdf": frozenset(("text_pdf",)),
+    "record_pdf": frozenset(("record_excerpt",)),
+    "scanned_pdf": frozenset(("scanned_pdf",)),
+}
+P9_REQUIRED_SOURCE_CATEGORIES = frozenset(P9_FIXTURE_SOURCE_TYPES_BY_CATEGORY)
+P9_REPRESENTATIVE_FLAG_BY_CATEGORY = {
+    "record_pdf": "record_pdf_representative",
+}
+P9_LLM_SCENARIOS = ("no_llm", "llm_requested")
 REQUIRED_GMP_ACCEPTANCE_CRITERIA = (
     "high_risk_review",
     "missed_detection_zero",
@@ -242,6 +288,48 @@ class LLMStabilityEvaluationReport:
             },
             "llm_stability": self.llm_stability.as_dict(),
             "poc_mode_comparison": self.poc_mode_comparison.as_dict(),
+        }
+
+
+@dataclass(frozen=True)
+class P9HarnessReport:
+    manifest: Path
+    results: tuple[dict[str, object], ...]
+    llm_stability: LLMStabilityMetrics
+    poc_mode_comparison: PoCComparisonMetrics
+
+    @property
+    def failure_count(self) -> int:
+        return sum(1 for result in self.results if not result["ok"])
+
+    @property
+    def completed_count(self) -> int:
+        return sum(1 for result in self.results if result["ok"])
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": P9_HARNESS_SCHEMA_VERSION,
+            "dataset_manifest": str(self.manifest),
+            "summary": {
+                "case_count": len(self.results),
+                "completed_count": self.completed_count,
+                "failure_count": self.failure_count,
+                "conversion_modes": sorted(
+                    {str(result["conversion_mode"]) for result in self.results}
+                ),
+                "llm_scenarios": list(P9_LLM_SCENARIOS),
+                "external_ai_api_guard_violation_count": sum(
+                    1
+                    for result in self.results
+                    if result["external_ai_api_guard_violation"]
+                )
+                + self.llm_stability.external_ai_api_guard_violation_count,
+            },
+            "results": list(self.results),
+            "phase8_comparison": {
+                "llm_stability": self.llm_stability.as_dict(),
+                "poc_mode_comparison": self.poc_mode_comparison.as_dict(),
+            },
         }
 
 
@@ -598,6 +686,696 @@ def fixture_paths_from_manifest(
             raise EvaluationCaseError(f"fixture {fixture_id!r} path does not exist")
         fixture_paths[fixture_id] = resolved_fixture_path
     return fixture_paths
+
+
+def p9_manifest_repo_root(manifest_path: Path) -> Path:
+    for candidate in manifest_path.parents:
+        if (candidate / EXPECTED_DATASET_MANIFEST).is_file():
+            return candidate
+    if manifest_path.name == "poc_evaluation_manifest_v1.json" and manifest_path.parent.name == "datasets":
+        return manifest_path.parent.parent
+    return manifest_path.parent
+
+
+def p9_fixture_manifest_path(manifest: dict[str, Any], repo_root: Path) -> Path:
+    if manifest.get("schema_version") != P9_EVALUATION_MANIFEST_SCHEMA_VERSION:
+        raise EvaluationCaseError(
+            f"unsupported P9 evaluation manifest schema_version {manifest.get('schema_version')!r}"
+        )
+    fixture_manifest = manifest.get("fixture_manifest")
+    if fixture_manifest != str(EXPECTED_DATASET_MANIFEST):
+        raise EvaluationCaseError(
+            "P9 evaluation manifest fixture_manifest must be datasets/fixtures/manifest.json"
+        )
+    return repo_root / EXPECTED_DATASET_MANIFEST
+
+
+def p9_sample_representative_mode(sample: dict[str, Any]) -> str:
+    if sample.get("category") == "scanned_pdf":
+        return "scanned_pdf_ocr"
+    conversion_mode = sample.get("conversion_mode")
+    if isinstance(conversion_mode, str) and conversion_mode in P9_CONVERSION_MODE_BY_MODE:
+        return conversion_mode
+    raise EvaluationCaseError(
+        f"P9 sample {sample.get('id')!r} has unsupported conversion_mode {conversion_mode!r}"
+    )
+
+
+def p9_sample_conversion_mode(sample: dict[str, Any], representative_mode: str) -> str:
+    conversion_mode = sample.get("conversion_mode")
+    if isinstance(conversion_mode, str) and conversion_mode in P9_CONVERSION_MODE_BY_MODE:
+        return conversion_mode
+    return P9_CONVERSION_MODE_BY_MODE[representative_mode]
+
+
+def p9_required_representative_flag(
+    sample: dict[str, Any],
+    representative_mode: str,
+) -> str:
+    category = sample.get("category")
+    if isinstance(category, str) and category in P9_REPRESENTATIVE_FLAG_BY_CATEGORY:
+        return P9_REPRESENTATIVE_FLAG_BY_CATEGORY[category]
+    return P9_REPRESENTATIVE_FLAGS_BY_MODE[representative_mode]
+
+
+def p9_validate_representative_fixture_link(
+    sample: dict[str, Any],
+    fixture: dict[str, Any],
+    *,
+    representative_mode: str,
+) -> None:
+    sample_id = sample.get("id")
+    fixture_id = sample.get("fixture_id")
+    category = sample.get("category")
+    allowed_source_types = (
+        P9_FIXTURE_SOURCE_TYPES_BY_CATEGORY.get(category)
+        if isinstance(category, str)
+        else None
+    )
+    if (
+        allowed_source_types is not None
+        and fixture.get("source_type") not in allowed_source_types
+    ):
+        raise EvaluationCaseError(
+            f"P9 sample {sample_id!r} fixture {fixture_id!r} source_type "
+            f"{fixture.get('source_type')!r} does not match category {category!r}"
+        )
+    representative_flag = p9_required_representative_flag(sample, representative_mode)
+    if fixture.get(representative_flag) is not True:
+        raise EvaluationCaseError(
+            f"P9 sample {sample_id!r} fixture {fixture_id!r} must declare "
+            f"{representative_flag}"
+        )
+
+
+def p9_evaluation_samples(
+    p9_manifest: dict[str, Any],
+    fixture_manifest: dict[str, Any],
+) -> list[dict[str, Any]]:
+    samples = p9_manifest.get("samples")
+    if not isinstance(samples, list):
+        raise EvaluationCaseError("P9 evaluation manifest must define a samples list")
+    fixtures = fixture_manifest.get("fixtures")
+    if not isinstance(fixtures, list):
+        raise EvaluationCaseError("fixture manifest must define a fixtures list")
+    fixtures_by_id = {
+        fixture["id"]: fixture
+        for fixture in fixtures
+        if isinstance(fixture, dict) and isinstance(fixture.get("id"), str)
+    }
+
+    evaluation_samples: list[dict[str, Any]] = []
+    seen_sample_ids: set[str] = set()
+    observed_modes: set[str] = set()
+    observed_categories: set[str] = set()
+    for sample in samples:
+        if not isinstance(sample, dict):
+            raise EvaluationCaseError("each P9 evaluation sample needs an object")
+        sample_id = sample.get("id")
+        if not isinstance(sample_id, str) or not sample_id:
+            raise EvaluationCaseError("each P9 evaluation sample needs a string id")
+        if sample_id in seen_sample_ids:
+            raise EvaluationCaseError(f"duplicate P9 sample id {sample_id!r}")
+        seen_sample_ids.add(sample_id)
+        category = sample.get("category")
+        if category not in P9_REQUIRED_SOURCE_CATEGORIES:
+            raise EvaluationCaseError(
+                f"P9 sample {sample_id!r} has unsupported source category {category!r}"
+            )
+        representative_mode = p9_sample_representative_mode(sample)
+        conversion_mode = p9_sample_conversion_mode(sample, representative_mode)
+        observed_modes.add(representative_mode)
+        observed_categories.add(str(category))
+        fixture_id = sample.get("fixture_id")
+        fixture = fixtures_by_id.get(fixture_id) if isinstance(fixture_id, str) else None
+        if fixture is None:
+            if fixture_id is not None or sample.get("dataset_status") != "manifest_placeholder":
+                raise EvaluationCaseError(
+                    f"P9 sample {sample_id!r} must reference a fixture_manifest fixture"
+                )
+            continue
+        if fixture is not None:
+            p9_validate_representative_fixture_link(
+                sample,
+                fixture,
+                representative_mode=representative_mode,
+            )
+        merged = dict(fixture or {})
+        merged.update(
+            {
+                "sample_id": sample_id,
+                "sample_category": sample.get("category"),
+                "dataset_status": sample.get("dataset_status"),
+                "availability_reason": sample.get("availability_reason"),
+                "evaluation_focus": sample.get("evaluation_focus"),
+                "expected_warning_or_review_focus": sample.get(
+                    "expected_warning_or_review_focus"
+                ),
+                "fixture_id": fixture_id,
+                "representative_mode": representative_mode,
+                "conversion_mode": conversion_mode,
+            }
+        )
+        evaluation_samples.append(merged)
+
+    required_modes = set(P9_REPRESENTATIVE_FLAGS_BY_MODE)
+    missing_modes = sorted(required_modes - observed_modes)
+    if missing_modes:
+        raise EvaluationCaseError(
+            f"P9 evaluation manifest has no representative for {missing_modes[0]}"
+        )
+    required_categories_value = p9_manifest.get("required_categories")
+    if not isinstance(required_categories_value, list) or not all(
+        isinstance(category, str) for category in required_categories_value
+    ):
+        raise EvaluationCaseError(
+            "P9 evaluation manifest must declare required_categories"
+        )
+    required_categories = set(required_categories_value)
+    if required_categories != set(P9_REQUIRED_SOURCE_CATEGORIES):
+        expected_categories = sorted(P9_REQUIRED_SOURCE_CATEGORIES)
+        raise EvaluationCaseError(
+            "P9 evaluation manifest required_categories must match "
+            f"{expected_categories!r}"
+        )
+    missing_categories = sorted(P9_REQUIRED_SOURCE_CATEGORIES - observed_categories)
+    if missing_categories:
+        raise EvaluationCaseError(
+            "P9 evaluation manifest has no representative for source category "
+            f"{missing_categories[0]!r}"
+        )
+    return evaluation_samples
+
+
+def p9_result_for_unavailable_fixture(
+    fixture: dict[str, Any],
+    *,
+    mode: str,
+    llm_scenario: str,
+    failure_reason: str,
+) -> dict[str, object]:
+    conversion_mode = (
+        fixture.get("conversion_mode")
+        if isinstance(fixture.get("conversion_mode"), str)
+        else P9_CONVERSION_MODE_BY_MODE[mode]
+    )
+    return {
+        "sample_id": fixture.get("sample_id"),
+        "fixture_id": fixture.get("id"),
+        "source_fixture_id": fixture.get("fixture_id"),
+        "title": fixture.get("title"),
+        "source_type": fixture.get("source_type"),
+        "format": fixture.get("format"),
+        "path": fixture.get("path"),
+        "conversion_mode": conversion_mode,
+        "representative_mode": mode,
+        "llm_scenario": llm_scenario,
+        "llm_requested": llm_scenario == "llm_requested",
+        "ocr_requested": mode == "scanned_pdf_ocr",
+        "ok": False,
+        "ir_generated": False,
+        "artifact_generated": False,
+        "artifact_count": 0,
+        "warnings_count": 0,
+        "review_items_count": 0,
+        "audit_present": False,
+        "processing_time_ms": 0.0,
+        "failure_reason": failure_reason,
+        "llm_status": "not_run",
+        "llm_fallback_used": False,
+        "use_ocr_status": "not_run",
+        "external_ai_api_guard_violation": False,
+        "conversion_status": "not_run",
+        "artifact_expectations_met": False,
+        "artifact_expectation_failures": [],
+    }
+
+
+def p9_external_ai_api_guard_violation(audit: dict[str, Any] | None) -> bool:
+    if not isinstance(audit, dict):
+        return False
+    llm_audit = audit.get("llm")
+    if not isinstance(llm_audit, dict):
+        return False
+    if llm_audit.get("enabled") is not True:
+        return False
+    return llm_audit.get("base_url_type") != "local"
+
+
+def p9_expectations_for_mode(
+    fixture: dict[str, Any], representative_mode: str
+) -> dict[str, Any] | None:
+    key = P9_EXPECTATION_KEYS_BY_MODE.get(representative_mode)
+    if key is None:
+        return None
+    expectations = fixture.get(key)
+    return expectations if isinstance(expectations, dict) else None
+
+
+def p9_primary_artifact(artifacts: object) -> dict[str, Any] | None:
+    if not isinstance(artifacts, list):
+        return None
+    for artifact in artifacts:
+        if isinstance(artifact, dict) and artifact.get("kind") == "primary":
+            return artifact
+    return None
+
+
+def p9_xlsx_comments_by_ref(xlsx_path: Path) -> dict[str, str]:
+    namespace = {"xlsx": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    comments_by_ref: dict[str, str] = {}
+    with ZipFile(xlsx_path) as archive:
+        comment_names = [
+            name
+            for name in archive.namelist()
+            if (
+                name.startswith("xl/comments/comment")
+                or name.startswith("xl/comments")
+            )
+            and name.endswith(".xml")
+        ]
+        for comment_name in comment_names:
+            root = ElementTree.fromstring(archive.read(comment_name))
+            for comment in root.findall(".//xlsx:comment", namespace):
+                ref = comment.attrib.get("ref")
+                if not isinstance(ref, str):
+                    continue
+                text = "".join(
+                    text_node.text or ""
+                    for text_node in comment.findall(".//xlsx:t", namespace)
+                )
+                comments_by_ref[ref] = text
+    return comments_by_ref
+
+
+def p9_cell_row_index(ref: str) -> int:
+    digits = "".join(ch for ch in ref if ch.isdigit())
+    return int(digits) if digits else 0
+
+
+def p9_cell_column_label(ref: str) -> str:
+    return "".join(ch for ch in ref if ch.isalpha()).upper()
+
+
+def p9_validate_xlsx_artifact(
+    artifact_path: Path, expectations: dict[str, Any], fixture_id: object
+) -> list[str]:
+    from core.parsers.xlsx_extraction import extract_xlsx_structure
+
+    failures: list[str] = []
+    xlsx = extract_xlsx_structure(artifact_path)
+    if not xlsx.sheets:
+        return ["xlsx artifact has no sheets"]
+    sheet = xlsx.sheets[0]
+    cells = {cell.ref: (cell.value, cell.value_type) for cell in sheet.cells}
+    expected_dimension = expectations.get("dimension")
+    if isinstance(expected_dimension, str) and sheet.dimension != expected_dimension:
+        failures.append(
+            f"expected xlsx dimension {expected_dimension}, got {sheet.dimension}"
+        )
+    expected_cells = expectations.get("cells")
+    if isinstance(expected_cells, dict):
+        for ref, expected in expected_cells.items():
+            if not isinstance(ref, str) or not isinstance(expected, dict):
+                failures.append(f"fixture {fixture_id!r} has malformed cell expectation")
+                continue
+            expected_pair = (expected.get("value"), expected.get("value_type"))
+            if cells.get(ref) != expected_pair:
+                failures.append(
+                    f"expected cell {ref} {expected_pair!r}, got {cells.get(ref)!r}"
+                )
+    expected_row_count = expectations.get("row_count")
+    if isinstance(expected_row_count, int):
+        actual_row_count = len({p9_cell_row_index(cell.ref) for cell in sheet.cells})
+        if actual_row_count != expected_row_count:
+            failures.append(
+                f"expected {expected_row_count} xlsx rows, got {actual_row_count}"
+            )
+    min_column_count = expectations.get("min_column_count")
+    if isinstance(min_column_count, int):
+        actual_column_count = len({p9_cell_column_label(cell.ref) for cell in sheet.cells})
+        if actual_column_count < min_column_count:
+            failures.append(
+                f"expected at least {min_column_count} xlsx columns, got {actual_column_count}"
+            )
+    source_comment = expectations.get("source_comment")
+    table_start_row = None
+    if isinstance(source_comment, dict) and isinstance(source_comment.get("cell"), str):
+        table_start_row = p9_cell_row_index(source_comment["cell"])
+    table_cells = [
+        cell
+        for cell in sheet.cells
+        if table_start_row is None or p9_cell_row_index(cell.ref) >= table_start_row
+    ]
+    expected_table_row_count = expectations.get("table_row_count")
+    if isinstance(expected_table_row_count, int):
+        actual_table_row_count = len(
+            {p9_cell_row_index(cell.ref) for cell in table_cells}
+        )
+        if actual_table_row_count != expected_table_row_count:
+            failures.append(
+                f"expected {expected_table_row_count} table rows, got {actual_table_row_count}"
+            )
+    expected_table_column_count = expectations.get("table_column_count")
+    if isinstance(expected_table_column_count, int):
+        actual_table_column_count = len(
+            {p9_cell_column_label(cell.ref) for cell in table_cells}
+        )
+        if actual_table_column_count != expected_table_column_count:
+            failures.append(
+                "expected "
+                f"{expected_table_column_count} table columns, got "
+                f"{actual_table_column_count}"
+            )
+    if isinstance(source_comment, dict):
+        comment_ref = source_comment.get("cell")
+        contains = source_comment.get("contains")
+        comments_by_ref = p9_xlsx_comments_by_ref(artifact_path)
+        if not isinstance(comment_ref, str) or comment_ref not in comments_by_ref:
+            failures.append(f"expected source comment at {comment_ref!r}")
+        elif isinstance(contains, list):
+            comment_text = comments_by_ref[comment_ref]
+            for expected_text in contains:
+                if isinstance(expected_text, str) and expected_text not in comment_text:
+                    failures.append(
+                        f"expected source comment at {comment_ref} to contain {expected_text!r}"
+                    )
+    return failures
+
+
+def p9_validate_docx_artifact(
+    artifact_path: Path, expectations: dict[str, Any]
+) -> list[str]:
+    from core.parsers.docx_extraction import extract_docx_structure
+
+    failures: list[str] = []
+    docx = extract_docx_structure(artifact_path)
+    table_rows = [block.rows for block in docx.blocks if block.kind == "table"]
+    expected_table_rows = expectations.get("table_rows")
+    if isinstance(expected_table_rows, list) and table_rows != expected_table_rows:
+        failures.append("docx table rows did not match expectations")
+    expected_headings = expectations.get("heading_texts")
+    if isinstance(expected_headings, list):
+        headings = [block.text for block in docx.blocks if block.kind == "heading"]
+        if headings != expected_headings:
+            failures.append("docx heading texts did not match expectations")
+    expected_paragraphs = expectations.get("paragraph_texts")
+    if isinstance(expected_paragraphs, list):
+        paragraphs = [block.text for block in docx.blocks if block.kind == "paragraph"]
+        if paragraphs != expected_paragraphs:
+            failures.append("docx paragraph texts did not match expectations")
+    return failures
+
+
+def p9_validate_artifact_expectations(
+    *,
+    fixture: dict[str, Any],
+    conversion_mode: str,
+    representative_mode: str,
+    primary_artifact: dict[str, Any] | None,
+    warnings: object,
+) -> list[str]:
+    expectations = p9_expectations_for_mode(fixture, representative_mode)
+    failures: list[str] = []
+    expected_artifact_format = P9_PRIMARY_ARTIFACT_FORMAT_BY_CONVERSION_MODE.get(
+        conversion_mode
+    )
+    if primary_artifact is None:
+        if expected_artifact_format is not None:
+            return ["primary artifact is missing"]
+        return []
+    artifact_content = primary_artifact.get("content")
+    artifact_format = primary_artifact.get("format")
+    if not isinstance(artifact_content, bytes):
+        return ["primary artifact content is missing"]
+    artifact_format_mismatch = (
+        expected_artifact_format is not None
+        and artifact_format != expected_artifact_format
+    )
+    if artifact_format_mismatch:
+        failures.append(
+            "primary artifact format "
+            f"{artifact_format!r} did not match expected "
+            f"{expected_artifact_format!r} for {conversion_mode}"
+        )
+    if expectations is None:
+        return failures
+    expected_warnings = expectations.get("warnings")
+    if isinstance(expected_warnings, list):
+        warning_list = warnings if isinstance(warnings, list) else []
+        expected_warning_values = [
+            expected_warning
+            for expected_warning in expected_warnings
+            if isinstance(expected_warning, str)
+        ]
+        for expected_warning in expected_warnings:
+            if isinstance(expected_warning, str) and expected_warning not in warning_list:
+                failures.append(f"expected warning {expected_warning!r} was not emitted")
+        for actual_warning in warning_list:
+            if (
+                isinstance(actual_warning, str)
+                and actual_warning not in expected_warning_values
+            ):
+                failures.append(f"unexpected warning {actual_warning!r} was emitted")
+    if artifact_format_mismatch:
+        return failures
+    suffix = f".{artifact_format}" if isinstance(artifact_format, str) else ""
+    artifact_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as artifact_file:
+            artifact_file.write(artifact_content)
+            artifact_file.flush()
+            artifact_path = Path(artifact_file.name)
+
+        if artifact_format == "xlsx":
+            failures.extend(
+                p9_validate_xlsx_artifact(
+                    artifact_path, expectations, fixture.get("id")
+                )
+            )
+        elif artifact_format == "docx":
+            failures.extend(p9_validate_docx_artifact(artifact_path, expectations))
+    except Exception as exc:
+        failures.append(f"artifact validation failed: {type(exc).__name__}: {exc}")
+    finally:
+        if artifact_path is not None:
+            try:
+                artifact_path.unlink(missing_ok=True)
+            except OSError as exc:
+                failures.append(f"artifact cleanup failed: {type(exc).__name__}: {exc}")
+    return failures
+
+
+def p9_conversion_result(
+    fixture: dict[str, Any],
+    *,
+    fixture_path: Path,
+    mode: str,
+    llm_scenario: str,
+) -> dict[str, object]:
+    from services.api.poc_web import convert_uploaded_document
+
+    conversion_mode = (
+        fixture.get("conversion_mode")
+        if isinstance(fixture.get("conversion_mode"), str)
+        else P9_CONVERSION_MODE_BY_MODE[mode]
+    )
+    llm_requested = llm_scenario == "llm_requested"
+    ocr_requested = mode == "scanned_pdf_ocr"
+    started_at = time.perf_counter()
+    try:
+        converted = convert_uploaded_document(
+            filename=fixture_path.name,
+            content=fixture_path.read_bytes(),
+            conversion_mode=conversion_mode,
+            use_llm=llm_requested,
+            use_ocr=ocr_requested,
+        )
+        failure_reason = None
+    except Exception as exc:
+        elapsed_ms = (time.perf_counter() - started_at) * 1000
+        return {
+            **p9_result_for_unavailable_fixture(
+                fixture,
+                mode=mode,
+                llm_scenario=llm_scenario,
+                failure_reason=f"{type(exc).__name__}: {exc}",
+            ),
+            "processing_time_ms": round(elapsed_ms, 3),
+        }
+
+    elapsed_ms = (time.perf_counter() - started_at) * 1000
+    audit = converted.get("audit") if isinstance(converted.get("audit"), dict) else None
+    conversion_settings = audit.get("conversion_settings") if audit else None
+    conversion_settings_malformed = not isinstance(conversion_settings, dict)
+    if conversion_settings_malformed:
+        conversion_settings = {}
+    use_llm = conversion_settings.get("use_llm", {})
+    use_ocr = conversion_settings.get("use_ocr", {})
+    conversion_plan = audit.get("conversion_plan", {}) if audit else {}
+    external_ai_api_guard_violation = p9_external_ai_api_guard_violation(audit)
+    artifacts = converted.get("artifacts")
+    artifact_list = artifacts if isinstance(artifacts, list) else []
+    primary_artifact = p9_primary_artifact(artifact_list)
+    primary_artifact_count = sum(
+        1
+        for artifact in artifact_list
+        if isinstance(artifact, dict) and artifact.get("kind") == "primary"
+    )
+    warnings = converted.get("warnings", [])
+    review_items = converted.get("review_items", [])
+    conversion_status = converted.get("status")
+    ir_generated = isinstance(converted.get("document_ir"), dict)
+    audit_present = audit is not None
+    artifact_expectation_failures = p9_validate_artifact_expectations(
+        fixture=fixture,
+        conversion_mode=conversion_mode,
+        representative_mode=mode,
+        primary_artifact=primary_artifact,
+        warnings=warnings,
+    )
+    row_failures: list[str] = []
+    if conversion_status == "blocked":
+        row_failures.append("conversion status blocked")
+    elif conversion_status not in {"converted", "requires_review"}:
+        row_failures.append(
+            f"conversion status {conversion_status!r} is not a valid terminal status"
+        )
+    if not ir_generated:
+        row_failures.append("document IR missing")
+    if not audit_present:
+        row_failures.append("conversion audit missing")
+    if conversion_settings_malformed:
+        row_failures.append("conversion settings missing or malformed")
+    if external_ai_api_guard_violation:
+        row_failures.append("external AI API guard violation")
+    if primary_artifact_count > 1:
+        row_failures.append(
+            f"expected exactly one primary artifact, got {primary_artifact_count}"
+        )
+    if mode == "scanned_pdf_ocr":
+        use_ocr_status = use_ocr.get("status") if isinstance(use_ocr, dict) else None
+        if use_ocr_status != "enabled":
+            row_failures.append(f"OCR status {use_ocr_status!r} is not enabled")
+    if not isinstance(use_llm, dict):
+        row_failures.append(f"{llm_scenario} scenario LLM audit missing")
+    elif llm_scenario == "no_llm":
+        use_llm_status = use_llm.get("status")
+        if use_llm_status != "disabled":
+            row_failures.append(
+                f"no_llm scenario LLM status {use_llm_status!r} is not disabled"
+            )
+        elif use_llm.get("requested") is True or use_llm.get("enabled") is True:
+            row_failures.append("no_llm scenario used LLM")
+    elif llm_scenario == "llm_requested":
+        use_llm_status = use_llm.get("status")
+        llm_request_tracked = use_llm.get("requested") is True
+        llm_enabled = use_llm.get("enabled") is True
+        llm_blocked_fallback = (
+            use_llm_status == "blocked" and use_llm.get("enabled") is False
+        )
+        if not llm_request_tracked or not (llm_enabled or llm_blocked_fallback):
+            row_failures.append(
+                "llm_requested scenario LLM status "
+                f"{use_llm_status!r} did not request LLM"
+            )
+    if artifact_expectation_failures:
+        row_failures.append(
+            "artifact expectation mismatch: "
+            + "; ".join(artifact_expectation_failures[:3])
+        )
+    ok = not row_failures
+    if row_failures:
+        failure_reason = "; ".join(row_failures)
+    return {
+        "sample_id": fixture.get("sample_id"),
+        "fixture_id": fixture.get("id"),
+        "source_fixture_id": fixture.get("fixture_id"),
+        "title": fixture.get("title"),
+        "source_type": fixture.get("source_type"),
+        "format": fixture.get("format"),
+        "path": fixture.get("path"),
+        "conversion_mode": conversion_mode,
+        "representative_mode": mode,
+        "llm_scenario": llm_scenario,
+        "llm_requested": llm_requested,
+        "ocr_requested": ocr_requested,
+        "ok": ok,
+        "ir_generated": ir_generated,
+        "artifact_generated": primary_artifact_count > 0,
+        "artifact_count": len(artifact_list),
+        "warnings_count": len(warnings) if isinstance(warnings, list) else 0,
+        "review_items_count": len(review_items) if isinstance(review_items, list) else 0,
+        "audit_present": audit_present,
+        "processing_time_ms": round(elapsed_ms, 3),
+        "failure_reason": failure_reason,
+        "llm_status": use_llm.get("status") if isinstance(use_llm, dict) else None,
+        "llm_fallback_used": (
+            isinstance(conversion_plan, dict)
+            and conversion_plan.get("status") == "fallback"
+        ),
+        "use_ocr_status": use_ocr.get("status") if isinstance(use_ocr, dict) else None,
+        "external_ai_api_guard_violation": external_ai_api_guard_violation,
+        "conversion_status": conversion_status,
+        "artifact_expectations_met": not artifact_expectation_failures,
+        "artifact_expectation_failures": artifact_expectation_failures,
+    }
+
+
+def evaluate_p9_harness(
+    manifest_path: Path = DEFAULT_P9_HARNESS_MANIFEST,
+    *,
+    llm_stability_runs_path: Path = DEFAULT_LLM_STABILITY_RUNS,
+    poc_comparison_path: Path = DEFAULT_POC_COMPARISON,
+) -> P9HarnessReport:
+    resolved_manifest = manifest_path.resolve()
+    repo_root = p9_manifest_repo_root(resolved_manifest)
+    manifest = load_json(resolved_manifest)
+    fixture_manifest_path = p9_fixture_manifest_path(manifest, repo_root)
+    fixture_manifest = load_json(fixture_manifest_path)
+    fixture_paths = fixture_paths_from_manifest(fixture_manifest, repo_root)
+    representative_samples = p9_evaluation_samples(manifest, fixture_manifest)
+
+    results: list[dict[str, object]] = []
+    for fixture in representative_samples:
+        mode = str(fixture["representative_mode"])
+        fixture_id = fixture.get("id")
+        fixture_path = fixture_paths.get(fixture_id) if isinstance(fixture_id, str) else None
+        for llm_scenario in P9_LLM_SCENARIOS:
+            if fixture_path is None:
+                failure_reason = (
+                    str(fixture.get("availability_reason"))
+                    if fixture.get("availability_reason")
+                    else "representative fixture path is unavailable"
+                )
+                results.append(
+                    p9_result_for_unavailable_fixture(
+                        fixture,
+                        mode=mode,
+                        llm_scenario=llm_scenario,
+                        failure_reason=failure_reason,
+                    )
+                )
+                continue
+            results.append(
+                p9_conversion_result(
+                    fixture,
+                    fixture_path=fixture_path,
+                    mode=mode,
+                    llm_scenario=llm_scenario,
+                )
+            )
+
+    llm_report = evaluate_llm_stability_report(
+        llm_stability_runs_path,
+        poc_comparison_path,
+    )
+    return P9HarnessReport(
+        manifest=manifest_path,
+        results=tuple(results),
+        llm_stability=llm_report.llm_stability,
+        poc_mode_comparison=llm_report.poc_mode_comparison,
+    )
 
 
 def validated_cell_text(cell: dict[str, Any], context: str) -> str:
@@ -2224,10 +3002,29 @@ def main() -> int:
         type=Path,
         help="Report GMP-08 15.7 acceptance criteria from public synthetic records.",
     )
+    parser.add_argument(
+        "--p9-harness",
+        type=Path,
+        nargs="?",
+        const=DEFAULT_P9_HARNESS_MANIFEST,
+        help=(
+            "Run the Phase9 PoC conversion harness against representative "
+            "P9-01 fixture manifest entries."
+        ),
+    )
     args = parser.parse_args()
+    if args.p9_harness is not None and args.gmp_acceptance is not None:
+        parser.error("--p9-harness cannot be combined with --gmp-acceptance")
 
     try:
-        if args.gmp_acceptance is not None:
+        if args.p9_harness is not None:
+            metrics = evaluate_p9_harness(
+                args.p9_harness,
+                llm_stability_runs_path=args.llm_stability_runs
+                or DEFAULT_LLM_STABILITY_RUNS,
+                poc_comparison_path=args.poc_comparison or DEFAULT_POC_COMPARISON,
+            )
+        elif args.gmp_acceptance is not None:
             gmp_acceptance_path = args.gmp_acceptance.resolve()
             metrics = evaluate_gmp_acceptance(
                 load_json(gmp_acceptance_path),
@@ -2257,7 +3054,11 @@ def main() -> int:
         return 1
 
     print(json.dumps(metrics.as_dict(), indent=2, sort_keys=True))
-    if args.gmp_acceptance is not None and not metrics.target_met:
+    if (
+        args.p9_harness is None
+        and args.gmp_acceptance is not None
+        and not metrics.target_met
+    ):
         return 1
     return 0
 
