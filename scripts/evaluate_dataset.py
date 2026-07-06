@@ -346,6 +346,7 @@ class PoCAcceptanceReport:
     p9_harness: P9HarnessReport
     generated_at: str
     commit: str
+    commit_is_clean: bool = True
     generation_command: str = (
         "python3 scripts/evaluate_dataset.py --poc-acceptance-report"
     )
@@ -384,6 +385,7 @@ class PoCAcceptanceReport:
             P9_REQUIRED_SOURCE_CATEGORIES - observed_source_categories
         )
         external_violation_count = int(summary["external_ai_api_guard_violation_count"])
+        llm_scenario_failures = poc_acceptance_llm_scenario_failures(results)
         high_quality_mode = poc_acceptance_required_mode(
             poc_comparison,
             "high_quality",
@@ -403,10 +405,13 @@ class PoCAcceptanceReport:
         )
         llm_control_status = (
             "fail"
-            if external_violation_count
+            if external_violation_count or llm_scenario_failures
             else "unknown"
             if llm_stability.unstable_example_count
             else "pass"
+        )
+        reproducibility_status = (
+            "pass" if self.commit != "unknown" and self.commit_is_clean else "fail"
         )
         acceptance_matrix = [
             poc_acceptance_row(
@@ -447,10 +452,13 @@ class PoCAcceptanceReport:
                 (
                     "External AI API guard violations: "
                     f"{external_violation_count}; unstable LLM examples: "
-                    f"{llm_stability.unstable_example_count}."
+                    f"{llm_stability.unstable_example_count}; harness LLM "
+                    f"scenario failures: {len(llm_scenario_failures)}."
                 ),
                 [
                     "p9_harness.summary.external_ai_api_guard_violation_count",
+                    "p9_harness.results[].llm_scenario",
+                    "p9_harness.results[].llm_status",
                     "llm_stability.unstable_examples",
                 ],
             ),
@@ -508,10 +516,11 @@ class PoCAcceptanceReport:
             poc_acceptance_row(
                 "reproducibility",
                 "再現性",
-                "pass",
+                reproducibility_status,
                 (
                     "Report records commit, dataset manifest, comparison "
-                    "inputs, and the generation command."
+                    "inputs, and the generation command; commit is "
+                    f"{self.commit!r}; worktree clean: {self.commit_is_clean}."
                 ),
                 ["tested_environment", "evidence"],
             ),
@@ -526,6 +535,7 @@ class PoCAcceptanceReport:
             "generated_at": self.generated_at,
             "tested_environment": {
                 "commit": self.commit,
+                "commit_is_clean": self.commit_is_clean,
                 "python": platform.python_version(),
                 "platform": platform.platform(),
             },
@@ -1635,25 +1645,64 @@ def current_git_commit(repo_root: Path = REPO_ROOT) -> str:
     return commit if commit else "unknown"
 
 
+def current_git_worktree_clean(repo_root: Path = REPO_ROOT) -> bool:
+    try:
+        completed = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return False
+    return completed.stdout.strip() == ""
+
+
+def poc_acceptance_manifest_default_path(repo_root: Path, default_path: Path) -> Path:
+    if default_path.is_absolute():
+        return default_path
+    if repo_root.resolve() == REPO_ROOT.resolve():
+        return default_path
+    return repo_root / default_path
+
+
 def build_poc_acceptance_report(
     manifest_path: Path = DEFAULT_P9_HARNESS_MANIFEST,
     *,
-    llm_stability_runs_path: Path = DEFAULT_LLM_STABILITY_RUNS,
-    poc_comparison_path: Path = DEFAULT_POC_COMPARISON,
+    llm_stability_runs_path: Path | None = None,
+    poc_comparison_path: Path | None = None,
     generation_command: str = (
         "python3 scripts/evaluate_dataset.py --poc-acceptance-report"
     ),
 ) -> PoCAcceptanceReport:
+    manifest_repo_root = p9_manifest_repo_root(manifest_path.resolve())
+    resolved_llm_stability_runs_path = (
+        llm_stability_runs_path
+        if llm_stability_runs_path is not None
+        else poc_acceptance_manifest_default_path(
+            manifest_repo_root,
+            DEFAULT_LLM_STABILITY_RUNS,
+        )
+    )
+    resolved_poc_comparison_path = (
+        poc_comparison_path
+        if poc_comparison_path is not None
+        else poc_acceptance_manifest_default_path(
+            manifest_repo_root,
+            DEFAULT_POC_COMPARISON,
+        )
+    )
     p9_harness = evaluate_p9_harness(
         manifest_path,
-        llm_stability_runs_path=llm_stability_runs_path,
-        poc_comparison_path=poc_comparison_path,
+        llm_stability_runs_path=resolved_llm_stability_runs_path,
+        poc_comparison_path=resolved_poc_comparison_path,
     )
-    manifest_repo_root = p9_manifest_repo_root(manifest_path.resolve())
     return PoCAcceptanceReport(
         p9_harness=p9_harness,
         generated_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         commit=current_git_commit(manifest_repo_root),
+        commit_is_clean=current_git_worktree_clean(manifest_repo_root),
         generation_command=generation_command,
     )
 
@@ -1682,6 +1731,20 @@ def poc_acceptance_required_mode(
         if mode.mode == mode_name:
             return mode
     return None
+
+
+def poc_acceptance_llm_scenario_failures(
+    results: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    failures: list[dict[str, object]] = []
+    for result in results:
+        llm_scenario = result.get("llm_scenario")
+        if llm_scenario not in P9_LLM_SCENARIOS:
+            continue
+        reason = str(result.get("failure_reason") or "")
+        if f"{llm_scenario} scenario" in reason:
+            failures.append(result)
+    return failures
 
 
 def poc_acceptance_row(
@@ -3554,9 +3617,8 @@ def main() -> int:
         if args.poc_acceptance_report is not None:
             metrics = build_poc_acceptance_report(
                 args.poc_acceptance_report,
-                llm_stability_runs_path=args.llm_stability_runs
-                or DEFAULT_LLM_STABILITY_RUNS,
-                poc_comparison_path=args.poc_comparison or DEFAULT_POC_COMPARISON,
+                llm_stability_runs_path=args.llm_stability_runs,
+                poc_comparison_path=args.poc_comparison,
                 generation_command=poc_acceptance_generation_command(
                     manifest_path=args.poc_acceptance_report,
                     llm_stability_runs_path=args.llm_stability_runs,

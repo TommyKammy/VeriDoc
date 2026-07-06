@@ -58,6 +58,8 @@ class EvaluateDatasetTest(unittest.TestCase):
         source_linkage_rates: dict[str, float] | None = None,
         llm_stability_source: Path = Path("datasets/custom/llm_runs.json"),
         poc_comparison_source: Path = Path("datasets/custom/poc_comparison.json"),
+        commit: str = "test-commit",
+        commit_is_clean: bool = True,
     ) -> dict[str, object]:
         if results is None:
             representative_rows = (
@@ -144,7 +146,8 @@ class EvaluateDatasetTest(unittest.TestCase):
         report = evaluate_dataset.PoCAcceptanceReport(
             p9_harness=harness,
             generated_at="2026-01-01T00:00:00Z",
-            commit="test-commit",
+            commit=commit,
+            commit_is_clean=commit_is_clean,
         )
         return report.as_dict()
 
@@ -567,6 +570,29 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertEqual("fail", conditions["external_transmission"]["status"])
         self.assertEqual("fail", payload["overall_status"])
 
+    def test_poc_acceptance_report_fails_llm_control_on_harness_scenario_violation(
+        self,
+    ) -> None:
+        payload = self.poc_acceptance_payload()
+        results = list(payload["p9_harness_results"])
+        results[0] = {
+            **results[0],
+            "ok": False,
+            "llm_scenario": "no_llm",
+            "llm_status": "enabled",
+            "failure_reason": "no_llm scenario LLM status 'enabled' is not disabled",
+        }
+
+        payload = self.poc_acceptance_payload(results=results)
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual("fail", rows["llm_control"]["status"])
+        self.assertIn("harness LLM scenario failures: 1", rows["llm_control"]["evidence"])
+        self.assertIn(
+            "p9_harness.results[].llm_status",
+            rows["llm_control"]["evidence_refs"],
+        )
+
     def test_poc_acceptance_report_requires_representative_mode_coverage(
         self,
     ) -> None:
@@ -645,6 +671,16 @@ class EvaluateDatasetTest(unittest.TestCase):
             )
         )
 
+    def test_poc_acceptance_report_fails_reproducibility_without_clean_commit(
+        self,
+    ) -> None:
+        payload = self.poc_acceptance_payload(commit="unknown", commit_is_clean=False)
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual("fail", rows["reproducibility"]["status"])
+        self.assertEqual("unknown", payload["tested_environment"]["commit"])
+        self.assertFalse(payload["tested_environment"]["commit_is_clean"])
+
     def test_p9_harness_resolves_custom_manifest_under_datasets_from_repo_root(
         self,
     ) -> None:
@@ -695,6 +731,50 @@ class EvaluateDatasetTest(unittest.TestCase):
         payload = report.as_dict()
         self.assertEqual("manifest-head", payload["tested_environment"]["commit"])
         self.assertEqual(str(custom_manifest_path), payload["evidence"]["dataset_manifest"])
+
+    def test_poc_acceptance_report_resolves_implicit_comparison_inputs_from_manifest_repo(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            shutil.copytree(REPO_ROOT / "datasets", temp_root / "datasets")
+            custom_manifest_path = temp_root / "datasets" / "custom_p9_manifest.json"
+            shutil.copy2(POC_EVALUATION_MANIFEST_PATH, custom_manifest_path)
+            with (
+                mock.patch.object(
+                    evaluate_dataset,
+                    "current_git_commit",
+                    return_value="manifest-head",
+                ),
+                mock.patch.object(
+                    evaluate_dataset,
+                    "current_git_worktree_clean",
+                    return_value=True,
+                ),
+            ):
+                report = evaluate_dataset.build_poc_acceptance_report(
+                    custom_manifest_path,
+                )
+
+        payload = report.as_dict()
+        self.assertEqual(
+            str(
+                temp_root.resolve()
+                / "datasets"
+                / "gold"
+                / "llm_stability_runs_v0.json"
+            ),
+            payload["evidence"]["llm_stability_runs"],
+        )
+        self.assertEqual(
+            str(
+                temp_root.resolve()
+                / "datasets"
+                / "gold"
+                / "poc_mode_comparison_v1.json"
+            ),
+            payload["evidence"]["poc_mode_comparison"],
+        )
 
     def test_p9_harness_counts_blocked_conversion_status_as_failure(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".docx") as fixture_file:
