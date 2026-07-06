@@ -358,6 +358,21 @@ class EvaluateDatasetTest(unittest.TestCase):
         ):
             evaluate_dataset.p9_evaluation_samples(p9_manifest, fixture_manifest)
 
+    def test_p9_evaluation_samples_requires_source_categories(self) -> None:
+        p9_manifest = evaluate_dataset.load_json(POC_EVALUATION_MANIFEST_PATH)
+        fixture_manifest = evaluate_dataset.load_json(FIXTURE_MANIFEST_PATH)
+        p9_manifest["samples"] = [
+            sample
+            for sample in p9_manifest["samples"]
+            if sample.get("category") != "record_pdf"
+        ]
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError,
+            "source category 'record_pdf'",
+        ):
+            evaluate_dataset.p9_evaluation_samples(p9_manifest, fixture_manifest)
+
     def test_p9_harness_counts_artifact_expectation_mismatch_as_failure(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".docx") as fixture_file:
             fixture_file.write(b"fixture")
@@ -938,6 +953,68 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertEqual("enabled", result["llm_status"])
         self.assertIn(
             "no_llm scenario LLM status 'enabled' is not disabled",
+            str(result["failure_reason"]),
+        )
+
+    def test_p9_harness_enforces_llm_requested_scenario_uses_llm_path(self) -> None:
+        with tempfile.NamedTemporaryFile(suffix=".docx") as fixture_file:
+            fixture_file.write(b"fixture")
+            fixture_file.flush()
+            fixture = {
+                "id": "llm-request-ignored-fixture",
+                "sample_id": "p9-llm-request-ignored",
+                "path": "datasets/fixtures/word/llm-request-ignored.docx",
+                "source_type": "word",
+                "format": "docx",
+                "conversion_mode": "word_to_excel",
+            }
+            artifact_content = (
+                REPO_ROOT
+                / "datasets"
+                / "fixtures"
+                / "excel"
+                / "excel-to-word-representative.xlsx"
+            ).read_bytes()
+
+            with mock.patch(
+                "services.api.poc_web.convert_uploaded_document",
+                return_value={
+                    "status": "converted",
+                    "document_ir": {"document": {"title": "llm request ignored"}},
+                    "artifacts": [
+                        {
+                            "kind": "primary",
+                            "id": "primary-xlsx",
+                            "format": "xlsx",
+                            "content": artifact_content,
+                        }
+                    ],
+                    "warnings": [],
+                    "review_items": [],
+                    "audit": {
+                        "conversion_settings": {
+                            "use_llm": {
+                                "requested": False,
+                                "enabled": False,
+                                "status": "disabled",
+                            },
+                            "use_ocr": {"status": "disabled"},
+                        },
+                        "conversion_plan": {"status": "disabled"},
+                    },
+                },
+            ):
+                result = evaluate_dataset.p9_conversion_result(
+                    fixture,
+                    fixture_path=Path(fixture_file.name),
+                    mode="word_to_excel",
+                    llm_scenario="llm_requested",
+                )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("disabled", result["llm_status"])
+        self.assertIn(
+            "llm_requested scenario LLM status 'disabled' did not request LLM",
             str(result["failure_reason"]),
         )
 

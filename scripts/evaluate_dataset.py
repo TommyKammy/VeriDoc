@@ -120,6 +120,7 @@ P9_FIXTURE_SOURCE_TYPES_BY_CATEGORY = {
     "record_pdf": frozenset(("record_excerpt",)),
     "scanned_pdf": frozenset(("scanned_pdf",)),
 }
+P9_REQUIRED_SOURCE_CATEGORIES = frozenset(P9_FIXTURE_SOURCE_TYPES_BY_CATEGORY)
 P9_REPRESENTATIVE_FLAG_BY_CATEGORY = {
     "record_pdf": "record_pdf_representative",
 }
@@ -787,6 +788,11 @@ def p9_evaluation_samples(
         sample_id = sample.get("id")
         if not isinstance(sample_id, str) or not sample_id:
             raise EvaluationCaseError("each P9 evaluation sample needs a string id")
+        category = sample.get("category")
+        if category not in P9_REQUIRED_SOURCE_CATEGORIES:
+            raise EvaluationCaseError(
+                f"P9 sample {sample_id!r} has unsupported source category {category!r}"
+            )
         representative_mode = p9_sample_representative_mode(sample)
         conversion_mode = p9_sample_conversion_mode(sample, representative_mode)
         fixture_id = sample.get("fixture_id")
@@ -827,6 +833,31 @@ def p9_evaluation_samples(
     if missing_modes:
         raise EvaluationCaseError(
             f"P9 evaluation manifest has no representative for {missing_modes[0]}"
+        )
+    required_categories_value = p9_manifest.get("required_categories")
+    if not isinstance(required_categories_value, list) or not all(
+        isinstance(category, str) for category in required_categories_value
+    ):
+        raise EvaluationCaseError(
+            "P9 evaluation manifest must declare required_categories"
+        )
+    required_categories = set(required_categories_value)
+    if required_categories != set(P9_REQUIRED_SOURCE_CATEGORIES):
+        expected_categories = sorted(P9_REQUIRED_SOURCE_CATEGORIES)
+        raise EvaluationCaseError(
+            "P9 evaluation manifest required_categories must match "
+            f"{expected_categories!r}"
+        )
+    observed_categories = {
+        str(sample["sample_category"])
+        for sample in evaluation_samples
+        if isinstance(sample.get("sample_category"), str)
+    }
+    missing_categories = sorted(P9_REQUIRED_SOURCE_CATEGORIES - observed_categories)
+    if missing_categories:
+        raise EvaluationCaseError(
+            "P9 evaluation manifest has no representative for source category "
+            f"{missing_categories[0]!r}"
         )
     return evaluation_samples
 
@@ -1199,7 +1230,9 @@ def p9_conversion_result(
         use_ocr_status = use_ocr.get("status") if isinstance(use_ocr, dict) else None
         if use_ocr_status != "enabled":
             row_failures.append(f"OCR status {use_ocr_status!r} is not enabled")
-    if llm_scenario == "no_llm" and isinstance(use_llm, dict):
+    if not isinstance(use_llm, dict):
+        row_failures.append(f"{llm_scenario} scenario LLM audit missing")
+    elif llm_scenario == "no_llm":
         use_llm_status = use_llm.get("status")
         if use_llm_status != "disabled":
             row_failures.append(
@@ -1207,6 +1240,18 @@ def p9_conversion_result(
             )
         elif use_llm.get("requested") is True or use_llm.get("enabled") is True:
             row_failures.append("no_llm scenario used LLM")
+    elif llm_scenario == "llm_requested":
+        use_llm_status = use_llm.get("status")
+        llm_request_tracked = use_llm.get("requested") is True
+        llm_enabled = use_llm.get("enabled") is True
+        llm_blocked_fallback = (
+            use_llm_status == "blocked" and use_llm.get("enabled") is False
+        )
+        if not llm_request_tracked or not (llm_enabled or llm_blocked_fallback):
+            row_failures.append(
+                "llm_requested scenario LLM status "
+                f"{use_llm_status!r} did not request LLM"
+            )
     if artifact_expectation_failures:
         row_failures.append(
             "artifact expectation mismatch: "
