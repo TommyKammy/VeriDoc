@@ -301,6 +301,8 @@ class P9HarnessReport:
     results: tuple[dict[str, object], ...]
     llm_stability: LLMStabilityMetrics
     poc_mode_comparison: PoCComparisonMetrics
+    llm_stability_source: Path
+    poc_comparison_source: Path
 
     @property
     def failure_count(self) -> int:
@@ -331,6 +333,8 @@ class P9HarnessReport:
             },
             "results": list(self.results),
             "phase8_comparison": {
+                "llm_stability_source": str(self.llm_stability_source),
+                "poc_comparison_source": str(self.poc_comparison_source),
                 "llm_stability": self.llm_stability.as_dict(),
                 "poc_mode_comparison": self.poc_mode_comparison.as_dict(),
             },
@@ -360,12 +364,132 @@ class PoCAcceptanceReport:
             result for result in results if result.get("audit_present") is not True
         ]
         by_mode = poc_acceptance_conversion_mode_results(results)
-        external_violation_count = int(summary["external_ai_api_guard_violation_count"])
-        target_met = (
-            not failed_results
-            and poc_comparison.target_met
-            and external_violation_count == 0
+        observed_representative_modes = {
+            str(result.get("representative_mode"))
+            for result in results
+            if result.get("representative_mode") is not None
+        }
+        missing_representative_modes = sorted(
+            set(P9_REPRESENTATIVE_FLAGS_BY_MODE) - observed_representative_modes
         )
+        external_violation_count = int(summary["external_ai_api_guard_violation_count"])
+        functionality_status = (
+            "fail" if failed_results or missing_representative_modes else "pass"
+        )
+        llm_control_status = (
+            "fail"
+            if external_violation_count
+            else "unknown"
+            if llm_stability.unstable_example_count
+            else "pass"
+        )
+        acceptance_matrix = [
+            poc_acceptance_row(
+                "functionality",
+                "機能",
+                functionality_status,
+                (
+                    f"{summary['completed_count']} of {summary['case_count']} "
+                    "representative conversion runs completed without harness "
+                    "failures; missing representative modes: "
+                    f"{missing_representative_modes or 'none'}."
+                ),
+                [
+                    "p9_harness.summary.completed_count",
+                    "p9_harness.results",
+                    "p9_harness.results[].representative_mode",
+                ],
+            ),
+            poc_acceptance_row(
+                "structured_output",
+                "構造化",
+                "fail" if artifact_failures else "pass",
+                (
+                    f"{len(artifact_failures)} runs failed primary artifact "
+                    "expectations."
+                ),
+                ["p9_harness.results[].artifact_expectations_met"],
+            ),
+            poc_acceptance_row(
+                "llm_control",
+                "LLM制御",
+                llm_control_status,
+                (
+                    "External AI API guard violations: "
+                    f"{external_violation_count}; unstable LLM examples: "
+                    f"{llm_stability.unstable_example_count}."
+                ),
+                [
+                    "p9_harness.summary.external_ai_api_guard_violation_count",
+                    "llm_stability.unstable_examples",
+                ],
+            ),
+            poc_acceptance_row(
+                "traceability",
+                "追跡性",
+                "pass"
+                if max(mode.source_linkage_rate for mode in poc_comparison.modes)
+                >= 1.0
+                else "fail",
+                (
+                    "Best observed source linkage rate across PoC modes: "
+                    f"{max(mode.source_linkage_rate for mode in poc_comparison.modes):.3f}."
+                ),
+                ["poc_mode_comparison.modes[].source_linkage_rate"],
+            ),
+            poc_acceptance_row(
+                "safety",
+                "安全性",
+                "pass"
+                if (
+                    poc_comparison.high_risk_false_auto_confirmed_count
+                    <= poc_comparison.high_risk_false_auto_confirmed_target
+                    and external_violation_count == 0
+                )
+                else "fail",
+                (
+                    "High-risk false auto-confirmed count: "
+                    f"{poc_comparison.high_risk_false_auto_confirmed_count}; "
+                    f"target: {poc_comparison.high_risk_false_auto_confirmed_target}."
+                ),
+                [
+                    "poc_mode_comparison.high_risk_false_auto_confirmed_count",
+                    "p9_harness.summary.external_ai_api_guard_violation_count",
+                ],
+            ),
+            poc_acceptance_row(
+                "logs",
+                "ログ",
+                "fail" if unaudited_results else "pass",
+                f"{len(unaudited_results)} harness rows lacked audit evidence.",
+                ["p9_harness.results[].audit_present"],
+            ),
+            poc_acceptance_row(
+                "security",
+                "セキュリティ",
+                "unknown",
+                (
+                    "The report verifies no external AI API transmission in "
+                    "the captured evidence, but does not run an authenticated "
+                    "PoC API session."
+                ),
+                [
+                    "README.md Local PoC API authentication",
+                    "p9_harness.summary.external_ai_api_guard_violation_count",
+                ],
+            ),
+            poc_acceptance_row(
+                "reproducibility",
+                "再現性",
+                "pass",
+                (
+                    "Report records commit, dataset manifest, comparison "
+                    "inputs, and the generation command."
+                ),
+                ["tested_environment", "evidence"],
+            ),
+        ]
+        target_met = all(row["status"] == "pass" for row in acceptance_matrix)
 
         return {
             "schema_version": POC_ACCEPTANCE_REPORT_SCHEMA_VERSION,
@@ -380,118 +504,14 @@ class PoCAcceptanceReport:
             },
             "evidence": {
                 "dataset_manifest": str(self.p9_harness.manifest),
-                "llm_stability_runs": str(DEFAULT_LLM_STABILITY_RUNS),
-                "poc_mode_comparison": str(DEFAULT_POC_COMPARISON),
+                "llm_stability_runs": str(self.p9_harness.llm_stability_source),
+                "poc_mode_comparison": str(self.p9_harness.poc_comparison_source),
                 "generation_command": (
                     "python3 scripts/evaluate_dataset.py --poc-acceptance-report"
                 ),
             },
             "overall_status": "pass" if target_met else "fail",
-            "acceptance_matrix": [
-                poc_acceptance_row(
-                    "functionality",
-                    "機能",
-                    "fail" if failed_results else "pass",
-                    (
-                        f"{summary['completed_count']} of {summary['case_count']} "
-                        "representative conversion runs completed without harness failures."
-                    ),
-                    ["p9_harness.summary.completed_count", "p9_harness.results"],
-                ),
-                poc_acceptance_row(
-                    "structured_output",
-                    "構造化",
-                    "fail" if artifact_failures else "pass",
-                    (
-                        f"{len(artifact_failures)} runs failed primary artifact "
-                        "expectations."
-                    ),
-                    ["p9_harness.results[].artifact_expectations_met"],
-                ),
-                poc_acceptance_row(
-                    "llm_control",
-                    "LLM制御",
-                    "unknown"
-                    if llm_stability.unstable_example_count
-                    else "pass",
-                    (
-                        "External AI API guard violations: "
-                        f"{external_violation_count}; unstable LLM examples: "
-                        f"{llm_stability.unstable_example_count}."
-                    ),
-                    [
-                        "p9_harness.summary.external_ai_api_guard_violation_count",
-                        "llm_stability.unstable_examples",
-                    ],
-                ),
-                poc_acceptance_row(
-                    "traceability",
-                    "追跡性",
-                    "pass"
-                    if max(
-                        mode.source_linkage_rate
-                        for mode in poc_comparison.modes
-                    )
-                    >= 1.0
-                    else "fail",
-                    (
-                        "Best observed source linkage rate across PoC modes: "
-                        f"{max(mode.source_linkage_rate for mode in poc_comparison.modes):.3f}."
-                    ),
-                    ["poc_mode_comparison.modes[].source_linkage_rate"],
-                ),
-                poc_acceptance_row(
-                    "safety",
-                    "安全性",
-                    "pass"
-                    if (
-                        poc_comparison.high_risk_false_auto_confirmed_count
-                        <= poc_comparison.high_risk_false_auto_confirmed_target
-                        and external_violation_count == 0
-                    )
-                    else "fail",
-                    (
-                        "High-risk false auto-confirmed count: "
-                        f"{poc_comparison.high_risk_false_auto_confirmed_count}; "
-                        f"target: {poc_comparison.high_risk_false_auto_confirmed_target}."
-                    ),
-                    [
-                        "poc_mode_comparison.high_risk_false_auto_confirmed_count",
-                        "p9_harness.summary.external_ai_api_guard_violation_count",
-                    ],
-                ),
-                poc_acceptance_row(
-                    "logs",
-                    "ログ",
-                    "fail" if unaudited_results else "pass",
-                    f"{len(unaudited_results)} harness rows lacked audit evidence.",
-                    ["p9_harness.results[].audit_present"],
-                ),
-                poc_acceptance_row(
-                    "security",
-                    "セキュリティ",
-                    "unknown",
-                    (
-                        "The report verifies no external AI API transmission in "
-                        "the captured evidence, but does not run an authenticated "
-                        "PoC API session."
-                    ),
-                    [
-                        "README.md Local PoC API authentication",
-                        "p9_harness.summary.external_ai_api_guard_violation_count",
-                    ],
-                ),
-                poc_acceptance_row(
-                    "reproducibility",
-                    "再現性",
-                    "pass",
-                    (
-                        "Report records commit, dataset manifest, comparison "
-                        "inputs, and the generation command."
-                    ),
-                    ["tested_environment", "evidence"],
-                ),
-            ],
+            "acceptance_matrix": acceptance_matrix,
             "fail_closed_conditions": poc_acceptance_fail_closed_conditions(
                 external_violation_count=external_violation_count,
                 poc_comparison=poc_comparison,
@@ -1564,6 +1584,8 @@ def evaluate_p9_harness(
         results=tuple(results),
         llm_stability=llm_report.llm_stability,
         poc_mode_comparison=llm_report.poc_mode_comparison,
+        llm_stability_source=llm_stability_runs_path,
+        poc_comparison_source=poc_comparison_path,
     )
 
 

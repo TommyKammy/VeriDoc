@@ -48,6 +48,92 @@ class EvaluateDatasetTest(unittest.TestCase):
     def valid_high_risk_labels_data(self) -> dict[str, object]:
         return copy.deepcopy(evaluate_dataset.load_json(HIGH_RISK_LABELS_PATH))
 
+    def poc_acceptance_payload(
+        self,
+        *,
+        results: list[dict[str, object]] | None = None,
+        llm_external_violation_count: int = 0,
+        unstable_example_count: int = 0,
+        llm_stability_source: Path = Path("datasets/custom/llm_runs.json"),
+        poc_comparison_source: Path = Path("datasets/custom/poc_comparison.json"),
+    ) -> dict[str, object]:
+        if results is None:
+            results = [
+                {
+                    "sample_id": f"sample-{representative_mode}",
+                    "conversion_mode": evaluate_dataset.P9_CONVERSION_MODE_BY_MODE[
+                        representative_mode
+                    ],
+                    "representative_mode": representative_mode,
+                    "llm_scenario": "no_llm",
+                    "ok": True,
+                    "artifact_expectations_met": True,
+                    "audit_present": True,
+                    "external_ai_api_guard_violation": False,
+                }
+                for representative_mode in evaluate_dataset.P9_REPRESENTATIVE_FLAGS_BY_MODE
+            ]
+        llm_stability = evaluate_dataset.LLMStabilityMetrics(
+            input_id="synthetic-report-test",
+            run_count=1,
+            plan_agreement_rate=1.0,
+            confirmed_value_agreement_rate=1.0,
+            schema_failure_rate=0.0,
+            repair_success_rate=1.0,
+            deterministic_fallback_rate=0.0,
+            external_ai_api_guard_violation_count=llm_external_violation_count,
+            distinct_plan_count=1,
+            distinct_confirmed_value_count=1,
+            unstable_example_count=unstable_example_count,
+            unstable_examples=(
+                {"run_id": "run-002", "changed": "conversion_plan"},
+            )
+            if unstable_example_count
+            else (),
+        )
+        poc_comparison = evaluate_dataset.PoCComparisonMetrics(
+            mode_count=len(evaluate_dataset.REQUIRED_POC_MODES),
+            high_risk_false_auto_confirmed_count=0,
+            high_risk_false_auto_confirmed_target=0,
+            target_met=True,
+            manual_correction_time=evaluate_dataset.ManualCorrectionTimeMetrics(
+                measurement_method="synthetic",
+                baseline_minutes=10.0,
+                assisted_minutes=4.0,
+                reduction_minutes=6.0,
+                reduction_rate=0.6,
+                target_reduction_rate=0.5,
+                target_met=True,
+            ),
+            modes=tuple(
+                evaluate_dataset.PoCModeMetrics(
+                    mode=mode,
+                    table_extraction_rate=1.0,
+                    cell_match_rate=1.0,
+                    source_linkage_rate=1.0,
+                    high_risk_false_auto_confirmed_count=0,
+                    requires_review_count=0,
+                    warning_count=0,
+                )
+                for mode in evaluate_dataset.REQUIRED_POC_MODES
+            ),
+            mode_diffs=(),
+        )
+        harness = evaluate_dataset.P9HarnessReport(
+            manifest=Path("datasets/custom/p9_manifest.json"),
+            results=tuple(results),
+            llm_stability=llm_stability,
+            poc_mode_comparison=poc_comparison,
+            llm_stability_source=llm_stability_source,
+            poc_comparison_source=poc_comparison_source,
+        )
+        report = evaluate_dataset.PoCAcceptanceReport(
+            p9_harness=harness,
+            generated_at="2026-01-01T00:00:00Z",
+            commit="test-commit",
+        )
+        return report.as_dict()
+
     def prepare_gmp_acceptance_repo(self, temp_root: Path) -> None:
         shutil.copytree(REPO_ROOT / "datasets", temp_root / "datasets")
         (temp_root / "docs").mkdir()
@@ -343,6 +429,68 @@ class EvaluateDatasetTest(unittest.TestCase):
                 for condition in payload["fail_closed_conditions"]
             )
         )
+
+    def test_poc_acceptance_report_treats_unknown_criteria_as_non_passing(
+        self,
+    ) -> None:
+        payload = self.poc_acceptance_payload()
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual("unknown", rows["security"]["status"])
+        self.assertEqual("fail", payload["overall_status"])
+
+    def test_poc_acceptance_report_preserves_custom_evidence_paths(self) -> None:
+        llm_stability_source = Path("datasets/custom/stability_runs.json")
+        poc_comparison_source = Path("datasets/custom/comparison.json")
+
+        payload = self.poc_acceptance_payload(
+            llm_stability_source=llm_stability_source,
+            poc_comparison_source=poc_comparison_source,
+        )
+
+        self.assertEqual(
+            str(llm_stability_source), payload["evidence"]["llm_stability_runs"]
+        )
+        self.assertEqual(
+            str(poc_comparison_source), payload["evidence"]["poc_mode_comparison"]
+        )
+
+    def test_poc_acceptance_report_fails_llm_control_on_external_transmission(
+        self,
+    ) -> None:
+        payload = self.poc_acceptance_payload(llm_external_violation_count=1)
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        conditions = {
+            condition["condition_id"]: condition
+            for condition in payload["fail_closed_conditions"]
+        }
+        self.assertEqual("fail", rows["llm_control"]["status"])
+        self.assertEqual("fail", conditions["external_transmission"]["status"])
+        self.assertEqual("fail", payload["overall_status"])
+
+    def test_poc_acceptance_report_requires_representative_mode_coverage(
+        self,
+    ) -> None:
+        results = [
+            {
+                "sample_id": "sample-word-to-excel",
+                "conversion_mode": "word_to_excel",
+                "representative_mode": "word_to_excel",
+                "llm_scenario": "no_llm",
+                "ok": True,
+                "artifact_expectations_met": True,
+                "audit_present": True,
+                "external_ai_api_guard_violation": False,
+            }
+        ]
+
+        payload = self.poc_acceptance_payload(results=results)
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual("fail", rows["functionality"]["status"])
+        self.assertIn("missing representative modes", rows["functionality"]["evidence"])
+        self.assertEqual("fail", payload["overall_status"])
 
     def test_p9_harness_resolves_custom_manifest_under_datasets_from_repo_root(
         self,
