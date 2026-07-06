@@ -689,6 +689,9 @@ def fixture_paths_from_manifest(
 
 
 def p9_manifest_repo_root(manifest_path: Path) -> Path:
+    for candidate in manifest_path.parents:
+        if (candidate / EXPECTED_DATASET_MANIFEST).is_file():
+            return candidate
     if manifest_path.name == "poc_evaluation_manifest_v1.json" and manifest_path.parent.name == "datasets":
         return manifest_path.parent.parent
     return manifest_path.parent
@@ -782,12 +785,16 @@ def p9_evaluation_samples(
     }
 
     evaluation_samples: list[dict[str, Any]] = []
+    seen_sample_ids: set[str] = set()
     for sample in samples:
         if not isinstance(sample, dict):
             raise EvaluationCaseError("each P9 evaluation sample needs an object")
         sample_id = sample.get("id")
         if not isinstance(sample_id, str) or not sample_id:
             raise EvaluationCaseError("each P9 evaluation sample needs a string id")
+        if sample_id in seen_sample_ids:
+            raise EvaluationCaseError(f"duplicate P9 sample id {sample_id!r}")
+        seen_sample_ids.add(sample_id)
         category = sample.get("category")
         if category not in P9_REQUIRED_SOURCE_CATEGORIES:
             raise EvaluationCaseError(
@@ -1191,10 +1198,14 @@ def p9_conversion_result(
 
     elapsed_ms = (time.perf_counter() - started_at) * 1000
     audit = converted.get("audit") if isinstance(converted.get("audit"), dict) else None
-    conversion_settings = audit.get("conversion_settings", {}) if audit else {}
+    conversion_settings = audit.get("conversion_settings") if audit else None
+    conversion_settings_malformed = not isinstance(conversion_settings, dict)
+    if conversion_settings_malformed:
+        conversion_settings = {}
     use_llm = conversion_settings.get("use_llm", {})
     use_ocr = conversion_settings.get("use_ocr", {})
     conversion_plan = audit.get("conversion_plan", {}) if audit else {}
+    external_ai_api_guard_violation = p9_external_ai_api_guard_violation(audit)
     artifacts = converted.get("artifacts")
     artifact_list = artifacts if isinstance(artifacts, list) else []
     primary_artifact = p9_primary_artifact(artifact_list)
@@ -1218,10 +1229,18 @@ def p9_conversion_result(
     row_failures: list[str] = []
     if conversion_status == "blocked":
         row_failures.append("conversion status blocked")
+    elif conversion_status not in {"converted", "requires_review"}:
+        row_failures.append(
+            f"conversion status {conversion_status!r} is not a valid terminal status"
+        )
     if not ir_generated:
         row_failures.append("document IR missing")
     if not audit_present:
         row_failures.append("conversion audit missing")
+    if conversion_settings_malformed:
+        row_failures.append("conversion settings missing or malformed")
+    if external_ai_api_guard_violation:
+        row_failures.append("external AI API guard violation")
     if primary_artifact_count > 1:
         row_failures.append(
             f"expected exactly one primary artifact, got {primary_artifact_count}"
@@ -1288,7 +1307,7 @@ def p9_conversion_result(
             and conversion_plan.get("status") == "fallback"
         ),
         "use_ocr_status": use_ocr.get("status") if isinstance(use_ocr, dict) else None,
-        "external_ai_api_guard_violation": p9_external_ai_api_guard_violation(audit),
+        "external_ai_api_guard_violation": external_ai_api_guard_violation,
         "conversion_status": conversion_status,
         "artifact_expectations_met": not artifact_expectation_failures,
         "artifact_expectation_failures": artifact_expectation_failures,

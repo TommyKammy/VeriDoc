@@ -294,6 +294,29 @@ class EvaluateDatasetTest(unittest.TestCase):
             payload["dataset_manifest"],
         )
 
+    def test_p9_harness_resolves_custom_manifest_under_datasets_from_repo_root(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            shutil.copytree(REPO_ROOT / "datasets", temp_root / "datasets")
+            custom_manifest_path = temp_root / "datasets" / "custom_p9_manifest.json"
+            shutil.copy2(POC_EVALUATION_MANIFEST_PATH, custom_manifest_path)
+
+            report = evaluate_dataset.evaluate_p9_harness(
+                custom_manifest_path,
+                llm_stability_runs_path=(
+                    temp_root / "datasets" / "gold" / "llm_stability_runs_v0.json"
+                ),
+                poc_comparison_path=(
+                    temp_root / "datasets" / "gold" / "poc_mode_comparison_v1.json"
+                ),
+            )
+
+        payload = report.as_dict()
+        self.assertEqual(str(custom_manifest_path), payload["dataset_manifest"])
+        self.assertGreater(payload["summary"]["case_count"], 0)
+
     def test_p9_harness_counts_blocked_conversion_status_as_failure(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".docx") as fixture_file:
             fixture_file.write(b"fixture")
@@ -336,6 +359,63 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertIn("conversion status blocked", str(result["failure_reason"]))
         self.assertFalse(result["artifact_generated"])
 
+    def test_p9_harness_rejects_invalid_conversion_status(self) -> None:
+        with tempfile.NamedTemporaryFile(suffix=".docx") as fixture_file:
+            fixture_file.write(b"fixture")
+            fixture_file.flush()
+            fixture = {
+                "id": "invalid-status-fixture",
+                "sample_id": "p9-invalid-status",
+                "path": "datasets/fixtures/word/invalid-status.docx",
+                "source_type": "word",
+                "format": "docx",
+                "conversion_mode": "word_to_excel",
+            }
+            artifact_content = (
+                REPO_ROOT
+                / "datasets"
+                / "fixtures"
+                / "excel"
+                / "excel-to-word-representative.xlsx"
+            ).read_bytes()
+
+            with mock.patch(
+                "services.api.poc_web.convert_uploaded_document",
+                return_value={
+                    "status": "done",
+                    "document_ir": {"document": {"title": "invalid status"}},
+                    "artifacts": [
+                        {
+                            "kind": "primary",
+                            "id": "primary-xlsx",
+                            "format": "xlsx",
+                            "content": artifact_content,
+                        }
+                    ],
+                    "warnings": [],
+                    "review_items": [],
+                    "audit": {
+                        "conversion_settings": {
+                            "use_llm": {"status": "disabled"},
+                            "use_ocr": {"status": "disabled"},
+                        },
+                        "conversion_plan": {"status": "disabled"},
+                    },
+                },
+            ):
+                result = evaluate_dataset.p9_conversion_result(
+                    fixture,
+                    fixture_path=Path(fixture_file.name),
+                    mode="word_to_excel",
+                    llm_scenario="no_llm",
+                )
+
+        self.assertFalse(result["ok"])
+        self.assertIn(
+            "conversion status 'done' is not a valid terminal status",
+            str(result["failure_reason"]),
+        )
+
     def test_p9_evaluation_samples_rejects_non_representative_fixture_link(self) -> None:
         p9_manifest = evaluate_dataset.load_json(POC_EVALUATION_MANIFEST_PATH)
         fixture_manifest = evaluate_dataset.load_json(FIXTURE_MANIFEST_PATH)
@@ -370,6 +450,19 @@ class EvaluateDatasetTest(unittest.TestCase):
         with self.assertRaisesRegex(
             evaluate_dataset.EvaluationCaseError,
             "source category 'record_pdf'",
+        ):
+            evaluate_dataset.p9_evaluation_samples(p9_manifest, fixture_manifest)
+
+    def test_p9_evaluation_samples_rejects_duplicate_sample_ids(self) -> None:
+        p9_manifest = evaluate_dataset.load_json(POC_EVALUATION_MANIFEST_PATH)
+        fixture_manifest = evaluate_dataset.load_json(FIXTURE_MANIFEST_PATH)
+        duplicate_sample = copy.deepcopy(p9_manifest["samples"][0])
+        duplicate_sample["fixture_id"] = p9_manifest["samples"][1]["fixture_id"]
+        p9_manifest["samples"].insert(1, duplicate_sample)
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError,
+            "duplicate P9 sample id",
         ):
             evaluate_dataset.p9_evaluation_samples(p9_manifest, fixture_manifest)
 
@@ -955,6 +1048,126 @@ class EvaluateDatasetTest(unittest.TestCase):
             "no_llm scenario LLM status 'enabled' is not disabled",
             str(result["failure_reason"]),
         )
+
+    def test_p9_harness_rejects_malformed_conversion_settings_as_row_failure(
+        self,
+    ) -> None:
+        with tempfile.NamedTemporaryFile(suffix=".docx") as fixture_file:
+            fixture_file.write(b"fixture")
+            fixture_file.flush()
+            fixture = {
+                "id": "malformed-settings-fixture",
+                "sample_id": "p9-malformed-settings",
+                "path": "datasets/fixtures/word/malformed-settings.docx",
+                "source_type": "word",
+                "format": "docx",
+                "conversion_mode": "word_to_excel",
+            }
+            artifact_content = (
+                REPO_ROOT
+                / "datasets"
+                / "fixtures"
+                / "excel"
+                / "excel-to-word-representative.xlsx"
+            ).read_bytes()
+
+            with mock.patch(
+                "services.api.poc_web.convert_uploaded_document",
+                return_value={
+                    "status": "converted",
+                    "document_ir": {"document": {"title": "malformed settings"}},
+                    "artifacts": [
+                        {
+                            "kind": "primary",
+                            "id": "primary-xlsx",
+                            "format": "xlsx",
+                            "content": artifact_content,
+                        }
+                    ],
+                    "warnings": [],
+                    "review_items": [],
+                    "audit": {
+                        "conversion_settings": ["not", "a", "mapping"],
+                        "conversion_plan": {"status": "disabled"},
+                    },
+                },
+            ):
+                result = evaluate_dataset.p9_conversion_result(
+                    fixture,
+                    fixture_path=Path(fixture_file.name),
+                    mode="word_to_excel",
+                    llm_scenario="no_llm",
+                )
+
+        self.assertFalse(result["ok"])
+        self.assertIn(
+            "conversion settings missing or malformed",
+            str(result["failure_reason"]),
+        )
+        self.assertNotIn("AttributeError", str(result["failure_reason"]))
+
+    def test_p9_harness_fails_rows_with_external_ai_guard_violation(self) -> None:
+        with tempfile.NamedTemporaryFile(suffix=".docx") as fixture_file:
+            fixture_file.write(b"fixture")
+            fixture_file.flush()
+            fixture = {
+                "id": "external-ai-fixture",
+                "sample_id": "p9-external-ai",
+                "path": "datasets/fixtures/word/external-ai.docx",
+                "source_type": "word",
+                "format": "docx",
+                "conversion_mode": "word_to_excel",
+            }
+            artifact_content = (
+                REPO_ROOT
+                / "datasets"
+                / "fixtures"
+                / "excel"
+                / "excel-to-word-representative.xlsx"
+            ).read_bytes()
+
+            with mock.patch(
+                "services.api.poc_web.convert_uploaded_document",
+                return_value={
+                    "status": "converted",
+                    "document_ir": {"document": {"title": "external ai"}},
+                    "artifacts": [
+                        {
+                            "kind": "primary",
+                            "id": "primary-xlsx",
+                            "format": "xlsx",
+                            "content": artifact_content,
+                        }
+                    ],
+                    "warnings": [],
+                    "review_items": [],
+                    "audit": {
+                        "conversion_settings": {
+                            "use_llm": {
+                                "requested": True,
+                                "enabled": True,
+                                "status": "enabled",
+                            },
+                            "use_ocr": {"status": "disabled"},
+                        },
+                        "conversion_plan": {"status": "enabled"},
+                        "llm": {
+                            "enabled": True,
+                            "base_url_type": "external",
+                        },
+                    },
+                },
+            ):
+                result = evaluate_dataset.p9_conversion_result(
+                    fixture,
+                    fixture_path=Path(fixture_file.name),
+                    mode="word_to_excel",
+                    llm_scenario="llm_requested",
+                )
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["external_ai_api_guard_violation"])
+        self.assertIn("external AI API guard violation", str(result["failure_reason"]))
 
     def test_p9_harness_enforces_llm_requested_scenario_uses_llm_path(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".docx") as fixture_file:
