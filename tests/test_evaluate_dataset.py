@@ -500,6 +500,42 @@ class EvaluateDatasetTest(unittest.TestCase):
             [mode["mode"] for mode in payload["poc_mode_comparison"]["modes"]],
         )
 
+    def test_poc_acceptance_report_fail_closed_matrix_keeps_backing_evidence(
+        self,
+    ) -> None:
+        payload = self.poc_acceptance_payload()
+        results = list(payload["p9_harness_results"])
+        for result in results:
+            if result["sample_category"] == "record_pdf":
+                result["sample_category"] = "text_pdf"
+                break
+
+        payload = self.poc_acceptance_payload(
+            results=results,
+            unstable_example_count=1,
+        )
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual("fail", rows["functionality"]["status"])
+        self.assertIn("record_pdf", rows["functionality"]["evidence"])
+        self.assertIn(
+            "p9_harness.results[].sample_category",
+            rows["functionality"]["evidence_refs"],
+        )
+        self.assertEqual("unknown", rows["llm_control"]["status"])
+        self.assertEqual("unknown", rows["security"]["status"])
+        self.assertEqual("fail", payload["overall_status"])
+        self.assertTrue(
+            all(
+                "artifact_expectations_met" in result and "audit_present" in result
+                for result in payload["p9_harness_results"]
+            )
+        )
+        self.assertEqual(
+            ["no_llm", "standard", "high_quality"],
+            [mode["mode"] for mode in payload["poc_mode_comparison"]["modes"]],
+        )
+
     def test_poc_acceptance_report_fails_llm_control_on_external_transmission(
         self,
     ) -> None:
