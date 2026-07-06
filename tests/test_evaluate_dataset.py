@@ -454,6 +454,66 @@ class EvaluateDatasetTest(unittest.TestCase):
         )
         self.assertIn("artifact expectation mismatch", str(result["failure_reason"]))
 
+    def test_p9_harness_rejects_primary_artifact_format_mismatch(self) -> None:
+        with tempfile.NamedTemporaryFile(suffix=".docx") as fixture_file:
+            fixture_file.write(b"fixture")
+            fixture_file.flush()
+            fixture = {
+                "id": "wrong-format-fixture",
+                "sample_id": "p9-wrong-format",
+                "path": "datasets/fixtures/word/wrong-format.docx",
+                "source_type": "word",
+                "format": "docx",
+                "conversion_mode": "word_to_excel",
+                "word_to_excel_expectations": {
+                    "cells": {
+                        "A1": {
+                            "value": "Expected header",
+                            "value_type": "inline_string",
+                        }
+                    }
+                },
+            }
+
+            with mock.patch(
+                "services.api.poc_web.convert_uploaded_document",
+                return_value={
+                    "status": "converted",
+                    "document_ir": {"document": {"title": "wrong format"}},
+                    "artifacts": [
+                        {
+                            "kind": "primary",
+                            "id": "primary-docx",
+                            "format": "docx",
+                            "content": b"not-a-workbook",
+                        }
+                    ],
+                    "warnings": [],
+                    "review_items": [],
+                    "audit": {
+                        "conversion_settings": {
+                            "use_llm": {"status": "disabled"},
+                            "use_ocr": {"status": "disabled"},
+                        },
+                        "conversion_plan": {"status": "disabled"},
+                    },
+                },
+            ):
+                result = evaluate_dataset.p9_conversion_result(
+                    fixture,
+                    fixture_path=Path(fixture_file.name),
+                    mode="word_to_excel",
+                    llm_scenario="no_llm",
+                )
+
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["artifact_expectations_met"])
+        self.assertIn(
+            "primary artifact format 'docx' did not match expected 'xlsx'",
+            str(result["artifact_expectation_failures"]),
+        )
+        self.assertIn("artifact expectation mismatch", str(result["failure_reason"]))
+
     def test_p9_harness_rejects_gmp_acceptance_flag_combination(self) -> None:
         completed = subprocess.run(
             [

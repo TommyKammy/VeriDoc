@@ -107,6 +107,12 @@ P9_CONVERSION_MODE_BY_MODE = {
     "pdf_to_word": "pdf_to_word",
     "scanned_pdf_ocr": "pdf_to_word",
 }
+P9_PRIMARY_ARTIFACT_FORMAT_BY_CONVERSION_MODE = {
+    "word_to_excel": "xlsx",
+    "pdf_to_excel": "xlsx",
+    "excel_to_word": "docx",
+    "pdf_to_word": "docx",
+}
 P9_LLM_SCENARIOS = ("no_llm", "llm_requested")
 REQUIRED_GMP_ACCEPTANCE_CRITERIA = (
     "high_risk_review",
@@ -978,12 +984,27 @@ def p9_validate_artifact_expectations(
     artifact_format = primary_artifact.get("format")
     if not isinstance(artifact_content, bytes):
         return ["primary artifact content is missing"]
+    expected_artifact_format = P9_PRIMARY_ARTIFACT_FORMAT_BY_CONVERSION_MODE.get(
+        conversion_mode
+    )
+    artifact_format_mismatch = (
+        expected_artifact_format is not None
+        and artifact_format != expected_artifact_format
+    )
+    if artifact_format_mismatch:
+        failures.append(
+            "primary artifact format "
+            f"{artifact_format!r} did not match expected "
+            f"{expected_artifact_format!r} for {conversion_mode}"
+        )
     expected_warnings = expectations.get("warnings")
     if isinstance(expected_warnings, list):
         warning_list = warnings if isinstance(warnings, list) else []
         for expected_warning in expected_warnings:
             if isinstance(expected_warning, str) and expected_warning not in warning_list:
                 failures.append(f"expected warning {expected_warning!r} was not emitted")
+    if artifact_format_mismatch:
+        return failures
     suffix = f".{artifact_format}" if isinstance(artifact_format, str) else ""
     try:
         with tempfile.NamedTemporaryFile(suffix=suffix) as artifact_file:
