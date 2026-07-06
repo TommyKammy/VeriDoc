@@ -292,6 +292,58 @@ class EvaluateDatasetTest(unittest.TestCase):
             payload["dataset_manifest"],
         )
 
+    def test_poc_acceptance_report_cli_maps_15_2_criteria(self) -> None:
+        completed = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "--poc-acceptance-report"],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        payload = json.loads(completed.stdout)
+
+        self.assertEqual(
+            "veridoc-poc-acceptance-report/v0", payload["schema_version"]
+        )
+        self.assertEqual("15.2_PoC受入基準", payload["criteria_source"])
+        self.assertEqual(
+            str(evaluate_dataset.DEFAULT_P9_HARNESS_MANIFEST),
+            payload["evidence"]["dataset_manifest"],
+        )
+        self.assertIn("commit", payload["tested_environment"])
+        self.assertEqual(
+            [
+                "functionality",
+                "structured_output",
+                "llm_control",
+                "traceability",
+                "safety",
+                "logs",
+                "security",
+                "reproducibility",
+            ],
+            [row["criterion_id"] for row in payload["acceptance_matrix"]],
+        )
+        self.assertTrue(
+            all(row["status"] in {"pass", "fail", "unknown"} for row in payload["acceptance_matrix"])
+        )
+        self.assertTrue(
+            any(row["status"] == "fail" for row in payload["acceptance_matrix"])
+        )
+        self.assertIn("conversion_mode_results", payload)
+        self.assertIn("llm_stability_comparison", payload)
+        self.assertIn("review_ui_observations", payload)
+        self.assertIn("known_limitations", payload)
+        self.assertIn("follow_up_issue_candidates", payload)
+        self.assertTrue(
+            any(
+                condition["condition_id"] == "external_transmission"
+                and condition["status"] == "pass"
+                for condition in payload["fail_closed_conditions"]
+            )
+        )
+
     def test_p9_harness_resolves_custom_manifest_under_datasets_from_repo_root(
         self,
     ) -> None:
