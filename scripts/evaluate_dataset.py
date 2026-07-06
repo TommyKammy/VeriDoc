@@ -346,6 +346,9 @@ class PoCAcceptanceReport:
     p9_harness: P9HarnessReport
     generated_at: str
     commit: str
+    generation_command: str = (
+        "python3 scripts/evaluate_dataset.py --poc-acceptance-report"
+    )
 
     def as_dict(self) -> dict[str, object]:
         harness_payload = self.p9_harness.as_dict()
@@ -372,9 +375,31 @@ class PoCAcceptanceReport:
         missing_representative_modes = sorted(
             set(P9_REPRESENTATIVE_FLAGS_BY_MODE) - observed_representative_modes
         )
+        observed_source_categories = {
+            str(result.get("sample_category"))
+            for result in results
+            if result.get("sample_category") is not None
+        }
+        missing_source_categories = sorted(
+            P9_REQUIRED_SOURCE_CATEGORIES - observed_source_categories
+        )
         external_violation_count = int(summary["external_ai_api_guard_violation_count"])
+        high_quality_mode = poc_acceptance_required_mode(
+            poc_comparison,
+            "high_quality",
+        )
+        high_quality_source_linkage_rate = (
+            high_quality_mode.source_linkage_rate if high_quality_mode else 0.0
+        )
         functionality_status = (
-            "fail" if failed_results or missing_representative_modes else "pass"
+            "fail"
+            if (
+                failed_results
+                or missing_representative_modes
+                or missing_source_categories
+                or not poc_comparison.manual_correction_time.target_met
+            )
+            else "pass"
         )
         llm_control_status = (
             "fail"
@@ -392,12 +417,17 @@ class PoCAcceptanceReport:
                     f"{summary['completed_count']} of {summary['case_count']} "
                     "representative conversion runs completed without harness "
                     "failures; missing representative modes: "
-                    f"{missing_representative_modes or 'none'}."
+                    f"{missing_representative_modes or 'none'}; missing source "
+                    f"categories: {missing_source_categories or 'none'}; manual "
+                    "correction target met: "
+                    f"{poc_comparison.manual_correction_time.target_met}."
                 ),
                 [
                     "p9_harness.summary.completed_count",
                     "p9_harness.results",
                     "p9_harness.results[].representative_mode",
+                    "p9_harness.results[].sample_category",
+                    "poc_mode_comparison.manual_correction_time.target_met",
                 ],
             ),
             poc_acceptance_row(
@@ -427,13 +457,10 @@ class PoCAcceptanceReport:
             poc_acceptance_row(
                 "traceability",
                 "追跡性",
-                "pass"
-                if max(mode.source_linkage_rate for mode in poc_comparison.modes)
-                >= 1.0
-                else "fail",
+                "pass" if high_quality_source_linkage_rate >= 1.0 else "fail",
                 (
-                    "Best observed source linkage rate across PoC modes: "
-                    f"{max(mode.source_linkage_rate for mode in poc_comparison.modes):.3f}."
+                    "High-quality PoC source linkage rate: "
+                    f"{high_quality_source_linkage_rate:.3f}."
                 ),
                 ["poc_mode_comparison.modes[].source_linkage_rate"],
             ),
@@ -506,9 +533,7 @@ class PoCAcceptanceReport:
                 "dataset_manifest": str(self.p9_harness.manifest),
                 "llm_stability_runs": str(self.p9_harness.llm_stability_source),
                 "poc_mode_comparison": str(self.p9_harness.poc_comparison_source),
-                "generation_command": (
-                    "python3 scripts/evaluate_dataset.py --poc-acceptance-report"
-                ),
+                "generation_command": self.generation_command,
             },
             "overall_status": "pass" if target_met else "fail",
             "acceptance_matrix": acceptance_matrix,
@@ -521,6 +546,8 @@ class PoCAcceptanceReport:
             ),
             "conversion_mode_results": by_mode,
             "llm_stability_comparison": llm_stability.as_dict(),
+            "poc_mode_comparison": poc_comparison.as_dict(),
+            "p9_harness_results": results,
             "review_ui_observations": {
                 "mode_diffs": list(poc_comparison.mode_diffs),
                 "manual_correction_time": poc_comparison.manual_correction_time.as_dict(),
@@ -537,6 +564,7 @@ class PoCAcceptanceReport:
                 failed_results,
                 llm_stability,
                 unaudited_results,
+                poc_comparison,
             ),
             "p9_harness_summary": summary,
         }
@@ -1093,6 +1121,7 @@ def p9_result_for_unavailable_fixture(
         "fixture_id": fixture.get("id"),
         "source_fixture_id": fixture.get("fixture_id"),
         "title": fixture.get("title"),
+        "sample_category": fixture.get("sample_category"),
         "source_type": fixture.get("source_type"),
         "format": fixture.get("format"),
         "path": fixture.get("path"),
@@ -1501,6 +1530,7 @@ def p9_conversion_result(
         "fixture_id": fixture.get("id"),
         "source_fixture_id": fixture.get("fixture_id"),
         "title": fixture.get("title"),
+        "sample_category": fixture.get("sample_category"),
         "source_type": fixture.get("source_type"),
         "format": fixture.get("format"),
         "path": fixture.get("path"),
@@ -1609,6 +1639,9 @@ def build_poc_acceptance_report(
     *,
     llm_stability_runs_path: Path = DEFAULT_LLM_STABILITY_RUNS,
     poc_comparison_path: Path = DEFAULT_POC_COMPARISON,
+    generation_command: str = (
+        "python3 scripts/evaluate_dataset.py --poc-acceptance-report"
+    ),
 ) -> PoCAcceptanceReport:
     return PoCAcceptanceReport(
         p9_harness=evaluate_p9_harness(
@@ -1618,7 +1651,34 @@ def build_poc_acceptance_report(
         ),
         generated_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         commit=current_git_commit(),
+        generation_command=generation_command,
     )
+
+
+def poc_acceptance_generation_command(
+    *,
+    manifest_path: Path,
+    llm_stability_runs_path: Path | None,
+    poc_comparison_path: Path | None,
+) -> str:
+    command = ["python3", "scripts/evaluate_dataset.py", "--poc-acceptance-report"]
+    if manifest_path != DEFAULT_P9_HARNESS_MANIFEST:
+        command.append(str(manifest_path))
+    if llm_stability_runs_path is not None:
+        command.extend(["--llm-stability-runs", str(llm_stability_runs_path)])
+    if poc_comparison_path is not None:
+        command.extend(["--poc-comparison", str(poc_comparison_path)])
+    return shlex.join(command)
+
+
+def poc_acceptance_required_mode(
+    poc_comparison: PoCComparisonMetrics,
+    mode_name: str,
+) -> PoCModeMetrics | None:
+    for mode in poc_comparison.modes:
+        if mode.mode == mode_name:
+            return mode
+    return None
 
 
 def poc_acceptance_row(
@@ -1787,6 +1847,7 @@ def poc_acceptance_follow_up_candidates(
     failed_results: list[dict[str, object]],
     llm_stability: LLMStabilityMetrics,
     unaudited_results: list[dict[str, object]],
+    poc_comparison: PoCComparisonMetrics,
 ) -> list[dict[str, str]]:
     candidates: list[dict[str, str]] = []
     if failed_results:
@@ -1811,6 +1872,17 @@ def poc_acceptance_follow_up_candidates(
             {
                 "title": "Require audit evidence for all P9 harness outcomes",
                 "reason": f"{len(unaudited_results)} rows lacked audit evidence.",
+            }
+        )
+    if not poc_comparison.manual_correction_time.target_met:
+        candidates.append(
+            {
+                "title": "Close the PoC manual-correction-time acceptance gap",
+                "reason": (
+                    "Assisted review timing missed the configured "
+                    f"{poc_comparison.manual_correction_time.target_reduction_rate:.3f} "
+                    "reduction target."
+                ),
             }
         )
     return candidates
@@ -3482,6 +3554,11 @@ def main() -> int:
                 llm_stability_runs_path=args.llm_stability_runs
                 or DEFAULT_LLM_STABILITY_RUNS,
                 poc_comparison_path=args.poc_comparison or DEFAULT_POC_COMPARISON,
+                generation_command=poc_acceptance_generation_command(
+                    manifest_path=args.poc_acceptance_report,
+                    llm_stability_runs_path=args.llm_stability_runs,
+                    poc_comparison_path=args.poc_comparison,
+                ),
             )
         elif args.p9_harness is not None:
             metrics = evaluate_p9_harness(

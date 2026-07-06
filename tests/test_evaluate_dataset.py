@@ -54,13 +54,23 @@ class EvaluateDatasetTest(unittest.TestCase):
         results: list[dict[str, object]] | None = None,
         llm_external_violation_count: int = 0,
         unstable_example_count: int = 0,
+        manual_correction_target_met: bool = True,
+        source_linkage_rates: dict[str, float] | None = None,
         llm_stability_source: Path = Path("datasets/custom/llm_runs.json"),
         poc_comparison_source: Path = Path("datasets/custom/poc_comparison.json"),
     ) -> dict[str, object]:
         if results is None:
+            representative_rows = (
+                ("word_to_excel", "word"),
+                ("excel_to_word", "excel"),
+                ("pdf_to_excel", "text_pdf"),
+                ("pdf_to_word", "record_pdf"),
+                ("scanned_pdf_ocr", "scanned_pdf"),
+            )
             results = [
                 {
                     "sample_id": f"sample-{representative_mode}",
+                    "sample_category": sample_category,
                     "conversion_mode": evaluate_dataset.P9_CONVERSION_MODE_BY_MODE[
                         representative_mode
                     ],
@@ -71,7 +81,7 @@ class EvaluateDatasetTest(unittest.TestCase):
                     "audit_present": True,
                     "external_ai_api_guard_violation": False,
                 }
-                for representative_mode in evaluate_dataset.P9_REPRESENTATIVE_FLAGS_BY_MODE
+                for representative_mode, sample_category in representative_rows
             ]
         llm_stability = evaluate_dataset.LLMStabilityMetrics(
             input_id="synthetic-report-test",
@@ -95,22 +105,26 @@ class EvaluateDatasetTest(unittest.TestCase):
             mode_count=len(evaluate_dataset.REQUIRED_POC_MODES),
             high_risk_false_auto_confirmed_count=0,
             high_risk_false_auto_confirmed_target=0,
-            target_met=True,
+            target_met=manual_correction_target_met,
             manual_correction_time=evaluate_dataset.ManualCorrectionTimeMetrics(
                 measurement_method="synthetic",
                 baseline_minutes=10.0,
-                assisted_minutes=4.0,
-                reduction_minutes=6.0,
-                reduction_rate=0.6,
+                assisted_minutes=4.0 if manual_correction_target_met else 8.0,
+                reduction_minutes=6.0 if manual_correction_target_met else 2.0,
+                reduction_rate=0.6 if manual_correction_target_met else 0.2,
                 target_reduction_rate=0.5,
-                target_met=True,
+                target_met=manual_correction_target_met,
             ),
             modes=tuple(
                 evaluate_dataset.PoCModeMetrics(
                     mode=mode,
                     table_extraction_rate=1.0,
                     cell_match_rate=1.0,
-                    source_linkage_rate=1.0,
+                    source_linkage_rate=(
+                        source_linkage_rates.get(mode, 1.0)
+                        if source_linkage_rates is not None
+                        else 1.0
+                    ),
                     high_risk_false_auto_confirmed_count=0,
                     requires_review_count=0,
                     warning_count=0,
@@ -455,6 +469,37 @@ class EvaluateDatasetTest(unittest.TestCase):
             str(poc_comparison_source), payload["evidence"]["poc_mode_comparison"]
         )
 
+    def test_poc_acceptance_report_records_actual_generation_command(self) -> None:
+        command = evaluate_dataset.poc_acceptance_generation_command(
+            manifest_path=Path("datasets/custom/p9_manifest.json"),
+            llm_stability_runs_path=Path("datasets/custom/stability_runs.json"),
+            poc_comparison_path=Path("datasets/custom/comparison.json"),
+        )
+
+        self.assertEqual(
+            "python3 scripts/evaluate_dataset.py --poc-acceptance-report "
+            "datasets/custom/p9_manifest.json --llm-stability-runs "
+            "datasets/custom/stability_runs.json --poc-comparison "
+            "datasets/custom/comparison.json",
+            command,
+        )
+
+    def test_poc_acceptance_report_includes_matrix_evidence_rows(self) -> None:
+        payload = self.poc_acceptance_payload()
+
+        self.assertIn("p9_harness_results", payload)
+        self.assertIn("poc_mode_comparison", payload)
+        self.assertTrue(
+            any(
+                row["sample_category"] == "record_pdf"
+                for row in payload["p9_harness_results"]
+            )
+        )
+        self.assertEqual(
+            ["no_llm", "standard", "high_quality"],
+            [mode["mode"] for mode in payload["poc_mode_comparison"]["modes"]],
+        )
+
     def test_poc_acceptance_report_fails_llm_control_on_external_transmission(
         self,
     ) -> None:
@@ -491,6 +536,61 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertEqual("fail", rows["functionality"]["status"])
         self.assertIn("missing representative modes", rows["functionality"]["evidence"])
         self.assertEqual("fail", payload["overall_status"])
+
+    def test_poc_acceptance_report_requires_source_category_coverage(
+        self,
+    ) -> None:
+        payload = self.poc_acceptance_payload()
+        results = list(payload["p9_harness_results"])
+        for result in results:
+            if result["sample_category"] == "record_pdf":
+                result["sample_category"] = "text_pdf"
+                break
+
+        payload = self.poc_acceptance_payload(results=results)
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual("fail", rows["functionality"]["status"])
+        self.assertIn("missing source categories", rows["functionality"]["evidence"])
+        self.assertIn("record_pdf", rows["functionality"]["evidence"])
+
+    def test_poc_acceptance_report_requires_target_mode_traceability(
+        self,
+    ) -> None:
+        payload = self.poc_acceptance_payload(
+            source_linkage_rates={
+                "no_llm": 1.0,
+                "standard": 1.0,
+                "high_quality": 0.5,
+            }
+        )
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual("fail", rows["traceability"]["status"])
+        self.assertIn(
+            "High-quality PoC source linkage rate: 0.500",
+            rows["traceability"]["evidence"],
+        )
+        self.assertEqual("fail", payload["overall_status"])
+
+    def test_poc_acceptance_report_surfaces_failed_manual_correction_target(
+        self,
+    ) -> None:
+        payload = self.poc_acceptance_payload(manual_correction_target_met=False)
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual("fail", rows["functionality"]["status"])
+        self.assertIn(
+            "manual correction target met: False",
+            rows["functionality"]["evidence"],
+        )
+        self.assertTrue(
+            any(
+                candidate["title"]
+                == "Close the PoC manual-correction-time acceptance gap"
+                for candidate in payload["follow_up_issue_candidates"]
+            )
+        )
 
     def test_p9_harness_resolves_custom_manifest_under_datasets_from_repo_root(
         self,
