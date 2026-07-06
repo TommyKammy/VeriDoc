@@ -1140,21 +1140,29 @@ def p9_validate_artifact_expectations(
     if artifact_format_mismatch:
         return failures
     suffix = f".{artifact_format}" if isinstance(artifact_format, str) else ""
+    artifact_path: Path | None = None
     try:
-        with tempfile.NamedTemporaryFile(suffix=suffix) as artifact_file:
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as artifact_file:
             artifact_file.write(artifact_content)
             artifact_file.flush()
             artifact_path = Path(artifact_file.name)
-            if artifact_format == "xlsx":
-                failures.extend(
-                    p9_validate_xlsx_artifact(
-                        artifact_path, expectations, fixture.get("id")
-                    )
+
+        if artifact_format == "xlsx":
+            failures.extend(
+                p9_validate_xlsx_artifact(
+                    artifact_path, expectations, fixture.get("id")
                 )
-            elif artifact_format == "docx":
-                failures.extend(p9_validate_docx_artifact(artifact_path, expectations))
+            )
+        elif artifact_format == "docx":
+            failures.extend(p9_validate_docx_artifact(artifact_path, expectations))
     except Exception as exc:
         failures.append(f"artifact validation failed: {type(exc).__name__}: {exc}")
+    finally:
+        if artifact_path is not None:
+            try:
+                artifact_path.unlink(missing_ok=True)
+            except OSError as exc:
+                failures.append(f"artifact cleanup failed: {type(exc).__name__}: {exc}")
     return failures
 
 

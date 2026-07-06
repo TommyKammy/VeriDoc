@@ -550,6 +550,74 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertIn("artifact validation failed", result["artifact_expectation_failures"][0])
         self.assertIn("artifact expectation mismatch", str(result["failure_reason"]))
 
+    def test_p9_harness_closes_temp_artifact_before_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_artifact_path = Path(temp_dir) / "artifact.xlsx"
+
+            class TemporaryArtifactSpy:
+                name = str(temp_artifact_path)
+
+                def __init__(self) -> None:
+                    self.is_open = False
+
+                def __enter__(self) -> "TemporaryArtifactSpy":
+                    self.is_open = True
+                    return self
+
+                def __exit__(self, *args: object) -> None:
+                    self.is_open = False
+
+                def write(self, content: bytes) -> None:
+                    temp_artifact_path.write_bytes(content)
+
+                def flush(self) -> None:
+                    return None
+
+            temp_file_spy = TemporaryArtifactSpy()
+
+            def validate_after_close(
+                artifact_path: Path,
+                expectations: dict[str, object],
+                fixture_id: object,
+            ) -> list[str]:
+                self.assertFalse(temp_file_spy.is_open)
+                self.assertEqual(temp_artifact_path, artifact_path)
+                self.assertEqual("closed-temp-fixture", fixture_id)
+                return []
+
+            fixture = {
+                "id": "closed-temp-fixture",
+                "sample_id": "p9-closed-temp",
+                "path": "datasets/fixtures/word/closed-temp.docx",
+                "source_type": "word",
+                "format": "docx",
+                "conversion_mode": "word_to_excel",
+                "word_to_excel_expectations": {"warnings": []},
+            }
+            with mock.patch(
+                "tempfile.NamedTemporaryFile",
+                return_value=temp_file_spy,
+            ), mock.patch.object(
+                evaluate_dataset,
+                "p9_validate_xlsx_artifact",
+                side_effect=validate_after_close,
+            ):
+                failures = evaluate_dataset.p9_validate_artifact_expectations(
+                    fixture=fixture,
+                    conversion_mode="word_to_excel",
+                    representative_mode="word_to_excel",
+                    primary_artifact={
+                        "kind": "primary",
+                        "id": "primary-xlsx",
+                        "format": "xlsx",
+                        "content": b"workbook bytes",
+                    },
+                    warnings=[],
+                )
+
+            self.assertEqual([], failures)
+            self.assertFalse(temp_artifact_path.exists())
+
     def test_p9_harness_requires_primary_artifact_without_fixture_expectations(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".pdf") as fixture_file:
             fixture_file.write(b"fixture")
