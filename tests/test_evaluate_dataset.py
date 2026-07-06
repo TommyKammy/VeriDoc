@@ -250,10 +250,10 @@ class EvaluateDatasetTest(unittest.TestCase):
                 and result["ir_generated"]
                 and result["artifact_generated"]
                 and result["audit_present"]
-                and result["artifact_expectations_met"]
+                and not result["artifact_expectations_met"]
                 and result["warnings_count"] >= 0
                 and result["review_items_count"] >= 0
-                and result["failure_reason"] is None
+                and "unexpected warning" in str(result["failure_reason"])
                 for result in results
             )
         )
@@ -387,6 +387,112 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertIn("artifact validation failed", result["artifact_expectation_failures"][0])
         self.assertIn("artifact expectation mismatch", str(result["failure_reason"]))
 
+    def test_p9_harness_requires_primary_artifact_without_fixture_expectations(self) -> None:
+        with tempfile.NamedTemporaryFile(suffix=".pdf") as fixture_file:
+            fixture_file.write(b"fixture")
+            fixture_file.flush()
+            fixture = {
+                "id": "pdf-without-expectations",
+                "sample_id": "p9-pdf-no-expectations",
+                "path": "datasets/fixtures/pdf/no-expectations.pdf",
+                "source_type": "record_pdf",
+                "format": "pdf",
+                "conversion_mode": "pdf_to_word",
+            }
+
+            with mock.patch(
+                "services.api.poc_web.convert_uploaded_document",
+                return_value={
+                    "status": "converted",
+                    "document_ir": {"document": {"title": "no expectations"}},
+                    "artifacts": [{"kind": "debug", "id": "debug-json"}],
+                    "warnings": [],
+                    "review_items": [],
+                    "audit": {
+                        "conversion_settings": {
+                            "use_llm": {"status": "disabled"},
+                            "use_ocr": {"status": "disabled"},
+                        },
+                        "conversion_plan": {"status": "disabled"},
+                    },
+                },
+            ):
+                result = evaluate_dataset.p9_conversion_result(
+                    fixture,
+                    fixture_path=Path(fixture_file.name),
+                    mode="pdf_to_word",
+                    llm_scenario="no_llm",
+                )
+
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["artifact_generated"])
+        self.assertFalse(result["artifact_expectations_met"])
+        self.assertEqual(
+            ["primary artifact is missing"],
+            result["artifact_expectation_failures"],
+        )
+        self.assertIn("artifact expectation mismatch", str(result["failure_reason"]))
+
+    def test_p9_harness_rejects_unexpected_warnings_for_exact_expectations(self) -> None:
+        with tempfile.NamedTemporaryFile(suffix=".docx") as fixture_file:
+            fixture_file.write(b"fixture")
+            fixture_file.flush()
+            fixture = {
+                "id": "unexpected-warning-fixture",
+                "sample_id": "p9-unexpected-warning",
+                "path": "datasets/fixtures/word/unexpected-warning.docx",
+                "source_type": "word",
+                "format": "docx",
+                "conversion_mode": "word_to_excel",
+                "word_to_excel_expectations": {"warnings": []},
+            }
+            artifact_content = (
+                REPO_ROOT
+                / "datasets"
+                / "fixtures"
+                / "excel"
+                / "excel-to-word-representative.xlsx"
+            ).read_bytes()
+
+            with mock.patch(
+                "services.api.poc_web.convert_uploaded_document",
+                return_value={
+                    "status": "converted",
+                    "document_ir": {"document": {"title": "unexpected warning"}},
+                    "artifacts": [
+                        {
+                            "kind": "primary",
+                            "id": "primary-xlsx",
+                            "format": "xlsx",
+                            "content": artifact_content,
+                        }
+                    ],
+                    "warnings": ["spurious warning"],
+                    "review_items": [],
+                    "audit": {
+                        "conversion_settings": {
+                            "use_llm": {"status": "disabled"},
+                            "use_ocr": {"status": "disabled"},
+                        },
+                        "conversion_plan": {"status": "disabled"},
+                    },
+                },
+            ):
+                result = evaluate_dataset.p9_conversion_result(
+                    fixture,
+                    fixture_path=Path(fixture_file.name),
+                    mode="word_to_excel",
+                    llm_scenario="no_llm",
+                )
+
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["artifact_expectations_met"])
+        self.assertEqual(
+            ["unexpected warning 'spurious warning' was emitted"],
+            result["artifact_expectation_failures"],
+        )
+        self.assertIn("artifact expectation mismatch", str(result["failure_reason"]))
+
     def test_p9_harness_checks_mode_specific_xlsx_expectations(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".docx") as fixture_file:
             fixture_file.write(b"fixture")
@@ -511,6 +617,68 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertIn(
             "primary artifact format 'docx' did not match expected 'xlsx'",
             str(result["artifact_expectation_failures"]),
+        )
+        self.assertIn("artifact expectation mismatch", str(result["failure_reason"]))
+
+    def test_p9_harness_uses_scanned_pdf_ocr_expectations_for_pdf_conversion(self) -> None:
+        with tempfile.NamedTemporaryFile(suffix=".pdf") as fixture_file:
+            fixture_file.write(b"fixture")
+            fixture_file.flush()
+            fixture = {
+                "id": "scanned-ocr-fixture",
+                "sample_id": "p9-scanned-ocr",
+                "path": "datasets/fixtures/pdf/scanned-ocr.pdf",
+                "source_type": "scanned_pdf",
+                "format": "pdf",
+                "conversion_mode": "pdf_to_word",
+                "scanned_pdf_ocr_expectations": {
+                    "warnings": ["ocr confidence below review threshold"],
+                },
+            }
+            artifact_content = (
+                REPO_ROOT
+                / "datasets"
+                / "fixtures"
+                / "word"
+                / "word-to-excel-report.docx"
+            ).read_bytes()
+
+            with mock.patch(
+                "services.api.poc_web.convert_uploaded_document",
+                return_value={
+                    "status": "converted",
+                    "document_ir": {"document": {"title": "scanned OCR"}},
+                    "artifacts": [
+                        {
+                            "kind": "primary",
+                            "id": "primary-docx",
+                            "format": "docx",
+                            "content": artifact_content,
+                        }
+                    ],
+                    "warnings": [],
+                    "review_items": [],
+                    "audit": {
+                        "conversion_settings": {
+                            "use_llm": {"status": "disabled"},
+                            "use_ocr": {"status": "enabled"},
+                        },
+                        "conversion_plan": {"status": "disabled"},
+                    },
+                },
+            ):
+                result = evaluate_dataset.p9_conversion_result(
+                    fixture,
+                    fixture_path=Path(fixture_file.name),
+                    mode="scanned_pdf_ocr",
+                    llm_scenario="no_llm",
+                )
+
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["artifact_expectations_met"])
+        self.assertIn(
+            "expected warning 'ocr confidence below review threshold' was not emitted",
+            result["artifact_expectation_failures"],
         )
         self.assertIn("artifact expectation mismatch", str(result["failure_reason"]))
 

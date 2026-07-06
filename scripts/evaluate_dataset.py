@@ -830,10 +830,10 @@ def p9_external_ai_api_guard_violation(audit: dict[str, Any] | None) -> bool:
     return llm_audit.get("base_url_type") != "local"
 
 
-def p9_expectations_for_conversion(
-    fixture: dict[str, Any], conversion_mode: str
+def p9_expectations_for_mode(
+    fixture: dict[str, Any], representative_mode: str
 ) -> dict[str, Any] | None:
-    key = P9_EXPECTATION_KEYS_BY_MODE.get(conversion_mode)
+    key = P9_EXPECTATION_KEYS_BY_MODE.get(representative_mode)
     if key is None:
         return None
     expectations = fixture.get(key)
@@ -971,22 +971,23 @@ def p9_validate_artifact_expectations(
     *,
     fixture: dict[str, Any],
     conversion_mode: str,
+    representative_mode: str,
     primary_artifact: dict[str, Any] | None,
     warnings: object,
 ) -> list[str]:
-    expectations = p9_expectations_for_conversion(fixture, conversion_mode)
-    if expectations is None:
-        return []
+    expectations = p9_expectations_for_mode(fixture, representative_mode)
     failures: list[str] = []
+    expected_artifact_format = P9_PRIMARY_ARTIFACT_FORMAT_BY_CONVERSION_MODE.get(
+        conversion_mode
+    )
     if primary_artifact is None:
-        return ["primary artifact is missing"]
+        if expected_artifact_format is not None:
+            return ["primary artifact is missing"]
+        return []
     artifact_content = primary_artifact.get("content")
     artifact_format = primary_artifact.get("format")
     if not isinstance(artifact_content, bytes):
         return ["primary artifact content is missing"]
-    expected_artifact_format = P9_PRIMARY_ARTIFACT_FORMAT_BY_CONVERSION_MODE.get(
-        conversion_mode
-    )
     artifact_format_mismatch = (
         expected_artifact_format is not None
         and artifact_format != expected_artifact_format
@@ -997,12 +998,23 @@ def p9_validate_artifact_expectations(
             f"{artifact_format!r} did not match expected "
             f"{expected_artifact_format!r} for {conversion_mode}"
         )
+    if expectations is None:
+        return failures
     expected_warnings = expectations.get("warnings")
     if isinstance(expected_warnings, list):
         warning_list = warnings if isinstance(warnings, list) else []
+        expected_warning_values = [
+            expected_warning
+            for expected_warning in expected_warnings
+            if isinstance(expected_warning, str)
+        ]
         for expected_warning in expected_warnings:
             if isinstance(expected_warning, str) and expected_warning not in warning_list:
                 failures.append(f"expected warning {expected_warning!r} was not emitted")
+        if not expected_warning_values:
+            for actual_warning in warning_list:
+                if isinstance(actual_warning, str):
+                    failures.append(f"unexpected warning {actual_warning!r} was emitted")
     if artifact_format_mismatch:
         return failures
     suffix = f".{artifact_format}" if isinstance(artifact_format, str) else ""
@@ -1082,6 +1094,7 @@ def p9_conversion_result(
     artifact_expectation_failures = p9_validate_artifact_expectations(
         fixture=fixture,
         conversion_mode=conversion_mode,
+        representative_mode=mode,
         primary_artifact=primary_artifact,
         warnings=warnings,
     )
