@@ -236,8 +236,11 @@ class EvaluateDatasetTest(unittest.TestCase):
             payload["summary"]["conversion_modes"],
         )
         self.assertEqual(["no_llm", "llm_requested"], payload["summary"]["llm_scenarios"])
-        self.assertGreater(payload["summary"]["completed_count"], 0)
         self.assertGreater(payload["summary"]["failure_count"], 0)
+        self.assertEqual(
+            payload["summary"]["case_count"],
+            payload["summary"]["completed_count"] + payload["summary"]["failure_count"],
+        )
         self.assertEqual(0, payload["summary"]["external_ai_api_guard_violation_count"])
         self.assertIn("phase8_comparison", payload)
 
@@ -264,13 +267,8 @@ class EvaluateDatasetTest(unittest.TestCase):
                 for result in results
             )
         )
-        self.assertTrue(
-            any(
-                result["representative_mode"] == "scanned_pdf_ocr"
-                and not result["ok"]
-                and result["failure_reason"] == "pending_synthetic_or_anonymized_fixture"
-                for result in results
-            )
+        self.assertFalse(
+            any(result["sample_id"] == "p9-word-004" for result in results)
         )
 
     def test_p9_harness_cli_emits_machine_readable_report(self) -> None:
@@ -466,6 +464,41 @@ class EvaluateDatasetTest(unittest.TestCase):
         ):
             evaluate_dataset.p9_evaluation_samples(p9_manifest, fixture_manifest)
 
+    def test_p9_evaluation_samples_rejects_usable_sample_without_fixture_link(
+        self,
+    ) -> None:
+        p9_manifest = evaluate_dataset.load_json(POC_EVALUATION_MANIFEST_PATH)
+        fixture_manifest = evaluate_dataset.load_json(FIXTURE_MANIFEST_PATH)
+        for sample in p9_manifest["samples"]:
+            if sample["id"] == "p9-word-001":
+                sample["fixture_id"] = None
+                sample["dataset_status"] = "usable_fixture"
+                break
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError,
+            "must reference a fixture_manifest fixture",
+        ):
+            evaluate_dataset.p9_evaluation_samples(p9_manifest, fixture_manifest)
+
+    def test_p9_evaluation_samples_skip_manifest_placeholders_from_scored_rows(
+        self,
+    ) -> None:
+        p9_manifest = evaluate_dataset.load_json(POC_EVALUATION_MANIFEST_PATH)
+        fixture_manifest = evaluate_dataset.load_json(FIXTURE_MANIFEST_PATH)
+
+        samples = evaluate_dataset.p9_evaluation_samples(p9_manifest, fixture_manifest)
+
+        self.assertFalse(
+            any(sample["sample_id"] == "p9-word-004" for sample in samples)
+        )
+        self.assertFalse(
+            any(
+                sample.get("dataset_status") == "manifest_placeholder"
+                for sample in samples
+            )
+        )
+
     def test_p9_harness_counts_artifact_expectation_mismatch_as_failure(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".docx") as fixture_file:
             fixture_file.write(b"fixture")
@@ -623,6 +656,69 @@ class EvaluateDatasetTest(unittest.TestCase):
         )
         self.assertIn("artifact expectation mismatch", str(result["failure_reason"]))
 
+    def test_p9_harness_rejects_extra_warnings_for_nonempty_expectations(self) -> None:
+        with tempfile.NamedTemporaryFile(suffix=".pdf") as fixture_file:
+            fixture_file.write(b"fixture")
+            fixture_file.flush()
+            fixture = {
+                "id": "extra-warning-fixture",
+                "sample_id": "p9-extra-warning",
+                "path": "datasets/fixtures/pdf/extra-warning.pdf",
+                "source_type": "text_pdf",
+                "format": "pdf",
+                "conversion_mode": "pdf_to_excel",
+                "pdf_to_excel_expectations": {
+                    "warnings": ["conversion mode pdf_to_excel selected"],
+                },
+            }
+            artifact_content = (
+                REPO_ROOT
+                / "datasets"
+                / "fixtures"
+                / "excel"
+                / "excel-to-word-representative.xlsx"
+            ).read_bytes()
+
+            with mock.patch(
+                "services.api.poc_web.convert_uploaded_document",
+                return_value={
+                    "status": "converted",
+                    "document_ir": {"document": {"title": "extra warning"}},
+                    "artifacts": [
+                        {
+                            "kind": "primary",
+                            "id": "primary-xlsx",
+                            "format": "xlsx",
+                            "content": artifact_content,
+                        }
+                    ],
+                    "warnings": [
+                        "conversion mode pdf_to_excel selected",
+                        "unexpected review warning",
+                    ],
+                    "review_items": [],
+                    "audit": {
+                        "conversion_settings": {
+                            "use_llm": {"status": "disabled"},
+                            "use_ocr": {"status": "disabled"},
+                        },
+                        "conversion_plan": {"status": "disabled"},
+                    },
+                },
+            ):
+                result = evaluate_dataset.p9_conversion_result(
+                    fixture,
+                    fixture_path=Path(fixture_file.name),
+                    mode="pdf_to_excel",
+                    llm_scenario="no_llm",
+                )
+
+        self.assertFalse(result["ok"])
+        self.assertIn(
+            "unexpected warning 'unexpected review warning' was emitted",
+            result["artifact_expectation_failures"],
+        )
+
     def test_p9_harness_checks_mode_specific_xlsx_expectations(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".docx") as fixture_file:
             fixture_file.write(b"fixture")
@@ -749,6 +845,29 @@ class EvaluateDatasetTest(unittest.TestCase):
             str(result["artifact_expectation_failures"]),
         )
         self.assertIn("artifact expectation mismatch", str(result["failure_reason"]))
+
+    def test_p9_harness_requires_docx_paragraph_expectations_to_match_exactly(
+        self,
+    ) -> None:
+        blocks = [
+            mock.Mock(kind="paragraph", text="first paragraph"),
+            mock.Mock(kind="paragraph", text="second paragraph"),
+        ]
+        docx = mock.Mock(blocks=blocks)
+
+        with mock.patch(
+            "core.parsers.docx_extraction.extract_docx_structure",
+            return_value=docx,
+        ):
+            failures = evaluate_dataset.p9_validate_docx_artifact(
+                Path("unused.docx"),
+                {"paragraph_texts": ["first paragraph"]},
+            )
+
+        self.assertEqual(
+            ["docx paragraph texts did not match expectations"],
+            failures,
+        )
 
     def test_p9_harness_uses_scanned_pdf_ocr_expectations_for_pdf_conversion(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".pdf") as fixture_file:

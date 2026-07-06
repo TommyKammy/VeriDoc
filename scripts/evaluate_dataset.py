@@ -786,6 +786,8 @@ def p9_evaluation_samples(
 
     evaluation_samples: list[dict[str, Any]] = []
     seen_sample_ids: set[str] = set()
+    observed_modes: set[str] = set()
+    observed_categories: set[str] = set()
     for sample in samples:
         if not isinstance(sample, dict):
             raise EvaluationCaseError("each P9 evaluation sample needs an object")
@@ -802,8 +804,16 @@ def p9_evaluation_samples(
             )
         representative_mode = p9_sample_representative_mode(sample)
         conversion_mode = p9_sample_conversion_mode(sample, representative_mode)
+        observed_modes.add(representative_mode)
+        observed_categories.add(str(category))
         fixture_id = sample.get("fixture_id")
         fixture = fixtures_by_id.get(fixture_id) if isinstance(fixture_id, str) else None
+        if fixture is None:
+            if fixture_id is not None or sample.get("dataset_status") != "manifest_placeholder":
+                raise EvaluationCaseError(
+                    f"P9 sample {sample_id!r} must reference a fixture_manifest fixture"
+                )
+            continue
         if fixture is not None:
             p9_validate_representative_fixture_link(
                 sample,
@@ -826,16 +836,9 @@ def p9_evaluation_samples(
                 "conversion_mode": conversion_mode,
             }
         )
-        if fixture is None:
-            merged.setdefault("id", fixture_id or sample_id)
-            merged.setdefault("title", f"P9 sample {sample_id}")
-            merged.setdefault("path", None)
-            merged.setdefault("source_type", sample.get("category"))
-            merged.setdefault("format", "pdf" if "pdf" in str(sample.get("category")) else None)
         evaluation_samples.append(merged)
 
     required_modes = set(P9_REPRESENTATIVE_FLAGS_BY_MODE)
-    observed_modes = {str(sample["representative_mode"]) for sample in evaluation_samples}
     missing_modes = sorted(required_modes - observed_modes)
     if missing_modes:
         raise EvaluationCaseError(
@@ -855,11 +858,6 @@ def p9_evaluation_samples(
             "P9 evaluation manifest required_categories must match "
             f"{expected_categories!r}"
         )
-    observed_categories = {
-        str(sample["sample_category"])
-        for sample in evaluation_samples
-        if isinstance(sample.get("sample_category"), str)
-    }
     missing_categories = sorted(P9_REQUIRED_SOURCE_CATEGORIES - observed_categories)
     if missing_categories:
         raise EvaluationCaseError(
@@ -1084,7 +1082,7 @@ def p9_validate_docx_artifact(
     expected_paragraphs = expectations.get("paragraph_texts")
     if isinstance(expected_paragraphs, list):
         paragraphs = [block.text for block in docx.blocks if block.kind == "paragraph"]
-        if paragraphs[: len(expected_paragraphs)] != expected_paragraphs:
+        if paragraphs != expected_paragraphs:
             failures.append("docx paragraph texts did not match expectations")
     return failures
 
@@ -1133,10 +1131,12 @@ def p9_validate_artifact_expectations(
         for expected_warning in expected_warnings:
             if isinstance(expected_warning, str) and expected_warning not in warning_list:
                 failures.append(f"expected warning {expected_warning!r} was not emitted")
-        if not expected_warning_values:
-            for actual_warning in warning_list:
-                if isinstance(actual_warning, str):
-                    failures.append(f"unexpected warning {actual_warning!r} was emitted")
+        for actual_warning in warning_list:
+            if (
+                isinstance(actual_warning, str)
+                and actual_warning not in expected_warning_values
+            ):
+                failures.append(f"unexpected warning {actual_warning!r} was emitted")
     if artifact_format_mismatch:
         return failures
     suffix = f".{artifact_format}" if isinstance(artifact_format, str) else ""
