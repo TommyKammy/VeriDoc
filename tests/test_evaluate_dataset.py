@@ -487,8 +487,25 @@ class EvaluateDatasetTest(unittest.TestCase):
     def test_poc_acceptance_report_includes_matrix_evidence_rows(self) -> None:
         payload = self.poc_acceptance_payload()
 
+        self.assertIn("p9_harness", payload)
         self.assertIn("p9_harness_results", payload)
         self.assertIn("poc_mode_comparison", payload)
+        self.assertEqual(
+            payload["p9_harness_results"],
+            payload["p9_harness"]["results"],
+        )
+        self.assertEqual(
+            payload["p9_harness_summary"],
+            payload["p9_harness"]["summary"],
+        )
+        first_harness_result = payload["p9_harness"]["results"][0]
+        for evidence_field in (
+            "artifact_expectations_met",
+            "audit_present",
+            "representative_mode",
+            "sample_category",
+        ):
+            self.assertIn(evidence_field, first_harness_result)
         self.assertTrue(
             any(
                 row["sample_category"] == "record_pdf"

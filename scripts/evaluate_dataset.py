@@ -547,6 +547,7 @@ class PoCAcceptanceReport:
             "conversion_mode_results": by_mode,
             "llm_stability_comparison": llm_stability.as_dict(),
             "poc_mode_comparison": poc_comparison.as_dict(),
+            "p9_harness": harness_payload,
             "p9_harness_results": results,
             "review_ui_observations": {
                 "mode_diffs": list(poc_comparison.mode_diffs),
