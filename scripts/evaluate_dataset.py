@@ -113,6 +113,16 @@ P9_PRIMARY_ARTIFACT_FORMAT_BY_CONVERSION_MODE = {
     "excel_to_word": "docx",
     "pdf_to_word": "docx",
 }
+P9_FIXTURE_SOURCE_TYPES_BY_CATEGORY = {
+    "word": frozenset(("word",)),
+    "excel": frozenset(("excel",)),
+    "text_pdf": frozenset(("text_pdf",)),
+    "record_pdf": frozenset(("record_excerpt",)),
+    "scanned_pdf": frozenset(("scanned_pdf",)),
+}
+P9_REPRESENTATIVE_FLAG_BY_CATEGORY = {
+    "record_pdf": "record_pdf_representative",
+}
 P9_LLM_SCENARIOS = ("no_llm", "llm_requested")
 REQUIRED_GMP_ACCEPTANCE_CRITERIA = (
     "high_risk_review",
@@ -714,6 +724,46 @@ def p9_sample_conversion_mode(sample: dict[str, Any], representative_mode: str) 
     return P9_CONVERSION_MODE_BY_MODE[representative_mode]
 
 
+def p9_required_representative_flag(
+    sample: dict[str, Any],
+    representative_mode: str,
+) -> str:
+    category = sample.get("category")
+    if isinstance(category, str) and category in P9_REPRESENTATIVE_FLAG_BY_CATEGORY:
+        return P9_REPRESENTATIVE_FLAG_BY_CATEGORY[category]
+    return P9_REPRESENTATIVE_FLAGS_BY_MODE[representative_mode]
+
+
+def p9_validate_representative_fixture_link(
+    sample: dict[str, Any],
+    fixture: dict[str, Any],
+    *,
+    representative_mode: str,
+) -> None:
+    sample_id = sample.get("id")
+    fixture_id = sample.get("fixture_id")
+    category = sample.get("category")
+    allowed_source_types = (
+        P9_FIXTURE_SOURCE_TYPES_BY_CATEGORY.get(category)
+        if isinstance(category, str)
+        else None
+    )
+    if (
+        allowed_source_types is not None
+        and fixture.get("source_type") not in allowed_source_types
+    ):
+        raise EvaluationCaseError(
+            f"P9 sample {sample_id!r} fixture {fixture_id!r} source_type "
+            f"{fixture.get('source_type')!r} does not match category {category!r}"
+        )
+    representative_flag = p9_required_representative_flag(sample, representative_mode)
+    if fixture.get(representative_flag) is not True:
+        raise EvaluationCaseError(
+            f"P9 sample {sample_id!r} fixture {fixture_id!r} must declare "
+            f"{representative_flag}"
+        )
+
+
 def p9_evaluation_samples(
     p9_manifest: dict[str, Any],
     fixture_manifest: dict[str, Any],
@@ -741,6 +791,12 @@ def p9_evaluation_samples(
         conversion_mode = p9_sample_conversion_mode(sample, representative_mode)
         fixture_id = sample.get("fixture_id")
         fixture = fixtures_by_id.get(fixture_id) if isinstance(fixture_id, str) else None
+        if fixture is not None:
+            p9_validate_representative_fixture_link(
+                sample,
+                fixture,
+                representative_mode=representative_mode,
+            )
         merged = dict(fixture or {})
         merged.update(
             {
@@ -927,6 +983,34 @@ def p9_validate_xlsx_artifact(
                 f"expected at least {min_column_count} xlsx columns, got {actual_column_count}"
             )
     source_comment = expectations.get("source_comment")
+    table_start_row = None
+    if isinstance(source_comment, dict) and isinstance(source_comment.get("cell"), str):
+        table_start_row = p9_cell_row_index(source_comment["cell"])
+    table_cells = [
+        cell
+        for cell in sheet.cells
+        if table_start_row is None or p9_cell_row_index(cell.ref) >= table_start_row
+    ]
+    expected_table_row_count = expectations.get("table_row_count")
+    if isinstance(expected_table_row_count, int):
+        actual_table_row_count = len(
+            {p9_cell_row_index(cell.ref) for cell in table_cells}
+        )
+        if actual_table_row_count != expected_table_row_count:
+            failures.append(
+                f"expected {expected_table_row_count} table rows, got {actual_table_row_count}"
+            )
+    expected_table_column_count = expectations.get("table_column_count")
+    if isinstance(expected_table_column_count, int):
+        actual_table_column_count = len(
+            {p9_cell_column_label(cell.ref) for cell in table_cells}
+        )
+        if actual_table_column_count != expected_table_column_count:
+            failures.append(
+                "expected "
+                f"{expected_table_column_count} table columns, got "
+                f"{actual_table_column_count}"
+            )
     if isinstance(source_comment, dict):
         comment_ref = source_comment.get("cell")
         contains = source_comment.get("contains")
@@ -1091,6 +1175,8 @@ def p9_conversion_result(
     warnings = converted.get("warnings", [])
     review_items = converted.get("review_items", [])
     conversion_status = converted.get("status")
+    ir_generated = isinstance(converted.get("document_ir"), dict)
+    audit_present = audit is not None
     artifact_expectation_failures = p9_validate_artifact_expectations(
         fixture=fixture,
         conversion_mode=conversion_mode,
@@ -1101,6 +1187,26 @@ def p9_conversion_result(
     row_failures: list[str] = []
     if conversion_status == "blocked":
         row_failures.append("conversion status blocked")
+    if not ir_generated:
+        row_failures.append("document IR missing")
+    if not audit_present:
+        row_failures.append("conversion audit missing")
+    if primary_artifact_count > 1:
+        row_failures.append(
+            f"expected exactly one primary artifact, got {primary_artifact_count}"
+        )
+    if mode == "scanned_pdf_ocr":
+        use_ocr_status = use_ocr.get("status") if isinstance(use_ocr, dict) else None
+        if use_ocr_status != "enabled":
+            row_failures.append(f"OCR status {use_ocr_status!r} is not enabled")
+    if llm_scenario == "no_llm" and isinstance(use_llm, dict):
+        use_llm_status = use_llm.get("status")
+        if use_llm_status != "disabled":
+            row_failures.append(
+                f"no_llm scenario LLM status {use_llm_status!r} is not disabled"
+            )
+        elif use_llm.get("requested") is True or use_llm.get("enabled") is True:
+            row_failures.append("no_llm scenario used LLM")
     if artifact_expectation_failures:
         row_failures.append(
             "artifact expectation mismatch: "
@@ -1123,12 +1229,12 @@ def p9_conversion_result(
         "llm_requested": llm_requested,
         "ocr_requested": ocr_requested,
         "ok": ok,
-        "ir_generated": isinstance(converted.get("document_ir"), dict),
+        "ir_generated": ir_generated,
         "artifact_generated": primary_artifact_count > 0,
         "artifact_count": len(artifact_list),
         "warnings_count": len(warnings) if isinstance(warnings, list) else 0,
         "review_items_count": len(review_items) if isinstance(review_items, list) else 0,
-        "audit_present": audit is not None,
+        "audit_present": audit_present,
         "processing_time_ms": round(elapsed_ms, 3),
         "failure_reason": failure_reason,
         "llm_status": use_llm.get("status") if isinstance(use_llm, dict) else None,

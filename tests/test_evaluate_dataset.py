@@ -336,6 +336,28 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertIn("conversion status blocked", str(result["failure_reason"]))
         self.assertFalse(result["artifact_generated"])
 
+    def test_p9_evaluation_samples_rejects_non_representative_fixture_link(self) -> None:
+        p9_manifest = evaluate_dataset.load_json(POC_EVALUATION_MANIFEST_PATH)
+        fixture_manifest = evaluate_dataset.load_json(FIXTURE_MANIFEST_PATH)
+        fixture_manifest["fixtures"].append(
+            {
+                "id": "word-not-representative",
+                "path": "datasets/fixtures/word/word-to-excel-report.docx",
+                "source_type": "word",
+                "format": "docx",
+            }
+        )
+        for sample in p9_manifest["samples"]:
+            if sample["id"] == "p9-word-001":
+                sample["fixture_id"] = "word-not-representative"
+                break
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError,
+            "must declare word_to_excel_representative",
+        ):
+            evaluate_dataset.p9_evaluation_samples(p9_manifest, fixture_manifest)
+
     def test_p9_harness_counts_artifact_expectation_mismatch_as_failure(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".docx") as fixture_file:
             fixture_file.write(b"fixture")
@@ -681,6 +703,300 @@ class EvaluateDatasetTest(unittest.TestCase):
             result["artifact_expectation_failures"],
         )
         self.assertIn("artifact expectation mismatch", str(result["failure_reason"]))
+
+    def test_p9_harness_validates_declared_pdf_table_size_expectations(self) -> None:
+        with tempfile.NamedTemporaryFile(suffix=".pdf") as fixture_file:
+            fixture_file.write(b"fixture")
+            fixture_file.flush()
+            fixture = {
+                "id": "pdf-table-size-fixture",
+                "sample_id": "p9-pdf-table-size",
+                "path": "datasets/fixtures/pdf/pdf-table-size.pdf",
+                "source_type": "text_pdf",
+                "format": "pdf",
+                "conversion_mode": "pdf_to_excel",
+                "pdf_to_excel_expectations": {
+                    "table_row_count": 999,
+                    "table_column_count": 999,
+                },
+            }
+            artifact_content = (
+                REPO_ROOT
+                / "datasets"
+                / "fixtures"
+                / "excel"
+                / "excel-to-word-representative.xlsx"
+            ).read_bytes()
+
+            with mock.patch(
+                "services.api.poc_web.convert_uploaded_document",
+                return_value={
+                    "status": "converted",
+                    "document_ir": {"document": {"title": "pdf table size"}},
+                    "artifacts": [
+                        {
+                            "kind": "primary",
+                            "id": "primary-xlsx",
+                            "format": "xlsx",
+                            "content": artifact_content,
+                        }
+                    ],
+                    "warnings": [],
+                    "review_items": [],
+                    "audit": {
+                        "conversion_settings": {
+                            "use_llm": {"status": "disabled"},
+                            "use_ocr": {"status": "disabled"},
+                        },
+                        "conversion_plan": {"status": "disabled"},
+                    },
+                },
+            ):
+                result = evaluate_dataset.p9_conversion_result(
+                    fixture,
+                    fixture_path=Path(fixture_file.name),
+                    mode="pdf_to_excel",
+                    llm_scenario="no_llm",
+                )
+
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["artifact_expectations_met"])
+        self.assertIn("expected 999 table rows", str(result["artifact_expectation_failures"]))
+        self.assertIn("expected 999 table columns", str(result["artifact_expectation_failures"]))
+
+    def test_p9_harness_fails_scanned_ocr_when_ocr_stays_unsupported(self) -> None:
+        with tempfile.NamedTemporaryFile(suffix=".pdf") as fixture_file:
+            fixture_file.write(b"fixture")
+            fixture_file.flush()
+            fixture = {
+                "id": "scanned-ocr-unsupported-fixture",
+                "sample_id": "p9-scanned-ocr-unsupported",
+                "path": "datasets/fixtures/pdf/scanned-ocr-unsupported.pdf",
+                "source_type": "scanned_pdf",
+                "format": "pdf",
+                "conversion_mode": "pdf_to_word",
+            }
+            artifact_content = (
+                REPO_ROOT
+                / "datasets"
+                / "fixtures"
+                / "word"
+                / "word-to-excel-report.docx"
+            ).read_bytes()
+
+            with mock.patch(
+                "services.api.poc_web.convert_uploaded_document",
+                return_value={
+                    "status": "converted",
+                    "document_ir": {"document": {"title": "scanned OCR"}},
+                    "artifacts": [
+                        {
+                            "kind": "primary",
+                            "id": "primary-docx",
+                            "format": "docx",
+                            "content": artifact_content,
+                        }
+                    ],
+                    "warnings": [],
+                    "review_items": [],
+                    "audit": {
+                        "conversion_settings": {
+                            "use_llm": {"status": "disabled"},
+                            "use_ocr": {"status": "unsupported"},
+                        },
+                        "conversion_plan": {"status": "disabled"},
+                    },
+                },
+            ):
+                result = evaluate_dataset.p9_conversion_result(
+                    fixture,
+                    fixture_path=Path(fixture_file.name),
+                    mode="scanned_pdf_ocr",
+                    llm_scenario="no_llm",
+                )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("unsupported", result["use_ocr_status"])
+        self.assertIn("OCR status 'unsupported' is not enabled", str(result["failure_reason"]))
+
+    def test_p9_harness_fails_rows_missing_required_ir_or_audit(self) -> None:
+        with tempfile.NamedTemporaryFile(suffix=".docx") as fixture_file:
+            fixture_file.write(b"fixture")
+            fixture_file.flush()
+            fixture = {
+                "id": "missing-required-output-fixture",
+                "sample_id": "p9-missing-required-output",
+                "path": "datasets/fixtures/word/missing-required-output.docx",
+                "source_type": "word",
+                "format": "docx",
+                "conversion_mode": "word_to_excel",
+            }
+            artifact_content = (
+                REPO_ROOT
+                / "datasets"
+                / "fixtures"
+                / "excel"
+                / "excel-to-word-representative.xlsx"
+            ).read_bytes()
+            base_response = {
+                "status": "converted",
+                "document_ir": {"document": {"title": "required outputs"}},
+                "artifacts": [
+                    {
+                        "kind": "primary",
+                        "id": "primary-xlsx",
+                        "format": "xlsx",
+                        "content": artifact_content,
+                    }
+                ],
+                "warnings": [],
+                "review_items": [],
+                "audit": {
+                    "conversion_settings": {
+                        "use_llm": {"status": "disabled"},
+                        "use_ocr": {"status": "disabled"},
+                    },
+                    "conversion_plan": {"status": "disabled"},
+                },
+            }
+            for omitted_key, expected_failure in (
+                ("document_ir", "document IR missing"),
+                ("audit", "conversion audit missing"),
+            ):
+                response = copy.deepcopy(base_response)
+                response.pop(omitted_key)
+                with self.subTest(omitted_key=omitted_key), mock.patch(
+                    "services.api.poc_web.convert_uploaded_document",
+                    return_value=response,
+                ):
+                    result = evaluate_dataset.p9_conversion_result(
+                        fixture,
+                        fixture_path=Path(fixture_file.name),
+                        mode="word_to_excel",
+                        llm_scenario="no_llm",
+                    )
+
+                self.assertFalse(result["ok"])
+                self.assertIn(expected_failure, str(result["failure_reason"]))
+
+    def test_p9_harness_enforces_no_llm_scenario_stays_llm_free(self) -> None:
+        with tempfile.NamedTemporaryFile(suffix=".docx") as fixture_file:
+            fixture_file.write(b"fixture")
+            fixture_file.flush()
+            fixture = {
+                "id": "no-llm-leak-fixture",
+                "sample_id": "p9-no-llm-leak",
+                "path": "datasets/fixtures/word/no-llm-leak.docx",
+                "source_type": "word",
+                "format": "docx",
+                "conversion_mode": "word_to_excel",
+            }
+            artifact_content = (
+                REPO_ROOT
+                / "datasets"
+                / "fixtures"
+                / "excel"
+                / "excel-to-word-representative.xlsx"
+            ).read_bytes()
+
+            with mock.patch(
+                "services.api.poc_web.convert_uploaded_document",
+                return_value={
+                    "status": "converted",
+                    "document_ir": {"document": {"title": "no LLM leak"}},
+                    "artifacts": [
+                        {
+                            "kind": "primary",
+                            "id": "primary-xlsx",
+                            "format": "xlsx",
+                            "content": artifact_content,
+                        }
+                    ],
+                    "warnings": [],
+                    "review_items": [],
+                    "audit": {
+                        "conversion_settings": {
+                            "use_llm": {
+                                "requested": True,
+                                "enabled": True,
+                                "status": "enabled",
+                            },
+                            "use_ocr": {"status": "disabled"},
+                        },
+                        "conversion_plan": {"status": "enabled"},
+                    },
+                },
+            ):
+                result = evaluate_dataset.p9_conversion_result(
+                    fixture,
+                    fixture_path=Path(fixture_file.name),
+                    mode="word_to_excel",
+                    llm_scenario="no_llm",
+                )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("enabled", result["llm_status"])
+        self.assertIn(
+            "no_llm scenario LLM status 'enabled' is not disabled",
+            str(result["failure_reason"]),
+        )
+
+    def test_p9_harness_rejects_duplicate_primary_artifacts(self) -> None:
+        with tempfile.NamedTemporaryFile(suffix=".docx") as fixture_file:
+            fixture_file.write(b"fixture")
+            fixture_file.flush()
+            fixture = {
+                "id": "duplicate-primary-fixture",
+                "sample_id": "p9-duplicate-primary",
+                "path": "datasets/fixtures/word/duplicate-primary.docx",
+                "source_type": "word",
+                "format": "docx",
+                "conversion_mode": "word_to_excel",
+            }
+            artifact_content = (
+                REPO_ROOT
+                / "datasets"
+                / "fixtures"
+                / "excel"
+                / "excel-to-word-representative.xlsx"
+            ).read_bytes()
+            primary_artifact = {
+                "kind": "primary",
+                "format": "xlsx",
+                "content": artifact_content,
+            }
+
+            with mock.patch(
+                "services.api.poc_web.convert_uploaded_document",
+                return_value={
+                    "status": "converted",
+                    "document_ir": {"document": {"title": "duplicate primary"}},
+                    "artifacts": [
+                        {**primary_artifact, "id": "primary-xlsx-1"},
+                        {**primary_artifact, "id": "primary-xlsx-2"},
+                    ],
+                    "warnings": [],
+                    "review_items": [],
+                    "audit": {
+                        "conversion_settings": {
+                            "use_llm": {"status": "disabled"},
+                            "use_ocr": {"status": "disabled"},
+                        },
+                        "conversion_plan": {"status": "disabled"},
+                    },
+                },
+            ):
+                result = evaluate_dataset.p9_conversion_result(
+                    fixture,
+                    fixture_path=Path(fixture_file.name),
+                    mode="word_to_excel",
+                    llm_scenario="no_llm",
+                )
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["artifact_generated"])
+        self.assertEqual(2, result["artifact_count"])
+        self.assertIn("expected exactly one primary artifact, got 2", str(result["failure_reason"]))
 
     def test_p9_harness_rejects_gmp_acceptance_flag_combination(self) -> None:
         completed = subprocess.run(
