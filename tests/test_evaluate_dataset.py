@@ -651,6 +651,34 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertEqual(str(custom_manifest_path), payload["dataset_manifest"])
         self.assertGreater(payload["summary"]["case_count"], 0)
 
+    def test_poc_acceptance_report_uses_custom_manifest_repo_for_commit(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            shutil.copytree(REPO_ROOT / "datasets", temp_root / "datasets")
+            custom_manifest_path = temp_root / "datasets" / "custom_p9_manifest.json"
+            shutil.copy2(POC_EVALUATION_MANIFEST_PATH, custom_manifest_path)
+            with mock.patch.object(
+                evaluate_dataset,
+                "current_git_commit",
+                return_value="manifest-head",
+            ) as mocked_commit:
+                report = evaluate_dataset.build_poc_acceptance_report(
+                    custom_manifest_path,
+                    llm_stability_runs_path=(
+                        temp_root / "datasets" / "gold" / "llm_stability_runs_v0.json"
+                    ),
+                    poc_comparison_path=(
+                        temp_root / "datasets" / "gold" / "poc_mode_comparison_v1.json"
+                    ),
+                )
+
+        mocked_commit.assert_called_once_with(temp_root.resolve())
+        payload = report.as_dict()
+        self.assertEqual("manifest-head", payload["tested_environment"]["commit"])
+        self.assertEqual(str(custom_manifest_path), payload["evidence"]["dataset_manifest"])
+
     def test_p9_harness_counts_blocked_conversion_status_as_failure(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".docx") as fixture_file:
             fixture_file.write(b"fixture")

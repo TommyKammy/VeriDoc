@@ -1643,14 +1643,16 @@ def build_poc_acceptance_report(
         "python3 scripts/evaluate_dataset.py --poc-acceptance-report"
     ),
 ) -> PoCAcceptanceReport:
+    p9_harness = evaluate_p9_harness(
+        manifest_path,
+        llm_stability_runs_path=llm_stability_runs_path,
+        poc_comparison_path=poc_comparison_path,
+    )
+    manifest_repo_root = p9_manifest_repo_root(manifest_path.resolve())
     return PoCAcceptanceReport(
-        p9_harness=evaluate_p9_harness(
-            manifest_path,
-            llm_stability_runs_path=llm_stability_runs_path,
-            poc_comparison_path=poc_comparison_path,
-        ),
+        p9_harness=p9_harness,
         generated_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-        commit=current_git_commit(),
+        commit=current_git_commit(manifest_repo_root),
         generation_command=generation_command,
     )
 
