@@ -108,6 +108,12 @@ POC_AUTH_SESSION_COVERAGE_REFS = (
     *POC_AUTH_SESSION_SUCCESS_COVERAGE_REFS,
     *POC_AUTH_SESSION_FAIL_CLOSED_COVERAGE_REFS,
 )
+POC_AUTH_SESSION_FAIL_CLOSED_EXPECTED_STATUS_BY_REF = {
+    "tests/test_poc_web_api.py::test_poc_http_api_authenticates_review_events_before_parsing_payload": 401,
+    "tests/test_poc_web_api.py::test_poc_http_api_rejects_read_only_review_role_before_parsing_payload": 403,
+    "tests/test_poc_web_api.py::test_poc_http_api_requires_configured_local_auth_token_for_review_events": 401,
+    "tests/test_poc_web_api.py::test_poc_http_api_authenticates_job_events_before_parsing_payload": 401,
+}
 POC_AUTH_SESSION_COVERAGE_INPUT_PATHS = (
     Path("README.md"),
     Path("tests/test_poc_web_api.py"),
@@ -117,6 +123,30 @@ POC_AUTH_SESSION_SUCCESS_TOKEN_LITERALS = frozenset(
 )
 POC_AUTH_SESSION_SUCCESS_STATUS_CODES = frozenset((200, 202))
 POC_AUTH_SESSION_ENV_ROLES = frozenset(("viewer", "reviewer", "approver", "admin"))
+POC_AUTH_SESSION_SUCCESS_REF_EXPECTATIONS = {
+    "tests/test_poc_web_api.py::test_poc_http_api_reads_local_auth_tokens_from_env_for_review_success": {
+        "tokens": frozenset(("env-reviewer-token",)),
+        "status_codes": frozenset((202,)),
+        "required_literals": frozenset(("conversion-env-auth",)),
+    },
+    "tests/test_poc_web_api.py::test_poc_http_api_filters_review_action_audit_events_by_action": {
+        "tokens": frozenset(("admin-token",)),
+        "status_codes": frozenset((202,)),
+        "required_literals": frozenset(("approve", "conversion-current")),
+    },
+    "tests/test_poc_web_api.py::test_poc_http_api_allows_approval_with_revised_text_target": {
+        "tokens": frozenset(("admin-token",)),
+        "status_codes": frozenset((202,)),
+        "required_literals": frozenset(("approve", "Lot: SAMPLE-001 corrected")),
+    },
+    "tests/test_poc_web_api.py::test_poc_http_api_requires_admin_role_for_retry_job_event": {
+        "tokens": frozenset(("admin-token",)),
+        "status_codes": frozenset((202,)),
+        "method": "POST",
+        "path": "/api/job-events",
+        "required_literals": frozenset(("retry_conversion",)),
+    },
+}
 EXPECTED_SCOPE_PHASE = "phase0"
 PUBLIC_FIXTURE_ANONYMIZATION_VALUES = {"anonymized", "synthetic"}
 PUBLIC_LLM_STABILITY_SOURCE_KINDS = {"anonymized_text", "synthetic_text"}
@@ -207,7 +237,36 @@ def _test_function_nodes(
         node.name: node
         for node in tree.body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and not _test_function_is_skipped_or_xfailed(node)
     }
+
+
+def _dotted_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        parent = _dotted_name(node.value)
+        return f"{parent}.{node.attr}" if parent is not None else node.attr
+    if isinstance(node, ast.Call):
+        return _dotted_name(node.func)
+    return None
+
+
+def _test_function_is_skipped_or_xfailed(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> bool:
+    for decorator in node.decorator_list:
+        name = _dotted_name(decorator)
+        if name in {
+            "pytest.mark.skip",
+            "pytest.mark.skipif",
+            "pytest.mark.xfail",
+            "skip",
+            "skipif",
+            "xfail",
+        }:
+            return True
+    return False
 
 
 def _constant_int_value(node: ast.AST) -> int | None:
@@ -219,13 +278,20 @@ def _constant_int_value(node: ast.AST) -> int | None:
 
 
 def _compare_checks_success_status_equality(node: ast.Compare) -> bool:
+    return _compare_checks_status_equality(
+        node, POC_AUTH_SESSION_SUCCESS_STATUS_CODES
+    )
+
+
+def _compare_checks_status_equality(
+    node: ast.Compare,
+    status_codes: frozenset[int],
+) -> bool:
     if len(node.ops) != 1 or not isinstance(node.ops[0], ast.Eq):
         return False
     parts = (node.left, *node.comparators)
     values = tuple(_constant_int_value(part) for part in parts)
-    has_success_status = any(
-        value in POC_AUTH_SESSION_SUCCESS_STATUS_CODES for value in values
-    )
+    has_success_status = any(value in status_codes for value in values)
     has_observed_status_side = any(value is None for value in values)
     return has_success_status and has_observed_status_side
 
@@ -295,6 +361,13 @@ def _status_expr_key(node: ast.AST) -> str | None:
 
 
 def _success_status_asserted_expr_keys(node: ast.Assert) -> frozenset[str]:
+    return _status_asserted_expr_keys(node, POC_AUTH_SESSION_SUCCESS_STATUS_CODES)
+
+
+def _status_asserted_expr_keys(
+    node: ast.Assert,
+    status_codes: frozenset[int],
+) -> frozenset[str]:
     if not isinstance(node.test, ast.Compare):
         return frozenset()
     compare = node.test
@@ -302,7 +375,7 @@ def _success_status_asserted_expr_keys(node: ast.Assert) -> frozenset[str]:
         return frozenset()
     parts = (compare.left, *compare.comparators)
     values = tuple(_constant_int_value(part) for part in parts)
-    if not any(value in POC_AUTH_SESSION_SUCCESS_STATUS_CODES for value in values):
+    if not any(value in status_codes for value in values):
         return frozenset()
     keys = {
         key
@@ -312,6 +385,17 @@ def _success_status_asserted_expr_keys(node: ast.Assert) -> frozenset[str]:
         if key is not None
     }
     return frozenset(keys)
+
+
+def _asserted_status_code(node: ast.Assert) -> int | None:
+    if not isinstance(node.test, ast.Compare):
+        return None
+    parts = (node.test.left, *node.test.comparators)
+    for part in parts:
+        value = _constant_int_value(part)
+        if value is not None:
+            return value
+    return None
 
 
 def _assigned_status_expr_keys(target: ast.AST) -> frozenset[str]:
@@ -331,10 +415,36 @@ def _assigned_name_targets(target: ast.AST) -> frozenset[str]:
     return frozenset()
 
 
+def _assigned_observation_keys(target: ast.AST) -> frozenset[str]:
+    keys: set[str] = set()
+    key = _status_expr_key(target)
+    if key is not None:
+        keys.add(key)
+    if isinstance(target, (ast.Tuple, ast.List)):
+        for element in target.elts:
+            keys.update(_assigned_observation_keys(element))
+    return frozenset(keys)
+
+
 def _assignment_targets(
     node: ast.Assign | ast.AnnAssign | ast.AugAssign,
 ) -> tuple[ast.AST, ...]:
     return node.targets if isinstance(node, ast.Assign) else (node.target,)
+
+
+def _clear_status_observations_for_targets(
+    status_observations: dict[str, "_AuthenticatedStatusObservation"],
+    targets: Iterable[ast.AST],
+) -> None:
+    target_keys = {
+        key for target in targets for key in _assigned_observation_keys(target)
+    }
+    for key in target_keys:
+        status_observations.pop(key, None)
+        prefix = f"attr:{key}."
+        for observed_key in tuple(status_observations):
+            if observed_key.startswith(prefix):
+                status_observations.pop(observed_key, None)
 
 
 def _ordered_function_statements(
@@ -343,17 +453,16 @@ def _ordered_function_statements(
     for statement in statements:
         if isinstance(statement, (ast.Try, ast.TryStar)):
             yield from _ordered_function_statements(statement.body)
-            for handler in statement.handlers:
-                yield from _ordered_function_statements(handler.body)
             yield from _ordered_function_statements(statement.orelse)
             yield from _ordered_function_statements(statement.finalbody)
             continue
         if isinstance(
             statement,
-            (ast.For, ast.AsyncFor, ast.While, ast.If, ast.With, ast.AsyncWith),
+            (ast.With, ast.AsyncWith),
         ):
             yield from _ordered_function_statements(statement.body)
-            yield from _ordered_function_statements(getattr(statement, "orelse", ()))
+            continue
+        if isinstance(statement, (ast.For, ast.AsyncFor, ast.While, ast.If)):
             continue
         yield statement
 
@@ -370,6 +479,26 @@ def _method_call_receiver_name(node: ast.Call, method_name: str) -> str | None:
 class _AuthenticatedStatusObservation:
     tokens: frozenset[str]
     env_tokens_before_request: frozenset[str]
+    status_code: int | None = None
+    request_method: str | None = None
+    request_path: str | None = None
+    string_literals: frozenset[str] = frozenset()
+
+
+def _string_literals_in_node(node: ast.AST) -> frozenset[str]:
+    return frozenset(
+        child.value
+        for child in ast.walk(node)
+        if isinstance(child, ast.Constant) and isinstance(child.value, str)
+    )
+
+
+def _request_method_and_path(node: ast.Call) -> tuple[str | None, str | None]:
+    if _method_call_receiver_name(node, "request") is None:
+        return None, None
+    method = _constant_string_value(node.args[0]) if len(node.args) >= 1 else None
+    path = _constant_string_value(node.args[1]) if len(node.args) >= 2 else None
+    return method, path
 
 
 def _authenticated_success_status_observations(
@@ -377,7 +506,7 @@ def _authenticated_success_status_observations(
 ) -> tuple[_AuthenticatedStatusObservation, ...]:
     env_tokens_seen: set[str] = set()
     pending_request_by_connection: dict[
-        str, tuple[frozenset[str], frozenset[str]]
+        str, _AuthenticatedStatusObservation
     ] = {}
     status_observations: dict[str, _AuthenticatedStatusObservation] = {}
     success_observations: list[_AuthenticatedStatusObservation] = []
@@ -393,20 +522,28 @@ def _authenticated_success_status_observations(
                 continue
             tokens = _call_privileged_auth_tokens(child)
             if tokens:
+                method, path = _request_method_and_path(child)
                 pending_request_by_connection[connection_name] = (
-                    tokens,
-                    frozenset(env_tokens_seen),
+                    _AuthenticatedStatusObservation(
+                        tokens=tokens,
+                        env_tokens_before_request=frozenset(env_tokens_seen),
+                        request_method=method,
+                        request_path=path,
+                        string_literals=_string_literals_in_node(child),
+                    )
                 )
 
         if isinstance(statement, (ast.Assign, ast.AnnAssign)):
             value = statement.value
             targets = _assignment_targets(statement)
+            _clear_status_observations_for_targets(status_observations, targets)
             if isinstance(value, ast.Call):
                 tokens = _call_privileged_auth_tokens(value)
                 if tokens:
                     observation = _AuthenticatedStatusObservation(
                         tokens=tokens,
                         env_tokens_before_request=frozenset(env_tokens_seen),
+                        string_literals=_string_literals_in_node(value),
                     )
                     for target in targets:
                         for key in _assigned_status_expr_keys(target):
@@ -418,10 +555,14 @@ def _authenticated_success_status_observations(
                         connection_name, None
                     )
                     if pending is not None:
-                        tokens, request_env_tokens = pending
                         observation = _AuthenticatedStatusObservation(
-                            tokens=tokens,
-                            env_tokens_before_request=request_env_tokens,
+                            tokens=pending.tokens,
+                            env_tokens_before_request=(
+                                pending.env_tokens_before_request
+                            ),
+                            request_method=pending.request_method,
+                            request_path=pending.request_path,
+                            string_literals=pending.string_literals,
                         )
                         for target in targets:
                             for name in _assigned_name_targets(target):
@@ -433,7 +574,18 @@ def _authenticated_success_status_observations(
             for key in _success_status_asserted_expr_keys(statement):
                 observation = status_observations.get(key)
                 if observation is not None:
-                    success_observations.append(observation)
+                    success_observations.append(
+                        _AuthenticatedStatusObservation(
+                            tokens=observation.tokens,
+                            env_tokens_before_request=(
+                                observation.env_tokens_before_request
+                            ),
+                            status_code=_asserted_status_code(statement),
+                            request_method=observation.request_method,
+                            request_path=observation.request_path,
+                            string_literals=observation.string_literals,
+                        )
+                    )
 
     return tuple(success_observations)
 
@@ -442,6 +594,37 @@ def _test_function_has_authenticated_success_markers(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> bool:
     return bool(_authenticated_success_status_observations(node))
+
+
+def _test_function_matches_success_ref_expectation(
+    ref: str,
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> bool:
+    expectation = POC_AUTH_SESSION_SUCCESS_REF_EXPECTATIONS.get(ref)
+    if expectation is None:
+        return _test_function_has_authenticated_success_markers(node)
+    expected_tokens = expectation.get("tokens", frozenset())
+    expected_status_codes = expectation.get("status_codes", frozenset())
+    expected_method = expectation.get("method")
+    expected_path = expectation.get("path")
+    required_literals = expectation.get("required_literals", frozenset())
+    function_literals = _string_literals_in_node(node)
+    if not required_literals.issubset(function_literals):
+        return False
+    for observation in _authenticated_success_status_observations(node):
+        if expected_tokens and not observation.tokens & expected_tokens:
+            continue
+        if (
+            expected_status_codes
+            and observation.status_code not in expected_status_codes
+        ):
+            continue
+        if expected_method is not None and observation.request_method != expected_method:
+            continue
+        if expected_path is not None and observation.request_path != expected_path:
+            continue
+        return True
+    return False
 
 
 def _assigns_server_local_auth_tokens(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
@@ -541,6 +724,53 @@ def _test_function_uses_env_auth_boundary(
     )
 
 
+def _test_function_asserts_status_code(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    expected_status: int,
+) -> bool:
+    status_observation_keys: set[str] = set()
+    pending_response_connections: set[str] = set()
+    for statement in _ordered_function_statements(node.body):
+        for child in ast.walk(statement):
+            if not isinstance(child, ast.Call):
+                continue
+            connection_name = _method_call_receiver_name(child, "request")
+            if connection_name is not None:
+                pending_response_connections.add(connection_name)
+
+        if isinstance(statement, (ast.Assign, ast.AnnAssign)):
+            targets = _assignment_targets(statement)
+            for target in targets:
+                for key in _assigned_observation_keys(target):
+                    status_observation_keys.discard(key)
+                    prefix = f"attr:{key}."
+                    status_observation_keys = {
+                        observed_key
+                        for observed_key in status_observation_keys
+                        if not observed_key.startswith(prefix)
+                    }
+            value = statement.value
+            if isinstance(value, ast.Call):
+                for target in targets:
+                    status_observation_keys.update(_assigned_status_expr_keys(target))
+                connection_name = _method_call_receiver_name(value, "getresponse")
+                if connection_name in pending_response_connections:
+                    pending_response_connections.discard(connection_name)
+                    for target in targets:
+                        for name in _assigned_name_targets(target):
+                            status_observation_keys.add(
+                                f"attr:name:{name}.status"
+                            )
+
+        if isinstance(statement, ast.Assert):
+            asserted_keys = _status_asserted_expr_keys(
+                statement, frozenset((expected_status,))
+            )
+            if asserted_keys & status_observation_keys:
+                return True
+    return False
+
+
 def _constant_string_value(node: ast.AST) -> str | None:
     if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
         return None
@@ -581,13 +811,19 @@ def poc_auth_session_coverage_is_present(repo_root: Path = REPO_ROOT) -> bool:
             return False
     for ref in POC_AUTH_SESSION_SUCCESS_COVERAGE_REFS:
         _path, test_name = ref.split("::", 1)
-        if not _test_function_has_authenticated_success_markers(
-            test_functions[test_name]
+        if not _test_function_matches_success_ref_expectation(
+            ref, test_functions[test_name]
         ):
             return False
     for ref in POC_AUTH_SESSION_ENV_SUCCESS_COVERAGE_REFS:
         _path, test_name = ref.split("::", 1)
         if not _test_function_uses_env_auth_boundary(test_functions[test_name]):
+            return False
+    for ref, expected_status in POC_AUTH_SESSION_FAIL_CLOSED_EXPECTED_STATUS_BY_REF.items():
+        _path, test_name = ref.split("::", 1)
+        if not _test_function_asserts_status_code(
+            test_functions[test_name], expected_status
+        ):
             return False
     return True
 
