@@ -512,7 +512,17 @@ def _authenticated_success_status_observations(
     success_observations: list[_AuthenticatedStatusObservation] = []
 
     for statement in _ordered_function_statements(node.body):
-        env_tokens_seen.update(_env_auth_tokens_configured_by_node(statement))
+        env_tokens_seen = set(
+            _env_auth_tokens_after_statement(statement, env_tokens_seen)
+        )
+        response_connections_seen = {
+            connection_name
+            for child in ast.walk(statement)
+            if isinstance(child, ast.Call)
+            for connection_name in (_method_call_receiver_name(child, "getresponse"),)
+            if connection_name is not None
+        }
+        response_connections_recorded: set[str] = set()
 
         for child in ast.walk(statement):
             if not isinstance(child, ast.Call):
@@ -554,6 +564,7 @@ def _authenticated_success_status_observations(
                     pending = pending_request_by_connection.pop(
                         connection_name, None
                     )
+                    response_connections_recorded.add(connection_name)
                     if pending is not None:
                         observation = _AuthenticatedStatusObservation(
                             tokens=pending.tokens,
@@ -569,6 +580,8 @@ def _authenticated_success_status_observations(
                                 status_observations[
                                     f"attr:name:{name}.status"
                                 ] = observation
+        for connection_name in response_connections_seen - response_connections_recorded:
+            pending_request_by_connection.pop(connection_name, None)
 
         if isinstance(statement, ast.Assert):
             for key in _success_status_asserted_expr_keys(statement):
@@ -652,10 +665,11 @@ def _calls_setattr_local_auth_tokens(node: ast.AST) -> bool:
     )
 
 
-def _env_auth_tokens_configured_by_node(
-    node: ast.FunctionDef | ast.AsyncFunctionDef,
+def _env_auth_tokens_after_statement(
+    node: ast.stmt,
+    current_tokens: Iterable[str],
 ) -> frozenset[str]:
-    tokens: set[str] = set()
+    tokens = set(current_tokens)
     for child in ast.walk(node):
         if isinstance(child, ast.Call):
             func = child.func
@@ -665,20 +679,39 @@ def _env_auth_tokens_configured_by_node(
                 and len(child.args) >= 2
                 and _constant_string_value(child.args[0]) == POC_AUTH_SESSION_ENV_VAR
             ):
-                tokens.update(
+                tokens = set(
                     _env_auth_token_value_tokens(
                         _constant_string_value(child.args[1]) or ""
                     )
                 )
+            if (
+                isinstance(func, ast.Attribute)
+                and func.attr == "delenv"
+                and child.args
+                and _constant_string_value(child.args[0]) == POC_AUTH_SESSION_ENV_VAR
+            ):
+                tokens.clear()
+            if (
+                isinstance(func, ast.Attribute)
+                and func.attr == "pop"
+                and _is_os_environ_node(func.value)
+                and child.args
+                and _constant_string_value(child.args[0]) == POC_AUTH_SESSION_ENV_VAR
+            ):
+                tokens.clear()
         if not isinstance(child, (ast.Assign, ast.AnnAssign)):
             continue
         targets = child.targets if isinstance(child, ast.Assign) else (child.target,)
         if any(_targets_env_auth_var(target) for target in targets):
-            tokens.update(
+            tokens = set(
                 _env_auth_token_value_tokens(
                     _constant_string_value(child.value) or ""
                 )
             )
+    if isinstance(node, ast.Delete) and any(
+        _targets_env_auth_var(target) for target in node.targets
+    ):
+        tokens.clear()
     return frozenset(tokens)
 
 
@@ -731,6 +764,14 @@ def _test_function_asserts_status_code(
     status_observation_keys: set[str] = set()
     pending_response_connections: set[str] = set()
     for statement in _ordered_function_statements(node.body):
+        response_connections_seen = {
+            connection_name
+            for child in ast.walk(statement)
+            if isinstance(child, ast.Call)
+            for connection_name in (_method_call_receiver_name(child, "getresponse"),)
+            if connection_name is not None
+        }
+        response_connections_recorded: set[str] = set()
         for child in ast.walk(statement):
             if not isinstance(child, ast.Call):
                 continue
@@ -756,11 +797,15 @@ def _test_function_asserts_status_code(
                 connection_name = _method_call_receiver_name(value, "getresponse")
                 if connection_name in pending_response_connections:
                     pending_response_connections.discard(connection_name)
+                    response_connections_recorded.add(connection_name)
                     for target in targets:
                         for name in _assigned_name_targets(target):
                             status_observation_keys.add(
                                 f"attr:name:{name}.status"
                             )
+        pending_response_connections.difference_update(
+            response_connections_seen - response_connections_recorded
+        )
 
         if isinstance(statement, ast.Assert):
             asserted_keys = _status_asserted_expr_keys(
@@ -782,12 +827,16 @@ def _targets_env_auth_var(target: ast.AST) -> bool:
         return False
     if _constant_string_value(target.slice) != POC_AUTH_SESSION_ENV_VAR:
         return False
-    value = target.value
-    if isinstance(value, ast.Attribute) and value.attr == "environ":
-        return True
-    if isinstance(value, ast.Name) and value.id == "environ":
-        return True
-    return False
+    return _is_os_environ_node(target.value)
+
+
+def _is_os_environ_node(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == "environ"
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "os"
+    )
 
 
 def poc_auth_session_coverage_is_present(repo_root: Path = REPO_ROOT) -> bool:
