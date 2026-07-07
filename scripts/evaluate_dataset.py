@@ -586,6 +586,19 @@ def _clear_status_observations_for_targets(
                 status_observations.pop(observed_key, None)
 
 
+def _statement_unconditionally_exits(statement: ast.stmt) -> bool:
+    if isinstance(statement, (ast.Return, ast.Raise)):
+        return True
+    if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call):
+        return _dotted_name(statement.value.func) in {
+            "pytest.skip",
+            "pytest.xfail",
+            "skip",
+            "xfail",
+        }
+    return False
+
+
 def _ordered_function_statements(
     statements: Iterable[ast.stmt],
 ) -> Iterable[ast.stmt]:
@@ -599,11 +612,18 @@ def _ordered_function_statements(
             statement,
             (ast.With, ast.AsyncWith),
         ):
-            yield from _ordered_function_statements(statement.body)
+            body_exited = False
+            for child in _ordered_function_statements(statement.body):
+                yield child
+                body_exited = _statement_unconditionally_exits(child)
+            if body_exited:
+                break
             continue
         if isinstance(statement, (ast.For, ast.AsyncFor, ast.While, ast.If)):
             continue
         yield statement
+        if _statement_unconditionally_exits(statement):
+            break
 
 
 def _method_call_receiver_name(node: ast.Call, method_name: str) -> str | None:
