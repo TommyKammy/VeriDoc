@@ -353,6 +353,7 @@ def _test_function_nodes(
         or _module_disables_test_collection(tree)
     ):
         return {}
+    disabled_test_names = _function_test_opt_out_names(tree)
     return {
         name: node
         for name, node in {
@@ -360,7 +361,8 @@ def _test_function_nodes(
             for node in tree.body
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         }.items()
-        if not _test_function_is_skipped_or_xfailed(node)
+        if name not in disabled_test_names
+        and not _test_function_is_skipped_or_xfailed(node)
     }
 
 
@@ -381,6 +383,31 @@ def _module_disables_test_collection(tree: ast.Module) -> bool:
         if isinstance(statement.value, ast.Constant) and statement.value.value is False:
             return True
     return False
+
+
+def _function_test_opt_out_names(tree: ast.Module) -> frozenset[str]:
+    disabled: set[str] = set()
+    for statement in tree.body:
+        if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
+            continue
+        if not (
+            isinstance(statement.value, ast.Constant)
+            and statement.value.value is False
+        ):
+            continue
+        targets = (
+            statement.targets
+            if isinstance(statement, ast.Assign)
+            else (statement.target,)
+        )
+        for target in targets:
+            if (
+                isinstance(target, ast.Attribute)
+                and target.attr == "__test__"
+                and isinstance(target.value, ast.Name)
+            ):
+                disabled.add(target.value.id)
+    return frozenset(disabled)
 
 
 def _dotted_name(node: ast.AST) -> str | None:
