@@ -2459,6 +2459,9 @@ def manifest_root_for_cases_path(cases_path: Path) -> Path:
 def repository_root_for_gold_path(gold_path: Path) -> Path:
     if gold_path.parent.name == "gold" and gold_path.parent.parent.name == "datasets":
         return gold_path.parent.parent.parent
+    for parent in gold_path.parents:
+        if parent.name == "datasets" and (parent / "fixtures" / "manifest.json").is_file():
+            return parent.parent
     return Path.cwd()
 
 

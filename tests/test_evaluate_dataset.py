@@ -1052,6 +1052,35 @@ class EvaluateDatasetTest(unittest.TestCase):
             poc_comparison_path=(temp_root / relative_comparison).resolve(),
         )
 
+    def test_llm_stability_report_resolves_custom_comparison_repo_root(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            shutil.copytree(REPO_ROOT / "datasets", temp_root / "datasets")
+            custom_comparison_path = temp_root / "datasets" / "custom" / "comparison.json"
+            custom_comparison_path.parent.mkdir()
+            shutil.copy2(POC_COMPARISON_PATH, custom_comparison_path)
+
+            with mock.patch.object(
+                evaluate_dataset,
+                "evaluate_poc_mode_comparison",
+                return_value=evaluate_dataset.evaluate_poc_mode_comparison(
+                    self.valid_poc_comparison_data(),
+                    repo_root=REPO_ROOT,
+                ),
+            ) as mocked_comparison:
+                evaluate_dataset.evaluate_llm_stability_report(
+                    temp_root / "datasets" / "gold" / "llm_stability_runs_v0.json",
+                    custom_comparison_path,
+                )
+
+        mocked_comparison.assert_called_once()
+        self.assertEqual(
+            temp_root.resolve(),
+            mocked_comparison.call_args.kwargs["repo_root"].resolve(),
+        )
+
     def test_poc_acceptance_report_resolves_relative_manifest_before_harness(
         self,
     ) -> None:
