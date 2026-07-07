@@ -1895,6 +1895,12 @@ def poc_acceptance_p9_input_paths(p9_harness: P9HarnessReport) -> tuple[Path, ..
         p9_harness.llm_stability_source,
         p9_harness.poc_comparison_source,
     ]
+    paths.extend(
+        poc_acceptance_poc_comparison_input_paths(
+            p9_harness.poc_comparison_source,
+            repo_root,
+        )
+    )
     try:
         manifest = load_json(
             p9_harness.manifest
@@ -1918,6 +1924,42 @@ def poc_acceptance_p9_input_paths(p9_harness: P9HarnessReport) -> tuple[Path, ..
             unique_paths.append(path)
             seen_paths.add(key)
     return tuple(unique_paths)
+
+
+def poc_acceptance_poc_comparison_input_paths(
+    poc_comparison_source: Path,
+    repo_root: Path,
+) -> tuple[Path, ...]:
+    comparison_path = (
+        poc_comparison_source
+        if poc_comparison_source.is_absolute()
+        else repo_root / poc_comparison_source
+    )
+    paths: list[Path] = []
+    try:
+        comparison_data = load_json(comparison_path)
+        paths.extend(
+            [
+                evaluation_cases_path_from_comparison(comparison_data, repo_root),
+                high_risk_labels_path_from_comparison(comparison_data, repo_root),
+            ]
+        )
+        fixture_manifest_path = manifest_path_from_cases(comparison_data, repo_root)
+        paths.append(fixture_manifest_path)
+        fixture_paths = fixture_paths_from_manifest(
+            load_json(fixture_manifest_path),
+            repo_root,
+        )
+        paths.extend(fixture_paths.values())
+    except (EvaluationCaseError, OSError, json.JSONDecodeError):
+        paths.extend(
+            [
+                repo_root / EXPECTED_EVALUATION_CASES,
+                repo_root / EXPECTED_HIGH_RISK_LABELS,
+                repo_root / EXPECTED_DATASET_MANIFEST,
+            ]
+        )
+    return tuple(paths)
 
 
 def poc_acceptance_evidence_inputs_tracked_in_manifest_repo(

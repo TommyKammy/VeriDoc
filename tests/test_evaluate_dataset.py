@@ -56,6 +56,7 @@ class EvaluateDatasetTest(unittest.TestCase):
         unstable_example_count: int = 0,
         manual_correction_target_met: bool = True,
         source_linkage_rates: dict[str, float] | None = None,
+        manifest: Path = POC_EVALUATION_MANIFEST_PATH,
         llm_stability_source: Path = LLM_STABILITY_RUNS_PATH,
         poc_comparison_source: Path = POC_COMPARISON_PATH,
         commit: str = "test-commit",
@@ -138,7 +139,7 @@ class EvaluateDatasetTest(unittest.TestCase):
             mode_diffs=(),
         )
         harness = evaluate_dataset.P9HarnessReport(
-            manifest=POC_EVALUATION_MANIFEST_PATH,
+            manifest=manifest,
             results=tuple(results),
             llm_stability=llm_stability,
             poc_mode_comparison=poc_comparison,
@@ -848,6 +849,49 @@ class EvaluateDatasetTest(unittest.TestCase):
         }
 
         payload = self.poc_acceptance_payload(results=results)
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual("fail", rows["reproducibility"]["status"])
+        self.assertFalse(
+            payload["matrix_evidence"]["reproducibility"][
+                "evidence_inputs_tracked_in_manifest_repo"
+            ]
+        )
+
+    def test_poc_acceptance_report_fails_reproducibility_for_untracked_comparison_input(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            shutil.copytree(REPO_ROOT / "datasets", temp_root / "datasets")
+            (temp_root / ".gitignore").write_text(
+                "datasets/gold/high_risk_labels_v0.json\n",
+                encoding="utf-8",
+            )
+            subprocess.run(
+                ["git", "init"],
+                cwd=temp_root,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["git", "add", "."],
+                cwd=temp_root,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            payload = self.poc_acceptance_payload(
+                manifest=temp_root / "datasets" / "poc_evaluation_manifest_v1.json",
+                llm_stability_source=(
+                    temp_root / "datasets" / "gold" / "llm_stability_runs_v0.json"
+                ),
+                poc_comparison_source=(
+                    temp_root / "datasets" / "gold" / "poc_mode_comparison_v1.json"
+                ),
+            )
 
         rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
         self.assertEqual("fail", rows["reproducibility"]["status"])
