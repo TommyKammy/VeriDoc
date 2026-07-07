@@ -243,7 +243,7 @@ def _privileged_auth_tokens_in_node(node: ast.AST) -> frozenset[str]:
 
 def _authorization_header_token(value: str) -> str | None:
     scheme, separator, token = value.strip().partition(" ")
-    if separator != " " or scheme.lower() != "bearer" or not token.strip():
+    if separator != " " or scheme != "Bearer" or not token.strip():
         return None
     return token.strip()
 
@@ -284,18 +284,164 @@ def _assert_checks_success_status(node: ast.Assert) -> bool:
     ) and _compare_checks_success_status_equality(node.test)
 
 
+def _status_expr_key(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Name):
+        return f"name:{node.id}"
+    if isinstance(node, ast.Attribute):
+        parent = _status_expr_key(node.value)
+        if parent is not None:
+            return f"attr:{parent}.{node.attr}"
+    return None
+
+
+def _success_status_asserted_expr_keys(node: ast.Assert) -> frozenset[str]:
+    if not isinstance(node.test, ast.Compare):
+        return frozenset()
+    compare = node.test
+    if len(compare.ops) != 1 or not isinstance(compare.ops[0], ast.Eq):
+        return frozenset()
+    parts = (compare.left, *compare.comparators)
+    values = tuple(_constant_int_value(part) for part in parts)
+    if not any(value in POC_AUTH_SESSION_SUCCESS_STATUS_CODES for value in values):
+        return frozenset()
+    keys = {
+        key
+        for part, value in zip(parts, values, strict=False)
+        if value is None
+        for key in (_status_expr_key(part),)
+        if key is not None
+    }
+    return frozenset(keys)
+
+
+def _assigned_status_expr_keys(target: ast.AST) -> frozenset[str]:
+    if isinstance(target, (ast.Tuple, ast.List)) and target.elts:
+        key = _status_expr_key(target.elts[0])
+        return frozenset((key,)) if key is not None else frozenset()
+    return frozenset()
+
+
+def _assigned_name_targets(target: ast.AST) -> frozenset[str]:
+    if isinstance(target, ast.Name):
+        return frozenset((target.id,))
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return frozenset(
+            element.id for element in target.elts if isinstance(element, ast.Name)
+        )
+    return frozenset()
+
+
+def _assignment_targets(
+    node: ast.Assign | ast.AnnAssign | ast.AugAssign,
+) -> tuple[ast.AST, ...]:
+    return node.targets if isinstance(node, ast.Assign) else (node.target,)
+
+
+def _ordered_function_statements(
+    statements: Iterable[ast.stmt],
+) -> Iterable[ast.stmt]:
+    for statement in statements:
+        if isinstance(statement, (ast.Try, ast.TryStar)):
+            yield from _ordered_function_statements(statement.body)
+            for handler in statement.handlers:
+                yield from _ordered_function_statements(handler.body)
+            yield from _ordered_function_statements(statement.orelse)
+            yield from _ordered_function_statements(statement.finalbody)
+            continue
+        if isinstance(
+            statement,
+            (ast.For, ast.AsyncFor, ast.While, ast.If, ast.With, ast.AsyncWith),
+        ):
+            yield from _ordered_function_statements(statement.body)
+            yield from _ordered_function_statements(getattr(statement, "orelse", ()))
+            continue
+        yield statement
+
+
+def _method_call_receiver_name(node: ast.Call, method_name: str) -> str | None:
+    if not isinstance(node.func, ast.Attribute) or node.func.attr != method_name:
+        return None
+    if isinstance(node.func.value, ast.Name):
+        return node.func.value.id
+    return None
+
+
+@dataclass(frozen=True)
+class _AuthenticatedStatusObservation:
+    tokens: frozenset[str]
+    env_tokens_before_request: frozenset[str]
+
+
+def _authenticated_success_status_observations(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[_AuthenticatedStatusObservation, ...]:
+    env_tokens_seen: set[str] = set()
+    pending_request_by_connection: dict[
+        str, tuple[frozenset[str], frozenset[str]]
+    ] = {}
+    status_observations: dict[str, _AuthenticatedStatusObservation] = {}
+    success_observations: list[_AuthenticatedStatusObservation] = []
+
+    for statement in _ordered_function_statements(node.body):
+        env_tokens_seen.update(_env_auth_tokens_configured_by_node(statement))
+
+        for child in ast.walk(statement):
+            if not isinstance(child, ast.Call):
+                continue
+            connection_name = _method_call_receiver_name(child, "request")
+            if connection_name is None:
+                continue
+            tokens = _call_privileged_auth_tokens(child)
+            if tokens:
+                pending_request_by_connection[connection_name] = (
+                    tokens,
+                    frozenset(env_tokens_seen),
+                )
+
+        if isinstance(statement, (ast.Assign, ast.AnnAssign)):
+            value = statement.value
+            targets = _assignment_targets(statement)
+            if isinstance(value, ast.Call):
+                tokens = _call_privileged_auth_tokens(value)
+                if tokens:
+                    observation = _AuthenticatedStatusObservation(
+                        tokens=tokens,
+                        env_tokens_before_request=frozenset(env_tokens_seen),
+                    )
+                    for target in targets:
+                        for key in _assigned_status_expr_keys(target):
+                            status_observations[key] = observation
+
+                connection_name = _method_call_receiver_name(value, "getresponse")
+                if connection_name is not None:
+                    pending = pending_request_by_connection.pop(
+                        connection_name, None
+                    )
+                    if pending is not None:
+                        tokens, request_env_tokens = pending
+                        observation = _AuthenticatedStatusObservation(
+                            tokens=tokens,
+                            env_tokens_before_request=request_env_tokens,
+                        )
+                        for target in targets:
+                            for name in _assigned_name_targets(target):
+                                status_observations[
+                                    f"attr:name:{name}.status"
+                                ] = observation
+
+        if isinstance(statement, ast.Assert):
+            for key in _success_status_asserted_expr_keys(statement):
+                observation = status_observations.get(key)
+                if observation is not None:
+                    success_observations.append(observation)
+
+    return tuple(success_observations)
+
+
 def _test_function_has_authenticated_success_markers(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> bool:
-    passes_privileged_auth_token = any(
-        isinstance(child, ast.Call) and _call_passes_privileged_auth_token(child)
-        for child in ast.walk(node)
-    )
-    has_success_status_assertion = any(
-        isinstance(child, ast.Assert) and _assert_checks_success_status(child)
-        for child in ast.walk(node)
-    )
-    return passes_privileged_auth_token and has_success_status_assertion
+    return bool(_authenticated_success_status_observations(node))
 
 
 def _assigns_server_local_auth_tokens(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
@@ -389,9 +535,9 @@ def _test_function_uses_env_auth_boundary(
 ) -> bool:
     if _assigns_server_local_auth_tokens(node):
         return False
-    return bool(
-        _env_auth_tokens_configured_by_node(node)
-        & _privileged_auth_tokens_passed_by_function(node)
+    return any(
+        observation.tokens & observation.env_tokens_before_request
+        for observation in _authenticated_success_status_observations(node)
     )
 
 
