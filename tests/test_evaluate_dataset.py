@@ -733,7 +733,7 @@ class EvaluateDatasetTest(unittest.TestCase):
             ],
         )
 
-    def test_poc_acceptance_report_treats_unknown_criteria_as_non_passing(
+    def test_poc_acceptance_report_passes_security_when_auth_session_coverage_exists(
         self,
     ) -> None:
         payload = self.poc_acceptance_payload()
@@ -754,8 +754,21 @@ class EvaluateDatasetTest(unittest.TestCase):
                 "external_ai_api_guard_violation_count"
             ],
         )
-        self.assertEqual("unknown", rows["security"]["status"])
-        self.assertEqual("fail", payload["overall_status"])
+        self.assertEqual("pass", rows["security"]["status"])
+        self.assertIn(
+            "authenticated PoC API session checked: True",
+            rows["security"]["evidence"],
+        )
+        self.assertIn(
+            "tests/test_poc_web_api.py::test_poc_http_api_authenticates_review_events_before_parsing_payload",
+            rows["security"]["evidence_refs"],
+        )
+        self.assertTrue(
+            payload["matrix_evidence"]["security"][
+                "authenticated_poc_api_session_checked"
+            ]
+        )
+        self.assertEqual("pass", payload["overall_status"])
 
     def test_poc_acceptance_report_preserves_custom_evidence_paths(self) -> None:
         llm_stability_source = Path("datasets/custom/stability_runs.json")
@@ -853,6 +866,9 @@ class EvaluateDatasetTest(unittest.TestCase):
         )
 
         def resolve_ref(ref: str) -> list[object]:
+            if "::" in ref:
+                public_path = REPO_ROOT / ref.split("::", 1)[0]
+                return [public_path] if public_path.exists() else []
             if " " in ref:
                 public_path = REPO_ROOT / ref.split(" ", 1)[0]
                 return [public_path] if public_path.exists() else []
@@ -901,7 +917,7 @@ class EvaluateDatasetTest(unittest.TestCase):
         )
 
         rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
-        self.assertEqual({"fail": 2, "pass": 5, "unknown": 1}, payload["criterion_status_counts"])
+        self.assertEqual({"fail": 2, "pass": 6, "unknown": 0}, payload["criterion_status_counts"])
         self.assertEqual("fail", rows["functionality"]["status"])
         self.assertIn("record_pdf", rows["functionality"]["evidence"])
         self.assertIn(
@@ -932,7 +948,7 @@ class EvaluateDatasetTest(unittest.TestCase):
                 "external_ai_api_guard_violation_count"
             ],
         )
-        self.assertEqual("unknown", rows["security"]["status"])
+        self.assertEqual("pass", rows["security"]["status"])
         self.assertEqual("fail", payload["overall_status"])
         self.assertTrue(
             all(

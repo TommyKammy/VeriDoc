@@ -86,6 +86,13 @@ EXPECTED_GMP_ACCEPTANCE_SOD_SCOPE = (
     "review approval flows with authenticated actor identity"
 )
 EXPECTED_GMP_ACCEPTANCE_SOD_NO_AUTH_NOTE = "no-auth approval attempts are forbidden"
+POC_AUTH_SESSION_README_REF = "README.md Local PoC API authentication"
+POC_AUTH_SESSION_COVERAGE_REFS = (
+    "tests/test_poc_web_api.py::test_poc_http_api_authenticates_review_events_before_parsing_payload",
+    "tests/test_poc_web_api.py::test_poc_http_api_rejects_read_only_review_role_before_parsing_payload",
+    "tests/test_poc_web_api.py::test_poc_http_api_records_desktop_upload_and_download_audit_events",
+    "tests/test_poc_web_api.py::test_poc_http_api_authenticates_job_events_before_parsing_payload",
+)
 EXPECTED_SCOPE_PHASE = "phase0"
 PUBLIC_FIXTURE_ANONYMIZATION_VALUES = {"anonymized", "synthetic"}
 PUBLIC_LLM_STABILITY_SOURCE_KINDS = {"anonymized_text", "synthetic_text"}
@@ -146,6 +153,31 @@ REQUIRED_GMP_ACCEPTANCE_CRITERIA = (
     "segregation_of_duties",
 )
 HighRiskLabelKey = tuple[str, str, str]
+
+
+def poc_auth_session_coverage_evidence_refs() -> tuple[str, ...]:
+    return (POC_AUTH_SESSION_README_REF, *POC_AUTH_SESSION_COVERAGE_REFS)
+
+
+def poc_auth_session_coverage_is_present(repo_root: Path = REPO_ROOT) -> bool:
+    readme_path = repo_root / "README.md"
+    test_path = repo_root / "tests" / "test_poc_web_api.py"
+    try:
+        readme = readme_path.read_text(encoding="utf-8")
+        test_source = test_path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+
+    if "## Local PoC API authentication" not in readme:
+        return False
+    if "VERIDOC_LOCAL_AUTH_TOKENS" not in readme:
+        return False
+
+    for ref in POC_AUTH_SESSION_COVERAGE_REFS:
+        _path, test_name = ref.split("::", 1)
+        if f"def {test_name}(" not in test_source:
+            return False
+    return True
 
 
 @dataclass(frozen=True)
@@ -481,6 +513,16 @@ class PoCAcceptanceReport:
             )
             else "fail"
         )
+        authenticated_poc_api_session_checked = (
+            poc_auth_session_coverage_is_present()
+        )
+        security_status = (
+            "fail"
+            if external_violation_count
+            else "pass"
+            if authenticated_poc_api_session_checked
+            else "unknown"
+        )
         acceptance_matrix = [
             poc_acceptance_row(
                 "functionality",
@@ -576,14 +618,15 @@ class PoCAcceptanceReport:
             poc_acceptance_row(
                 "security",
                 "セキュリティ",
-                "fail" if external_violation_count else "unknown",
+                security_status,
                 (
                     "External AI API guard violations: "
                     f"{external_violation_count}; authenticated PoC API session "
-                    "checked: False."
+                    "checked: "
+                    f"{authenticated_poc_api_session_checked}."
                 ),
                 [
-                    "README.md Local PoC API authentication",
+                    *poc_auth_session_coverage_evidence_refs(),
                     "p9_harness.summary.external_ai_api_guard_violation_count",
                 ],
             ),
@@ -619,6 +662,9 @@ class PoCAcceptanceReport:
             poc_comparison=poc_comparison,
             llm_stability=llm_stability,
             llm_stability_threshold_failures=llm_stability_threshold_failures,
+            authenticated_poc_api_session_checked=(
+                authenticated_poc_api_session_checked
+            ),
             commit=self.commit,
             commit_is_clean=self.commit_is_clean,
             evaluator_commit=evaluator_commit,
@@ -2390,6 +2436,7 @@ def poc_acceptance_matrix_evidence(
     poc_comparison: PoCComparisonMetrics,
     llm_stability: LLMStabilityMetrics,
     llm_stability_threshold_failures: list[str],
+    authenticated_poc_api_session_checked: bool,
     commit: str,
     commit_is_clean: bool,
     evaluator_commit: str,
@@ -2439,7 +2486,12 @@ def poc_acceptance_matrix_evidence(
         },
         "security": {
             "external_ai_api_guard_violation_count": external_violation_count,
-            "authenticated_poc_api_session_checked": False,
+            "authenticated_poc_api_session_checked": (
+                authenticated_poc_api_session_checked
+            ),
+            "authenticated_poc_api_session_evidence_refs": list(
+                poc_auth_session_coverage_evidence_refs()
+            ),
         },
         "reproducibility": {
             "commit": commit,
