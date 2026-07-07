@@ -256,7 +256,7 @@ def poc_auth_session_coverage_inputs_tracked_in_repo(repo_root: Path) -> bool:
     )
 
 
-def _test_function_nodes(
+def _top_level_function_nodes(
     test_source: str,
 ) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
     try:
@@ -267,7 +267,16 @@ def _test_function_nodes(
         node.name: node
         for node in tree.body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and not _test_function_is_skipped_or_xfailed(node)
+    }
+
+
+def _test_function_nodes(
+    test_source: str,
+) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
+    return {
+        name: node
+        for name, node in _top_level_function_nodes(test_source).items()
+        if not _test_function_is_skipped_or_xfailed(node)
     }
 
 
@@ -347,6 +356,46 @@ def _privileged_auth_tokens_in_node(node: ast.AST) -> frozenset[str]:
         if value in POC_AUTH_SESSION_SUCCESS_TOKEN_LITERALS:
             tokens.add(value)
     return frozenset(tokens)
+
+
+def _local_auth_token_mapping_value_is_valid(node: ast.AST) -> bool:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value.strip() in POC_AUTH_SESSION_ENV_ROLES
+    if not isinstance(node, ast.Dict):
+        return False
+    role: str | None = None
+    for key, value in zip(node.keys, node.values, strict=False):
+        if _constant_string_value(key) == "role":
+            role = _constant_string_value(value)
+    return role in POC_AUTH_SESSION_ENV_ROLES
+
+
+def _local_auth_token_mapping_tokens(node: ast.AST) -> frozenset[str]:
+    if not isinstance(node, ast.Dict):
+        return frozenset()
+    tokens: set[str] = set()
+    for key, value in zip(node.keys, node.values, strict=False):
+        token = _constant_string_value(key)
+        if (
+            token in POC_AUTH_SESSION_SUCCESS_TOKEN_LITERALS
+            and _local_auth_token_mapping_value_is_valid(value)
+        ):
+            tokens.add(token)
+    return frozenset(tokens)
+
+
+def _local_auth_token_helper_tokens(
+    test_source: str,
+) -> dict[str, frozenset[str]]:
+    helpers: dict[str, frozenset[str]] = {}
+    for name, node in _top_level_function_nodes(test_source).items():
+        tokens: set[str] = set()
+        for statement in node.body:
+            if isinstance(statement, ast.Return):
+                tokens.update(_local_auth_token_mapping_tokens(statement.value))
+        if tokens:
+            helpers[name] = frozenset(tokens)
+    return helpers
 
 
 def _authorization_header_token(value: str) -> str | None:
@@ -601,7 +650,11 @@ def _request_method_and_path(node: ast.Call) -> tuple[str | None, str | None]:
 
 def _authenticated_success_status_observations(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
+    *,
+    local_auth_token_helpers: dict[str, frozenset[str]] | None = None,
 ) -> tuple[_AuthenticatedStatusObservation, ...]:
+    if local_auth_token_helpers is None:
+        local_auth_token_helpers = {}
     env_tokens_seen: set[str] = set()
     direct_tokens_seen: set[str] = set()
     active_monkeypatch_fixture_names = set(
@@ -624,7 +677,11 @@ def _authenticated_success_status_observations(
             )
         )
         direct_tokens_seen = set(
-            _direct_auth_tokens_after_statement(statement, direct_tokens_seen)
+            _direct_auth_tokens_after_statement(
+                statement,
+                direct_tokens_seen,
+                local_auth_token_helpers=local_auth_token_helpers,
+            )
         )
         response_connections_seen = {
             connection_name
@@ -728,17 +785,29 @@ def _authenticated_success_status_observations(
 
 def _test_function_has_authenticated_success_markers(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
+    *,
+    local_auth_token_helpers: dict[str, frozenset[str]] | None = None,
 ) -> bool:
-    return bool(_authenticated_success_status_observations(node))
+    return bool(
+        _authenticated_success_status_observations(
+            node,
+            local_auth_token_helpers=local_auth_token_helpers,
+        )
+    )
 
 
 def _test_function_matches_success_ref_expectation(
     ref: str,
     node: ast.FunctionDef | ast.AsyncFunctionDef,
+    *,
+    local_auth_token_helpers: dict[str, frozenset[str]] | None = None,
 ) -> bool:
     expectation = POC_AUTH_SESSION_SUCCESS_REF_EXPECTATIONS.get(ref)
     if expectation is None:
-        return _test_function_has_authenticated_success_markers(node)
+        return _test_function_has_authenticated_success_markers(
+            node,
+            local_auth_token_helpers=local_auth_token_helpers,
+        )
     expected_tokens = expectation.get("tokens", frozenset())
     expected_status_codes = expectation.get("status_codes", frozenset())
     expected_method = expectation.get("method")
@@ -747,7 +816,10 @@ def _test_function_matches_success_ref_expectation(
     function_literals = _string_literals_in_node(node)
     if not required_literals.issubset(function_literals):
         return False
-    for observation in _authenticated_success_status_observations(node):
+    for observation in _authenticated_success_status_observations(
+        node,
+        local_auth_token_helpers=local_auth_token_helpers,
+    ):
         if expected_tokens and not observation.tokens & expected_tokens:
             continue
         if (
@@ -878,39 +950,67 @@ def _privileged_auth_tokens_passed_by_function(
 
 def _test_function_uses_env_auth_boundary(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
+    *,
+    local_auth_token_helpers: dict[str, frozenset[str]] | None = None,
 ) -> bool:
     if _assigns_server_local_auth_tokens(node):
         return False
     return any(
         observation.tokens & observation.env_tokens_before_request
-        for observation in _authenticated_success_status_observations(node)
+        for observation in _authenticated_success_status_observations(
+            node,
+            local_auth_token_helpers=local_auth_token_helpers,
+        )
     )
 
 
 def _test_function_uses_direct_auth_boundary(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
+    *,
+    local_auth_token_helpers: dict[str, frozenset[str]] | None = None,
 ) -> bool:
     return any(
         observation.tokens & observation.direct_tokens_before_request
-        for observation in _authenticated_success_status_observations(node)
+        for observation in _authenticated_success_status_observations(
+            node,
+            local_auth_token_helpers=local_auth_token_helpers,
+        )
     )
 
 
 def _direct_auth_tokens_after_statement(
     node: ast.stmt,
     current_tokens: Iterable[str],
+    *,
+    local_auth_token_helpers: dict[str, frozenset[str]] | None = None,
 ) -> frozenset[str]:
+    if local_auth_token_helpers is None:
+        local_auth_token_helpers = {}
     tokens = set(current_tokens)
     for child in _walk_statement_without_nested_scopes(node):
         if isinstance(child, ast.Call):
-            configured_tokens = _setattr_local_auth_token_value_tokens(child)
+            configured_tokens = _setattr_local_auth_token_value_tokens(
+                child,
+                local_auth_token_helpers=local_auth_token_helpers,
+            )
             if configured_tokens is not None:
                 tokens = set(configured_tokens)
+            if _calls_delattr_local_auth_tokens(child):
+                tokens.clear()
+        if isinstance(child, ast.Delete) and any(
+            _targets_server_local_auth_tokens(target) for target in child.targets
+        ):
+            tokens.clear()
         if not isinstance(child, (ast.Assign, ast.AnnAssign)):
             continue
         for target in _assignment_targets(child):
             if _targets_server_local_auth_tokens(target):
-                tokens = set(_direct_auth_token_value_tokens(child.value))
+                tokens = set(
+                    _direct_auth_token_value_tokens(
+                        child.value,
+                        local_auth_token_helpers=local_auth_token_helpers,
+                    )
+                )
     return frozenset(tokens)
 
 
@@ -925,7 +1025,11 @@ def _targets_server_local_auth_tokens(target: ast.AST) -> bool:
 
 def _setattr_local_auth_token_value_tokens(
     node: ast.Call,
+    *,
+    local_auth_token_helpers: dict[str, frozenset[str]] | None = None,
 ) -> frozenset[str] | None:
+    if local_auth_token_helpers is None:
+        local_auth_token_helpers = {}
     if (
         isinstance(node.func, ast.Name)
         and node.func.id == "setattr"
@@ -934,18 +1038,35 @@ def _setattr_local_auth_token_value_tokens(
         and node.args[0].id == "server"
         and _constant_string_value(node.args[1]) == "local_auth_tokens"
     ):
-        return _direct_auth_token_value_tokens(node.args[2])
+        return _direct_auth_token_value_tokens(
+            node.args[2],
+            local_auth_token_helpers=local_auth_token_helpers,
+        )
     return None
 
 
-def _direct_auth_token_value_tokens(node: ast.AST) -> frozenset[str]:
-    if (
+def _direct_auth_token_value_tokens(
+    node: ast.AST,
+    *,
+    local_auth_token_helpers: dict[str, frozenset[str]] | None = None,
+) -> frozenset[str]:
+    if local_auth_token_helpers is None:
+        local_auth_token_helpers = {}
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+        return local_auth_token_helpers.get(node.func.id, frozenset())
+    return _local_auth_token_mapping_tokens(node)
+
+
+def _calls_delattr_local_auth_tokens(node: ast.AST) -> bool:
+    return (
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
-        and node.func.id == "_local_auth_tokens"
-    ):
-        return POC_AUTH_SESSION_SUCCESS_TOKEN_LITERALS
-    return _privileged_auth_tokens_in_node(node)
+        and node.func.id == "delattr"
+        and len(node.args) >= 2
+        and isinstance(node.args[0], ast.Name)
+        and node.args[0].id == "server"
+        and _constant_string_value(node.args[1]) == "local_auth_tokens"
+    )
 
 
 def _test_function_asserts_status_code(
@@ -1103,6 +1224,7 @@ def poc_auth_session_coverage_is_present(repo_root: Path = REPO_ROOT) -> bool:
         return False
 
     test_functions = _test_function_nodes(test_source)
+    local_auth_token_helpers = _local_auth_token_helper_tokens(test_source)
     for ref in POC_AUTH_SESSION_COVERAGE_REFS:
         _path, test_name = ref.split("::", 1)
         if test_name not in test_functions:
@@ -1110,18 +1232,26 @@ def poc_auth_session_coverage_is_present(repo_root: Path = REPO_ROOT) -> bool:
     for ref in POC_AUTH_SESSION_SUCCESS_COVERAGE_REFS:
         _path, test_name = ref.split("::", 1)
         if not _test_function_matches_success_ref_expectation(
-            ref, test_functions[test_name]
+            ref,
+            test_functions[test_name],
+            local_auth_token_helpers=local_auth_token_helpers,
         ):
             return False
     for ref in POC_AUTH_SESSION_ENV_SUCCESS_COVERAGE_REFS:
         _path, test_name = ref.split("::", 1)
-        if not _test_function_uses_env_auth_boundary(test_functions[test_name]):
+        if not _test_function_uses_env_auth_boundary(
+            test_functions[test_name],
+            local_auth_token_helpers=local_auth_token_helpers,
+        ):
             return False
     for ref in set(POC_AUTH_SESSION_SUCCESS_COVERAGE_REFS) - set(
         POC_AUTH_SESSION_ENV_SUCCESS_COVERAGE_REFS
     ):
         _path, test_name = ref.split("::", 1)
-        if not _test_function_uses_direct_auth_boundary(test_functions[test_name]):
+        if not _test_function_uses_direct_auth_boundary(
+            test_functions[test_name],
+            local_auth_token_helpers=local_auth_token_helpers,
+        ):
             return False
     for ref in POC_AUTH_SESSION_FAIL_CLOSED_COVERAGE_REFS:
         _path, test_name = ref.split("::", 1)
