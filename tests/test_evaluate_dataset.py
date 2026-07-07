@@ -794,6 +794,11 @@ class EvaluateDatasetTest(unittest.TestCase):
                 "authenticated_poc_api_session_checked"
             ]
         )
+        self.assertTrue(
+            payload["matrix_evidence"]["security"][
+                "authenticated_poc_api_session_evidence_inputs_tracked"
+            ]
+        )
         self.assertEqual("pass", payload["overall_status"])
 
     def test_poc_acceptance_report_checks_auth_session_coverage_in_manifest_repo(
@@ -805,7 +810,11 @@ class EvaluateDatasetTest(unittest.TestCase):
                 evaluate_dataset,
                 "poc_auth_session_coverage_is_present",
                 return_value=True,
-            ) as mocked_auth_coverage:
+            ) as mocked_auth_coverage, mock.patch.object(
+                evaluate_dataset,
+                "poc_auth_session_coverage_inputs_tracked_in_repo",
+                return_value=True,
+            ):
                 payload = self.poc_acceptance_payload(harness_repo_root=temp_root)
 
         mocked_auth_coverage.assert_called_once_with(temp_root.resolve())
@@ -835,7 +844,12 @@ class EvaluateDatasetTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            payload = self.poc_acceptance_payload(harness_repo_root=temp_root)
+            with mock.patch.object(
+                evaluate_dataset,
+                "poc_auth_session_coverage_inputs_tracked_in_repo",
+                return_value=True,
+            ):
+                payload = self.poc_acceptance_payload(harness_repo_root=temp_root)
 
         rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
         self.assertEqual("unknown", rows["security"]["status"])
@@ -869,7 +883,12 @@ class EvaluateDatasetTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            payload = self.poc_acceptance_payload(harness_repo_root=temp_root)
+            with mock.patch.object(
+                evaluate_dataset,
+                "poc_auth_session_coverage_inputs_tracked_in_repo",
+                return_value=True,
+            ):
+                payload = self.poc_acceptance_payload(harness_repo_root=temp_root)
 
         rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
         self.assertEqual("unknown", rows["security"]["status"])
@@ -910,7 +929,57 @@ class EvaluateDatasetTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            payload = self.poc_acceptance_payload(harness_repo_root=temp_root)
+            with mock.patch.object(
+                evaluate_dataset,
+                "poc_auth_session_coverage_inputs_tracked_in_repo",
+                return_value=True,
+            ):
+                payload = self.poc_acceptance_payload(harness_repo_root=temp_root)
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual("unknown", rows["security"]["status"])
+        self.assertFalse(
+            payload["matrix_evidence"]["security"][
+                "authenticated_poc_api_session_checked"
+            ]
+        )
+
+    def test_poc_acceptance_report_requires_observed_success_status_assertion(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            (temp_root / "tests").mkdir()
+            (temp_root / "README.md").write_text(
+                "## Local PoC API authentication\n"
+                "Set VERIDOC_LOCAL_AUTH_TOKENS for local role tokens.\n",
+                encoding="utf-8",
+            )
+            success_ref_names_with_constant_status = "\n".join(
+                f"def {ref.split('::', 1)[1]}():\n"
+                "    monkeypatch.setenv(\n"
+                "        'VERIDOC_LOCAL_AUTH_TOKENS',\n"
+                "        'reviewer:env-reviewer=reviewer-token',\n"
+                "    )\n"
+                "    role_token = 'reviewer-token'\n"
+                "    assert 202 == 202\n"
+                for ref in evaluate_dataset.POC_AUTH_SESSION_SUCCESS_COVERAGE_REFS
+            )
+            fail_closed_ref_names = "\n".join(
+                f"def {ref.split('::', 1)[1]}():\n    assert 401 == 401\n"
+                for ref in evaluate_dataset.POC_AUTH_SESSION_FAIL_CLOSED_COVERAGE_REFS
+            )
+            (temp_root / "tests" / "test_poc_web_api.py").write_text(
+                f"{success_ref_names_with_constant_status}\n{fail_closed_ref_names}\n",
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(
+                evaluate_dataset,
+                "poc_auth_session_coverage_inputs_tracked_in_repo",
+                return_value=True,
+            ):
+                payload = self.poc_acceptance_payload(harness_repo_root=temp_root)
 
         rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
         self.assertEqual("unknown", rows["security"]["status"])
@@ -935,7 +1004,8 @@ class EvaluateDatasetTest(unittest.TestCase):
                 f"def {ref.split('::', 1)[1]}():\n"
                 "    server.local_auth_tokens = {'reviewer-token': 'reviewer'}\n"
                 "    role_token = 'reviewer-token'\n"
-                "    assert 202 == 202\n"
+                "    status = 202\n"
+                "    assert status == 202\n"
                 for ref in evaluate_dataset.POC_AUTH_SESSION_SUCCESS_COVERAGE_REFS
             )
             fail_closed_ref_names = "\n".join(
@@ -947,7 +1017,12 @@ class EvaluateDatasetTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            payload = self.poc_acceptance_payload(harness_repo_root=temp_root)
+            with mock.patch.object(
+                evaluate_dataset,
+                "poc_auth_session_coverage_inputs_tracked_in_repo",
+                return_value=True,
+            ):
+                payload = self.poc_acceptance_payload(harness_repo_root=temp_root)
 
         rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
         self.assertEqual("unknown", rows["security"]["status"])
@@ -985,7 +1060,12 @@ class EvaluateDatasetTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            payload = self.poc_acceptance_payload(harness_repo_root=temp_root)
+            with mock.patch.object(
+                evaluate_dataset,
+                "poc_auth_session_coverage_inputs_tracked_in_repo",
+                return_value=True,
+            ):
+                payload = self.poc_acceptance_payload(harness_repo_root=temp_root)
 
         rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
         self.assertEqual("unknown", rows["security"]["status"])
@@ -994,6 +1074,135 @@ class EvaluateDatasetTest(unittest.TestCase):
                 "authenticated_poc_api_session_checked"
             ]
         )
+
+    def test_poc_acceptance_report_requires_valid_env_auth_token_value(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            (temp_root / "tests").mkdir()
+            (temp_root / "README.md").write_text(
+                "## Local PoC API authentication\n"
+                "Set VERIDOC_LOCAL_AUTH_TOKENS for local role tokens.\n",
+                encoding="utf-8",
+            )
+            success_ref_names_with_empty_env_token = "\n".join(
+                f"def {ref.split('::', 1)[1]}():\n"
+                "    monkeypatch.setenv(\n"
+                "        'VERIDOC_LOCAL_AUTH_TOKENS',\n"
+                "        'reviewer:env-reviewer=',\n"
+                "    )\n"
+                "    role_token = 'reviewer-token'\n"
+                "    status = 202\n"
+                "    assert status == 202\n"
+                for ref in evaluate_dataset.POC_AUTH_SESSION_SUCCESS_COVERAGE_REFS
+            )
+            fail_closed_ref_names = "\n".join(
+                f"def {ref.split('::', 1)[1]}():\n    assert 401 == 401\n"
+                for ref in evaluate_dataset.POC_AUTH_SESSION_FAIL_CLOSED_COVERAGE_REFS
+            )
+            (temp_root / "tests" / "test_poc_web_api.py").write_text(
+                f"{success_ref_names_with_empty_env_token}\n{fail_closed_ref_names}\n",
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(
+                evaluate_dataset,
+                "poc_auth_session_coverage_inputs_tracked_in_repo",
+                return_value=True,
+            ):
+                payload = self.poc_acceptance_payload(harness_repo_root=temp_root)
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual("unknown", rows["security"]["status"])
+        self.assertFalse(
+            payload["matrix_evidence"]["security"][
+                "authenticated_poc_api_session_checked"
+            ]
+        )
+
+    def test_poc_acceptance_report_requires_tracked_auth_evidence_files(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            (temp_root / "tests").mkdir()
+            (temp_root / "README.md").write_text(
+                "## Local PoC API authentication\n"
+                "Set VERIDOC_LOCAL_AUTH_TOKENS for local role tokens.\n",
+                encoding="utf-8",
+            )
+            success_ref_names = "\n".join(
+                f"def {ref.split('::', 1)[1]}():\n"
+                "    monkeypatch.setenv(\n"
+                "        'VERIDOC_LOCAL_AUTH_TOKENS',\n"
+                "        'reviewer:env-reviewer=reviewer-token',\n"
+                "    )\n"
+                "    role_token = 'reviewer-token'\n"
+                "    status = 202\n"
+                "    assert status == 202\n"
+                for ref in evaluate_dataset.POC_AUTH_SESSION_SUCCESS_COVERAGE_REFS
+            )
+            fail_closed_ref_names = "\n".join(
+                f"def {ref.split('::', 1)[1]}():\n    assert 401 == 401\n"
+                for ref in evaluate_dataset.POC_AUTH_SESSION_FAIL_CLOSED_COVERAGE_REFS
+            )
+            (temp_root / "tests" / "test_poc_web_api.py").write_text(
+                f"{success_ref_names}\n{fail_closed_ref_names}\n",
+                encoding="utf-8",
+            )
+            auth_input_paths = {
+                path.resolve()
+                for path in evaluate_dataset.poc_auth_session_coverage_input_paths(
+                    temp_root
+                )
+            }
+
+            def fake_tracked(path: Path, repo_root: Path) -> bool:
+                return path.resolve() not in auth_input_paths
+
+            with mock.patch.object(
+                evaluate_dataset,
+                "poc_acceptance_tracked_repo_path",
+                side_effect=fake_tracked,
+            ):
+                payload = self.poc_acceptance_payload(harness_repo_root=temp_root)
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual("unknown", rows["security"]["status"])
+        self.assertFalse(
+            payload["matrix_evidence"]["security"][
+                "authenticated_poc_api_session_checked"
+            ]
+        )
+        self.assertFalse(
+            payload["matrix_evidence"]["security"][
+                "authenticated_poc_api_session_evidence_inputs_tracked"
+            ]
+        )
+
+    def test_poc_acceptance_reproducibility_tracks_auth_evidence_inputs(
+        self,
+    ) -> None:
+        payload = self.poc_acceptance_payload()
+        llm_report = evaluate_dataset.evaluate_llm_stability_report(
+            LLM_STABILITY_RUNS_PATH,
+            POC_COMPARISON_PATH,
+        )
+        harness = evaluate_dataset.P9HarnessReport(
+            manifest=evaluate_dataset.DEFAULT_P9_HARNESS_MANIFEST,
+            results=tuple(payload["p9_harness_results"]),
+            llm_stability=llm_report.llm_stability,
+            poc_mode_comparison=llm_report.poc_mode_comparison,
+            llm_stability_source=evaluate_dataset.DEFAULT_LLM_STABILITY_RUNS,
+            poc_comparison_source=evaluate_dataset.DEFAULT_POC_COMPARISON,
+            repo_root=REPO_ROOT,
+        )
+
+        input_paths = evaluate_dataset.poc_acceptance_p9_input_paths(harness)
+
+        self.assertIn(Path("README.md"), input_paths)
+        self.assertIn(Path("tests/test_poc_web_api.py"), input_paths)
 
     def test_poc_acceptance_report_preserves_custom_evidence_paths(self) -> None:
         llm_stability_source = Path("datasets/custom/stability_runs.json")

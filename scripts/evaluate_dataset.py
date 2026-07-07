@@ -108,10 +108,15 @@ POC_AUTH_SESSION_COVERAGE_REFS = (
     *POC_AUTH_SESSION_SUCCESS_COVERAGE_REFS,
     *POC_AUTH_SESSION_FAIL_CLOSED_COVERAGE_REFS,
 )
+POC_AUTH_SESSION_COVERAGE_INPUT_PATHS = (
+    Path("README.md"),
+    Path("tests/test_poc_web_api.py"),
+)
 POC_AUTH_SESSION_SUCCESS_TOKEN_LITERALS = frozenset(
     ("reviewer-token", "approver-token", "admin-token")
 )
 POC_AUTH_SESSION_SUCCESS_STATUS_CODES = frozenset((200, 202))
+POC_AUTH_SESSION_ENV_ROLES = frozenset(("viewer", "reviewer", "approver", "admin"))
 EXPECTED_SCOPE_PHASE = "phase0"
 PUBLIC_FIXTURE_ANONYMIZATION_VALUES = {"anonymized", "synthetic"}
 PUBLIC_LLM_STABILITY_SOURCE_KINDS = {"anonymized_text", "synthetic_text"}
@@ -178,6 +183,19 @@ def poc_auth_session_coverage_evidence_refs() -> tuple[str, ...]:
     return (POC_AUTH_SESSION_README_REF, *POC_AUTH_SESSION_COVERAGE_REFS)
 
 
+def poc_auth_session_coverage_input_paths(repo_root: Path) -> tuple[Path, ...]:
+    resolved_root = repo_root.resolve()
+    return tuple(resolved_root / path for path in POC_AUTH_SESSION_COVERAGE_INPUT_PATHS)
+
+
+def poc_auth_session_coverage_inputs_tracked_in_repo(repo_root: Path) -> bool:
+    resolved_root = repo_root.resolve()
+    return all(
+        poc_acceptance_tracked_repo_path(path, resolved_root)
+        for path in poc_auth_session_coverage_input_paths(resolved_root)
+    )
+
+
 def _test_function_nodes(
     test_source: str,
 ) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
@@ -203,8 +221,13 @@ def _constant_int_value(node: ast.AST) -> int | None:
 def _compare_checks_success_status_equality(node: ast.Compare) -> bool:
     if len(node.ops) != 1 or not isinstance(node.ops[0], ast.Eq):
         return False
-    values = (_constant_int_value(part) for part in (node.left, *node.comparators))
-    return any(value in POC_AUTH_SESSION_SUCCESS_STATUS_CODES for value in values)
+    parts = (node.left, *node.comparators)
+    values = tuple(_constant_int_value(part) for part in parts)
+    has_success_status = any(
+        value in POC_AUTH_SESSION_SUCCESS_STATUS_CODES for value in values
+    )
+    has_observed_status_side = any(value is None for value in values)
+    return has_success_status and has_observed_status_side
 
 
 def _test_function_has_authenticated_success_markers(
@@ -248,14 +271,36 @@ def _sets_env_auth_var(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
             if (
                 isinstance(func, ast.Attribute)
                 and func.attr == "setenv"
-                and child.args
+                and len(child.args) >= 2
                 and _constant_string_value(child.args[0]) == POC_AUTH_SESSION_ENV_VAR
+                and _env_auth_token_value_has_valid_mapping(
+                    _constant_string_value(child.args[1]) or ""
+                )
             ):
                 return True
         if not isinstance(child, (ast.Assign, ast.AnnAssign)):
             continue
         targets = child.targets if isinstance(child, ast.Assign) else (child.target,)
-        if any(_targets_env_auth_var(target) for target in targets):
+        if any(_targets_env_auth_var(target) for target in targets) and (
+            _env_auth_token_value_has_valid_mapping(
+                _constant_string_value(child.value) or ""
+            )
+        ):
+            return True
+    return False
+
+
+def _env_auth_token_value_has_valid_mapping(value: str) -> bool:
+    for entry in value.split(","):
+        identity, separator, token = entry.partition("=")
+        if separator != "=" or not token.strip():
+            continue
+        role, principal_separator, principal = identity.strip().partition(":")
+        if (
+            principal_separator == ":"
+            and role.strip() in POC_AUTH_SESSION_ENV_ROLES
+            and principal.strip()
+        ):
             return True
     return False
 
@@ -640,6 +685,9 @@ class PoCAcceptanceReport:
         evidence_inputs_tracked_in_manifest_repo = (
             poc_acceptance_evidence_inputs_tracked_in_manifest_repo(self.p9_harness)
         )
+        poc_auth_session_evidence_inputs_tracked = (
+            poc_auth_session_coverage_inputs_tracked_in_repo(manifest_repo_root)
+        )
         reproducibility_status = (
             "pass"
             if (
@@ -652,7 +700,8 @@ class PoCAcceptanceReport:
             else "fail"
         )
         authenticated_poc_api_session_checked = (
-            poc_auth_session_coverage_is_present(manifest_repo_root)
+            poc_auth_session_evidence_inputs_tracked
+            and poc_auth_session_coverage_is_present(manifest_repo_root)
         )
         security_status = (
             "fail"
@@ -761,7 +810,9 @@ class PoCAcceptanceReport:
                     "External AI API guard violations: "
                     f"{external_violation_count}; authenticated PoC API session "
                     "checked: "
-                    f"{authenticated_poc_api_session_checked}."
+                    f"{authenticated_poc_api_session_checked}; auth evidence "
+                    "inputs tracked in manifest repo: "
+                    f"{poc_auth_session_evidence_inputs_tracked}."
                 ),
                 [
                     *poc_auth_session_coverage_evidence_refs(),
@@ -802,6 +853,9 @@ class PoCAcceptanceReport:
             llm_stability_threshold_failures=llm_stability_threshold_failures,
             authenticated_poc_api_session_checked=(
                 authenticated_poc_api_session_checked
+            ),
+            poc_auth_session_evidence_inputs_tracked=(
+                poc_auth_session_evidence_inputs_tracked
             ),
             commit=self.commit,
             commit_is_clean=self.commit_is_clean,
@@ -2369,6 +2423,7 @@ def poc_acceptance_p9_input_paths(p9_harness: P9HarnessReport) -> tuple[Path, ..
         p9_harness.manifest,
         p9_harness.llm_stability_source,
         p9_harness.poc_comparison_source,
+        *POC_AUTH_SESSION_COVERAGE_INPUT_PATHS,
     ]
     paths.extend(
         poc_acceptance_poc_comparison_input_paths(
@@ -2575,6 +2630,7 @@ def poc_acceptance_matrix_evidence(
     llm_stability: LLMStabilityMetrics,
     llm_stability_threshold_failures: list[str],
     authenticated_poc_api_session_checked: bool,
+    poc_auth_session_evidence_inputs_tracked: bool,
     commit: str,
     commit_is_clean: bool,
     evaluator_commit: str,
@@ -2626,6 +2682,9 @@ def poc_acceptance_matrix_evidence(
             "external_ai_api_guard_violation_count": external_violation_count,
             "authenticated_poc_api_session_checked": (
                 authenticated_poc_api_session_checked
+            ),
+            "authenticated_poc_api_session_evidence_inputs_tracked": (
+                poc_auth_session_evidence_inputs_tracked
             ),
             "authenticated_poc_api_session_evidence_refs": list(
                 poc_auth_session_coverage_evidence_refs()
