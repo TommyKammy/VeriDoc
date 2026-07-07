@@ -119,6 +119,7 @@ POC_AUTH_SESSION_FAIL_CLOSED_REF_EXPECTATIONS = {
         "status_codes": frozenset((401,)),
         "method": "POST",
         "path": "/api/review-events",
+        "forbid_auth_tokens": True,
         "required_literals": frozenset(("{not valid json", "auth_required")),
         "asserted_literals": frozenset(("auth_required",)),
     },
@@ -136,6 +137,7 @@ POC_AUTH_SESSION_FAIL_CLOSED_REF_EXPECTATIONS = {
         "status_codes": frozenset((401,)),
         "method": "POST",
         "path": "/api/review-events",
+        "forbid_auth_tokens": True,
         "required_literals": frozenset(
             ("Authorization bearer token is required", "auth_required")
         ),
@@ -147,6 +149,7 @@ POC_AUTH_SESSION_FAIL_CLOSED_REF_EXPECTATIONS = {
         "status_codes": frozenset((401,)),
         "method": "POST",
         "path": "/api/job-events",
+        "forbid_auth_tokens": True,
         "required_literals": frozenset(("{not valid json", "auth_required")),
         "asserted_literals": frozenset(("auth_required",)),
     },
@@ -495,7 +498,7 @@ def _decorator_is_empty_parametrize(
     if len(node.args) < 2:
         return False
     values = node.args[1]
-    if isinstance(values, ast.Name) and values.id in empty_parametrize_names:
+    if isinstance(values, ast.Name):
         return True
     return isinstance(values, (ast.List, ast.Tuple)) and not values.elts
 
@@ -812,7 +815,7 @@ def _statement_unconditionally_exits(statement: ast.stmt) -> bool:
     if (
         isinstance(statement, ast.Assert)
         and isinstance(statement.test, ast.Constant)
-        and statement.test.value is False
+        and not bool(statement.test.value)
     ):
         return True
     if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call):
@@ -978,7 +981,19 @@ def _update_name_literal_bindings_after_statement(
             isinstance(child, ast.Call)
             and isinstance(child.func, ast.Attribute)
             and child.func.attr
-            in {"append", "extend", "insert", "clear", "update", "write"}
+            in {
+                "append",
+                "clear",
+                "extend",
+                "insert",
+                "pop",
+                "popitem",
+                "remove",
+                "setdefault",
+                "sort",
+                "update",
+                "write",
+            }
             and isinstance(child.func.value, ast.Name)
         ):
             name_literal_bindings.pop(child.func.value.id, None)
@@ -2022,6 +2037,7 @@ def _test_function_matches_fail_closed_ref_expectation(
     expected_method = expectation.get("method")
     expected_path = expectation.get("path")
     expected_auth_tokens = expectation.get("auth_tokens", frozenset())
+    forbid_auth_tokens = bool(expectation.get("forbid_auth_tokens", False))
     required_literals = expectation.get("required_literals", frozenset())
     asserted_literals = expectation.get("asserted_literals", frozenset())
     request_literals = required_literals - asserted_literals
@@ -2039,6 +2055,8 @@ def _test_function_matches_fail_closed_ref_expectation(
             observation.env_tokens_before_request
             | observation.direct_tokens_before_request
         )
+        if forbid_auth_tokens and observation.tokens:
+            continue
         if expected_auth_tokens:
             if not observation.tokens & expected_auth_tokens:
                 continue
