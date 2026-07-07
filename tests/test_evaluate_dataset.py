@@ -91,8 +91,9 @@ def valid_poc_auth_success_ref_source(
 def valid_poc_auth_fail_closed_ref_source() -> str:
     return "\n".join(
         f"def {ref.split('::', 1)[1]}():\n"
-        f"    status, _body = _post_review_event_on_connection(None, None)\n"
-        f"    assert status == {status}\n"
+        f"    connection.request('POST', '/api/review-events')\n"
+        f"    response = connection.getresponse()\n"
+        f"    assert response.status == {status}\n"
         for ref, status in (
             evaluate_dataset.POC_AUTH_SESSION_FAIL_CLOSED_EXPECTED_STATUS_BY_REF.items()
         )
@@ -1927,6 +1928,7 @@ class EvaluateDatasetTest(unittest.TestCase):
                         "        headers={'Authorization': 'Bearer env-reviewer-token'},\n"
                         "    )\n"
                         "    body = json.loads(connection.getresponse().read().decode('utf-8'))\n"
+                        "    connection.request('POST', '/api/review-events')\n"
                         "    response = connection.getresponse()\n"
                         "    assert response.status == 202\n"
                     )
