@@ -318,6 +318,22 @@ def _module_is_skipped_or_xfailed(tree: ast.Module) -> bool:
     return False
 
 
+def _module_has_top_level_skip_call(tree: ast.Module) -> bool:
+    for statement in tree.body:
+        if not isinstance(statement, ast.Expr) or not isinstance(
+            statement.value, ast.Call
+        ):
+            continue
+        if _dotted_name(statement.value.func) in {
+            "pytest.skip",
+            "pytest.importorskip",
+            "skip",
+            "importorskip",
+        }:
+            return True
+    return False
+
+
 def _test_function_nodes(
     test_source: str,
 ) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
@@ -325,7 +341,7 @@ def _test_function_nodes(
         tree = ast.parse(test_source)
     except SyntaxError:
         return {}
-    if _module_is_skipped_or_xfailed(tree):
+    if _module_is_skipped_or_xfailed(tree) or _module_has_top_level_skip_call(tree):
         return {}
     return {
         name: node
@@ -468,6 +484,8 @@ def _local_auth_token_helper_tokens(
 ) -> dict[str, frozenset[str]]:
     helpers: dict[str, frozenset[str]] = {}
     for name, node in _top_level_function_nodes(test_source).items():
+        if _test_function_is_skipped_or_xfailed(node):
+            continue
         tokens: set[str] = set()
         for ordered_statement in _ordered_function_statements(node.body):
             statement = ordered_statement.statement
@@ -768,9 +786,11 @@ class _AuthenticatedStatusObservation:
     env_tokens_before_request: frozenset[str]
     direct_tokens_before_request: frozenset[str] = frozenset()
     status_code: int | None = None
+    response_name: str | None = None
     request_method: str | None = None
     request_path: str | None = None
     string_literals: frozenset[str] = frozenset()
+    asserted_response_literals: frozenset[str] = frozenset()
 
 
 def _string_literals_in_node(node: ast.AST) -> frozenset[str]:
@@ -845,15 +865,45 @@ def _request_method_and_path(node: ast.Call) -> tuple[str | None, str | None]:
 def _trusted_poc_status_helper_method_and_path(
     node: ast.Call,
     poc_connection_names: frozenset[str],
+    trusted_status_helpers: Mapping[str, tuple[str, str]] | None = None,
 ) -> tuple[str | None, str | None] | None:
+    if trusted_status_helpers is None:
+        trusted_status_helpers = POC_AUTH_SESSION_TRUSTED_STATUS_HELPERS
     helper_name = _dotted_name(node.func)
-    if helper_name not in POC_AUTH_SESSION_TRUSTED_STATUS_HELPERS:
+    if helper_name not in trusted_status_helpers:
         return None
     if not node.args or not isinstance(node.args[0], ast.Name):
         return None
     if node.args[0].id not in poc_connection_names:
         return None
-    return POC_AUTH_SESSION_TRUSTED_STATUS_HELPERS[helper_name]
+    return trusted_status_helpers[helper_name]
+
+
+def _trusted_poc_status_helpers(test_source: str) -> dict[str, tuple[str, str]]:
+    helpers: dict[str, tuple[str, str]] = {}
+    functions = _top_level_function_nodes(test_source)
+    for name, expected_request in POC_AUTH_SESSION_TRUSTED_STATUS_HELPERS.items():
+        node = functions.get(name)
+        if node is None or _test_function_is_skipped_or_xfailed(node):
+            continue
+        if not node.args.args:
+            continue
+        connection_arg = node.args.args[0].arg
+        saw_expected_request = False
+        saw_response = False
+        for statement in node.body:
+            for child in _walk_statement_without_nested_scopes(statement):
+                if not isinstance(child, ast.Call):
+                    continue
+                if _method_call_receiver_name(child, "request") == connection_arg:
+                    saw_expected_request = (
+                        _request_method_and_path(child) == expected_request
+                    )
+                if _method_call_receiver_name(child, "getresponse") == connection_arg:
+                    saw_response = True
+        if saw_expected_request and saw_response:
+            helpers[name] = expected_request
+    return helpers
 
 
 def _node_references_poc_server_address(node: ast.AST) -> bool:
@@ -880,9 +930,12 @@ def _authenticated_success_status_observations(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
     *,
     local_auth_token_helpers: dict[str, frozenset[str]] | None = None,
+    trusted_status_helpers: Mapping[str, tuple[str, str]] | None = None,
 ) -> tuple[_AuthenticatedStatusObservation, ...]:
     if local_auth_token_helpers is None:
         local_auth_token_helpers = {}
+    if trusted_status_helpers is None:
+        trusted_status_helpers = POC_AUTH_SESSION_TRUSTED_STATUS_HELPERS
     env_tokens_seen: set[str] = set()
     direct_tokens_seen: set[str] = set()
     active_monkeypatch_fixture_names = set(
@@ -968,7 +1021,9 @@ def _authenticated_success_status_observations(
                 if tokens:
                     trusted_helper_request = (
                         _trusted_poc_status_helper_method_and_path(
-                            value, frozenset(poc_connection_names)
+                            value,
+                            frozenset(poc_connection_names),
+                            trusted_status_helpers=trusted_status_helpers,
                         )
                     )
                     if trusted_helper_request is None:
@@ -1059,11 +1114,13 @@ def _test_function_has_authenticated_success_markers(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
     *,
     local_auth_token_helpers: dict[str, frozenset[str]] | None = None,
+    trusted_status_helpers: Mapping[str, tuple[str, str]] | None = None,
 ) -> bool:
     return bool(
         _authenticated_success_status_observations(
             node,
             local_auth_token_helpers=local_auth_token_helpers,
+            trusted_status_helpers=trusted_status_helpers,
         )
     )
 
@@ -1073,12 +1130,14 @@ def _test_function_matches_success_ref_expectation(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
     *,
     local_auth_token_helpers: dict[str, frozenset[str]] | None = None,
+    trusted_status_helpers: Mapping[str, tuple[str, str]] | None = None,
 ) -> bool:
     expectation = POC_AUTH_SESSION_SUCCESS_REF_EXPECTATIONS.get(ref)
     if expectation is None:
         return _test_function_has_authenticated_success_markers(
             node,
             local_auth_token_helpers=local_auth_token_helpers,
+            trusted_status_helpers=trusted_status_helpers,
         )
     expected_tokens = expectation.get("tokens", frozenset())
     expected_status_codes = expectation.get("status_codes", frozenset())
@@ -1088,6 +1147,7 @@ def _test_function_matches_success_ref_expectation(
     for observation in _authenticated_success_status_observations(
         node,
         local_auth_token_helpers=local_auth_token_helpers,
+        trusted_status_helpers=trusted_status_helpers,
     ):
         if not required_literals.issubset(observation.string_literals):
             continue
@@ -1346,17 +1406,41 @@ def _test_function_asserts_status_code(
     return bool(_asserted_status_observations(node, frozenset((expected_status,))))
 
 
+def _response_read_receiver_names(node: ast.AST) -> frozenset[str]:
+    return frozenset(
+        receiver
+        for child in ast.walk(node)
+        if isinstance(child, ast.Call)
+        for receiver in (_method_call_receiver_name(child, "read"),)
+        if receiver is not None
+    )
+
+
 def _asserted_status_observations(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
     status_codes: frozenset[int],
+    *,
+    local_auth_token_helpers: dict[str, frozenset[str]] | None = None,
 ) -> tuple[_AuthenticatedStatusObservation, ...]:
+    if local_auth_token_helpers is None:
+        local_auth_token_helpers = {}
+    env_tokens_seen: set[str] = set()
+    direct_tokens_seen: set[str] = set()
+    active_monkeypatch_fixture_names = set(
+        name for name in _function_arg_names(node) if name == "monkeypatch"
+    )
     status_observations: dict[str, _AuthenticatedStatusObservation] = {}
     pending_request_by_connection: dict[str, _AuthenticatedStatusObservation] = {}
+    response_names_by_body_name: dict[str, str] = {}
+    asserted_literals_by_response_name: dict[str, set[str]] = {}
     asserted_observations: list[_AuthenticatedStatusObservation] = []
     name_literal_bindings: dict[str, frozenset[str]] = {}
     poc_connection_names: set[str] = set()
     for ordered_statement in _ordered_function_statements(node.body):
         statement = ordered_statement.statement
+        active_monkeypatch_fixture_names.difference_update(
+            ordered_statement.bound_names_before
+        )
         response_connections_seen = {
             connection_name
             for child in _walk_statement_without_nested_scopes(statement)
@@ -1377,7 +1461,8 @@ def _asserted_status_observations(
             pending_request_by_connection[connection_name] = (
                 _AuthenticatedStatusObservation(
                     tokens=frozenset(),
-                    env_tokens_before_request=frozenset(),
+                    env_tokens_before_request=frozenset(env_tokens_seen),
+                    direct_tokens_before_request=frozenset(direct_tokens_seen),
                     request_method=method,
                     request_path=path,
                     string_literals=_string_literals_with_bound_names(
@@ -1401,7 +1486,10 @@ def _asserted_status_observations(
                     for key in _assigned_status_expr_keys(target):
                         status_observations[key] = _AuthenticatedStatusObservation(
                             tokens=frozenset(),
-                            env_tokens_before_request=frozenset(),
+                            env_tokens_before_request=frozenset(env_tokens_seen),
+                            direct_tokens_before_request=frozenset(
+                                direct_tokens_seen
+                            ),
                             string_literals=_string_literals_with_bound_names(
                                 value, name_literal_bindings
                             ),
@@ -1412,19 +1500,40 @@ def _asserted_status_observations(
                     response_connections_recorded.add(connection_name)
                     for target in targets:
                         for name in _assigned_name_targets(target):
+                            asserted_literals_by_response_name.setdefault(name, set())
                             status_observations[
                                 f"attr:name:{name}.status"
                             ] = _AuthenticatedStatusObservation(
                                 tokens=frozenset(),
-                                env_tokens_before_request=frozenset(),
+                                env_tokens_before_request=(
+                                    pending.env_tokens_before_request
+                                ),
+                                direct_tokens_before_request=(
+                                    pending.direct_tokens_before_request
+                                ),
+                                response_name=name,
                                 request_method=pending.request_method,
                                 request_path=pending.request_path,
                                 string_literals=pending.string_literals,
                             )
+                response_read_names = _response_read_receiver_names(value)
+                for response_name in response_read_names:
+                    if response_name not in asserted_literals_by_response_name:
+                        continue
+                    for target in targets:
+                        for body_name in _assigned_name_targets(target):
+                            response_names_by_body_name[body_name] = response_name
         for connection_name in response_connections_seen - response_connections_recorded:
             pending_request_by_connection.pop(connection_name, None)
 
         if isinstance(statement, ast.Assert):
+            assert_literals = _string_literals_in_node(statement)
+            loaded_names = _loaded_name_references(statement)
+            for body_name, response_name in response_names_by_body_name.items():
+                if body_name in loaded_names:
+                    asserted_literals_by_response_name.setdefault(
+                        response_name, set()
+                    ).update(assert_literals)
             asserted_keys = _status_asserted_expr_keys(
                 statement, status_codes
             )
@@ -1439,7 +1548,11 @@ def _asserted_status_observations(
                         env_tokens_before_request=(
                             observation.env_tokens_before_request
                         ),
+                        direct_tokens_before_request=(
+                            observation.direct_tokens_before_request
+                        ),
                         status_code=status_code,
+                        response_name=observation.response_name,
                         request_method=observation.request_method,
                         request_path=observation.request_path,
                         string_literals=(
@@ -1448,15 +1561,53 @@ def _asserted_status_observations(
                         ),
                     )
                 )
+        active_monkeypatch_fixture_names.difference_update(
+            _statement_bound_names(statement)
+        )
         _update_name_literal_bindings_after_statement(
             statement, name_literal_bindings
         )
-    return tuple(asserted_observations)
+        env_tokens_seen = set(
+            _env_auth_tokens_after_statement(
+                statement,
+                env_tokens_seen,
+                monkeypatch_fixture_names=frozenset(
+                    active_monkeypatch_fixture_names
+                ),
+            )
+        )
+        direct_tokens_seen = set(
+            _direct_auth_tokens_after_statement(
+                statement,
+                direct_tokens_seen,
+                local_auth_token_helpers=local_auth_token_helpers,
+            )
+        )
+    return tuple(
+        _AuthenticatedStatusObservation(
+            tokens=observation.tokens,
+            env_tokens_before_request=observation.env_tokens_before_request,
+            direct_tokens_before_request=observation.direct_tokens_before_request,
+            status_code=observation.status_code,
+            response_name=observation.response_name,
+            request_method=observation.request_method,
+            request_path=observation.request_path,
+            string_literals=observation.string_literals,
+            asserted_response_literals=frozenset(
+                asserted_literals_by_response_name.get(
+                    observation.response_name or "", set()
+                )
+            ),
+        )
+        for observation in asserted_observations
+    )
 
 
 def _test_function_matches_fail_closed_ref_expectation(
     ref: str,
     node: ast.FunctionDef | ast.AsyncFunctionDef,
+    *,
+    local_auth_token_helpers: dict[str, frozenset[str]] | None = None,
 ) -> bool:
     expectation = POC_AUTH_SESSION_FAIL_CLOSED_REF_EXPECTATIONS[ref]
     expected_status_codes = expectation.get("status_codes", frozenset())
@@ -1464,12 +1615,21 @@ def _test_function_matches_fail_closed_ref_expectation(
     expected_path = expectation.get("path")
     required_literals = expectation.get("required_literals", frozenset())
     asserted_literals = expectation.get("asserted_literals", frozenset())
-    function_literals = _string_literals_in_node(node)
-    if not required_literals.issubset(function_literals):
-        return False
-    if not asserted_literals.issubset(_asserted_string_literals_in_node(node)):
-        return False
-    for observation in _asserted_status_observations(node, expected_status_codes):
+    request_literals = required_literals - asserted_literals
+    for observation in _asserted_status_observations(
+        node,
+        expected_status_codes,
+        local_auth_token_helpers=local_auth_token_helpers,
+    ):
+        if not (
+            observation.env_tokens_before_request
+            or observation.direct_tokens_before_request
+        ):
+            continue
+        if not request_literals.issubset(observation.string_literals):
+            continue
+        if not asserted_literals.issubset(observation.asserted_response_literals):
+            continue
         if expected_method is not None and observation.request_method != expected_method:
             continue
         if expected_path is not None and observation.request_path != expected_path:
@@ -1517,6 +1677,7 @@ def poc_auth_session_coverage_is_present(repo_root: Path = REPO_ROOT) -> bool:
 
     test_functions = _test_function_nodes(test_source)
     local_auth_token_helpers = _local_auth_token_helper_tokens(test_source)
+    trusted_status_helpers = _trusted_poc_status_helpers(test_source)
     for ref in POC_AUTH_SESSION_COVERAGE_REFS:
         _path, test_name = ref.split("::", 1)
         if test_name not in test_functions:
@@ -1527,6 +1688,7 @@ def poc_auth_session_coverage_is_present(repo_root: Path = REPO_ROOT) -> bool:
             ref,
             test_functions[test_name],
             local_auth_token_helpers=local_auth_token_helpers,
+            trusted_status_helpers=trusted_status_helpers,
         ):
             return False
     for ref in POC_AUTH_SESSION_ENV_SUCCESS_COVERAGE_REFS:
@@ -1548,7 +1710,9 @@ def poc_auth_session_coverage_is_present(repo_root: Path = REPO_ROOT) -> bool:
     for ref in POC_AUTH_SESSION_FAIL_CLOSED_COVERAGE_REFS:
         _path, test_name = ref.split("::", 1)
         if not _test_function_matches_fail_closed_ref_expectation(
-            ref, test_functions[test_name]
+            ref,
+            test_functions[test_name],
+            local_auth_token_helpers=local_auth_token_helpers,
         ):
             return False
     return True
