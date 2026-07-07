@@ -88,7 +88,12 @@ EXPECTED_GMP_ACCEPTANCE_SOD_SCOPE = (
 )
 EXPECTED_GMP_ACCEPTANCE_SOD_NO_AUTH_NOTE = "no-auth approval attempts are forbidden"
 POC_AUTH_SESSION_README_REF = "README.md Local PoC API authentication"
+POC_AUTH_SESSION_ENV_VAR = "VERIDOC_LOCAL_AUTH_TOKENS"
+POC_AUTH_SESSION_ENV_SUCCESS_COVERAGE_REFS = (
+    "tests/test_poc_web_api.py::test_poc_http_api_reads_local_auth_tokens_from_env_for_review_success",
+)
 POC_AUTH_SESSION_SUCCESS_COVERAGE_REFS = (
+    *POC_AUTH_SESSION_ENV_SUCCESS_COVERAGE_REFS,
     "tests/test_poc_web_api.py::test_poc_http_api_filters_review_action_audit_events_by_action",
     "tests/test_poc_web_api.py::test_poc_http_api_allows_approval_with_revised_text_target",
     "tests/test_poc_web_api.py::test_poc_http_api_requires_admin_role_for_retry_job_event",
@@ -220,6 +225,33 @@ def _test_function_has_authenticated_success_markers(
     return has_configured_privileged_token and has_success_status_assertion
 
 
+def _assigns_server_local_auth_tokens(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    for child in ast.walk(node):
+        if not isinstance(child, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            continue
+        targets = child.targets if isinstance(child, ast.Assign) else (child.target,)
+        if any(
+            isinstance(target, ast.Attribute) and target.attr == "local_auth_tokens"
+            for target in targets
+        ):
+            return True
+    return False
+
+
+def _test_function_uses_env_auth_boundary(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> bool:
+    string_literals = {
+        child.value
+        for child in ast.walk(node)
+        if isinstance(child, ast.Constant) and isinstance(child.value, str)
+    }
+    return (
+        any(POC_AUTH_SESSION_ENV_VAR in literal for literal in string_literals)
+        and not _assigns_server_local_auth_tokens(node)
+    )
+
+
 def poc_auth_session_coverage_is_present(repo_root: Path = REPO_ROOT) -> bool:
     readme_path = repo_root / "README.md"
     test_path = repo_root / "tests" / "test_poc_web_api.py"
@@ -231,7 +263,7 @@ def poc_auth_session_coverage_is_present(repo_root: Path = REPO_ROOT) -> bool:
 
     if "## Local PoC API authentication" not in readme:
         return False
-    if "VERIDOC_LOCAL_AUTH_TOKENS" not in readme:
+    if POC_AUTH_SESSION_ENV_VAR not in readme:
         return False
 
     test_functions = _test_function_nodes(test_source)
@@ -244,6 +276,10 @@ def poc_auth_session_coverage_is_present(repo_root: Path = REPO_ROOT) -> bool:
         if not _test_function_has_authenticated_success_markers(
             test_functions[test_name]
         ):
+            return False
+    for ref in POC_AUTH_SESSION_ENV_SUCCESS_COVERAGE_REFS:
+        _path, test_name = ref.split("::", 1)
+        if not _test_function_uses_env_auth_boundary(test_functions[test_name]):
             return False
     return True
 

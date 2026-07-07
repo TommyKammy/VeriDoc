@@ -766,6 +766,10 @@ class EvaluateDatasetTest(unittest.TestCase):
             rows["security"]["evidence_refs"],
         )
         self.assertIn(
+            "tests/test_poc_web_api.py::test_poc_http_api_reads_local_auth_tokens_from_env_for_review_success",
+            rows["security"]["evidence_refs"],
+        )
+        self.assertIn(
             "tests/test_poc_web_api.py::test_poc_http_api_filters_review_action_audit_events_by_action",
             rows["security"]["evidence_refs"],
         )
@@ -862,6 +866,43 @@ class EvaluateDatasetTest(unittest.TestCase):
             )
             (temp_root / "tests" / "test_poc_web_api.py").write_text(
                 f"{success_ref_names_without_auth}\n{fail_closed_ref_names}\n",
+                encoding="utf-8",
+            )
+
+            payload = self.poc_acceptance_payload(harness_repo_root=temp_root)
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual("unknown", rows["security"]["status"])
+        self.assertFalse(
+            payload["matrix_evidence"]["security"][
+                "authenticated_poc_api_session_checked"
+            ]
+        )
+
+    def test_poc_acceptance_report_requires_env_backed_auth_success_evidence(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            (temp_root / "tests").mkdir()
+            (temp_root / "README.md").write_text(
+                "## Local PoC API authentication\n"
+                "Set VERIDOC_LOCAL_AUTH_TOKENS for local role tokens.\n",
+                encoding="utf-8",
+            )
+            success_ref_names_with_direct_tokens = "\n".join(
+                f"def {ref.split('::', 1)[1]}():\n"
+                "    server.local_auth_tokens = {'reviewer-token': 'reviewer'}\n"
+                "    role_token = 'reviewer-token'\n"
+                "    assert 202 == 202\n"
+                for ref in evaluate_dataset.POC_AUTH_SESSION_SUCCESS_COVERAGE_REFS
+            )
+            fail_closed_ref_names = "\n".join(
+                f"def {ref.split('::', 1)[1]}():\n    assert 401 == 401\n"
+                for ref in evaluate_dataset.POC_AUTH_SESSION_FAIL_CLOSED_COVERAGE_REFS
+            )
+            (temp_root / "tests" / "test_poc_web_api.py").write_text(
+                f"{success_ref_names_with_direct_tokens}\n{fail_closed_ref_names}\n",
                 encoding="utf-8",
             )
 
