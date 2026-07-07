@@ -411,15 +411,15 @@ class PoCAcceptanceReport:
             if llm_stability.unstable_example_count
             else "pass"
         )
-        evidence_inputs_in_manifest_repo = (
-            poc_acceptance_evidence_inputs_in_manifest_repo(self.p9_harness)
+        evidence_inputs_tracked_in_manifest_repo = (
+            poc_acceptance_evidence_inputs_tracked_in_manifest_repo(self.p9_harness)
         )
         reproducibility_status = (
             "pass"
             if (
                 self.commit != "unknown"
                 and self.commit_is_clean
-                and evidence_inputs_in_manifest_repo
+                and evidence_inputs_tracked_in_manifest_repo
             )
             else "fail"
         )
@@ -534,8 +534,8 @@ class PoCAcceptanceReport:
                     "Report records commit, dataset manifest, comparison "
                     "inputs, and the generation command; commit is "
                     f"{self.commit!r}; worktree clean: {self.commit_is_clean}; "
-                    "evidence inputs in manifest repo: "
-                    f"{evidence_inputs_in_manifest_repo}."
+                    "evidence inputs tracked in manifest repo: "
+                    f"{evidence_inputs_tracked_in_manifest_repo}."
                 ),
                 ["tested_environment", "evidence"],
             ),
@@ -557,7 +557,9 @@ class PoCAcceptanceReport:
             llm_stability=llm_stability,
             commit=self.commit,
             commit_is_clean=self.commit_is_clean,
-            evidence_inputs_in_manifest_repo=evidence_inputs_in_manifest_repo,
+            evidence_inputs_tracked_in_manifest_repo=(
+                evidence_inputs_tracked_in_manifest_repo
+            ),
         )
 
         return {
@@ -1830,7 +1832,32 @@ def poc_acceptance_path_in_repo(path: Path, repo_root: Path) -> bool:
     )
 
 
-def poc_acceptance_evidence_inputs_in_manifest_repo(
+def poc_acceptance_tracked_repo_path(path: Path, repo_root: Path) -> bool:
+    if not poc_acceptance_path_in_repo(path, repo_root):
+        return False
+    resolved_root = repo_root.resolve()
+    candidate = path if path.is_absolute() else resolved_root / path
+    try:
+        relative_candidate = candidate.resolve().relative_to(resolved_root)
+        completed = subprocess.run(
+            [
+                "git",
+                "ls-files",
+                "--error-unmatch",
+                "--",
+                relative_candidate.as_posix(),
+            ],
+            cwd=resolved_root,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return False
+    return completed.returncode == 0
+
+
+def poc_acceptance_evidence_inputs_tracked_in_manifest_repo(
     p9_harness: P9HarnessReport,
 ) -> bool:
     repo_root = poc_acceptance_report_repo_root(p9_harness.manifest)
@@ -1839,7 +1866,9 @@ def poc_acceptance_evidence_inputs_in_manifest_repo(
         p9_harness.llm_stability_source,
         p9_harness.poc_comparison_source,
     )
-    return all(poc_acceptance_path_in_repo(path, repo_root) for path in evidence_paths)
+    return all(
+        poc_acceptance_tracked_repo_path(path, repo_root) for path in evidence_paths
+    )
 
 
 def poc_acceptance_overall_status(
@@ -1924,7 +1953,7 @@ def poc_acceptance_matrix_evidence(
     llm_stability: LLMStabilityMetrics,
     commit: str,
     commit_is_clean: bool,
-    evidence_inputs_in_manifest_repo: bool,
+    evidence_inputs_tracked_in_manifest_repo: bool,
 ) -> dict[str, object]:
     return {
         "functionality": {
@@ -1970,7 +1999,9 @@ def poc_acceptance_matrix_evidence(
         "reproducibility": {
             "commit": commit,
             "commit_is_clean": commit_is_clean,
-            "evidence_inputs_in_manifest_repo": evidence_inputs_in_manifest_repo,
+            "evidence_inputs_tracked_in_manifest_repo": (
+                evidence_inputs_tracked_in_manifest_repo
+            ),
         },
     }
 

@@ -56,8 +56,8 @@ class EvaluateDatasetTest(unittest.TestCase):
         unstable_example_count: int = 0,
         manual_correction_target_met: bool = True,
         source_linkage_rates: dict[str, float] | None = None,
-        llm_stability_source: Path = Path("datasets/custom/llm_runs.json"),
-        poc_comparison_source: Path = Path("datasets/custom/poc_comparison.json"),
+        llm_stability_source: Path = LLM_STABILITY_RUNS_PATH,
+        poc_comparison_source: Path = POC_COMPARISON_PATH,
         commit: str = "test-commit",
         commit_is_clean: bool = True,
     ) -> dict[str, object]:
@@ -136,7 +136,7 @@ class EvaluateDatasetTest(unittest.TestCase):
             mode_diffs=(),
         )
         harness = evaluate_dataset.P9HarnessReport(
-            manifest=Path("datasets/custom/p9_manifest.json"),
+            manifest=POC_EVALUATION_MANIFEST_PATH,
             results=tuple(results),
             llm_stability=llm_stability,
             poc_mode_comparison=poc_comparison,
@@ -767,10 +767,13 @@ class EvaluateDatasetTest(unittest.TestCase):
 
         rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
         self.assertEqual("fail", rows["reproducibility"]["status"])
-        self.assertIn("evidence inputs in manifest repo: False", rows["reproducibility"]["evidence"])
+        self.assertIn(
+            "evidence inputs tracked in manifest repo: False",
+            rows["reproducibility"]["evidence"],
+        )
         self.assertFalse(
             payload["matrix_evidence"]["reproducibility"][
-                "evidence_inputs_in_manifest_repo"
+                "evidence_inputs_tracked_in_manifest_repo"
             ]
         )
 
