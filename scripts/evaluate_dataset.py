@@ -157,6 +157,12 @@ POC_AUTH_SESSION_COVERAGE_INPUT_PATHS = (
 POC_AUTH_SESSION_SUCCESS_TOKEN_LITERALS = frozenset(
     ("env-reviewer-token", "reviewer-token", "approver-token", "admin-token")
 )
+POC_AUTH_SESSION_EXPECTED_ROLE_BY_TOKEN = {
+    "env-reviewer-token": "reviewer",
+    "reviewer-token": "reviewer",
+    "approver-token": "approver",
+    "admin-token": "admin",
+}
 POC_AUTH_SESSION_SUCCESS_STATUS_CODES = frozenset((200, 202))
 POC_AUTH_SESSION_ENV_ROLES = frozenset(("viewer", "reviewer", "approver", "admin"))
 POC_AUTH_SESSION_TRUSTED_STATUS_HELPERS = {
@@ -341,7 +347,11 @@ def _test_function_nodes(
         tree = ast.parse(test_source)
     except SyntaxError:
         return {}
-    if _module_is_skipped_or_xfailed(tree) or _module_has_top_level_skip_call(tree):
+    if (
+        _module_is_skipped_or_xfailed(tree)
+        or _module_has_top_level_skip_call(tree)
+        or _module_disables_test_collection(tree)
+    ):
         return {}
     return {
         name: node
@@ -352,6 +362,25 @@ def _test_function_nodes(
         }.items()
         if not _test_function_is_skipped_or_xfailed(node)
     }
+
+
+def _module_disables_test_collection(tree: ast.Module) -> bool:
+    for statement in tree.body:
+        if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
+            continue
+        targets = (
+            statement.targets
+            if isinstance(statement, ast.Assign)
+            else (statement.target,)
+        )
+        if not any(
+            isinstance(target, ast.Name) and target.id == "__test__"
+            for target in targets
+        ):
+            continue
+        if isinstance(statement.value, ast.Constant) and statement.value.value is False:
+            return True
+    return False
 
 
 def _dotted_name(node: ast.AST) -> str | None:
@@ -368,6 +397,8 @@ def _dotted_name(node: ast.AST) -> str | None:
 def _test_function_is_skipped_or_xfailed(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> bool:
+    if isinstance(node, ast.AsyncFunctionDef):
+        return True
     for decorator in node.decorator_list:
         name = _dotted_name(decorator)
         if name in {
@@ -450,7 +481,11 @@ def _privileged_auth_tokens_in_node(node: ast.AST) -> frozenset[str]:
     return frozenset(tokens)
 
 
-def _local_auth_token_mapping_value_is_valid(node: ast.AST) -> bool:
+def _local_auth_token_mapping_value_is_valid(
+    node: ast.AST,
+    *,
+    expected_role: str | None = None,
+) -> bool:
     if not isinstance(node, ast.Dict):
         return False
     role: str | None = None
@@ -460,9 +495,11 @@ def _local_auth_token_mapping_value_is_valid(node: ast.AST) -> bool:
             role = _constant_string_value(value)
         if _constant_string_value(key) == "principal_id":
             principal_id = _constant_string_value(value)
-    return role in POC_AUTH_SESSION_ENV_ROLES and bool(
-        principal_id and principal_id.strip()
-    )
+    if role not in POC_AUTH_SESSION_ENV_ROLES:
+        return False
+    if expected_role is not None and role != expected_role:
+        return False
+    return bool(principal_id and principal_id.strip())
 
 
 def _local_auth_token_mapping_tokens(node: ast.AST) -> frozenset[str]:
@@ -473,7 +510,10 @@ def _local_auth_token_mapping_tokens(node: ast.AST) -> frozenset[str]:
         token = _constant_string_value(key)
         if (
             token in POC_AUTH_SESSION_SUCCESS_TOKEN_LITERALS
-            and _local_auth_token_mapping_value_is_valid(value)
+            and _local_auth_token_mapping_value_is_valid(
+                value,
+                expected_role=POC_AUTH_SESSION_EXPECTED_ROLE_BY_TOKEN.get(token),
+            )
         ):
             tokens.add(token)
     return frozenset(tokens)
@@ -505,18 +545,15 @@ def _authorization_header_token(value: str) -> str | None:
 
 
 def _auth_header_tokens_in_node(node: ast.AST) -> frozenset[str]:
+    if not isinstance(node, ast.Dict):
+        return frozenset()
     tokens: set[str] = set()
-    for child in ast.walk(node):
-        if not isinstance(child, ast.Dict):
+    for key, value in zip(node.keys, node.values, strict=False):
+        if _constant_string_value(key) != "Authorization":
             continue
-        for key, value in zip(child.keys, child.values, strict=False):
-            if _constant_string_value(key) != "Authorization":
-                continue
-            header_token = _authorization_header_token(
-                _constant_string_value(value) or ""
-            )
-            if header_token in POC_AUTH_SESSION_SUCCESS_TOKEN_LITERALS:
-                tokens.add(header_token)
+        header_token = _authorization_header_token(_constant_string_value(value) or "")
+        if header_token in POC_AUTH_SESSION_SUCCESS_TOKEN_LITERALS:
+            tokens.add(header_token)
     return frozenset(tokens)
 
 
@@ -889,9 +926,16 @@ def _trusted_poc_status_helpers(test_source: str) -> dict[str, tuple[str, str]]:
         if not node.args.args:
             continue
         connection_arg = node.args.args[0].arg
+        if not any(arg.arg == "role_token" for arg in node.args.kwonlyargs):
+            continue
         saw_expected_request = False
+        saw_role_token_header = False
         saw_response = False
+        header_names_with_role_token: set[str] = set()
         for statement in node.body:
+            header_names_with_role_token.update(
+                _header_names_assigned_authorization_role_token(statement)
+            )
             for child in _walk_statement_without_nested_scopes(statement):
                 if not isinstance(child, ast.Call):
                     continue
@@ -899,11 +943,118 @@ def _trusted_poc_status_helpers(test_source: str) -> dict[str, tuple[str, str]]:
                     saw_expected_request = (
                         _request_method_and_path(child) == expected_request
                     )
+                    if saw_expected_request:
+                        saw_role_token_header = (
+                            _request_uses_authorization_role_token(child)
+                            or _request_uses_authorization_role_token_header_name(
+                                child,
+                                frozenset(header_names_with_role_token),
+                            )
+                        )
                 if _method_call_receiver_name(child, "getresponse") == connection_arg:
                     saw_response = True
-        if saw_expected_request and saw_response:
+        if saw_expected_request and saw_role_token_header and saw_response:
             helpers[name] = expected_request
     return helpers
+
+
+def _request_uses_authorization_role_token(node: ast.Call) -> bool:
+    for keyword in node.keywords:
+        if keyword.arg != "headers" or not isinstance(keyword.value, ast.Dict):
+            continue
+        for key, value in zip(keyword.value.keys, keyword.value.values, strict=False):
+            if _constant_string_value(key) != "Authorization":
+                continue
+            if _value_formats_bearer_role_token(value):
+                return True
+    return False
+
+
+def _request_uses_authorization_role_token_header_name(
+    node: ast.Call,
+    header_names: frozenset[str],
+) -> bool:
+    for keyword in node.keywords:
+        if keyword.arg != "headers" or not isinstance(keyword.value, ast.Name):
+            continue
+        if keyword.value.id in header_names:
+            return True
+    return False
+
+
+def _header_names_assigned_authorization_role_token(node: ast.AST) -> frozenset[str]:
+    names: set[str] = set()
+    for child in _walk_statement_without_nested_scopes(node):
+        if not isinstance(child, (ast.Assign, ast.AnnAssign)):
+            continue
+        for target in _assignment_targets(child):
+            header_name = _authorization_header_assignment_name(target)
+            if header_name is None:
+                continue
+            if _value_formats_bearer_role_token(child.value):
+                names.add(header_name)
+        if isinstance(child.value, ast.Dict):
+            for target in _assignment_targets(child):
+                for name in _assigned_name_targets(target):
+                    if _headers_dict_uses_authorization_role_token(child.value):
+                        names.add(name)
+    return frozenset(names)
+
+
+def _authorization_header_assignment_name(target: ast.AST) -> str | None:
+    if not isinstance(target, ast.Subscript):
+        return None
+    if _constant_string_value(target.slice) != "Authorization":
+        return None
+    if isinstance(target.value, ast.Name):
+        return target.value.id
+    return None
+
+
+def _headers_dict_uses_authorization_role_token(node: ast.Dict) -> bool:
+    for key, value in zip(node.keys, node.values, strict=False):
+        if _constant_string_value(key) != "Authorization":
+            continue
+        if _value_formats_bearer_role_token(value):
+            return True
+    return False
+
+
+def _value_formats_bearer_role_token(node: ast.AST) -> bool:
+    if isinstance(node, ast.JoinedStr):
+        saw_bearer_literal = any(
+            isinstance(value, ast.Constant)
+            and isinstance(value.value, str)
+            and "Bearer " in value.value
+            for value in node.values
+        )
+        saw_role_token = any(
+            isinstance(value, ast.FormattedValue)
+            and isinstance(value.value, ast.Name)
+            and value.value.id == "role_token"
+            for value in node.values
+        )
+        return saw_bearer_literal and saw_role_token
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        parts = _string_concatenation_parts(node)
+        return any(
+            isinstance(part, ast.Constant)
+            and isinstance(part.value, str)
+            and "Bearer " in part.value
+            for part in parts
+        ) and any(
+            isinstance(part, ast.Name) and part.id == "role_token" for part in parts
+        )
+    return False
+
+
+def _string_concatenation_parts(node: ast.AST) -> tuple[ast.AST, ...]:
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return (
+            *_string_concatenation_parts(node.left),
+            *_string_concatenation_parts(node.right),
+        )
+    return (node,)
 
 
 def _node_references_poc_server_address(node: ast.AST) -> bool:
@@ -1262,6 +1413,7 @@ def _env_auth_token_value_tokens(value: str) -> frozenset[str]:
         if (
             principal_separator == ":"
             and role.strip() in POC_AUTH_SESSION_ENV_ROLES
+            and role.strip() == POC_AUTH_SESSION_EXPECTED_ROLE_BY_TOKEN.get(token)
             and principal.strip()
         ):
             tokens.add(token)
