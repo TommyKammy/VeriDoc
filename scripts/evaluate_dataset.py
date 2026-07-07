@@ -113,7 +113,7 @@ POC_AUTH_SESSION_COVERAGE_INPUT_PATHS = (
     Path("tests/test_poc_web_api.py"),
 )
 POC_AUTH_SESSION_SUCCESS_TOKEN_LITERALS = frozenset(
-    ("reviewer-token", "approver-token", "admin-token")
+    ("env-reviewer-token", "reviewer-token", "approver-token", "admin-token")
 )
 POC_AUTH_SESSION_SUCCESS_STATUS_CODES = frozenset((200, 202))
 POC_AUTH_SESSION_ENV_ROLES = frozenset(("viewer", "reviewer", "approver", "admin"))
@@ -230,35 +230,35 @@ def _compare_checks_success_status_equality(node: ast.Compare) -> bool:
     return has_success_status and has_observed_status_side
 
 
-def _node_contains_privileged_auth_token(node: ast.AST) -> bool:
-    return any(
-        isinstance(child, ast.Constant)
-        and isinstance(child.value, str)
-        and any(
-            token in child.value for token in POC_AUTH_SESSION_SUCCESS_TOKEN_LITERALS
+def _privileged_auth_tokens_in_node(node: ast.AST) -> frozenset[str]:
+    tokens: set[str] = set()
+    for child in ast.walk(node):
+        if not isinstance(child, ast.Constant) or not isinstance(child.value, str):
+            continue
+        tokens.update(
+            token
+            for token in POC_AUTH_SESSION_SUCCESS_TOKEN_LITERALS
+            if token in child.value
         )
-        for child in ast.walk(node)
-    )
+    return frozenset(tokens)
 
 
 def _call_passes_privileged_auth_token(node: ast.Call) -> bool:
+    return bool(_call_privileged_auth_tokens(node))
+
+
+def _call_privileged_auth_tokens(node: ast.Call) -> frozenset[str]:
+    tokens: set[str] = set()
     for keyword in node.keywords:
-        if keyword.arg == "role_token" and _node_contains_privileged_auth_token(
-            keyword.value
-        ):
-            return True
-        if keyword.arg == "headers" and _node_contains_privileged_auth_token(
-            keyword.value
-        ):
-            return True
-    return False
+        if keyword.arg in {"role_token", "headers"}:
+            tokens.update(_privileged_auth_tokens_in_node(keyword.value))
+    return frozenset(tokens)
 
 
 def _assert_checks_success_status(node: ast.Assert) -> bool:
-    return any(
-        isinstance(child, ast.Compare) and _compare_checks_success_status_equality(child)
-        for child in ast.walk(node.test)
-    )
+    return isinstance(
+        node.test, ast.Compare
+    ) and _compare_checks_success_status_equality(node.test)
 
 
 def _test_function_has_authenticated_success_markers(
@@ -277,6 +277,8 @@ def _test_function_has_authenticated_success_markers(
 
 def _assigns_server_local_auth_tokens(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     for child in ast.walk(node):
+        if _calls_setattr_local_auth_tokens(child):
+            return True
         if not isinstance(child, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
             continue
         targets = child.targets if isinstance(child, ast.Assign) else (child.target,)
@@ -288,7 +290,20 @@ def _assigns_server_local_auth_tokens(node: ast.FunctionDef | ast.AsyncFunctionD
     return False
 
 
-def _sets_env_auth_var(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+def _calls_setattr_local_auth_tokens(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "setattr"
+        and len(node.args) >= 2
+        and _constant_string_value(node.args[1]) == "local_auth_tokens"
+    )
+
+
+def _env_auth_tokens_configured_by_node(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> frozenset[str]:
+    tokens: set[str] = set()
     for child in ast.walk(node):
         if isinstance(child, ast.Call):
             func = child.func
@@ -297,27 +312,34 @@ def _sets_env_auth_var(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
                 and func.attr == "setenv"
                 and len(child.args) >= 2
                 and _constant_string_value(child.args[0]) == POC_AUTH_SESSION_ENV_VAR
-                and _env_auth_token_value_has_valid_mapping(
-                    _constant_string_value(child.args[1]) or ""
-                )
             ):
-                return True
+                tokens.update(
+                    _env_auth_token_value_tokens(
+                        _constant_string_value(child.args[1]) or ""
+                    )
+                )
         if not isinstance(child, (ast.Assign, ast.AnnAssign)):
             continue
         targets = child.targets if isinstance(child, ast.Assign) else (child.target,)
-        if any(_targets_env_auth_var(target) for target in targets) and (
-            _env_auth_token_value_has_valid_mapping(
-                _constant_string_value(child.value) or ""
+        if any(_targets_env_auth_var(target) for target in targets):
+            tokens.update(
+                _env_auth_token_value_tokens(
+                    _constant_string_value(child.value) or ""
+                )
             )
-        ):
-            return True
-    return False
+    return frozenset(tokens)
 
 
 def _env_auth_token_value_has_valid_mapping(value: str) -> bool:
+    return bool(_env_auth_token_value_tokens(value))
+
+
+def _env_auth_token_value_tokens(value: str) -> frozenset[str]:
+    tokens: set[str] = set()
     for entry in value.split(","):
         identity, separator, token = entry.partition("=")
-        if separator != "=" or not token.strip():
+        token = token.strip()
+        if separator != "=" or not token:
             continue
         role, principal_separator, principal = identity.strip().partition(":")
         if (
@@ -325,8 +347,29 @@ def _env_auth_token_value_has_valid_mapping(value: str) -> bool:
             and role.strip() in POC_AUTH_SESSION_ENV_ROLES
             and principal.strip()
         ):
-            return True
-    return False
+            tokens.add(token)
+    return frozenset(tokens)
+
+
+def _privileged_auth_tokens_passed_by_function(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> frozenset[str]:
+    tokens: set[str] = set()
+    for child in ast.walk(node):
+        if isinstance(child, ast.Call):
+            tokens.update(_call_privileged_auth_tokens(child))
+    return frozenset(tokens)
+
+
+def _test_function_uses_env_auth_boundary(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> bool:
+    if _assigns_server_local_auth_tokens(node):
+        return False
+    return bool(
+        _env_auth_tokens_configured_by_node(node)
+        & _privileged_auth_tokens_passed_by_function(node)
+    )
 
 
 def _constant_string_value(node: ast.AST) -> str | None:
@@ -346,12 +389,6 @@ def _targets_env_auth_var(target: ast.AST) -> bool:
     if isinstance(value, ast.Name) and value.id == "environ":
         return True
     return False
-
-
-def _test_function_uses_env_auth_boundary(
-    node: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> bool:
-    return _sets_env_auth_var(node) and not _assigns_server_local_auth_tokens(node)
 
 
 def poc_auth_session_coverage_is_present(repo_root: Path = REPO_ROOT) -> bool:
