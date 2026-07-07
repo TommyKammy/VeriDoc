@@ -303,6 +303,7 @@ class P9HarnessReport:
     poc_mode_comparison: PoCComparisonMetrics
     llm_stability_source: Path
     poc_comparison_source: Path
+    repo_root: Path | None = None
 
     @property
     def failure_count(self) -> int:
@@ -1690,6 +1691,7 @@ def evaluate_p9_harness(
         poc_mode_comparison=llm_report.poc_mode_comparison,
         llm_stability_source=llm_stability_runs_path,
         poc_comparison_source=poc_comparison_path,
+        repo_root=repo_root,
     )
 
 
@@ -1927,6 +1929,12 @@ def poc_acceptance_report_repo_root(manifest_path: Path) -> Path:
     return p9_manifest_repo_root(manifest.resolve())
 
 
+def poc_acceptance_harness_repo_root(p9_harness: P9HarnessReport) -> Path:
+    if p9_harness.repo_root is not None:
+        return p9_harness.repo_root.resolve()
+    return poc_acceptance_report_repo_root(p9_harness.manifest)
+
+
 def poc_acceptance_path_in_repo(path: Path, repo_root: Path) -> bool:
     resolved_root = repo_root.resolve()
     candidate = path if path.is_absolute() else resolved_root / path
@@ -1966,7 +1974,7 @@ def poc_acceptance_tracked_repo_path(path: Path, repo_root: Path) -> bool:
 
 
 def poc_acceptance_p9_input_paths(p9_harness: P9HarnessReport) -> tuple[Path, ...]:
-    repo_root = poc_acceptance_report_repo_root(p9_harness.manifest)
+    repo_root = poc_acceptance_harness_repo_root(p9_harness)
     paths: list[Path] = [
         p9_harness.manifest,
         p9_harness.llm_stability_source,
@@ -2042,7 +2050,7 @@ def poc_acceptance_poc_comparison_input_paths(
 def poc_acceptance_evidence_inputs_tracked_in_manifest_repo(
     p9_harness: P9HarnessReport,
 ) -> bool:
-    repo_root = poc_acceptance_report_repo_root(p9_harness.manifest)
+    repo_root = poc_acceptance_harness_repo_root(p9_harness)
     return all(
         poc_acceptance_tracked_repo_path(path, repo_root)
         for path in poc_acceptance_p9_input_paths(p9_harness)

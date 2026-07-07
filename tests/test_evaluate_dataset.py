@@ -1350,7 +1350,47 @@ class EvaluateDatasetTest(unittest.TestCase):
 
         payload = report.as_dict()
         self.assertEqual(str(custom_manifest_path), payload["dataset_manifest"])
+        self.assertEqual(temp_root.resolve(), report.repo_root)
+        self.assertNotIn("repo_root", payload)
         self.assertGreater(payload["summary"]["case_count"], 0)
+
+    def test_poc_acceptance_reproducibility_uses_harness_repo_root(
+        self,
+    ) -> None:
+        payload = self.poc_acceptance_payload()
+        llm_report = evaluate_dataset.evaluate_llm_stability_report(
+            LLM_STABILITY_RUNS_PATH,
+            POC_COMPARISON_PATH,
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            shutil.copytree(REPO_ROOT / "datasets", temp_root / "datasets")
+            harness = evaluate_dataset.P9HarnessReport(
+                manifest=evaluate_dataset.DEFAULT_P9_HARNESS_MANIFEST,
+                results=tuple(payload["p9_harness_results"]),
+                llm_stability=llm_report.llm_stability,
+                poc_mode_comparison=llm_report.poc_mode_comparison,
+                llm_stability_source=evaluate_dataset.DEFAULT_LLM_STABILITY_RUNS,
+                poc_comparison_source=evaluate_dataset.DEFAULT_POC_COMPARISON,
+                repo_root=temp_root,
+            )
+            with mock.patch.object(
+                evaluate_dataset,
+                "poc_acceptance_tracked_repo_path",
+                return_value=True,
+            ) as mocked_tracked:
+                tracked = (
+                    evaluate_dataset.poc_acceptance_evidence_inputs_tracked_in_manifest_repo(
+                        harness
+                    )
+                )
+
+        self.assertTrue(tracked)
+        self.assertTrue(mocked_tracked.call_args_list)
+        self.assertEqual(
+            {temp_root.resolve()},
+            {call.args[1] for call in mocked_tracked.call_args_list},
+        )
 
     def test_poc_acceptance_report_uses_custom_manifest_repo_for_commit(
         self,
