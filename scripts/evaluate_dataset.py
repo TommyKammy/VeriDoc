@@ -200,7 +200,9 @@ def _constant_int_value(node: ast.AST) -> int | None:
     return node.value
 
 
-def _compare_mentions_success_status(node: ast.Compare) -> bool:
+def _compare_checks_success_status_equality(node: ast.Compare) -> bool:
+    if len(node.ops) != 1 or not isinstance(node.ops[0], ast.Eq):
+        return False
     values = (_constant_int_value(part) for part in (node.left, *node.comparators))
     return any(value in POC_AUTH_SESSION_SUCCESS_STATUS_CODES for value in values)
 
@@ -219,7 +221,8 @@ def _test_function_has_authenticated_success_markers(
         for token in POC_AUTH_SESSION_SUCCESS_TOKEN_LITERALS
     )
     has_success_status_assertion = any(
-        isinstance(child, ast.Compare) and _compare_mentions_success_status(child)
+        isinstance(child, ast.Compare)
+        and _compare_checks_success_status_equality(child)
         for child in ast.walk(node)
     )
     return has_configured_privileged_token and has_success_status_assertion
@@ -238,18 +241,48 @@ def _assigns_server_local_auth_tokens(node: ast.FunctionDef | ast.AsyncFunctionD
     return False
 
 
+def _sets_env_auth_var(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    for child in ast.walk(node):
+        if isinstance(child, ast.Call):
+            func = child.func
+            if (
+                isinstance(func, ast.Attribute)
+                and func.attr == "setenv"
+                and child.args
+                and _constant_string_value(child.args[0]) == POC_AUTH_SESSION_ENV_VAR
+            ):
+                return True
+        if not isinstance(child, (ast.Assign, ast.AnnAssign)):
+            continue
+        targets = child.targets if isinstance(child, ast.Assign) else (child.target,)
+        if any(_targets_env_auth_var(target) for target in targets):
+            return True
+    return False
+
+
+def _constant_string_value(node: ast.AST) -> str | None:
+    if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+        return None
+    return node.value
+
+
+def _targets_env_auth_var(target: ast.AST) -> bool:
+    if not isinstance(target, ast.Subscript):
+        return False
+    if _constant_string_value(target.slice) != POC_AUTH_SESSION_ENV_VAR:
+        return False
+    value = target.value
+    if isinstance(value, ast.Attribute) and value.attr == "environ":
+        return True
+    if isinstance(value, ast.Name) and value.id == "environ":
+        return True
+    return False
+
+
 def _test_function_uses_env_auth_boundary(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> bool:
-    string_literals = {
-        child.value
-        for child in ast.walk(node)
-        if isinstance(child, ast.Constant) and isinstance(child.value, str)
-    }
-    return (
-        any(POC_AUTH_SESSION_ENV_VAR in literal for literal in string_literals)
-        and not _assigns_server_local_auth_tokens(node)
-    )
+    return _sets_env_auth_var(node) and not _assigns_server_local_auth_tokens(node)
 
 
 def poc_auth_session_coverage_is_present(repo_root: Path = REPO_ROOT) -> bool:
