@@ -964,6 +964,14 @@ class EvaluateDatasetTest(unittest.TestCase):
                 for candidate in payload["follow_up_issue_candidates"]
             )
         )
+        self.assertTrue(
+            any(
+                limitation["id"] == f"p9_fail_closed_gate_{results[0]['sample_id']}"
+                and limitation["mvp_before_gate_revision"]
+                == "p9-mvp-before-pdf-eval-dependency-gate"
+                for limitation in payload["known_limitations"]
+            )
+        )
 
     def test_poc_acceptance_report_fails_llm_control_from_harness_fields(
         self,
@@ -2148,6 +2156,17 @@ class EvaluateDatasetTest(unittest.TestCase):
         ]
         self.assertIn(
             ("p9-record-pdf-002", "record_pdf", "pdf_to_word"),
+            [
+                (
+                    sample["sample_id"],
+                    sample["sample_category"],
+                    sample["representative_mode"],
+                )
+                for sample in placeholders
+            ],
+        )
+        self.assertIn(
+            ("p9-record-pdf-003", "record_pdf", "pdf_to_excel"),
             [
                 (
                     sample["sample_id"],

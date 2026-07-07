@@ -374,6 +374,9 @@ class PoCAcceptanceReport:
         llm_stability = self.p9_harness.llm_stability
         results = list(self.p9_harness.results)
         failed_results = [result for result in results if result.get("ok") is not True]
+        fail_closed_gate_results = [
+            result for result in results if result.get("fail_closed") is True
+        ]
         usable_results = [result for result in results if result.get("ok") is True]
         artifact_failures = [
             result
@@ -642,7 +645,10 @@ class PoCAcceptanceReport:
                     mode.mode: mode.warning_count for mode in poc_comparison.modes
                 },
             },
-            "known_limitations": poc_acceptance_known_limitations(failed_results),
+            "known_limitations": poc_acceptance_known_limitations(
+                failed_results,
+                fail_closed_gate_results,
+            ),
             "follow_up_issue_candidates": poc_acceptance_follow_up_candidates(
                 results,
                 failed_results,
@@ -1111,8 +1117,8 @@ def p9_evaluation_samples(
     usable_modes: set[str] = set()
     observed_categories: set[str] = set()
     usable_categories: set[str] = set()
-    placeholder_by_mode: dict[str, dict[str, Any]] = {}
-    placeholder_by_category: dict[str, dict[str, Any]] = {}
+    placeholder_by_mode: dict[str, list[dict[str, Any]]] = {}
+    placeholder_by_category: dict[str, list[dict[str, Any]]] = {}
     for sample in samples:
         if not isinstance(sample, dict):
             raise EvaluationCaseError("each P9 evaluation sample needs an object")
@@ -1151,8 +1157,8 @@ def p9_evaluation_samples(
                 "representative_mode": representative_mode,
                 "conversion_mode": conversion_mode,
             }
-            placeholder_by_mode.setdefault(representative_mode, placeholder)
-            placeholder_by_category.setdefault(str(category), placeholder)
+            placeholder_by_mode.setdefault(representative_mode, []).append(placeholder)
+            placeholder_by_category.setdefault(str(category), []).append(placeholder)
             continue
         if fixture is not None:
             p9_validate_representative_fixture_link(
@@ -1207,20 +1213,28 @@ def p9_evaluation_samples(
             f"{missing_categories[0]!r}"
         )
     appended_placeholder_ids: set[str] = set()
-    for missing_usable_mode in sorted(required_modes - usable_modes):
-        placeholder = placeholder_by_mode.get(missing_usable_mode)
-        if placeholder is not None:
-            evaluation_samples.append(placeholder)
-            if isinstance(placeholder.get("sample_id"), str):
-                appended_placeholder_ids.add(str(placeholder["sample_id"]))
+    appended_placeholder_categories: set[str] = set()
+    missing_usable_modes = required_modes - usable_modes
+    for missing_usable_mode in sorted(missing_usable_modes):
+        placeholders = placeholder_by_mode.get(missing_usable_mode, [])
+        if not placeholders:
+            continue
+        placeholder = placeholders[0]
+        evaluation_samples.append(placeholder)
+        if isinstance(placeholder.get("sample_id"), str):
+            appended_placeholder_ids.add(str(placeholder["sample_id"]))
+        if isinstance(placeholder.get("sample_category"), str):
+            appended_placeholder_categories.add(str(placeholder["sample_category"]))
     for missing_usable_category in sorted(P9_REQUIRED_SOURCE_CATEGORIES - usable_categories):
-        placeholder = placeholder_by_category.get(missing_usable_category)
-        placeholder_id = placeholder.get("sample_id") if placeholder else None
-        if (
-            placeholder is not None
-            and isinstance(placeholder_id, str)
-            and placeholder_id not in appended_placeholder_ids
-        ):
+        if missing_usable_category in appended_placeholder_categories:
+            continue
+        for placeholder in placeholder_by_category.get(missing_usable_category, []):
+            placeholder_id = placeholder.get("sample_id")
+            if (
+                not isinstance(placeholder_id, str)
+                or placeholder_id in appended_placeholder_ids
+            ):
+                continue
             evaluation_samples.append(placeholder)
             appended_placeholder_ids.add(placeholder_id)
     return evaluation_samples
@@ -2480,6 +2494,7 @@ def poc_acceptance_fail_closed_conditions(
 
 def poc_acceptance_known_limitations(
     failed_results: list[dict[str, object]],
+    fail_closed_gate_results: list[dict[str, object]] | None = None,
 ) -> list[dict[str, object]]:
     limitations: list[dict[str, object]] = [
         {
@@ -2498,6 +2513,16 @@ def poc_acceptance_known_limitations(
                 "description": str(result.get("failure_reason")),
                 "conversion_mode": result.get("conversion_mode"),
                 "llm_scenario": result.get("llm_scenario"),
+            }
+        )
+    for result in (fail_closed_gate_results or [])[:5]:
+        limitations.append(
+            {
+                "id": f"p9_fail_closed_gate_{result.get('sample_id')}",
+                "description": str(result.get("failure_reason")),
+                "conversion_mode": result.get("conversion_mode"),
+                "llm_scenario": result.get("llm_scenario"),
+                "mvp_before_gate_revision": result.get("mvp_before_gate_revision"),
             }
         )
     return limitations
