@@ -662,6 +662,30 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertIn("review_ui_observations", payload)
         self.assertIn("known_limitations", payload)
         self.assertIn("follow_up_issue_candidates", payload)
+        expected_gate_revisions = {
+            result["mvp_before_gate_revision"]
+            for result in payload["p9_harness_results"]
+            if result.get("fail_closed")
+        }
+        self.assertTrue(
+            expected_gate_revisions.issubset(
+                {
+                    limitation.get("mvp_before_gate_revision")
+                    for limitation in payload["known_limitations"]
+                }
+            )
+        )
+        self.assertTrue(
+            any(
+                all(
+                    gate_revision in candidate["reason"]
+                    for gate_revision in expected_gate_revisions
+                )
+                for candidate in payload["follow_up_issue_candidates"]
+                if candidate["title"]
+                == "Resolve fail-closed P9 MVP-before gate revisions"
+            )
+        )
         self.assertTrue(
             any(
                 condition["condition_id"] == "external_transmission"
@@ -961,6 +985,15 @@ class EvaluateDatasetTest(unittest.TestCase):
             any(
                 candidate["title"]
                 == "Resolve fail-closed P9 MVP-before gate revisions"
+                and "p9-mvp-before-pdf-eval-dependency-gate"
+                in candidate["reason"]
+                for candidate in payload["follow_up_issue_candidates"]
+            )
+        )
+        self.assertFalse(
+            any(
+                candidate["title"]
+                == "Resolve failing P9 representative conversion harness rows"
                 for candidate in payload["follow_up_issue_candidates"]
             )
         )

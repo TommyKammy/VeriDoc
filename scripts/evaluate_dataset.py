@@ -650,8 +650,8 @@ class PoCAcceptanceReport:
                 fail_closed_gate_results,
             ),
             "follow_up_issue_candidates": poc_acceptance_follow_up_candidates(
-                results,
                 failed_results,
+                fail_closed_gate_results,
                 llm_stability,
                 unaudited_results,
                 poc_comparison,
@@ -2515,7 +2515,7 @@ def poc_acceptance_known_limitations(
                 "llm_scenario": result.get("llm_scenario"),
             }
         )
-    for result in (fail_closed_gate_results or [])[:5]:
+    for result in fail_closed_gate_results or []:
         limitations.append(
             {
                 "id": f"p9_fail_closed_gate_{result.get('sample_id')}",
@@ -2529,8 +2529,8 @@ def poc_acceptance_known_limitations(
 
 
 def poc_acceptance_follow_up_candidates(
-    results: list[dict[str, object]],
     failed_results: list[dict[str, object]],
+    fail_closed_gate_results: list[dict[str, object]],
     llm_stability: LLMStabilityMetrics,
     unaudited_results: list[dict[str, object]],
     poc_comparison: PoCComparisonMetrics,
@@ -2539,7 +2539,7 @@ def poc_acceptance_follow_up_candidates(
     gate_revisions = sorted(
         {
             str(result.get("mvp_before_gate_revision"))
-            for result in results
+            for result in fail_closed_gate_results
             if result.get("fail_closed") is True
             and isinstance(result.get("mvp_before_gate_revision"), str)
         }
