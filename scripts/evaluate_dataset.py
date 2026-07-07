@@ -18,7 +18,7 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PureWindowsPath
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 from xml.etree import ElementTree
 from zipfile import ZipFile
 
@@ -660,6 +660,44 @@ def _string_literals_in_node(node: ast.AST) -> frozenset[str]:
     return frozenset(literals)
 
 
+def _loaded_name_references(node: ast.AST) -> frozenset[str]:
+    return frozenset(
+        child.id
+        for child in ast.walk(node)
+        if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load)
+    )
+
+
+def _string_literals_with_bound_names(
+    node: ast.AST,
+    name_literal_bindings: Mapping[str, frozenset[str]],
+) -> frozenset[str]:
+    literals = set(_string_literals_in_node(node))
+    for name in _loaded_name_references(node):
+        literals.update(name_literal_bindings.get(name, frozenset()))
+    return frozenset(literals)
+
+
+def _update_name_literal_bindings_after_statement(
+    node: ast.stmt,
+    name_literal_bindings: dict[str, frozenset[str]],
+) -> None:
+    if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+        value = node.value
+        if value is None:
+            return
+        value_literals = _string_literals_with_bound_names(
+            value, name_literal_bindings
+        )
+        for target in _assignment_targets(node):
+            for name in _target_name_bindings(target):
+                name_literal_bindings[name] = value_literals
+    if isinstance(node, ast.Delete):
+        for target in node.targets:
+            for name in _target_name_bindings(target):
+                name_literal_bindings.pop(name, None)
+
+
 def _request_method_and_path(node: ast.Call) -> tuple[str | None, str | None]:
     if _method_call_receiver_name(node, "request") is None:
         return None, None
@@ -685,6 +723,7 @@ def _authenticated_success_status_observations(
     ] = {}
     status_observations: dict[str, _AuthenticatedStatusObservation] = {}
     success_observations: list[_AuthenticatedStatusObservation] = []
+    name_literal_bindings: dict[str, frozenset[str]] = {}
 
     for statement in _ordered_function_statements(node.body):
         env_tokens_seen = set(
@@ -728,7 +767,9 @@ def _authenticated_success_status_observations(
                         direct_tokens_before_request=frozenset(direct_tokens_seen),
                         request_method=method,
                         request_path=path,
-                        string_literals=_string_literals_in_node(child),
+                        string_literals=_string_literals_with_bound_names(
+                            child, name_literal_bindings
+                        ),
                     )
                 )
 
@@ -743,7 +784,9 @@ def _authenticated_success_status_observations(
                         tokens=tokens,
                         env_tokens_before_request=frozenset(env_tokens_seen),
                         direct_tokens_before_request=frozenset(direct_tokens_seen),
-                        string_literals=_string_literals_in_node(value),
+                        string_literals=_string_literals_with_bound_names(
+                            value, name_literal_bindings
+                        ),
                     )
                     for target in targets:
                         for key in _assigned_status_expr_keys(target):
@@ -799,6 +842,9 @@ def _authenticated_success_status_observations(
         active_monkeypatch_fixture_names.difference_update(
             _statement_bound_names(statement)
         )
+        _update_name_literal_bindings_after_statement(
+            statement, name_literal_bindings
+        )
 
     return tuple(success_observations)
 
@@ -833,13 +879,12 @@ def _test_function_matches_success_ref_expectation(
     expected_method = expectation.get("method")
     expected_path = expectation.get("path")
     required_literals = expectation.get("required_literals", frozenset())
-    function_literals = _string_literals_in_node(node)
-    if not required_literals.issubset(function_literals):
-        return False
     for observation in _authenticated_success_status_observations(
         node,
         local_auth_token_helpers=local_auth_token_helpers,
     ):
+        if not required_literals.issubset(observation.string_literals):
+            continue
         if expected_tokens and not observation.tokens & expected_tokens:
             continue
         if (
@@ -1103,6 +1148,7 @@ def _asserted_status_observations(
     status_observations: dict[str, _AuthenticatedStatusObservation] = {}
     pending_request_by_connection: dict[str, _AuthenticatedStatusObservation] = {}
     asserted_observations: list[_AuthenticatedStatusObservation] = []
+    name_literal_bindings: dict[str, frozenset[str]] = {}
     for statement in _ordered_function_statements(node.body):
         response_connections_seen = {
             connection_name
@@ -1124,7 +1170,9 @@ def _asserted_status_observations(
                         env_tokens_before_request=frozenset(),
                         request_method=method,
                         request_path=path,
-                        string_literals=_string_literals_in_node(child),
+                        string_literals=_string_literals_with_bound_names(
+                            child, name_literal_bindings
+                        ),
                     )
                 )
 
@@ -1138,7 +1186,9 @@ def _asserted_status_observations(
                         status_observations[key] = _AuthenticatedStatusObservation(
                             tokens=frozenset(),
                             env_tokens_before_request=frozenset(),
-                            string_literals=_string_literals_in_node(value),
+                            string_literals=_string_literals_with_bound_names(
+                                value, name_literal_bindings
+                            ),
                         )
                 connection_name = _method_call_receiver_name(value, "getresponse")
                 pending = pending_request_by_connection.pop(connection_name, None)
@@ -1182,6 +1232,9 @@ def _asserted_status_observations(
                         ),
                     )
                 )
+        _update_name_literal_bindings_after_statement(
+            statement, name_literal_bindings
+        )
     return tuple(asserted_observations)
 
 
