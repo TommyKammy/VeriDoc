@@ -235,11 +235,32 @@ def _privileged_auth_tokens_in_node(node: ast.AST) -> frozenset[str]:
     for child in ast.walk(node):
         if not isinstance(child, ast.Constant) or not isinstance(child.value, str):
             continue
-        tokens.update(
-            token
-            for token in POC_AUTH_SESSION_SUCCESS_TOKEN_LITERALS
-            if token in child.value
-        )
+        value = child.value.strip()
+        if value in POC_AUTH_SESSION_SUCCESS_TOKEN_LITERALS:
+            tokens.add(value)
+    return frozenset(tokens)
+
+
+def _authorization_header_token(value: str) -> str | None:
+    scheme, separator, token = value.strip().partition(" ")
+    if separator != " " or scheme.lower() != "bearer" or not token.strip():
+        return None
+    return token.strip()
+
+
+def _auth_header_tokens_in_node(node: ast.AST) -> frozenset[str]:
+    tokens: set[str] = set()
+    for child in ast.walk(node):
+        if not isinstance(child, ast.Dict):
+            continue
+        for key, value in zip(child.keys, child.values, strict=False):
+            if _constant_string_value(key) != "Authorization":
+                continue
+            header_token = _authorization_header_token(
+                _constant_string_value(value) or ""
+            )
+            if header_token in POC_AUTH_SESSION_SUCCESS_TOKEN_LITERALS:
+                tokens.add(header_token)
     return frozenset(tokens)
 
 
@@ -250,8 +271,10 @@ def _call_passes_privileged_auth_token(node: ast.Call) -> bool:
 def _call_privileged_auth_tokens(node: ast.Call) -> frozenset[str]:
     tokens: set[str] = set()
     for keyword in node.keywords:
-        if keyword.arg in {"role_token", "headers"}:
+        if keyword.arg == "role_token":
             tokens.update(_privileged_auth_tokens_in_node(keyword.value))
+        if keyword.arg == "headers":
+            tokens.update(_auth_header_tokens_in_node(keyword.value))
     return frozenset(tokens)
 
 
