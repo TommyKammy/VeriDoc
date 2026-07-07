@@ -18,6 +18,16 @@ REQUIRED_FILES = (
     "README.md",
     "LICENSE",
     ".gitignore",
+    "docs/mvp-transition-decision.md",
+)
+
+MVP_DECISION_REQUIRED_MARKERS = (
+    "python3 scripts/evaluate_dataset.py --poc-acceptance-report",
+    "## Recommendation",
+    "## MVP-before conditions",
+    "## GMP record PDF handling",
+    "## PoC unresolved classification",
+    "## Follow-up issue candidates",
 )
 
 FORBIDDEN_TRACKED_PREFIXES = (
@@ -97,6 +107,18 @@ def main() -> int:
     for markdown in (REPO_ROOT / "README.md",):
         if markdown.exists() and markdown.read_text(encoding="utf-8").strip() == "":
             failures.append(f"empty markdown file: {markdown.relative_to(REPO_ROOT)}")
+
+    mvp_decision = REPO_ROOT / "docs/mvp-transition-decision.md"
+    if mvp_decision.exists():
+        decision_text = mvp_decision.read_text(encoding="utf-8")
+        missing_markers = [
+            marker for marker in MVP_DECISION_REQUIRED_MARKERS if marker not in decision_text
+        ]
+        if missing_markers:
+            failures.append(
+                "incomplete MVP transition decision memo: "
+                + ", ".join(missing_markers)
+            )
 
     if failures:
         print("Repository hygiene check failed:")
