@@ -17,7 +17,7 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PureWindowsPath
-from typing import Any
+from typing import Any, Iterable
 from xml.etree import ElementTree
 from zipfile import ZipFile
 
@@ -1697,10 +1697,52 @@ def current_git_commit(repo_root: Path = REPO_ROOT) -> str:
     return commit if commit else "unknown"
 
 
-def current_git_worktree_clean(repo_root: Path = REPO_ROOT) -> bool:
+def current_stdout_path() -> Path | None:
+    for fd_path in (Path("/proc/self/fd/1"), Path("/dev/fd/1")):
+        try:
+            target = os.readlink(fd_path)
+        except OSError:
+            continue
+        path = Path(target)
+        if path.is_absolute():
+            return path
+    return None
+
+
+def git_status_exclude_pathspecs(
+    repo_root: Path,
+    ignored_paths: Iterable[Path],
+) -> list[str]:
+    pathspecs: list[str] = []
+    resolved_root = repo_root.resolve()
+    for ignored_path in ignored_paths:
+        try:
+            resolved_ignored = ignored_path.resolve()
+            relative_ignored = resolved_ignored.relative_to(resolved_root)
+        except (OSError, ValueError):
+            continue
+        pathspecs.append(f":(exclude){relative_ignored.as_posix()}")
+    return pathspecs
+
+
+def current_git_worktree_clean(
+    repo_root: Path = REPO_ROOT,
+    *,
+    ignored_paths: Iterable[Path] = (),
+    include_untracked: bool = True,
+) -> bool:
+    command = [
+        "git",
+        "status",
+        "--porcelain",
+        "--untracked-files=all" if include_untracked else "--untracked-files=no",
+    ]
+    exclude_pathspecs = git_status_exclude_pathspecs(repo_root, ignored_paths)
+    if exclude_pathspecs:
+        command.extend(["--", ".", *exclude_pathspecs])
     try:
         completed = subprocess.run(
-            ["git", "status", "--porcelain", "--untracked-files=all"],
+            command,
             cwd=repo_root,
             check=True,
             capture_output=True,
@@ -1764,14 +1806,25 @@ def build_poc_acceptance_report(
         llm_stability_runs_path=resolved_llm_stability_runs_path,
         poc_comparison_path=resolved_poc_comparison_path,
     )
+    ignored_cleanliness_paths = tuple(
+        path for path in (current_stdout_path(),) if path is not None
+    )
     return PoCAcceptanceReport(
         p9_harness=p9_harness,
         generated_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         commit=current_git_commit(manifest_repo_root),
-        commit_is_clean=current_git_worktree_clean(manifest_repo_root),
+        commit_is_clean=current_git_worktree_clean(
+            manifest_repo_root,
+            ignored_paths=ignored_cleanliness_paths,
+            include_untracked=False,
+        ),
         generation_command=generation_command,
         evaluator_commit=current_git_commit(REPO_ROOT),
-        evaluator_commit_is_clean=current_git_worktree_clean(REPO_ROOT),
+        evaluator_commit_is_clean=current_git_worktree_clean(
+            REPO_ROOT,
+            ignored_paths=ignored_cleanliness_paths,
+            include_untracked=False,
+        ),
     )
 
 

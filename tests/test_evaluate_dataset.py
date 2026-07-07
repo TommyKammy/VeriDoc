@@ -921,6 +921,62 @@ class EvaluateDatasetTest(unittest.TestCase):
             ]
         )
 
+    def test_git_cleanliness_can_ignore_generated_report_output(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            (temp_root / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+            subprocess.run(["git", "init"], cwd=temp_root, check=True, capture_output=True)
+            subprocess.run(["git", "add", "."], cwd=temp_root, check=True, capture_output=True)
+            subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "user.name=VeriDoc Test",
+                    "-c",
+                    "user.email=veridoc-test@example.invalid",
+                    "commit",
+                    "-m",
+                    "seed",
+                ],
+                cwd=temp_root,
+                check=True,
+                capture_output=True,
+            )
+            report_output = temp_root / "reports" / "poc_acceptance.json"
+            report_output.parent.mkdir()
+            report_output.write_text("{}", encoding="utf-8")
+
+            self.assertFalse(evaluate_dataset.current_git_worktree_clean(temp_root))
+            self.assertTrue(
+                evaluate_dataset.current_git_worktree_clean(
+                    temp_root,
+                    ignored_paths=(report_output,),
+                )
+            )
+            self.assertTrue(
+                evaluate_dataset.current_git_worktree_clean(
+                    temp_root,
+                    include_untracked=False,
+                )
+            )
+            (temp_root / "tracked.txt").write_text("modified\n", encoding="utf-8")
+            self.assertFalse(
+                evaluate_dataset.current_git_worktree_clean(
+                    temp_root,
+                    include_untracked=False,
+                )
+            )
+            (temp_root / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+            (temp_root / "other.json").write_text("{}", encoding="utf-8")
+            self.assertFalse(
+                evaluate_dataset.current_git_worktree_clean(
+                    temp_root,
+                    ignored_paths=(report_output,),
+                )
+            )
+
     def test_poc_acceptance_report_build_path_rejects_external_evidence(
         self,
     ) -> None:
