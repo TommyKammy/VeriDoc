@@ -898,6 +898,100 @@ class EvaluateDatasetTest(unittest.TestCase):
             ]
         )
 
+    def test_poc_acceptance_report_requires_token_on_success_request(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            (temp_root / "tests").mkdir()
+            (temp_root / "README.md").write_text(
+                "## Local PoC API authentication\n"
+                "Set VERIDOC_LOCAL_AUTH_TOKENS for local role tokens.\n",
+                encoding="utf-8",
+            )
+            success_ref_names_with_unused_token = "\n".join(
+                f"def {ref.split('::', 1)[1]}():\n"
+                "    monkeypatch.setenv(\n"
+                "        'VERIDOC_LOCAL_AUTH_TOKENS',\n"
+                "        'reviewer:env-reviewer=reviewer-token',\n"
+                "    )\n"
+                "    unused_token = 'reviewer-token'\n"
+                "    status = 202\n"
+                "    assert status == 202\n"
+                for ref in evaluate_dataset.POC_AUTH_SESSION_SUCCESS_COVERAGE_REFS
+            )
+            fail_closed_ref_names = "\n".join(
+                f"def {ref.split('::', 1)[1]}():\n    assert 401 == 401\n"
+                for ref in evaluate_dataset.POC_AUTH_SESSION_FAIL_CLOSED_COVERAGE_REFS
+            )
+            (temp_root / "tests" / "test_poc_web_api.py").write_text(
+                f"{success_ref_names_with_unused_token}\n{fail_closed_ref_names}\n",
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(
+                evaluate_dataset,
+                "poc_auth_session_coverage_inputs_tracked_in_repo",
+                return_value=True,
+            ):
+                payload = self.poc_acceptance_payload(harness_repo_root=temp_root)
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual("unknown", rows["security"]["status"])
+        self.assertFalse(
+            payload["matrix_evidence"]["security"][
+                "authenticated_poc_api_session_checked"
+            ]
+        )
+
+    def test_poc_acceptance_report_requires_asserted_success_comparison(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            (temp_root / "tests").mkdir()
+            (temp_root / "README.md").write_text(
+                "## Local PoC API authentication\n"
+                "Set VERIDOC_LOCAL_AUTH_TOKENS for local role tokens.\n",
+                encoding="utf-8",
+            )
+            success_ref_names_with_branch_comparison = "\n".join(
+                f"def {ref.split('::', 1)[1]}():\n"
+                "    monkeypatch.setenv(\n"
+                "        'VERIDOC_LOCAL_AUTH_TOKENS',\n"
+                "        'reviewer:env-reviewer=reviewer-token',\n"
+                "    )\n"
+                "    status = _post_review_event_on_connection(\n"
+                "        None, None, role_token='reviewer-token'\n"
+                "    )\n"
+                "    if status == 202:\n"
+                "        pytest.fail('success status was not expected')\n"
+                for ref in evaluate_dataset.POC_AUTH_SESSION_SUCCESS_COVERAGE_REFS
+            )
+            fail_closed_ref_names = "\n".join(
+                f"def {ref.split('::', 1)[1]}():\n    assert 401 == 401\n"
+                for ref in evaluate_dataset.POC_AUTH_SESSION_FAIL_CLOSED_COVERAGE_REFS
+            )
+            (temp_root / "tests" / "test_poc_web_api.py").write_text(
+                f"{success_ref_names_with_branch_comparison}\n{fail_closed_ref_names}\n",
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(
+                evaluate_dataset,
+                "poc_auth_session_coverage_inputs_tracked_in_repo",
+                return_value=True,
+            ):
+                payload = self.poc_acceptance_payload(harness_repo_root=temp_root)
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual("unknown", rows["security"]["status"])
+        self.assertFalse(
+            payload["matrix_evidence"]["security"][
+                "authenticated_poc_api_session_checked"
+            ]
+        )
+
     def test_poc_acceptance_report_requires_success_status_equality(
         self,
     ) -> None:
@@ -915,7 +1009,7 @@ class EvaluateDatasetTest(unittest.TestCase):
                 "        'VERIDOC_LOCAL_AUTH_TOKENS',\n"
                 "        'reviewer:env-reviewer=reviewer-token',\n"
                 "    )\n"
-                "    role_token = 'reviewer-token'\n"
+                "    _post_review_event_on_connection(None, None, role_token='reviewer-token')\n"
                 "    status = 202\n"
                 "    assert status != 202\n"
                 for ref in evaluate_dataset.POC_AUTH_SESSION_SUCCESS_COVERAGE_REFS
@@ -961,7 +1055,7 @@ class EvaluateDatasetTest(unittest.TestCase):
                 "        'VERIDOC_LOCAL_AUTH_TOKENS',\n"
                 "        'reviewer:env-reviewer=reviewer-token',\n"
                 "    )\n"
-                "    role_token = 'reviewer-token'\n"
+                "    _post_review_event_on_connection(None, None, role_token='reviewer-token')\n"
                 "    assert 202 == 202\n"
                 for ref in evaluate_dataset.POC_AUTH_SESSION_SUCCESS_COVERAGE_REFS
             )
@@ -1003,7 +1097,7 @@ class EvaluateDatasetTest(unittest.TestCase):
             success_ref_names_with_direct_tokens = "\n".join(
                 f"def {ref.split('::', 1)[1]}():\n"
                 "    server.local_auth_tokens = {'reviewer-token': 'reviewer'}\n"
-                "    role_token = 'reviewer-token'\n"
+                "    _post_review_event_on_connection(None, None, role_token='reviewer-token')\n"
                 "    status = 202\n"
                 "    assert status == 202\n"
                 for ref in evaluate_dataset.POC_AUTH_SESSION_SUCCESS_COVERAGE_REFS
@@ -1046,7 +1140,7 @@ class EvaluateDatasetTest(unittest.TestCase):
             success_ref_names_with_env_mention = "\n".join(
                 f"def {ref.split('::', 1)[1]}():\n"
                 "    monkeypatch.delenv('VERIDOC_LOCAL_AUTH_TOKENS', raising=False)\n"
-                "    role_token = 'reviewer-token'\n"
+                "    _post_review_event_on_connection(None, None, role_token='reviewer-token')\n"
                 "    status = 202\n"
                 "    assert status == 202\n"
                 for ref in evaluate_dataset.POC_AUTH_SESSION_SUCCESS_COVERAGE_REFS
@@ -1092,7 +1186,7 @@ class EvaluateDatasetTest(unittest.TestCase):
                 "        'VERIDOC_LOCAL_AUTH_TOKENS',\n"
                 "        'reviewer:env-reviewer=',\n"
                 "    )\n"
-                "    role_token = 'reviewer-token'\n"
+                "    _post_review_event_on_connection(None, None, role_token='reviewer-token')\n"
                 "    status = 202\n"
                 "    assert status == 202\n"
                 for ref in evaluate_dataset.POC_AUTH_SESSION_SUCCESS_COVERAGE_REFS
@@ -1138,7 +1232,7 @@ class EvaluateDatasetTest(unittest.TestCase):
                 "        'VERIDOC_LOCAL_AUTH_TOKENS',\n"
                 "        'reviewer:env-reviewer=reviewer-token',\n"
                 "    )\n"
-                "    role_token = 'reviewer-token'\n"
+                "    _post_review_event_on_connection(None, None, role_token='reviewer-token')\n"
                 "    status = 202\n"
                 "    assert status == 202\n"
                 for ref in evaluate_dataset.POC_AUTH_SESSION_SUCCESS_COVERAGE_REFS

@@ -230,25 +230,49 @@ def _compare_checks_success_status_equality(node: ast.Compare) -> bool:
     return has_success_status and has_observed_status_side
 
 
+def _node_contains_privileged_auth_token(node: ast.AST) -> bool:
+    return any(
+        isinstance(child, ast.Constant)
+        and isinstance(child.value, str)
+        and any(
+            token in child.value for token in POC_AUTH_SESSION_SUCCESS_TOKEN_LITERALS
+        )
+        for child in ast.walk(node)
+    )
+
+
+def _call_passes_privileged_auth_token(node: ast.Call) -> bool:
+    for keyword in node.keywords:
+        if keyword.arg == "role_token" and _node_contains_privileged_auth_token(
+            keyword.value
+        ):
+            return True
+        if keyword.arg == "headers" and _node_contains_privileged_auth_token(
+            keyword.value
+        ):
+            return True
+    return False
+
+
+def _assert_checks_success_status(node: ast.Assert) -> bool:
+    return any(
+        isinstance(child, ast.Compare) and _compare_checks_success_status_equality(child)
+        for child in ast.walk(node.test)
+    )
+
+
 def _test_function_has_authenticated_success_markers(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> bool:
-    string_literals = {
-        child.value
+    passes_privileged_auth_token = any(
+        isinstance(child, ast.Call) and _call_passes_privileged_auth_token(child)
         for child in ast.walk(node)
-        if isinstance(child, ast.Constant) and isinstance(child.value, str)
-    }
-    has_configured_privileged_token = any(
-        token in literal
-        for literal in string_literals
-        for token in POC_AUTH_SESSION_SUCCESS_TOKEN_LITERALS
     )
     has_success_status_assertion = any(
-        isinstance(child, ast.Compare)
-        and _compare_checks_success_status_equality(child)
+        isinstance(child, ast.Assert) and _assert_checks_success_status(child)
         for child in ast.walk(node)
     )
-    return has_configured_privileged_token and has_success_status_assertion
+    return passes_privileged_auth_token and has_success_status_assertion
 
 
 def _assigns_server_local_auth_tokens(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
