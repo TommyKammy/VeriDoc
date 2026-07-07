@@ -87,11 +87,20 @@ EXPECTED_GMP_ACCEPTANCE_SOD_SCOPE = (
 )
 EXPECTED_GMP_ACCEPTANCE_SOD_NO_AUTH_NOTE = "no-auth approval attempts are forbidden"
 POC_AUTH_SESSION_README_REF = "README.md Local PoC API authentication"
-POC_AUTH_SESSION_COVERAGE_REFS = (
+POC_AUTH_SESSION_SUCCESS_COVERAGE_REFS = (
+    "tests/test_poc_web_api.py::test_poc_http_api_filters_review_action_audit_events_by_action",
+    "tests/test_poc_web_api.py::test_poc_http_api_allows_approval_with_revised_text_target",
+    "tests/test_poc_web_api.py::test_poc_http_api_requires_admin_role_for_retry_job_event",
+)
+POC_AUTH_SESSION_FAIL_CLOSED_COVERAGE_REFS = (
     "tests/test_poc_web_api.py::test_poc_http_api_authenticates_review_events_before_parsing_payload",
     "tests/test_poc_web_api.py::test_poc_http_api_rejects_read_only_review_role_before_parsing_payload",
     "tests/test_poc_web_api.py::test_poc_http_api_requires_configured_local_auth_token_for_review_events",
     "tests/test_poc_web_api.py::test_poc_http_api_authenticates_job_events_before_parsing_payload",
+)
+POC_AUTH_SESSION_COVERAGE_REFS = (
+    *POC_AUTH_SESSION_SUCCESS_COVERAGE_REFS,
+    *POC_AUTH_SESSION_FAIL_CLOSED_COVERAGE_REFS,
 )
 EXPECTED_SCOPE_PHASE = "phase0"
 PUBLIC_FIXTURE_ANONYMIZATION_VALUES = {"anonymized", "synthetic"}
