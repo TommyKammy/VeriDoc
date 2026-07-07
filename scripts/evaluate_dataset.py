@@ -364,6 +364,7 @@ class PoCAcceptanceReport:
             for result in results
             if result.get("artifact_expectations_met") is not True
         ]
+        structured_output_failures = poc_acceptance_structured_output_failures(results)
         unaudited_results = [
             result for result in results if result.get("audit_present") is not True
         ]
@@ -410,8 +411,17 @@ class PoCAcceptanceReport:
             if llm_stability.unstable_example_count
             else "pass"
         )
+        evidence_inputs_in_manifest_repo = (
+            poc_acceptance_evidence_inputs_in_manifest_repo(self.p9_harness)
+        )
         reproducibility_status = (
-            "pass" if self.commit != "unknown" and self.commit_is_clean else "fail"
+            "pass"
+            if (
+                self.commit != "unknown"
+                and self.commit_is_clean
+                and evidence_inputs_in_manifest_repo
+            )
+            else "fail"
         )
         acceptance_matrix = [
             poc_acceptance_row(
@@ -438,12 +448,15 @@ class PoCAcceptanceReport:
             poc_acceptance_row(
                 "structured_output",
                 "構造化",
-                "fail" if artifact_failures else "pass",
+                "fail" if structured_output_failures else "pass",
                 (
-                    f"{len(artifact_failures)} runs failed primary artifact "
-                    "expectations."
+                    f"{len(structured_output_failures)} runs failed primary "
+                    "artifact structure or expectations."
                 ),
-                ["p9_harness.results[].artifact_expectations_met"],
+                [
+                    "p9_harness.results[].artifact_expectations_met",
+                    "p9_harness.results[].failure_reason",
+                ],
             ),
             poc_acceptance_row(
                 "llm_control",
@@ -502,11 +515,11 @@ class PoCAcceptanceReport:
             poc_acceptance_row(
                 "security",
                 "セキュリティ",
-                "unknown",
+                "fail" if external_violation_count else "unknown",
                 (
-                    "The report verifies no external AI API transmission in "
-                    "the captured evidence, but does not run an authenticated "
-                    "PoC API session."
+                    "External AI API guard violations: "
+                    f"{external_violation_count}; authenticated PoC API session "
+                    "checked: False."
                 ),
                 [
                     "README.md Local PoC API authentication",
@@ -520,7 +533,9 @@ class PoCAcceptanceReport:
                 (
                     "Report records commit, dataset manifest, comparison "
                     "inputs, and the generation command; commit is "
-                    f"{self.commit!r}; worktree clean: {self.commit_is_clean}."
+                    f"{self.commit!r}; worktree clean: {self.commit_is_clean}; "
+                    "evidence inputs in manifest repo: "
+                    f"{evidence_inputs_in_manifest_repo}."
                 ),
                 ["tested_environment", "evidence"],
             ),
@@ -531,6 +546,7 @@ class PoCAcceptanceReport:
         matrix_evidence = poc_acceptance_matrix_evidence(
             failed_results=failed_results,
             artifact_failures=artifact_failures,
+            structured_output_failures=structured_output_failures,
             unaudited_results=unaudited_results,
             llm_scenario_failures=llm_scenario_failures,
             missing_representative_modes=missing_representative_modes,
@@ -541,6 +557,7 @@ class PoCAcceptanceReport:
             llm_stability=llm_stability,
             commit=self.commit,
             commit_is_clean=self.commit_is_clean,
+            evidence_inputs_in_manifest_repo=evidence_inputs_in_manifest_repo,
         )
 
         return {
@@ -1781,6 +1798,50 @@ def poc_acceptance_result_violates_llm_scenario(result: dict[str, object]) -> bo
     return False
 
 
+def poc_acceptance_structured_output_failures(
+    results: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    failures: list[dict[str, object]] = []
+    for result in results:
+        reason = str(result.get("failure_reason") or "")
+        if (
+            result.get("artifact_expectations_met") is not True
+            or "expected exactly one primary artifact" in reason
+        ):
+            failures.append(result)
+    return failures
+
+
+def poc_acceptance_report_repo_root(manifest_path: Path) -> Path:
+    manifest = manifest_path if manifest_path.is_absolute() else REPO_ROOT / manifest_path
+    return p9_manifest_repo_root(manifest.resolve())
+
+
+def poc_acceptance_path_in_repo(path: Path, repo_root: Path) -> bool:
+    resolved_root = repo_root.resolve()
+    candidate = path if path.is_absolute() else resolved_root / path
+    try:
+        resolved_candidate = candidate.resolve()
+    except OSError:
+        return False
+    return (
+        resolved_candidate == resolved_root
+        or resolved_candidate.is_relative_to(resolved_root)
+    )
+
+
+def poc_acceptance_evidence_inputs_in_manifest_repo(
+    p9_harness: P9HarnessReport,
+) -> bool:
+    repo_root = poc_acceptance_report_repo_root(p9_harness.manifest)
+    evidence_paths = (
+        p9_harness.manifest,
+        p9_harness.llm_stability_source,
+        p9_harness.poc_comparison_source,
+    )
+    return all(poc_acceptance_path_in_repo(path, repo_root) for path in evidence_paths)
+
+
 def poc_acceptance_overall_status(
     acceptance_matrix: list[dict[str, object]],
 ) -> str:
@@ -1852,6 +1913,7 @@ def poc_acceptance_matrix_evidence(
     *,
     failed_results: list[dict[str, object]],
     artifact_failures: list[dict[str, object]],
+    structured_output_failures: list[dict[str, object]],
     unaudited_results: list[dict[str, object]],
     llm_scenario_failures: list[dict[str, object]],
     missing_representative_modes: list[str],
@@ -1862,6 +1924,7 @@ def poc_acceptance_matrix_evidence(
     llm_stability: LLMStabilityMetrics,
     commit: str,
     commit_is_clean: bool,
+    evidence_inputs_in_manifest_repo: bool,
 ) -> dict[str, object]:
     return {
         "functionality": {
@@ -1871,7 +1934,12 @@ def poc_acceptance_matrix_evidence(
             "failed_rows": poc_acceptance_result_evidence_rows(failed_results),
         },
         "structured_output": {
-            "rows": poc_acceptance_result_evidence_rows(artifact_failures),
+            "artifact_expectation_failures": poc_acceptance_result_evidence_rows(
+                artifact_failures
+            ),
+            "rows": poc_acceptance_result_evidence_rows(
+                structured_output_failures
+            ),
         },
         "llm_control": {
             "external_ai_api_guard_violation_count": external_violation_count,
@@ -1902,6 +1970,7 @@ def poc_acceptance_matrix_evidence(
         "reproducibility": {
             "commit": commit,
             "commit_is_clean": commit_is_clean,
+            "evidence_inputs_in_manifest_repo": evidence_inputs_in_manifest_repo,
         },
     }
 

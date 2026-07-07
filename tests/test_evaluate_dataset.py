@@ -589,8 +589,35 @@ class EvaluateDatasetTest(unittest.TestCase):
             for condition in payload["fail_closed_conditions"]
         }
         self.assertEqual("fail", rows["llm_control"]["status"])
+        self.assertEqual("fail", rows["security"]["status"])
+        self.assertIn("External AI API guard violations: 1", rows["security"]["evidence"])
         self.assertEqual("fail", conditions["external_transmission"]["status"])
         self.assertEqual("fail", payload["overall_status"])
+
+    def test_poc_acceptance_report_fails_structured_output_on_duplicate_primary_artifacts(
+        self,
+    ) -> None:
+        payload = self.poc_acceptance_payload()
+        results = list(payload["p9_harness_results"])
+        results[0] = {
+            **results[0],
+            "ok": False,
+            "artifact_expectations_met": True,
+            "artifact_count": 2,
+            "failure_reason": "expected exactly one primary artifact, got 2",
+        }
+
+        payload = self.poc_acceptance_payload(results=results)
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual("fail", rows["structured_output"]["status"])
+        self.assertIn("1 runs failed primary artifact structure", rows["structured_output"]["evidence"])
+        self.assertEqual(
+            "expected exactly one primary artifact, got 2",
+            payload["matrix_evidence"]["structured_output"]["rows"][0][
+                "failure_reason"
+            ],
+        )
 
     def test_poc_acceptance_report_fails_llm_control_on_harness_scenario_violation(
         self,
@@ -727,6 +754,25 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertEqual("fail", rows["reproducibility"]["status"])
         self.assertEqual("unknown", payload["tested_environment"]["commit"])
         self.assertFalse(payload["tested_environment"]["commit_is_clean"])
+
+    def test_poc_acceptance_report_fails_reproducibility_for_external_evidence(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            external_source = Path(temp_dir) / "external_llm_runs.json"
+
+            payload = self.poc_acceptance_payload(
+                llm_stability_source=external_source,
+            )
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual("fail", rows["reproducibility"]["status"])
+        self.assertIn("evidence inputs in manifest repo: False", rows["reproducibility"]["evidence"])
+        self.assertFalse(
+            payload["matrix_evidence"]["reproducibility"][
+                "evidence_inputs_in_manifest_repo"
+            ]
+        )
 
     def test_p9_harness_resolves_custom_manifest_under_datasets_from_repo_root(
         self,
