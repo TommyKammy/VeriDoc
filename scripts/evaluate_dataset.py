@@ -2507,7 +2507,10 @@ def poc_acceptance_known_limitations(
             "description": "This report is not a formal GMP validation document.",
         },
     ]
-    for result in failed_results[:5]:
+    non_gate_failed_results = [
+        result for result in failed_results if result.get("fail_closed") is not True
+    ]
+    for result in non_gate_failed_results[:5]:
         limitations.append(
             {
                 "id": f"p9_harness_failure_{result.get('sample_id')}",

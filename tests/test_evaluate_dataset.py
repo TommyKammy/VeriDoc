@@ -1022,23 +1022,42 @@ class EvaluateDatasetTest(unittest.TestCase):
         self,
     ) -> None:
         payload = self.poc_acceptance_payload()
-        results = list(payload["p9_harness_results"])
-        results[0] = {
-            **results[0],
+        base_results = list(payload["p9_harness_results"])
+        gate_results = []
+        for index, result in enumerate(base_results):
+            gate_results.append(
+                {
+                    **result,
+                    "sample_id": f"gate-sample-{index}",
+                    "ok": False,
+                    "fail_closed": True,
+                    "audit_present": False,
+                    "mvp_before_gate_revision": (
+                        "p9-mvp-before-placeholder-fixture-gate"
+                    ),
+                    "artifact_expectations_met": False,
+                    "artifact_expectation_failures": [
+                        "fail-closed MVP-before gate revision: "
+                        "p9-mvp-before-placeholder-fixture-gate"
+                    ],
+                    "failure_reason": (
+                        "representative fixture path is unavailable; "
+                        "conversion audit missing"
+                    ),
+                }
+            )
+        non_gate_failure = {
+            **base_results[0],
+            "sample_id": "non-gate-failure",
             "ok": False,
-            "fail_closed": True,
+            "fail_closed": False,
             "audit_present": False,
-            "mvp_before_gate_revision": "p9-mvp-before-placeholder-fixture-gate",
+            "mvp_before_gate_revision": None,
             "artifact_expectations_met": False,
-            "artifact_expectation_failures": [
-                "fail-closed MVP-before gate revision: "
-                "p9-mvp-before-placeholder-fixture-gate"
-            ],
-            "failure_reason": (
-                "representative fixture path is unavailable; "
-                "conversion audit missing"
-            ),
+            "artifact_expectation_failures": ["artifact hash missing"],
+            "failure_reason": "artifact hash missing",
         }
+        results = [*gate_results, non_gate_failure]
 
         payload = self.poc_acceptance_payload(results=results)
 
@@ -1048,6 +1067,7 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertEqual(
             [
                 "Resolve fail-closed P9 MVP-before gate revisions",
+                "Resolve failing P9 representative conversion harness rows",
                 "Require audit evidence for all P9 harness outcomes",
             ],
             [
@@ -1060,6 +1080,35 @@ class EvaluateDatasetTest(unittest.TestCase):
                     "Require audit evidence for all P9 harness outcomes",
                 }
             ],
+        )
+        self.assertTrue(
+            any(
+                candidate["title"]
+                == "Resolve failing P9 representative conversion harness rows"
+                and "1 harness rows are not acceptance-ready." in candidate["reason"]
+                for candidate in payload["follow_up_issue_candidates"]
+            )
+        )
+        self.assertTrue(
+            any(
+                limitation["id"] == "p9_harness_failure_non-gate-failure"
+                for limitation in payload["known_limitations"]
+            )
+        )
+        self.assertFalse(
+            any(
+                str(limitation["id"]).startswith("p9_harness_failure_gate-sample-")
+                for limitation in payload["known_limitations"]
+            )
+        )
+        self.assertTrue(
+            all(
+                any(
+                    limitation["id"] == f"p9_fail_closed_gate_gate-sample-{index}"
+                    for limitation in payload["known_limitations"]
+                )
+                for index in range(len(gate_results))
+            )
         )
 
     def test_poc_acceptance_report_fails_llm_control_from_harness_fields(
