@@ -1154,6 +1154,11 @@ def _update_name_literal_bindings_after_statement(
         value = node.value
         if value is None:
             return
+        if any(isinstance(child, ast.IfExp) for child in ast.walk(value)):
+            for target in _assignment_targets(node):
+                for name in _target_name_bindings(target):
+                    name_literal_bindings.pop(name, None)
+            return
         value_literals = _string_literals_with_bound_names(
             value, name_literal_bindings
         )
@@ -1169,6 +1174,18 @@ def _update_name_literal_bindings_after_statement(
 def _mutated_name_bindings(node: ast.stmt) -> frozenset[str]:
     names: set[str] = set()
     for child in _walk_statement_without_nested_scopes(node):
+        if isinstance(child, (ast.Assign, ast.AnnAssign)):
+            for target in _assignment_targets(child):
+                if isinstance(target, ast.Subscript) and isinstance(
+                    target.value, ast.Name
+                ):
+                    names.add(target.value.id)
+        if isinstance(child, ast.Delete):
+            for target in child.targets:
+                if isinstance(target, ast.Subscript) and isinstance(
+                    target.value, ast.Name
+                ):
+                    names.add(target.value.id)
         if (
             isinstance(child, ast.Call)
             and isinstance(child.func, ast.Attribute)
@@ -1265,11 +1282,15 @@ def _trusted_poc_status_helpers(test_source: str) -> dict[str, _TrustedPocStatus
         header_names_with_role_token: set[str] = set()
         payload_bound_names = {payload_arg}
         response_names: set[str] = set()
+        helper_is_trusted = True
         for ordered_statement in _trusted_helper_ordered_statements(
             node.body,
             required_non_none_name="role_token",
         ):
             statement = ordered_statement.statement
+            if connection_arg in ordered_statement.bound_names_before:
+                helper_is_trusted = False
+                break
             header_names_with_role_token.update(
                 _header_names_assigned_authorization_role_token(statement)
             )
@@ -1285,8 +1306,13 @@ def _trusted_poc_status_helpers(test_source: str) -> dict[str, _TrustedPocStatus
                         _method_call_receiver_name(value, "getresponse")
                         == connection_arg
                     ):
-                        for target in _assignment_targets(child):
-                            response_names.update(_assigned_name_targets(target))
+                        if (
+                            saw_expected_request
+                            and saw_role_token_header
+                            and saw_payload_body
+                        ):
+                            for target in _assignment_targets(child):
+                                response_names.update(_assigned_name_targets(target))
                 if not isinstance(child, ast.Call):
                     continue
                 if _method_call_receiver_name(child, "request") == connection_arg:
@@ -1309,8 +1335,12 @@ def _trusted_poc_status_helpers(test_source: str) -> dict[str, _TrustedPocStatus
                     statement.value,
                     frozenset(response_names),
                 )
+            if connection_arg in _statement_bound_names(statement):
+                helper_is_trusted = False
+                break
         if (
-            saw_expected_request
+            helper_is_trusted
+            and saw_expected_request
             and saw_role_token_header
             and saw_payload_body
             and saw_returned_response_status
@@ -1584,9 +1614,12 @@ def _authenticated_success_status_observations(
     shadowed_local_auth_helper_names = set(
         _function_arg_names(node) & frozenset(local_auth_token_helpers)
     )
+    os_module_available = "os" not in _function_arg_names(node)
 
     for ordered_statement in _ordered_function_statements(node.body):
         statement = ordered_statement.statement
+        if "os" in ordered_statement.bound_names_before:
+            os_module_available = False
         active_monkeypatch_fixture_names.difference_update(
             ordered_statement.bound_names_before
         )
@@ -1646,6 +1679,7 @@ def _authenticated_success_status_observations(
             _clear_status_observations_for_targets(status_observations, targets)
             for target in targets:
                 for name in _assigned_name_targets(target):
+                    pending_request_by_connection.pop(name, None)
                     if name == "server":
                         direct_tokens_seen.clear()
                     if _call_creates_poc_server(value):
@@ -1776,8 +1810,11 @@ def _authenticated_success_status_observations(
                 monkeypatch_fixture_names=frozenset(
                     active_monkeypatch_fixture_names
                 ),
+                os_module_available=os_module_available,
             )
         )
+        if "os" in _statement_bound_names(statement):
+            os_module_available = False
 
     return tuple(success_observations)
 
@@ -1880,6 +1917,7 @@ def _env_auth_tokens_after_statement(
     current_tokens: Iterable[str],
     *,
     monkeypatch_fixture_names: frozenset[str] = frozenset(),
+    os_module_available: bool = True,
 ) -> frozenset[str]:
     tokens = set(current_tokens)
     for child in _walk_statement_without_nested_scopes(node):
@@ -1906,7 +1944,8 @@ def _env_auth_tokens_after_statement(
             ):
                 tokens.clear()
             if (
-                isinstance(func, ast.Attribute)
+                os_module_available
+                and isinstance(func, ast.Attribute)
                 and func.attr == "pop"
                 and _is_os_environ_node(func.value)
                 and child.args
@@ -1916,13 +1955,15 @@ def _env_auth_tokens_after_statement(
         if not isinstance(child, (ast.Assign, ast.AnnAssign)):
             continue
         targets = child.targets if isinstance(child, ast.Assign) else (child.target,)
-        if any(_targets_env_auth_var(target) for target in targets):
+        if os_module_available and any(
+            _targets_env_auth_var(target) for target in targets
+        ):
             tokens = set(
                 _env_auth_token_value_tokens(
                     _constant_string_value(child.value) or ""
                 )
             )
-    if isinstance(node, ast.Delete) and any(
+    if os_module_available and isinstance(node, ast.Delete) and any(
         _targets_env_auth_var(target) for target in node.targets
     ):
         tokens.clear()
@@ -2093,14 +2134,25 @@ def _test_function_asserts_status_code(
     return bool(_asserted_status_observations(node, frozenset((expected_status,))))
 
 
+def _direct_response_read_receiver_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Call):
+        receiver = _method_call_receiver_name(node, "read")
+        if receiver is not None:
+            return receiver
+        if (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "decode"
+            and isinstance(node.func.value, ast.Call)
+        ):
+            return _direct_response_read_receiver_name(node.func.value)
+        if _dotted_name(node.func) == "json.loads" and node.args:
+            return _direct_response_read_receiver_name(node.args[0])
+    return None
+
+
 def _response_read_receiver_names(node: ast.AST) -> frozenset[str]:
-    return frozenset(
-        receiver
-        for child in ast.walk(node)
-        if isinstance(child, ast.Call)
-        for receiver in (_method_call_receiver_name(child, "read"),)
-        if receiver is not None
-    )
+    receiver = _direct_response_read_receiver_name(node)
+    return frozenset((receiver,)) if receiver is not None else frozenset()
 
 
 def _asserted_status_observations(
@@ -2128,8 +2180,11 @@ def _asserted_status_observations(
     shadowed_local_auth_helper_names = set(
         _function_arg_names(node) & frozenset(local_auth_token_helpers)
     )
+    os_module_available = "os" not in _function_arg_names(node)
     for ordered_statement in _ordered_function_statements(node.body):
         statement = ordered_statement.statement
+        if "os" in ordered_statement.bound_names_before:
+            os_module_available = False
         active_monkeypatch_fixture_names.difference_update(
             ordered_statement.bound_names_before
         )
@@ -2200,6 +2255,7 @@ def _asserted_status_observations(
                             auth_header_tokens_by_name.pop(name, None)
             for target in targets:
                 for name in _assigned_name_targets(target):
+                    pending_request_by_connection.pop(name, None)
                     if name == "server":
                         direct_tokens_seen.clear()
                     if _call_creates_poc_server(value):
@@ -2336,8 +2392,11 @@ def _asserted_status_observations(
                 monkeypatch_fixture_names=frozenset(
                     active_monkeypatch_fixture_names
                 ),
+                os_module_available=os_module_available,
             )
         )
+        if "os" in _statement_bound_names(statement):
+            os_module_available = False
         direct_tokens_seen = set(
             _direct_auth_tokens_after_statement(
                 statement,
