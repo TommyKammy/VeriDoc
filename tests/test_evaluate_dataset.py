@@ -1433,6 +1433,64 @@ class EvaluateDatasetTest(unittest.TestCase):
             payload["evidence"]["poc_mode_comparison"],
         )
 
+    def test_poc_acceptance_report_resolves_default_inputs_from_repo_when_cwd_differs(
+        self,
+    ) -> None:
+        payload = self.poc_acceptance_payload()
+        llm_report = evaluate_dataset.evaluate_llm_stability_report(
+            LLM_STABILITY_RUNS_PATH,
+            POC_COMPARISON_PATH,
+        )
+        harness = evaluate_dataset.P9HarnessReport(
+            manifest=POC_EVALUATION_MANIFEST_PATH.resolve(),
+            results=tuple(payload["p9_harness_results"]),
+            llm_stability=llm_report.llm_stability,
+            poc_mode_comparison=llm_report.poc_mode_comparison,
+            llm_stability_source=LLM_STABILITY_RUNS_PATH.resolve(),
+            poc_comparison_source=POC_COMPARISON_PATH.resolve(),
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            previous_cwd = Path.cwd()
+            os.chdir(temp_dir)
+            try:
+                with (
+                    mock.patch.object(
+                        evaluate_dataset,
+                        "evaluate_p9_harness",
+                        return_value=harness,
+                    ) as mocked_harness,
+                    mock.patch.object(
+                        evaluate_dataset,
+                        "current_git_commit",
+                        return_value="tracked-head",
+                    ),
+                    mock.patch.object(
+                        evaluate_dataset,
+                        "current_git_worktree_clean",
+                        return_value=True,
+                    ),
+                ):
+                    report = evaluate_dataset.build_poc_acceptance_report(
+                        POC_EVALUATION_MANIFEST_PATH.resolve(),
+                    )
+            finally:
+                os.chdir(previous_cwd)
+
+        mocked_harness.assert_called_once_with(
+            POC_EVALUATION_MANIFEST_PATH.resolve(),
+            llm_stability_runs_path=LLM_STABILITY_RUNS_PATH.resolve(),
+            poc_comparison_path=POC_COMPARISON_PATH.resolve(),
+        )
+        payload = report.as_dict()
+        self.assertEqual(
+            str(evaluate_dataset.DEFAULT_LLM_STABILITY_RUNS),
+            payload["evidence"]["llm_stability_runs"],
+        )
+        self.assertEqual(
+            str(evaluate_dataset.DEFAULT_POC_COMPARISON),
+            payload["evidence"]["poc_mode_comparison"],
+        )
+
     def test_p9_harness_counts_blocked_conversion_status_as_failure(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".docx") as fixture_file:
             fixture_file.write(b"fixture")

@@ -589,9 +589,19 @@ class PoCAcceptanceReport:
                 "platform": platform.platform(),
             },
             "evidence": {
-                "dataset_manifest": str(self.p9_harness.manifest),
-                "llm_stability_runs": str(self.p9_harness.llm_stability_source),
-                "poc_mode_comparison": str(self.p9_harness.poc_comparison_source),
+                "dataset_manifest": str(
+                    poc_acceptance_top_level_evidence_path(self.p9_harness.manifest)
+                ),
+                "llm_stability_runs": str(
+                    poc_acceptance_top_level_evidence_path(
+                        self.p9_harness.llm_stability_source
+                    )
+                ),
+                "poc_mode_comparison": str(
+                    poc_acceptance_top_level_evidence_path(
+                        self.p9_harness.poc_comparison_source
+                    )
+                ),
                 "generation_command": self.generation_command,
             },
             "overall_status": poc_acceptance_overall_status(acceptance_matrix),
@@ -1757,8 +1767,6 @@ def current_git_worktree_clean(
 def poc_acceptance_manifest_default_path(repo_root: Path, default_path: Path) -> Path:
     if default_path.is_absolute():
         return default_path
-    if repo_root.resolve() == REPO_ROOT.resolve():
-        return default_path
     return repo_root / default_path
 
 
@@ -1768,6 +1776,19 @@ def poc_acceptance_manifest_input_path(repo_root: Path, input_path: Path) -> Pat
     if repo_root.resolve() == REPO_ROOT.resolve():
         return input_path
     return repo_root / input_path
+
+
+def poc_acceptance_top_level_evidence_path(path: Path) -> Path:
+    try:
+        repo_root = poc_acceptance_report_repo_root(path)
+    except (EvaluationCaseError, OSError):
+        repo_root = REPO_ROOT
+    if repo_root.resolve() != REPO_ROOT.resolve() or not path.is_absolute():
+        return path
+    try:
+        return path.resolve().relative_to(repo_root.resolve())
+    except (OSError, ValueError):
+        return path
 
 
 def build_poc_acceptance_report(
@@ -1783,7 +1804,11 @@ def build_poc_acceptance_report(
     manifest_repo_root = p9_manifest_repo_root(resolved_manifest_path)
     evaluated_manifest_path = (
         manifest_path
-        if manifest_repo_root.resolve() == REPO_ROOT.resolve() and not manifest_path.is_absolute()
+        if (
+            manifest_repo_root.resolve() == REPO_ROOT.resolve()
+            and Path.cwd().resolve() == REPO_ROOT.resolve()
+            and not manifest_path.is_absolute()
+        )
         else resolved_manifest_path
     )
     resolved_llm_stability_runs_path = (
