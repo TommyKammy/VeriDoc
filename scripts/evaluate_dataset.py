@@ -1791,6 +1791,12 @@ def poc_acceptance_top_level_evidence_path(path: Path) -> Path:
         return path
 
 
+def poc_acceptance_report_manifest_path(manifest_path: Path) -> Path:
+    if not manifest_path.is_absolute() and manifest_path == DEFAULT_P9_HARNESS_MANIFEST:
+        return REPO_ROOT / manifest_path
+    return manifest_path
+
+
 def build_poc_acceptance_report(
     manifest_path: Path = DEFAULT_P9_HARNESS_MANIFEST,
     *,
@@ -1800,7 +1806,8 @@ def build_poc_acceptance_report(
         "python3 scripts/evaluate_dataset.py --poc-acceptance-report"
     ),
 ) -> PoCAcceptanceReport:
-    resolved_manifest_path = manifest_path.resolve()
+    report_manifest_path = poc_acceptance_report_manifest_path(manifest_path)
+    resolved_manifest_path = report_manifest_path.resolve()
     manifest_repo_root = p9_manifest_repo_root(resolved_manifest_path)
     evaluated_manifest_path = (
         manifest_path
