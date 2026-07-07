@@ -492,6 +492,7 @@ class EvaluateDatasetTest(unittest.TestCase):
 
         self.assertIn("p9_harness", payload)
         self.assertIn("p9_harness_results", payload)
+        self.assertIn("matrix_evidence", payload)
         self.assertIn("poc_mode_comparison", payload)
         self.assertEqual(
             payload["p9_harness_results"],
@@ -519,6 +520,20 @@ class EvaluateDatasetTest(unittest.TestCase):
             ["no_llm", "standard", "high_quality"],
             [mode["mode"] for mode in payload["poc_mode_comparison"]["modes"]],
         )
+        self.assertEqual(
+            [],
+            payload["matrix_evidence"]["functionality"][
+                "missing_source_categories"
+            ],
+        )
+        self.assertIn(
+            "manual_correction_time",
+            payload["matrix_evidence"]["functionality"],
+        )
+        self.assertIn(
+            "rows",
+            payload["matrix_evidence"]["structured_output"],
+        )
 
     def test_poc_acceptance_report_fail_closed_matrix_keeps_backing_evidence(
         self,
@@ -536,11 +551,18 @@ class EvaluateDatasetTest(unittest.TestCase):
         )
 
         rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual({"fail": 1, "pass": 5, "unknown": 2}, payload["criterion_status_counts"])
         self.assertEqual("fail", rows["functionality"]["status"])
         self.assertIn("record_pdf", rows["functionality"]["evidence"])
         self.assertIn(
             "p9_harness.results[].sample_category",
             rows["functionality"]["evidence_refs"],
+        )
+        self.assertEqual(
+            ["record_pdf"],
+            payload["matrix_evidence"]["functionality"][
+                "missing_source_categories"
+            ],
         )
         self.assertEqual("unknown", rows["llm_control"]["status"])
         self.assertEqual("unknown", rows["security"]["status"])
@@ -591,6 +613,31 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertIn(
             "p9_harness.results[].llm_status",
             rows["llm_control"]["evidence_refs"],
+        )
+
+    def test_poc_acceptance_report_fails_llm_control_from_harness_fields(
+        self,
+    ) -> None:
+        payload = self.poc_acceptance_payload()
+        results = list(payload["p9_harness_results"])
+        results[0] = {
+            **results[0],
+            "ok": False,
+            "llm_scenario": "no_llm",
+            "llm_status": "enabled",
+            "failure_reason": "primary artifact expectation failed",
+        }
+
+        payload = self.poc_acceptance_payload(results=results)
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual("fail", rows["llm_control"]["status"])
+        self.assertIn("harness LLM scenario failures: 1", rows["llm_control"]["evidence"])
+        self.assertEqual(
+            "enabled",
+            payload["matrix_evidence"]["llm_control"]["scenario_failures"][0][
+                "llm_status"
+            ],
         )
 
     def test_poc_acceptance_report_requires_representative_mode_coverage(

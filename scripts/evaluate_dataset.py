@@ -525,7 +525,23 @@ class PoCAcceptanceReport:
                 ["tested_environment", "evidence"],
             ),
         ]
-        target_met = all(row["status"] == "pass" for row in acceptance_matrix)
+        criterion_status_counts = poc_acceptance_criterion_status_counts(
+            acceptance_matrix
+        )
+        matrix_evidence = poc_acceptance_matrix_evidence(
+            failed_results=failed_results,
+            artifact_failures=artifact_failures,
+            unaudited_results=unaudited_results,
+            llm_scenario_failures=llm_scenario_failures,
+            missing_representative_modes=missing_representative_modes,
+            missing_source_categories=missing_source_categories,
+            high_quality_source_linkage_rate=high_quality_source_linkage_rate,
+            external_violation_count=external_violation_count,
+            poc_comparison=poc_comparison,
+            llm_stability=llm_stability,
+            commit=self.commit,
+            commit_is_clean=self.commit_is_clean,
+        )
 
         return {
             "schema_version": POC_ACCEPTANCE_REPORT_SCHEMA_VERSION,
@@ -545,8 +561,10 @@ class PoCAcceptanceReport:
                 "poc_mode_comparison": str(self.p9_harness.poc_comparison_source),
                 "generation_command": self.generation_command,
             },
-            "overall_status": "pass" if target_met else "fail",
+            "overall_status": poc_acceptance_overall_status(acceptance_matrix),
+            "criterion_status_counts": criterion_status_counts,
             "acceptance_matrix": acceptance_matrix,
+            "matrix_evidence": matrix_evidence,
             "fail_closed_conditions": poc_acceptance_fail_closed_conditions(
                 external_violation_count=external_violation_count,
                 poc_comparison=poc_comparison,
@@ -1738,13 +1756,50 @@ def poc_acceptance_llm_scenario_failures(
 ) -> list[dict[str, object]]:
     failures: list[dict[str, object]] = []
     for result in results:
-        llm_scenario = result.get("llm_scenario")
-        if llm_scenario not in P9_LLM_SCENARIOS:
-            continue
-        reason = str(result.get("failure_reason") or "")
-        if f"{llm_scenario} scenario" in reason:
+        if poc_acceptance_result_violates_llm_scenario(result):
             failures.append(result)
     return failures
+
+
+def poc_acceptance_result_violates_llm_scenario(result: dict[str, object]) -> bool:
+    llm_scenario = result.get("llm_scenario")
+    if llm_scenario not in P9_LLM_SCENARIOS:
+        return False
+    reason = str(result.get("failure_reason") or "")
+    if f"{llm_scenario} scenario" in reason:
+        return True
+    llm_status = result.get("llm_status")
+    if llm_scenario == "no_llm":
+        if result.get("llm_requested") is True:
+            return True
+        return llm_status not in {None, "not_run", "disabled"}
+    if llm_scenario == "llm_requested":
+        if llm_status == "disabled":
+            return True
+        if result.get("ok") is True and llm_status not in {"enabled", "blocked"}:
+            return True
+    return False
+
+
+def poc_acceptance_overall_status(
+    acceptance_matrix: list[dict[str, object]],
+) -> str:
+    return (
+        "pass"
+        if acceptance_matrix
+        and all(row.get("status") == "pass" for row in acceptance_matrix)
+        else "fail"
+    )
+
+
+def poc_acceptance_criterion_status_counts(
+    acceptance_matrix: list[dict[str, object]],
+) -> dict[str, int]:
+    counts = {"fail": 0, "pass": 0, "unknown": 0}
+    for row in acceptance_matrix:
+        status = str(row.get("status"))
+        counts[status] = counts.get(status, 0) + 1
+    return counts
 
 
 def poc_acceptance_row(
@@ -1760,6 +1815,94 @@ def poc_acceptance_row(
         "status": status,
         "evidence": evidence,
         "evidence_refs": evidence_refs,
+    }
+
+
+def poc_acceptance_result_evidence_rows(
+    results: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    evidence_fields = (
+        "sample_id",
+        "fixture_id",
+        "sample_category",
+        "conversion_mode",
+        "representative_mode",
+        "llm_scenario",
+        "llm_status",
+        "ok",
+        "failure_reason",
+        "artifact_expectations_met",
+        "artifact_expectation_failures",
+        "audit_present",
+        "external_ai_api_guard_violation",
+    )
+    rows: list[dict[str, object]] = []
+    for result in results:
+        rows.append(
+            {
+                field: result[field]
+                for field in evidence_fields
+                if field in result
+            }
+        )
+    return rows
+
+
+def poc_acceptance_matrix_evidence(
+    *,
+    failed_results: list[dict[str, object]],
+    artifact_failures: list[dict[str, object]],
+    unaudited_results: list[dict[str, object]],
+    llm_scenario_failures: list[dict[str, object]],
+    missing_representative_modes: list[str],
+    missing_source_categories: list[str],
+    high_quality_source_linkage_rate: float,
+    external_violation_count: int,
+    poc_comparison: PoCComparisonMetrics,
+    llm_stability: LLMStabilityMetrics,
+    commit: str,
+    commit_is_clean: bool,
+) -> dict[str, object]:
+    return {
+        "functionality": {
+            "missing_representative_modes": missing_representative_modes,
+            "missing_source_categories": missing_source_categories,
+            "manual_correction_time": poc_comparison.manual_correction_time.as_dict(),
+            "failed_rows": poc_acceptance_result_evidence_rows(failed_results),
+        },
+        "structured_output": {
+            "rows": poc_acceptance_result_evidence_rows(artifact_failures),
+        },
+        "llm_control": {
+            "external_ai_api_guard_violation_count": external_violation_count,
+            "unstable_examples": list(llm_stability.unstable_examples),
+            "scenario_failures": poc_acceptance_result_evidence_rows(
+                llm_scenario_failures
+            ),
+        },
+        "traceability": {
+            "high_quality_source_linkage_rate": high_quality_source_linkage_rate,
+        },
+        "safety": {
+            "high_risk_false_auto_confirmed_count": (
+                poc_comparison.high_risk_false_auto_confirmed_count
+            ),
+            "high_risk_false_auto_confirmed_target": (
+                poc_comparison.high_risk_false_auto_confirmed_target
+            ),
+            "external_ai_api_guard_violation_count": external_violation_count,
+        },
+        "logs": {
+            "rows": poc_acceptance_result_evidence_rows(unaudited_results),
+        },
+        "security": {
+            "external_ai_api_guard_violation_count": external_violation_count,
+            "authenticated_poc_api_session_checked": False,
+        },
+        "reproducibility": {
+            "commit": commit,
+            "commit_is_clean": commit_is_clean,
+        },
     }
 
 
