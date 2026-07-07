@@ -126,6 +126,7 @@ POC_AUTH_SESSION_FAIL_CLOSED_REF_EXPECTATIONS = {
         "status_codes": frozenset((403,)),
         "method": "POST",
         "path": "/api/review-events",
+        "auth_tokens": frozenset(("viewer-token",)),
         "required_literals": frozenset(
             ("{not valid json", "Bearer viewer-token", "forbidden")
         ),
@@ -157,8 +158,12 @@ POC_AUTH_SESSION_COVERAGE_INPUT_PATHS = (
 POC_AUTH_SESSION_SUCCESS_TOKEN_LITERALS = frozenset(
     ("env-reviewer-token", "reviewer-token", "approver-token", "admin-token")
 )
+POC_AUTH_SESSION_AUTH_TOKEN_LITERALS = frozenset(
+    (*POC_AUTH_SESSION_SUCCESS_TOKEN_LITERALS, "viewer-token")
+)
 POC_AUTH_SESSION_EXPECTED_ROLE_BY_TOKEN = {
     "env-reviewer-token": "reviewer",
+    "viewer-token": "viewer",
     "reviewer-token": "reviewer",
     "approver-token": "approver",
     "admin-token": "admin",
@@ -362,11 +367,15 @@ def _test_function_nodes(
     ):
         return {}
     disabled_test_names = _function_test_opt_out_names(tree)
+    empty_parametrize_names = _empty_collection_literal_names(tree)
     return {
         name: node
         for name, node in _top_level_function_nodes(test_source).items()
         if name not in disabled_test_names
-        and not _test_function_is_skipped_or_xfailed(node)
+        and not _test_function_is_skipped_or_xfailed(
+            node,
+            empty_parametrize_names=empty_parametrize_names,
+        )
     }
 
 
@@ -414,6 +423,19 @@ def _function_test_opt_out_names(tree: ast.Module) -> frozenset[str]:
     return frozenset(disabled)
 
 
+def _empty_collection_literal_names(tree: ast.Module) -> frozenset[str]:
+    names: set[str] = set()
+    for statement in tree.body:
+        if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
+            continue
+        value = statement.value
+        if not isinstance(value, (ast.List, ast.Tuple, ast.Set)) or value.elts:
+            continue
+        for target in _assignment_targets(statement):
+            names.update(_target_name_bindings(target))
+    return frozenset(names)
+
+
 def _dotted_name(node: ast.AST) -> str | None:
     if isinstance(node, ast.Name):
         return node.id
@@ -427,6 +449,8 @@ def _dotted_name(node: ast.AST) -> str | None:
 
 def _test_function_is_skipped_or_xfailed(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
+    *,
+    empty_parametrize_names: frozenset[str] = frozenset(),
 ) -> bool:
     if isinstance(node, ast.AsyncFunctionDef):
         return True
@@ -446,12 +470,24 @@ def _test_function_is_skipped_or_xfailed(
             "fixture",
         }:
             return True
-        if _decorator_is_empty_parametrize(decorator):
+        if _decorator_is_empty_parametrize(
+            decorator,
+            empty_parametrize_names=empty_parametrize_names,
+        ):
+            return True
+        if _dotted_name(decorator.func) not in {
+            "pytest.mark.parametrize",
+            "parametrize",
+        } if isinstance(decorator, ast.Call) else True:
             return True
     return False
 
 
-def _decorator_is_empty_parametrize(node: ast.AST) -> bool:
+def _decorator_is_empty_parametrize(
+    node: ast.AST,
+    *,
+    empty_parametrize_names: frozenset[str] = frozenset(),
+) -> bool:
     if not isinstance(node, ast.Call):
         return False
     if _dotted_name(node.func) not in {"pytest.mark.parametrize", "parametrize"}:
@@ -459,6 +495,8 @@ def _decorator_is_empty_parametrize(node: ast.AST) -> bool:
     if len(node.args) < 2:
         return False
     values = node.args[1]
+    if isinstance(values, ast.Name) and values.id in empty_parametrize_names:
+        return True
     return isinstance(values, (ast.List, ast.Tuple)) and not values.elts
 
 
@@ -540,7 +578,7 @@ def _local_auth_token_mapping_tokens(node: ast.AST) -> frozenset[str]:
     for key, value in zip(node.keys, node.values, strict=False):
         token = _constant_string_value(key)
         if (
-            token in POC_AUTH_SESSION_SUCCESS_TOKEN_LITERALS
+            token in POC_AUTH_SESSION_AUTH_TOKEN_LITERALS
             and _local_auth_token_mapping_value_is_valid(
                 value,
                 expected_role=POC_AUTH_SESSION_EXPECTED_ROLE_BY_TOKEN.get(token),
@@ -583,7 +621,7 @@ def _auth_header_tokens_in_node(node: ast.AST) -> frozenset[str]:
         if _constant_string_value(key) != "Authorization":
             continue
         header_token = _authorization_header_token(_constant_string_value(value) or "")
-        if header_token in POC_AUTH_SESSION_SUCCESS_TOKEN_LITERALS:
+        if header_token in POC_AUTH_SESSION_AUTH_TOKEN_LITERALS:
             tokens.add(header_token)
     return frozenset(tokens)
 
@@ -599,6 +637,21 @@ def _call_privileged_auth_tokens(node: ast.Call) -> frozenset[str]:
             tokens.update(_privileged_auth_tokens_in_node(keyword.value))
         if keyword.arg == "headers":
             tokens.update(_auth_header_tokens_in_node(keyword.value))
+    return frozenset(tokens)
+
+
+def _call_bound_auth_header_tokens(
+    node: ast.Call,
+    auth_header_tokens_by_name: Mapping[str, frozenset[str]],
+) -> frozenset[str]:
+    tokens: set[str] = set()
+    for keyword in node.keywords:
+        if (
+            keyword.arg == "headers"
+            and isinstance(keyword.value, ast.Name)
+            and keyword.value.id in auth_header_tokens_by_name
+        ):
+            tokens.update(auth_header_tokens_by_name[keyword.value.id])
     return frozenset(tokens)
 
 
@@ -755,6 +808,12 @@ def _clear_status_observations_for_targets(
 
 def _statement_unconditionally_exits(statement: ast.stmt) -> bool:
     if isinstance(statement, (ast.Return, ast.Raise)):
+        return True
+    if (
+        isinstance(statement, ast.Assert)
+        and isinstance(statement.test, ast.Constant)
+        and statement.test.value is False
+    ):
         return True
     if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call):
         return _dotted_name(statement.value.func) in {
@@ -914,6 +973,15 @@ def _update_name_literal_bindings_after_statement(
     node: ast.stmt,
     name_literal_bindings: dict[str, frozenset[str]],
 ) -> None:
+    for child in _walk_statement_without_nested_scopes(node):
+        if (
+            isinstance(child, ast.Call)
+            and isinstance(child.func, ast.Attribute)
+            and child.func.attr
+            in {"append", "extend", "insert", "clear", "update", "write"}
+            and isinstance(child.func.value, ast.Name)
+        ):
+            name_literal_bindings.pop(child.func.value.id, None)
     if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
         value = node.value
         if value is None:
@@ -1167,12 +1235,43 @@ def _node_references_poc_server_address(node: ast.AST) -> bool:
     return False
 
 
+def _node_references_poc_server_port(node: ast.AST) -> bool:
+    for child in ast.walk(node):
+        if (
+            isinstance(child, ast.Attribute)
+            and child.attr in {"server_port", "server_address"}
+            and isinstance(child.value, ast.Name)
+            and child.value.id == "server"
+        ):
+            return True
+    return False
+
+
+def _node_references_poc_server_host(node: ast.AST) -> bool:
+    host = _constant_string_value(node)
+    if host in {"127.0.0.1", "localhost", "::1"}:
+        return True
+    for child in ast.walk(node):
+        if (
+            isinstance(child, ast.Attribute)
+            and child.attr == "server_address"
+            and isinstance(child.value, ast.Name)
+            and child.value.id == "server"
+        ):
+            return True
+    return False
+
+
 def _call_creates_poc_http_connection(node: ast.AST) -> bool:
-    return (
+    if not (
         isinstance(node, ast.Call)
         and _dotted_name(node.func) in {"HTTPConnection", "http.client.HTTPConnection"}
-        and _node_references_poc_server_address(node)
-    )
+        and len(node.args) >= 2
+    ):
+        return False
+    return _node_references_poc_server_host(
+        node.args[0]
+    ) and _node_references_poc_server_port(node.args[1])
 
 
 def _authenticated_success_status_observations(
@@ -1707,6 +1806,7 @@ def _asserted_status_observations(
     asserted_literals_by_response_name: dict[str, set[str]] = {}
     asserted_observations: list[_AuthenticatedStatusObservation] = []
     name_literal_bindings: dict[str, frozenset[str]] = {}
+    auth_header_tokens_by_name: dict[str, frozenset[str]] = {}
     poc_connection_names: set[str] = set()
     for ordered_statement in _ordered_function_statements(node.body):
         statement = ordered_statement.statement
@@ -1730,9 +1830,13 @@ def _asserted_status_observations(
             if connection_name not in poc_connection_names:
                 continue
             method, path = _request_method_and_path(child)
+            tokens = _call_privileged_auth_tokens(child) | _call_bound_auth_header_tokens(
+                child,
+                auth_header_tokens_by_name,
+            )
             pending_request_by_connection[connection_name] = (
                 _AuthenticatedStatusObservation(
-                    tokens=frozenset(),
+                    tokens=tokens,
                     env_tokens_before_request=frozenset(env_tokens_seen),
                     direct_tokens_before_request=frozenset(direct_tokens_seen),
                     request_method=method,
@@ -1747,6 +1851,14 @@ def _asserted_status_observations(
             targets = _assignment_targets(statement)
             _clear_status_observations_for_targets(status_observations, targets)
             value = statement.value
+            if value is not None:
+                header_tokens = _auth_header_tokens_in_node(value)
+                for target in targets:
+                    for name in _target_name_bindings(target):
+                        if header_tokens:
+                            auth_header_tokens_by_name[name] = header_tokens
+                        else:
+                            auth_header_tokens_by_name.pop(name, None)
             for target in targets:
                 for name in _assigned_name_targets(target):
                     if _call_creates_poc_http_connection(value):
@@ -1776,7 +1888,7 @@ def _asserted_status_observations(
                             status_observations[
                                 f"attr:name:{name}.status"
                             ] = _AuthenticatedStatusObservation(
-                                tokens=frozenset(),
+                                tokens=pending.tokens,
                                 env_tokens_before_request=(
                                     pending.env_tokens_before_request
                                 ),
@@ -1813,6 +1925,7 @@ def _asserted_status_observations(
                 poc_connection_names.discard(name)
                 pending_request_by_connection.pop(name, None)
                 asserted_literals_by_response_name.pop(name, None)
+                auth_header_tokens_by_name.pop(name, None)
             if deleted_names:
                 response_names_by_body_name = {
                     body_name: response_name
@@ -1908,6 +2021,7 @@ def _test_function_matches_fail_closed_ref_expectation(
     expected_status_codes = expectation.get("status_codes", frozenset())
     expected_method = expectation.get("method")
     expected_path = expectation.get("path")
+    expected_auth_tokens = expectation.get("auth_tokens", frozenset())
     required_literals = expectation.get("required_literals", frozenset())
     asserted_literals = expectation.get("asserted_literals", frozenset())
     request_literals = required_literals - asserted_literals
@@ -1921,6 +2035,15 @@ def _test_function_matches_fail_closed_ref_expectation(
             or observation.direct_tokens_before_request
         ):
             continue
+        configured_tokens = (
+            observation.env_tokens_before_request
+            | observation.direct_tokens_before_request
+        )
+        if expected_auth_tokens:
+            if not observation.tokens & expected_auth_tokens:
+                continue
+            if not observation.tokens & configured_tokens:
+                continue
         if not request_literals.issubset(observation.string_literals):
             continue
         if not asserted_literals.issubset(observation.asserted_response_literals):
