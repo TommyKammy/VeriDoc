@@ -129,6 +129,12 @@ P9_REPRESENTATIVE_FLAG_BY_CATEGORY = {
     "record_pdf": "record_pdf_representative",
 }
 P9_LLM_SCENARIOS = ("no_llm", "llm_requested")
+P9_MVP_BEFORE_GATE_REVISION_OPTIONAL_PDF_DEPS = (
+    "p9-mvp-before-pdf-eval-dependency-gate"
+)
+P9_MVP_BEFORE_GATE_REVISION_PLACEHOLDER_FIXTURE = (
+    "p9-mvp-before-representative-fixture-gate"
+)
 REQUIRED_GMP_ACCEPTANCE_CRITERIA = (
     "high_risk_review",
     "missed_detection_zero",
@@ -1101,7 +1107,9 @@ def p9_evaluation_samples(
     evaluation_samples: list[dict[str, Any]] = []
     seen_sample_ids: set[str] = set()
     observed_modes: set[str] = set()
+    usable_modes: set[str] = set()
     observed_categories: set[str] = set()
+    placeholder_by_mode: dict[str, dict[str, Any]] = {}
     for sample in samples:
         if not isinstance(sample, dict):
             raise EvaluationCaseError("each P9 evaluation sample needs an object")
@@ -1127,6 +1135,22 @@ def p9_evaluation_samples(
                 raise EvaluationCaseError(
                     f"P9 sample {sample_id!r} must reference a fixture_manifest fixture"
                 )
+            placeholder_by_mode.setdefault(
+                representative_mode,
+                {
+                    "sample_id": sample_id,
+                    "sample_category": sample.get("category"),
+                    "dataset_status": sample.get("dataset_status"),
+                    "availability_reason": sample.get("availability_reason"),
+                    "evaluation_focus": sample.get("evaluation_focus"),
+                    "expected_warning_or_review_focus": sample.get(
+                        "expected_warning_or_review_focus"
+                    ),
+                    "fixture_id": fixture_id,
+                    "representative_mode": representative_mode,
+                    "conversion_mode": conversion_mode,
+                },
+            )
             continue
         if fixture is not None:
             p9_validate_representative_fixture_link(
@@ -1151,6 +1175,7 @@ def p9_evaluation_samples(
             }
         )
         evaluation_samples.append(merged)
+        usable_modes.add(representative_mode)
 
     required_modes = set(P9_REPRESENTATIVE_FLAGS_BY_MODE)
     missing_modes = sorted(required_modes - observed_modes)
@@ -1178,6 +1203,10 @@ def p9_evaluation_samples(
             "P9 evaluation manifest has no representative for source category "
             f"{missing_categories[0]!r}"
         )
+    for missing_usable_mode in sorted(required_modes - usable_modes):
+        placeholder = placeholder_by_mode.get(missing_usable_mode)
+        if placeholder is not None:
+            evaluation_samples.append(placeholder)
     return evaluation_samples
 
 
@@ -1187,6 +1216,8 @@ def p9_result_for_unavailable_fixture(
     mode: str,
     llm_scenario: str,
     failure_reason: str,
+    fail_closed: bool = False,
+    mvp_before_gate_revision: str | None = None,
 ) -> dict[str, object]:
     conversion_mode = (
         fixture.get("conversion_mode")
@@ -1207,7 +1238,9 @@ def p9_result_for_unavailable_fixture(
         "llm_scenario": llm_scenario,
         "llm_requested": llm_scenario == "llm_requested",
         "ocr_requested": mode == "scanned_pdf_ocr",
-        "ok": False,
+        "ok": fail_closed,
+        "fail_closed": fail_closed,
+        "mvp_before_gate_revision": mvp_before_gate_revision,
         "ir_generated": False,
         "artifact_generated": False,
         "artifact_count": 0,
@@ -1409,6 +1442,7 @@ def p9_validate_artifact_expectations(
     representative_mode: str,
     primary_artifact: dict[str, Any] | None,
     warnings: object,
+    allowed_runtime_warning_prefixes: tuple[str, ...] = (),
 ) -> list[str]:
     expectations = p9_expectations_for_mode(fixture, representative_mode)
     failures: list[str] = []
@@ -1450,6 +1484,11 @@ def p9_validate_artifact_expectations(
             if (
                 isinstance(actual_warning, str)
                 and actual_warning not in expected_warning_values
+                and not p9_runtime_warning_is_review_only(
+                    actual_warning,
+                    conversion_mode=conversion_mode,
+                    allowed_prefixes=allowed_runtime_warning_prefixes,
+                )
             ):
                 failures.append(f"unexpected warning {actual_warning!r} was emitted")
     if artifact_format_mismatch:
@@ -1481,6 +1520,27 @@ def p9_validate_artifact_expectations(
     return failures
 
 
+def p9_runtime_warning_is_review_only(
+    warning: str,
+    *,
+    conversion_mode: str,
+    allowed_prefixes: tuple[str, ...],
+) -> bool:
+    if warning == f"conversion mode {conversion_mode} selected":
+        return True
+    if warning.startswith(allowed_prefixes):
+        return True
+    return (
+        "requires review" in warning
+        or warning.endswith("marked requires_review")
+        or "marked block requires_review" in warning
+    )
+
+
+def p9_exception_is_fail_closed_gate(exc: Exception) -> bool:
+    return type(exc).__name__ == "PocServerDependencyError"
+
+
 def p9_conversion_result(
     fixture: dict[str, Any],
     *,
@@ -1509,12 +1569,19 @@ def p9_conversion_result(
         failure_reason = None
     except Exception as exc:
         elapsed_ms = (time.perf_counter() - started_at) * 1000
+        fail_closed = p9_exception_is_fail_closed_gate(exc)
         return {
             **p9_result_for_unavailable_fixture(
                 fixture,
                 mode=mode,
                 llm_scenario=llm_scenario,
                 failure_reason=f"{type(exc).__name__}: {exc}",
+                fail_closed=fail_closed,
+                mvp_before_gate_revision=(
+                    P9_MVP_BEFORE_GATE_REVISION_OPTIONAL_PDF_DEPS
+                    if fail_closed
+                    else None
+                ),
             ),
             "processing_time_ms": round(elapsed_ms, 3),
         }
@@ -1529,6 +1596,14 @@ def p9_conversion_result(
     use_ocr = conversion_settings.get("use_ocr", {})
     conversion_plan = audit.get("conversion_plan", {}) if audit else {}
     external_ai_api_guard_violation = p9_external_ai_api_guard_violation(audit)
+    allowed_runtime_warning_prefixes = (
+        ("LLM conversion plan fallback ",)
+        if llm_requested
+        and isinstance(use_llm, dict)
+        and use_llm.get("status") == "blocked"
+        and use_llm.get("enabled") is False
+        else ()
+    )
     artifacts = converted.get("artifacts")
     artifact_list = artifacts if isinstance(artifacts, list) else []
     primary_artifact = p9_primary_artifact(artifact_list)
@@ -1548,6 +1623,7 @@ def p9_conversion_result(
         representative_mode=mode,
         primary_artifact=primary_artifact,
         warnings=warnings,
+        allowed_runtime_warning_prefixes=allowed_runtime_warning_prefixes,
     )
     row_failures: list[str] = []
     if conversion_status == "blocked":
@@ -1670,6 +1746,10 @@ def evaluate_p9_harness(
                         mode=mode,
                         llm_scenario=llm_scenario,
                         failure_reason=failure_reason,
+                        fail_closed=True,
+                        mvp_before_gate_revision=(
+                            P9_MVP_BEFORE_GATE_REVISION_PLACEHOLDER_FIXTURE
+                        ),
                     )
                 )
                 continue

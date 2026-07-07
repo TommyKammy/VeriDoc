@@ -329,7 +329,7 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertEqual(1.0, high_quality["source_linkage_rate"])
         self.assertEqual(2, high_quality["requires_review_count"])
 
-    def test_p9_harness_runs_representative_manifest_entries_and_keeps_failures(
+    def test_p9_harness_runs_representative_manifest_entries_and_tracks_gates(
         self,
     ) -> None:
         report = evaluate_dataset.evaluate_p9_harness(POC_EVALUATION_MANIFEST_PATH)
@@ -344,11 +344,12 @@ class EvaluateDatasetTest(unittest.TestCase):
             payload["summary"]["conversion_modes"],
         )
         self.assertEqual(["no_llm", "llm_requested"], payload["summary"]["llm_scenarios"])
-        self.assertGreater(payload["summary"]["failure_count"], 0)
+        self.assertEqual(0, payload["summary"]["failure_count"])
         self.assertEqual(
             payload["summary"]["case_count"],
-            payload["summary"]["completed_count"] + payload["summary"]["failure_count"],
+            payload["summary"]["completed_count"],
         )
+        self.assertEqual(16, payload["summary"]["case_count"])
         self.assertEqual(0, payload["summary"]["external_ai_api_guard_violation_count"])
         self.assertIn("phase8_comparison", payload)
 
@@ -361,10 +362,10 @@ class EvaluateDatasetTest(unittest.TestCase):
                 and result["ir_generated"]
                 and result["artifact_generated"]
                 and result["audit_present"]
-                and not result["artifact_expectations_met"]
+                and result["artifact_expectations_met"]
                 and result["warnings_count"] >= 0
                 and result["review_items_count"] >= 0
-                and "unexpected warning" in str(result["failure_reason"])
+                and result["failure_reason"] is None
                 for result in results
             )
         )
@@ -375,8 +376,16 @@ class EvaluateDatasetTest(unittest.TestCase):
                 for result in results
             )
         )
-        self.assertFalse(
-            any(result["sample_id"] == "p9-word-004" for result in results)
+        self.assertTrue(
+            any(
+                result["sample_id"] == "p9-scanned-pdf-001"
+                and result["representative_mode"] == "scanned_pdf_ocr"
+                and result["ok"]
+                and result["fail_closed"]
+                and result["mvp_before_gate_revision"]
+                == "p9-mvp-before-representative-fixture-gate"
+                for result in results
+            )
         )
 
     def test_p9_harness_cli_emits_machine_readable_report(self) -> None:
@@ -1837,7 +1846,7 @@ class EvaluateDatasetTest(unittest.TestCase):
         ):
             evaluate_dataset.p9_evaluation_samples(p9_manifest, fixture_manifest)
 
-    def test_p9_evaluation_samples_skip_manifest_placeholders_from_scored_rows(
+    def test_p9_evaluation_samples_track_missing_required_mode_placeholder(
         self,
     ) -> None:
         p9_manifest = evaluate_dataset.load_json(POC_EVALUATION_MANIFEST_PATH)
@@ -1848,11 +1857,18 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertFalse(
             any(sample["sample_id"] == "p9-word-004" for sample in samples)
         )
-        self.assertFalse(
-            any(
-                sample.get("dataset_status") == "manifest_placeholder"
-                for sample in samples
-            )
+        placeholders = [
+            sample
+            for sample in samples
+            if sample.get("dataset_status") == "manifest_placeholder"
+        ]
+        self.assertEqual(
+            ["p9-scanned-pdf-001"],
+            [sample["sample_id"] for sample in placeholders],
+        )
+        self.assertEqual(
+            ["scanned_pdf_ocr"],
+            [sample["representative_mode"] for sample in placeholders],
         )
 
     def test_p9_harness_counts_artifact_expectation_mismatch_as_failure(self) -> None:
@@ -2142,6 +2158,107 @@ class EvaluateDatasetTest(unittest.TestCase):
             "unexpected warning 'unexpected review warning' was emitted",
             result["artifact_expectation_failures"],
         )
+
+    def test_p9_harness_allows_review_only_runtime_warnings(self) -> None:
+        with tempfile.NamedTemporaryFile(suffix=".docx") as fixture_file:
+            fixture_file.write(b"fixture")
+            fixture_file.flush()
+            fixture = {
+                "id": "review-warning-fixture",
+                "sample_id": "p9-review-warning",
+                "path": "datasets/fixtures/word/review-warning.docx",
+                "source_type": "word",
+                "format": "docx",
+                "conversion_mode": "word_to_excel",
+                "word_to_excel_expectations": {"warnings": []},
+            }
+            artifact_content = (
+                REPO_ROOT
+                / "datasets"
+                / "fixtures"
+                / "excel"
+                / "excel-to-word-representative.xlsx"
+            ).read_bytes()
+
+            with mock.patch(
+                "services.api.poc_web.convert_uploaded_document",
+                return_value={
+                    "status": "requires_review",
+                    "document_ir": {"document": {"title": "review warning"}},
+                    "artifacts": [
+                        {
+                            "kind": "primary",
+                            "id": "primary-xlsx",
+                            "format": "xlsx",
+                            "content": artifact_content,
+                        }
+                    ],
+                    "warnings": [
+                        "conversion mode word_to_excel selected",
+                        "blocks[0].bbox missing; block marked requires_review",
+                    ],
+                    "review_items": [
+                        {
+                            "id": "review-1",
+                            "warnings": [
+                                "blocks[0].bbox missing; block marked requires_review"
+                            ],
+                        }
+                    ],
+                    "audit": {
+                        "conversion_settings": {
+                            "use_llm": {"status": "disabled"},
+                            "use_ocr": {"status": "disabled"},
+                        },
+                        "conversion_plan": {"status": "disabled"},
+                    },
+                },
+            ):
+                result = evaluate_dataset.p9_conversion_result(
+                    fixture,
+                    fixture_path=Path(fixture_file.name),
+                    mode="word_to_excel",
+                    llm_scenario="no_llm",
+                )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["artifact_expectations_met"])
+        self.assertEqual([], result["artifact_expectation_failures"])
+
+    def test_p9_harness_marks_optional_pdf_dependency_errors_fail_closed(self) -> None:
+        class PocServerDependencyError(RuntimeError):
+            pass
+
+        with tempfile.NamedTemporaryFile(suffix=".pdf") as fixture_file:
+            fixture_file.write(b"fixture")
+            fixture_file.flush()
+            fixture = {
+                "id": "pdf-dependency-fixture",
+                "sample_id": "p9-pdf-dependency",
+                "path": "datasets/fixtures/pdf/pdf-dependency.pdf",
+                "source_type": "text_pdf",
+                "format": "pdf",
+                "conversion_mode": "pdf_to_word",
+            }
+
+            with mock.patch(
+                "services.api.poc_web.convert_uploaded_document",
+                side_effect=PocServerDependencyError("pdf dependency unavailable"),
+            ):
+                result = evaluate_dataset.p9_conversion_result(
+                    fixture,
+                    fixture_path=Path(fixture_file.name),
+                    mode="pdf_to_word",
+                    llm_scenario="no_llm",
+                )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["fail_closed"])
+        self.assertEqual(
+            "p9-mvp-before-pdf-eval-dependency-gate",
+            result["mvp_before_gate_revision"],
+        )
+        self.assertFalse(result["artifact_expectations_met"])
 
     def test_p9_harness_checks_mode_specific_xlsx_expectations(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".docx") as fixture_file:
