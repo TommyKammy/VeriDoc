@@ -521,6 +521,7 @@ def _method_call_receiver_name(node: ast.Call, method_name: str) -> str | None:
 class _AuthenticatedStatusObservation:
     tokens: frozenset[str]
     env_tokens_before_request: frozenset[str]
+    direct_tokens_before_request: frozenset[str] = frozenset()
     status_code: int | None = None
     request_method: str | None = None
     request_path: str | None = None
@@ -554,6 +555,7 @@ def _authenticated_success_status_observations(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> tuple[_AuthenticatedStatusObservation, ...]:
     env_tokens_seen: set[str] = set()
+    direct_tokens_seen: set[str] = set()
     monkeypatch_fixture_names = frozenset(
         name for name in _function_arg_names(node) if name == "monkeypatch"
     )
@@ -570,6 +572,9 @@ def _authenticated_success_status_observations(
                 env_tokens_seen,
                 monkeypatch_fixture_names=monkeypatch_fixture_names,
             )
+        )
+        direct_tokens_seen = set(
+            _direct_auth_tokens_after_statement(statement, direct_tokens_seen)
         )
         response_connections_seen = {
             connection_name
@@ -593,6 +598,7 @@ def _authenticated_success_status_observations(
                     _AuthenticatedStatusObservation(
                         tokens=tokens,
                         env_tokens_before_request=frozenset(env_tokens_seen),
+                        direct_tokens_before_request=frozenset(direct_tokens_seen),
                         request_method=method,
                         request_path=path,
                         string_literals=_string_literals_in_node(child),
@@ -609,6 +615,7 @@ def _authenticated_success_status_observations(
                     observation = _AuthenticatedStatusObservation(
                         tokens=tokens,
                         env_tokens_before_request=frozenset(env_tokens_seen),
+                        direct_tokens_before_request=frozenset(direct_tokens_seen),
                         string_literals=_string_literals_in_node(value),
                     )
                     for target in targets:
@@ -626,6 +633,9 @@ def _authenticated_success_status_observations(
                             tokens=pending.tokens,
                             env_tokens_before_request=(
                                 pending.env_tokens_before_request
+                            ),
+                            direct_tokens_before_request=(
+                                pending.direct_tokens_before_request
                             ),
                             request_method=pending.request_method,
                             request_path=pending.request_path,
@@ -648,6 +658,9 @@ def _authenticated_success_status_observations(
                             tokens=observation.tokens,
                             env_tokens_before_request=(
                                 observation.env_tokens_before_request
+                            ),
+                            direct_tokens_before_request=(
+                                observation.direct_tokens_before_request
                             ),
                             status_code=_asserted_status_code(statement),
                             request_method=observation.request_method,
@@ -815,6 +828,67 @@ def _test_function_uses_env_auth_boundary(
         observation.tokens & observation.env_tokens_before_request
         for observation in _authenticated_success_status_observations(node)
     )
+
+
+def _test_function_uses_direct_auth_boundary(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> bool:
+    return any(
+        observation.tokens & observation.direct_tokens_before_request
+        for observation in _authenticated_success_status_observations(node)
+    )
+
+
+def _direct_auth_tokens_after_statement(
+    node: ast.stmt,
+    current_tokens: Iterable[str],
+) -> frozenset[str]:
+    tokens = set(current_tokens)
+    for child in ast.walk(node):
+        if isinstance(child, ast.Call):
+            configured_tokens = _setattr_local_auth_token_value_tokens(child)
+            if configured_tokens is not None:
+                tokens = set(configured_tokens)
+        if not isinstance(child, (ast.Assign, ast.AnnAssign)):
+            continue
+        for target in _assignment_targets(child):
+            if _targets_server_local_auth_tokens(target):
+                tokens = set(_direct_auth_token_value_tokens(child.value))
+    return frozenset(tokens)
+
+
+def _targets_server_local_auth_tokens(target: ast.AST) -> bool:
+    return (
+        isinstance(target, ast.Attribute)
+        and target.attr == "local_auth_tokens"
+        and isinstance(target.value, ast.Name)
+        and target.value.id == "server"
+    )
+
+
+def _setattr_local_auth_token_value_tokens(
+    node: ast.Call,
+) -> frozenset[str] | None:
+    if (
+        isinstance(node.func, ast.Name)
+        and node.func.id == "setattr"
+        and len(node.args) >= 3
+        and isinstance(node.args[0], ast.Name)
+        and node.args[0].id == "server"
+        and _constant_string_value(node.args[1]) == "local_auth_tokens"
+    ):
+        return _direct_auth_token_value_tokens(node.args[2])
+    return None
+
+
+def _direct_auth_token_value_tokens(node: ast.AST) -> frozenset[str]:
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_local_auth_tokens"
+    ):
+        return POC_AUTH_SESSION_SUCCESS_TOKEN_LITERALS
+    return _privileged_auth_tokens_in_node(node)
 
 
 def _test_function_asserts_status_code(
@@ -985,6 +1059,12 @@ def poc_auth_session_coverage_is_present(repo_root: Path = REPO_ROOT) -> bool:
     for ref in POC_AUTH_SESSION_ENV_SUCCESS_COVERAGE_REFS:
         _path, test_name = ref.split("::", 1)
         if not _test_function_uses_env_auth_boundary(test_functions[test_name]):
+            return False
+    for ref in set(POC_AUTH_SESSION_SUCCESS_COVERAGE_REFS) - set(
+        POC_AUTH_SESSION_ENV_SUCCESS_COVERAGE_REFS
+    ):
+        _path, test_name = ref.split("::", 1)
+        if not _test_function_uses_direct_auth_boundary(test_functions[test_name]):
             return False
     for ref in POC_AUTH_SESSION_FAIL_CLOSED_COVERAGE_REFS:
         _path, test_name = ref.split("::", 1)

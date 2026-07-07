@@ -34,6 +34,8 @@ spec.loader.exec_module(evaluate_dataset)
 
 def valid_poc_auth_success_ref_source(
     overrides: dict[str, str] | None = None,
+    *,
+    include_direct_auth_setup: bool = True,
 ) -> str:
     snippets: dict[str, str] = {
         "test_poc_http_api_reads_local_auth_tokens_from_env_for_review_success": (
@@ -86,7 +88,11 @@ def valid_poc_auth_success_ref_source(
         (
             f"def {test_name}(monkeypatch):\n{snippets[test_name]}"
             if ref in evaluate_dataset.POC_AUTH_SESSION_ENV_SUCCESS_COVERAGE_REFS
-            else f"def {test_name}():\n{snippets[test_name]}"
+            else (
+                f"def {test_name}():\n"
+                f"{'    server.local_auth_tokens = _local_auth_tokens()\\n' if include_direct_auth_setup else ''}"
+                f"{snippets[test_name]}"
+            )
         )
         for ref in evaluate_dataset.POC_AUTH_SESSION_SUCCESS_COVERAGE_REFS
         for test_name in (ref.split("::", 1)[1],)
@@ -1526,6 +1532,71 @@ class EvaluateDatasetTest(unittest.TestCase):
             )
             (temp_root / "tests" / "test_poc_web_api.py").write_text(
                 f"{success_ref_names_with_direct_tokens}\n{fail_closed_ref_names}\n",
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(
+                evaluate_dataset,
+                "poc_auth_session_coverage_inputs_tracked_in_repo",
+                return_value=True,
+            ):
+                payload = self.poc_acceptance_payload(harness_repo_root=temp_root)
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual("unknown", rows["security"]["status"])
+        self.assertFalse(
+            payload["matrix_evidence"]["security"][
+                "authenticated_poc_api_session_checked"
+            ]
+        )
+
+    def test_poc_acceptance_report_requires_direct_auth_setup_for_direct_success_refs(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            (temp_root / "tests").mkdir()
+            (temp_root / "README.md").write_text(
+                "## Local PoC API authentication\n"
+                "Set VERIDOC_LOCAL_AUTH_TOKENS for local role tokens.\n",
+                encoding="utf-8",
+            )
+            overrides: dict[str, str] = {}
+            for ref in evaluate_dataset.POC_AUTH_SESSION_SUCCESS_COVERAGE_REFS:
+                if ref in evaluate_dataset.POC_AUTH_SESSION_ENV_SUCCESS_COVERAGE_REFS:
+                    continue
+                test_name = ref.split("::", 1)[1]
+                expectation = evaluate_dataset.POC_AUTH_SESSION_SUCCESS_REF_EXPECTATIONS[
+                    ref
+                ]
+                token = next(iter(expectation["tokens"]))
+                status_code = next(iter(expectation["status_codes"]))
+                method = expectation.get("method") or "POST"
+                path = expectation.get("path") or "/api/review-events"
+                literals = "\n".join(
+                    f"    marker_{index} = {literal!r}"
+                    for index, literal in enumerate(expectation["required_literals"])
+                )
+                overrides[test_name] = (
+                    f"{literals}\n"
+                    "    connection.request(\n"
+                    f"        {method!r},\n"
+                    f"        {path!r},\n"
+                    f"        headers={{'Authorization': 'Bearer {token}'}},\n"
+                    "    )\n"
+                    "    response = connection.getresponse()\n"
+                    f"    assert response.status == {status_code}\n"
+                )
+            success_ref_names_without_direct_auth_setup = (
+                valid_poc_auth_success_ref_source(
+                    overrides,
+                    include_direct_auth_setup=False,
+                )
+            )
+            fail_closed_ref_names = valid_poc_auth_fail_closed_ref_source()
+            (temp_root / "tests" / "test_poc_web_api.py").write_text(
+                f"{success_ref_names_without_direct_auth_setup}\n"
+                f"{fail_closed_ref_names}\n",
                 encoding="utf-8",
             )
 
