@@ -712,6 +712,33 @@ class EvaluateDatasetTest(unittest.TestCase):
             rows["llm_control"]["evidence_refs"],
         )
 
+    def test_poc_acceptance_report_excludes_fail_closed_rows_from_llm_control(
+        self,
+    ) -> None:
+        payload = self.poc_acceptance_payload()
+        results = list(payload["p9_harness_results"])
+        results[0] = {
+            **results[0],
+            "llm_scenario": "llm_requested",
+            "llm_requested": True,
+            "llm_status": "not_run",
+            "ok": True,
+            "fail_closed": True,
+            "mvp_before_gate_revision": "p9-mvp-before-pdf-eval-dependency-gate",
+            "artifact_expectations_met": False,
+            "failure_reason": "optional PDF dependency unavailable",
+        }
+
+        payload = self.poc_acceptance_payload(results=results)
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual("pass", rows["llm_control"]["status"])
+        self.assertIn("harness LLM scenario failures: 0", rows["llm_control"]["evidence"])
+        self.assertEqual(
+            [],
+            payload["matrix_evidence"]["llm_control"]["scenario_failures"],
+        )
+
     def test_poc_acceptance_report_fails_llm_control_from_harness_fields(
         self,
     ) -> None:

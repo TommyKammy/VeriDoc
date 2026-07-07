@@ -1979,6 +1979,8 @@ def poc_acceptance_llm_scenario_failures(
 
 
 def poc_acceptance_result_violates_llm_scenario(result: dict[str, object]) -> bool:
+    if result.get("fail_closed") is True:
+        return False
     llm_scenario = result.get("llm_scenario")
     if llm_scenario not in P9_LLM_SCENARIOS:
         return False
