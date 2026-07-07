@@ -1736,7 +1736,13 @@ def build_poc_acceptance_report(
         "python3 scripts/evaluate_dataset.py --poc-acceptance-report"
     ),
 ) -> PoCAcceptanceReport:
-    manifest_repo_root = p9_manifest_repo_root(manifest_path.resolve())
+    resolved_manifest_path = manifest_path.resolve()
+    manifest_repo_root = p9_manifest_repo_root(resolved_manifest_path)
+    evaluated_manifest_path = (
+        manifest_path
+        if manifest_repo_root.resolve() == REPO_ROOT.resolve() and not manifest_path.is_absolute()
+        else resolved_manifest_path
+    )
     resolved_llm_stability_runs_path = (
         poc_acceptance_manifest_input_path(manifest_repo_root, llm_stability_runs_path)
         if llm_stability_runs_path is not None
@@ -1754,7 +1760,7 @@ def build_poc_acceptance_report(
         )
     )
     p9_harness = evaluate_p9_harness(
-        manifest_path,
+        evaluated_manifest_path,
         llm_stability_runs_path=resolved_llm_stability_runs_path,
         poc_comparison_path=resolved_poc_comparison_path,
     )

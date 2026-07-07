@@ -1003,9 +1003,88 @@ class EvaluateDatasetTest(unittest.TestCase):
                 )
 
         mocked_harness.assert_called_once_with(
-            custom_manifest_path,
+            custom_manifest_path.resolve(),
             llm_stability_runs_path=(temp_root / relative_stability).resolve(),
             poc_comparison_path=(temp_root / relative_comparison).resolve(),
+        )
+
+    def test_poc_acceptance_report_resolves_relative_manifest_before_harness(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            shutil.copytree(REPO_ROOT / "datasets", temp_root / "datasets")
+            custom_manifest_path = temp_root / "datasets" / "custom_p9_manifest.json"
+            shutil.copy2(POC_EVALUATION_MANIFEST_PATH, custom_manifest_path)
+            relative_manifest_path = Path(os.path.relpath(custom_manifest_path, REPO_ROOT))
+            harness = evaluate_dataset.P9HarnessReport(
+                manifest=custom_manifest_path.resolve(),
+                results=(),
+                llm_stability=evaluate_dataset.LLMStabilityMetrics(
+                    input_id="synthetic",
+                    run_count=1,
+                    plan_agreement_rate=1.0,
+                    confirmed_value_agreement_rate=1.0,
+                    schema_failure_rate=0.0,
+                    repair_success_rate=1.0,
+                    deterministic_fallback_rate=0.0,
+                    external_ai_api_guard_violation_count=0,
+                    distinct_plan_count=1,
+                    distinct_confirmed_value_count=1,
+                    unstable_example_count=0,
+                    unstable_examples=(),
+                ),
+                poc_mode_comparison=evaluate_dataset.PoCComparisonMetrics(
+                    mode_count=0,
+                    high_risk_false_auto_confirmed_count=0,
+                    high_risk_false_auto_confirmed_target=0,
+                    target_met=True,
+                    manual_correction_time=evaluate_dataset.ManualCorrectionTimeMetrics(
+                        measurement_method="synthetic",
+                        baseline_minutes=1.0,
+                        assisted_minutes=0.5,
+                        reduction_minutes=0.5,
+                        reduction_rate=0.5,
+                        target_reduction_rate=0.5,
+                        target_met=True,
+                    ),
+                    modes=(),
+                    mode_diffs=(),
+                ),
+                llm_stability_source=(
+                    temp_root / "datasets" / "gold" / "llm_stability_runs_v0.json"
+                ),
+                poc_comparison_source=(
+                    temp_root / "datasets" / "gold" / "poc_mode_comparison_v1.json"
+                ),
+            )
+            with (
+                mock.patch.object(
+                    evaluate_dataset,
+                    "evaluate_p9_harness",
+                    return_value=harness,
+                ) as mocked_harness,
+                mock.patch.object(
+                    evaluate_dataset,
+                    "current_git_commit",
+                    return_value="tracked-head",
+                ),
+                mock.patch.object(
+                    evaluate_dataset,
+                    "current_git_worktree_clean",
+                    return_value=True,
+                ),
+            ):
+                report = evaluate_dataset.build_poc_acceptance_report(
+                    relative_manifest_path,
+                )
+
+        mocked_harness.assert_called_once()
+        self.assertEqual(custom_manifest_path.resolve(), mocked_harness.call_args.args[0])
+        payload = report.as_dict()
+        self.assertEqual(
+            str(custom_manifest_path.resolve()),
+            payload["evidence"]["dataset_manifest"],
         )
 
     def test_p9_harness_resolves_custom_manifest_under_datasets_from_repo_root(
@@ -1063,7 +1142,10 @@ class EvaluateDatasetTest(unittest.TestCase):
             "manifest-head",
             payload["tested_environment"]["evaluator_commit"],
         )
-        self.assertEqual(str(custom_manifest_path), payload["evidence"]["dataset_manifest"])
+        self.assertEqual(
+            str(custom_manifest_path.resolve()),
+            payload["evidence"]["dataset_manifest"],
+        )
 
     def test_poc_acceptance_report_resolves_implicit_comparison_inputs_from_manifest_repo(
         self,
