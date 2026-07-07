@@ -48,6 +48,114 @@ class EvaluateDatasetTest(unittest.TestCase):
     def valid_high_risk_labels_data(self) -> dict[str, object]:
         return copy.deepcopy(evaluate_dataset.load_json(HIGH_RISK_LABELS_PATH))
 
+    def poc_acceptance_payload(
+        self,
+        *,
+        results: list[dict[str, object]] | None = None,
+        llm_external_violation_count: int = 0,
+        unstable_example_count: int = 0,
+        manual_correction_target_met: bool = True,
+        source_linkage_rates: dict[str, float] | None = None,
+        manifest: Path = POC_EVALUATION_MANIFEST_PATH,
+        llm_stability_source: Path = LLM_STABILITY_RUNS_PATH,
+        poc_comparison_source: Path = POC_COMPARISON_PATH,
+        commit: str = "test-commit",
+        commit_is_clean: bool = True,
+        evaluator_commit: str | None = None,
+        evaluator_commit_is_clean: bool | None = None,
+    ) -> dict[str, object]:
+        if results is None:
+            representative_rows = (
+                ("word_to_excel", "word"),
+                ("excel_to_word", "excel"),
+                ("pdf_to_excel", "text_pdf"),
+                ("pdf_to_word", "record_pdf"),
+                ("scanned_pdf_ocr", "scanned_pdf"),
+            )
+            results = [
+                {
+                    "sample_id": f"sample-{representative_mode}",
+                    "sample_category": sample_category,
+                    "conversion_mode": evaluate_dataset.P9_CONVERSION_MODE_BY_MODE[
+                        representative_mode
+                    ],
+                    "representative_mode": representative_mode,
+                    "llm_scenario": "no_llm",
+                    "ok": True,
+                    "artifact_expectations_met": True,
+                    "audit_present": True,
+                    "external_ai_api_guard_violation": False,
+                }
+                for representative_mode, sample_category in representative_rows
+            ]
+        llm_stability = evaluate_dataset.LLMStabilityMetrics(
+            input_id="synthetic-report-test",
+            run_count=1,
+            plan_agreement_rate=1.0,
+            confirmed_value_agreement_rate=1.0,
+            schema_failure_rate=0.0,
+            repair_success_rate=1.0,
+            deterministic_fallback_rate=0.0,
+            external_ai_api_guard_violation_count=llm_external_violation_count,
+            distinct_plan_count=1,
+            distinct_confirmed_value_count=1,
+            unstable_example_count=unstable_example_count,
+            unstable_examples=(
+                {"run_id": "run-002", "changed": "conversion_plan"},
+            )
+            if unstable_example_count
+            else (),
+        )
+        poc_comparison = evaluate_dataset.PoCComparisonMetrics(
+            mode_count=len(evaluate_dataset.REQUIRED_POC_MODES),
+            high_risk_false_auto_confirmed_count=0,
+            high_risk_false_auto_confirmed_target=0,
+            target_met=manual_correction_target_met,
+            manual_correction_time=evaluate_dataset.ManualCorrectionTimeMetrics(
+                measurement_method="synthetic",
+                baseline_minutes=10.0,
+                assisted_minutes=4.0 if manual_correction_target_met else 8.0,
+                reduction_minutes=6.0 if manual_correction_target_met else 2.0,
+                reduction_rate=0.6 if manual_correction_target_met else 0.2,
+                target_reduction_rate=0.5,
+                target_met=manual_correction_target_met,
+            ),
+            modes=tuple(
+                evaluate_dataset.PoCModeMetrics(
+                    mode=mode,
+                    table_extraction_rate=1.0,
+                    cell_match_rate=1.0,
+                    source_linkage_rate=(
+                        source_linkage_rates.get(mode, 1.0)
+                        if source_linkage_rates is not None
+                        else 1.0
+                    ),
+                    high_risk_false_auto_confirmed_count=0,
+                    requires_review_count=0,
+                    warning_count=0,
+                )
+                for mode in evaluate_dataset.REQUIRED_POC_MODES
+            ),
+            mode_diffs=(),
+        )
+        harness = evaluate_dataset.P9HarnessReport(
+            manifest=manifest,
+            results=tuple(results),
+            llm_stability=llm_stability,
+            poc_mode_comparison=poc_comparison,
+            llm_stability_source=llm_stability_source,
+            poc_comparison_source=poc_comparison_source,
+        )
+        report = evaluate_dataset.PoCAcceptanceReport(
+            p9_harness=harness,
+            generated_at="2026-01-01T00:00:00Z",
+            commit=commit,
+            commit_is_clean=commit_is_clean,
+            evaluator_commit=evaluator_commit,
+            evaluator_commit_is_clean=evaluator_commit_is_clean,
+        )
+        return report.as_dict()
+
     def prepare_gmp_acceptance_repo(self, temp_root: Path) -> None:
         shutil.copytree(REPO_ROOT / "datasets", temp_root / "datasets")
         (temp_root / "docs").mkdir()
@@ -292,6 +400,959 @@ class EvaluateDatasetTest(unittest.TestCase):
             payload["dataset_manifest"],
         )
 
+    def test_poc_acceptance_report_cli_maps_15_2_criteria(self) -> None:
+        completed = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "--poc-acceptance-report"],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        payload = json.loads(completed.stdout)
+
+        self.assertEqual(
+            "veridoc-poc-acceptance-report/v0", payload["schema_version"]
+        )
+        self.assertEqual("15.2_PoC受入基準", payload["criteria_source"])
+        self.assertEqual(
+            str(evaluate_dataset.DEFAULT_P9_HARNESS_MANIFEST),
+            payload["evidence"]["dataset_manifest"],
+        )
+        self.assertIn("commit", payload["tested_environment"])
+        self.assertEqual(
+            [
+                "functionality",
+                "structured_output",
+                "llm_control",
+                "traceability",
+                "safety",
+                "logs",
+                "security",
+                "reproducibility",
+            ],
+            [row["criterion_id"] for row in payload["acceptance_matrix"]],
+        )
+        self.assertTrue(
+            all(row["status"] in {"pass", "fail", "unknown"} for row in payload["acceptance_matrix"])
+        )
+        self.assertTrue(
+            any(row["status"] == "fail" for row in payload["acceptance_matrix"])
+        )
+        self.assertIn("conversion_mode_results", payload)
+        self.assertIn("llm_stability_comparison", payload)
+        self.assertIn("review_ui_observations", payload)
+        self.assertIn("known_limitations", payload)
+        self.assertIn("follow_up_issue_candidates", payload)
+        self.assertTrue(
+            any(
+                condition["condition_id"] == "external_transmission"
+                and condition["status"] == "pass"
+                for condition in payload["fail_closed_conditions"]
+            )
+        )
+
+    def test_poc_acceptance_report_treats_unknown_criteria_as_non_passing(
+        self,
+    ) -> None:
+        payload = self.poc_acceptance_payload()
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual("unknown", rows["security"]["status"])
+        self.assertEqual("fail", payload["overall_status"])
+
+    def test_poc_acceptance_report_preserves_custom_evidence_paths(self) -> None:
+        llm_stability_source = Path("datasets/custom/stability_runs.json")
+        poc_comparison_source = Path("datasets/custom/comparison.json")
+
+        payload = self.poc_acceptance_payload(
+            llm_stability_source=llm_stability_source,
+            poc_comparison_source=poc_comparison_source,
+        )
+
+        self.assertEqual(
+            str(llm_stability_source), payload["evidence"]["llm_stability_runs"]
+        )
+        self.assertEqual(
+            str(poc_comparison_source), payload["evidence"]["poc_mode_comparison"]
+        )
+
+    def test_poc_acceptance_report_records_actual_generation_command(self) -> None:
+        command = evaluate_dataset.poc_acceptance_generation_command(
+            manifest_path=Path("datasets/custom/p9_manifest.json"),
+            llm_stability_runs_path=Path("datasets/custom/stability_runs.json"),
+            poc_comparison_path=Path("datasets/custom/comparison.json"),
+        )
+
+        self.assertEqual(
+            "python3 scripts/evaluate_dataset.py --poc-acceptance-report "
+            "datasets/custom/p9_manifest.json --llm-stability-runs "
+            "datasets/custom/stability_runs.json --poc-comparison "
+            "datasets/custom/comparison.json",
+            command,
+        )
+
+    def test_poc_acceptance_report_includes_matrix_evidence_rows(self) -> None:
+        payload = self.poc_acceptance_payload()
+
+        self.assertIn("p9_harness", payload)
+        self.assertIn("p9_harness_results", payload)
+        self.assertIn("matrix_evidence", payload)
+        self.assertIn("poc_mode_comparison", payload)
+        self.assertEqual(
+            payload["p9_harness_results"],
+            payload["p9_harness"]["results"],
+        )
+        self.assertEqual(
+            payload["p9_harness_summary"],
+            payload["p9_harness"]["summary"],
+        )
+        first_harness_result = payload["p9_harness"]["results"][0]
+        for evidence_field in (
+            "artifact_expectations_met",
+            "audit_present",
+            "representative_mode",
+            "sample_category",
+        ):
+            self.assertIn(evidence_field, first_harness_result)
+        self.assertTrue(
+            any(
+                row["sample_category"] == "record_pdf"
+                for row in payload["p9_harness_results"]
+            )
+        )
+        self.assertEqual(
+            ["no_llm", "standard", "high_quality"],
+            [mode["mode"] for mode in payload["poc_mode_comparison"]["modes"]],
+        )
+        self.assertEqual(
+            [],
+            payload["matrix_evidence"]["functionality"][
+                "missing_source_categories"
+            ],
+        )
+        self.assertIn(
+            "manual_correction_time",
+            payload["matrix_evidence"]["functionality"],
+        )
+        self.assertIn(
+            "rows",
+            payload["matrix_evidence"]["structured_output"],
+        )
+
+    def test_poc_acceptance_report_matrix_refs_resolve_to_payload_evidence(
+        self,
+    ) -> None:
+        base_payload = self.poc_acceptance_payload()
+        results = list(base_payload["p9_harness_results"])
+        results[0] = {
+            **results[0],
+            "ok": False,
+            "failure_reason": "no_llm scenario LLM status 'enabled' is not disabled",
+            "llm_status": "enabled",
+        }
+        payload = self.poc_acceptance_payload(
+            results=results,
+            unstable_example_count=1,
+        )
+
+        def resolve_ref(ref: str) -> list[object]:
+            if " " in ref:
+                public_path = REPO_ROOT / ref.split(" ", 1)[0]
+                return [public_path] if public_path.exists() else []
+            values: list[object] = [payload]
+            for part in ref.split("."):
+                next_values: list[object] = []
+                if part.endswith("[]"):
+                    key = part[:-2]
+                    for value in values:
+                        if isinstance(value, dict) and isinstance(value.get(key), list):
+                            next_values.extend(value[key])
+                    values = next_values
+                    continue
+                for value in values:
+                    if isinstance(value, dict) and part in value:
+                        next_values.append(value[part])
+                values = next_values
+            return values
+
+        unresolved_refs = [
+            ref
+            for row in payload["acceptance_matrix"]
+            for ref in row["evidence_refs"]
+            if not resolve_ref(ref)
+        ]
+
+        self.assertEqual([], unresolved_refs)
+
+    def test_poc_acceptance_report_fail_closed_matrix_keeps_backing_evidence(
+        self,
+    ) -> None:
+        payload = self.poc_acceptance_payload()
+        results = list(payload["p9_harness_results"])
+        for result in results:
+            if result["sample_category"] == "record_pdf":
+                result["sample_category"] = "text_pdf"
+                break
+
+        payload = self.poc_acceptance_payload(
+            results=results,
+            unstable_example_count=1,
+        )
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual({"fail": 1, "pass": 5, "unknown": 2}, payload["criterion_status_counts"])
+        self.assertEqual("fail", rows["functionality"]["status"])
+        self.assertIn("record_pdf", rows["functionality"]["evidence"])
+        self.assertIn(
+            "p9_harness.results[].sample_category",
+            rows["functionality"]["evidence_refs"],
+        )
+        self.assertEqual(
+            ["record_pdf"],
+            payload["matrix_evidence"]["functionality"][
+                "missing_source_categories"
+            ],
+        )
+        self.assertEqual("unknown", rows["llm_control"]["status"])
+        self.assertEqual("unknown", rows["security"]["status"])
+        self.assertEqual("fail", payload["overall_status"])
+        self.assertTrue(
+            all(
+                "artifact_expectations_met" in result and "audit_present" in result
+                for result in payload["p9_harness_results"]
+            )
+        )
+        self.assertEqual(
+            ["no_llm", "standard", "high_quality"],
+            [mode["mode"] for mode in payload["poc_mode_comparison"]["modes"]],
+        )
+
+    def test_poc_acceptance_report_fails_llm_control_on_external_transmission(
+        self,
+    ) -> None:
+        payload = self.poc_acceptance_payload(llm_external_violation_count=1)
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        conditions = {
+            condition["condition_id"]: condition
+            for condition in payload["fail_closed_conditions"]
+        }
+        self.assertEqual("fail", rows["llm_control"]["status"])
+        self.assertEqual("fail", rows["security"]["status"])
+        self.assertIn("External AI API guard violations: 1", rows["security"]["evidence"])
+        self.assertEqual("fail", conditions["llm_correction_or_completion"]["status"])
+        self.assertEqual("fail", conditions["external_transmission"]["status"])
+        self.assertEqual("fail", payload["overall_status"])
+
+    def test_poc_acceptance_report_fails_structured_output_on_duplicate_primary_artifacts(
+        self,
+    ) -> None:
+        payload = self.poc_acceptance_payload()
+        results = list(payload["p9_harness_results"])
+        results[0] = {
+            **results[0],
+            "ok": False,
+            "artifact_expectations_met": True,
+            "artifact_count": 2,
+            "failure_reason": "expected exactly one primary artifact, got 2",
+        }
+
+        payload = self.poc_acceptance_payload(results=results)
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        conditions = {
+            condition["condition_id"]: condition
+            for condition in payload["fail_closed_conditions"]
+        }
+        self.assertEqual("fail", rows["structured_output"]["status"])
+        self.assertEqual("fail", conditions["unknown_source_normal_output"]["status"])
+        self.assertIn("1 runs failed primary artifact structure", rows["structured_output"]["evidence"])
+        self.assertEqual(
+            "expected exactly one primary artifact, got 2",
+            payload["matrix_evidence"]["structured_output"]["rows"][0][
+                "failure_reason"
+            ],
+        )
+
+    def test_poc_acceptance_report_fails_llm_control_on_harness_scenario_violation(
+        self,
+    ) -> None:
+        payload = self.poc_acceptance_payload()
+        results = list(payload["p9_harness_results"])
+        results[0] = {
+            **results[0],
+            "ok": False,
+            "llm_scenario": "no_llm",
+            "llm_status": "enabled",
+            "failure_reason": "no_llm scenario LLM status 'enabled' is not disabled",
+        }
+
+        payload = self.poc_acceptance_payload(results=results)
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        conditions = {
+            condition["condition_id"]: condition
+            for condition in payload["fail_closed_conditions"]
+        }
+        self.assertEqual("fail", rows["llm_control"]["status"])
+        self.assertEqual("fail", conditions["llm_correction_or_completion"]["status"])
+        self.assertIn("harness LLM scenario failures: 1", rows["llm_control"]["evidence"])
+        self.assertIn(
+            "p9_harness.results[].llm_status",
+            rows["llm_control"]["evidence_refs"],
+        )
+
+    def test_poc_acceptance_report_fails_llm_control_from_harness_fields(
+        self,
+    ) -> None:
+        payload = self.poc_acceptance_payload()
+        results = list(payload["p9_harness_results"])
+        results[0] = {
+            **results[0],
+            "ok": False,
+            "llm_scenario": "no_llm",
+            "llm_status": "enabled",
+            "failure_reason": "primary artifact expectation failed",
+        }
+
+        payload = self.poc_acceptance_payload(results=results)
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual("fail", rows["llm_control"]["status"])
+        self.assertIn("harness LLM scenario failures: 1", rows["llm_control"]["evidence"])
+        self.assertEqual(
+            "enabled",
+            payload["matrix_evidence"]["llm_control"]["scenario_failures"][0][
+                "llm_status"
+            ],
+        )
+
+    def test_poc_acceptance_report_requires_representative_mode_coverage(
+        self,
+    ) -> None:
+        results = [
+            {
+                "sample_id": "sample-word-to-excel",
+                "conversion_mode": "word_to_excel",
+                "representative_mode": "word_to_excel",
+                "llm_scenario": "no_llm",
+                "ok": True,
+                "artifact_expectations_met": True,
+                "audit_present": True,
+                "external_ai_api_guard_violation": False,
+            }
+        ]
+
+        payload = self.poc_acceptance_payload(results=results)
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual("fail", rows["functionality"]["status"])
+        self.assertIn("missing representative modes", rows["functionality"]["evidence"])
+        self.assertEqual("fail", payload["overall_status"])
+
+    def test_poc_acceptance_report_requires_source_category_coverage(
+        self,
+    ) -> None:
+        payload = self.poc_acceptance_payload()
+        results = list(payload["p9_harness_results"])
+        for result in results:
+            if result["sample_category"] == "record_pdf":
+                result["sample_category"] = "text_pdf"
+                break
+
+        payload = self.poc_acceptance_payload(results=results)
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual("fail", rows["functionality"]["status"])
+        self.assertIn("missing source categories", rows["functionality"]["evidence"])
+        self.assertIn("record_pdf", rows["functionality"]["evidence"])
+
+    def test_poc_acceptance_report_counts_only_successful_rows_for_coverage(
+        self,
+    ) -> None:
+        payload = self.poc_acceptance_payload()
+        results = list(payload["p9_harness_results"])
+        for index, result in enumerate(results):
+            if result["sample_category"] == "record_pdf":
+                results[index] = {
+                    **result,
+                    "ok": False,
+                    "failure_reason": "representative fixture path is unavailable",
+                    "artifact_expectations_met": False,
+                }
+                break
+
+        payload = self.poc_acceptance_payload(results=results)
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        functionality_evidence = payload["matrix_evidence"]["functionality"]
+        self.assertEqual("fail", rows["functionality"]["status"])
+        self.assertIn("record_pdf", functionality_evidence["missing_source_categories"])
+        self.assertIn("pdf_to_word", functionality_evidence["missing_representative_modes"])
+        self.assertNotIn("record_pdf", functionality_evidence["observed_source_categories"])
+
+    def test_poc_acceptance_report_requires_target_mode_traceability(
+        self,
+    ) -> None:
+        payload = self.poc_acceptance_payload(
+            source_linkage_rates={
+                "no_llm": 1.0,
+                "standard": 1.0,
+                "high_quality": 0.5,
+            }
+        )
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual("fail", rows["traceability"]["status"])
+        self.assertIn(
+            "High-quality PoC source linkage rate: 0.500",
+            rows["traceability"]["evidence"],
+        )
+        self.assertEqual("fail", payload["overall_status"])
+
+    def test_poc_acceptance_report_surfaces_failed_manual_correction_target(
+        self,
+    ) -> None:
+        payload = self.poc_acceptance_payload(manual_correction_target_met=False)
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual("fail", rows["functionality"]["status"])
+        self.assertIn(
+            "manual correction target met: False",
+            rows["functionality"]["evidence"],
+        )
+        self.assertTrue(
+            any(
+                candidate["title"]
+                == "Close the PoC manual-correction-time acceptance gap"
+                for candidate in payload["follow_up_issue_candidates"]
+            )
+        )
+
+    def test_poc_acceptance_report_fails_reproducibility_without_clean_commit(
+        self,
+    ) -> None:
+        payload = self.poc_acceptance_payload(commit="unknown", commit_is_clean=False)
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual("fail", rows["reproducibility"]["status"])
+        self.assertEqual("unknown", payload["tested_environment"]["commit"])
+        self.assertFalse(payload["tested_environment"]["commit_is_clean"])
+
+    def test_poc_acceptance_report_fails_reproducibility_for_external_evidence(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            external_source = Path(temp_dir) / "external_llm_runs.json"
+
+            payload = self.poc_acceptance_payload(
+                llm_stability_source=external_source,
+            )
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual("fail", rows["reproducibility"]["status"])
+        self.assertIn(
+            "evidence inputs tracked in manifest repo: False",
+            rows["reproducibility"]["evidence"],
+        )
+        self.assertFalse(
+            payload["matrix_evidence"]["reproducibility"][
+                "evidence_inputs_tracked_in_manifest_repo"
+            ]
+        )
+
+    def test_poc_acceptance_report_fails_reproducibility_for_untracked_fixture(
+        self,
+    ) -> None:
+        payload = self.poc_acceptance_payload()
+        results = list(payload["p9_harness_results"])
+        results[0] = {
+            **results[0],
+            "path": "datasets/fixtures/word/untracked-fixture.docx",
+        }
+
+        payload = self.poc_acceptance_payload(results=results)
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual("fail", rows["reproducibility"]["status"])
+        self.assertFalse(
+            payload["matrix_evidence"]["reproducibility"][
+                "evidence_inputs_tracked_in_manifest_repo"
+            ]
+        )
+
+    def test_poc_acceptance_report_fails_reproducibility_for_untracked_comparison_input(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            shutil.copytree(REPO_ROOT / "datasets", temp_root / "datasets")
+            (temp_root / ".gitignore").write_text(
+                "datasets/gold/high_risk_labels_v0.json\n",
+                encoding="utf-8",
+            )
+            subprocess.run(
+                ["git", "init"],
+                cwd=temp_root,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["git", "add", "."],
+                cwd=temp_root,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            payload = self.poc_acceptance_payload(
+                manifest=temp_root / "datasets" / "poc_evaluation_manifest_v1.json",
+                llm_stability_source=(
+                    temp_root / "datasets" / "gold" / "llm_stability_runs_v0.json"
+                ),
+                poc_comparison_source=(
+                    temp_root / "datasets" / "gold" / "poc_mode_comparison_v1.json"
+                ),
+            )
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual("fail", rows["reproducibility"]["status"])
+        self.assertFalse(
+            payload["matrix_evidence"]["reproducibility"][
+                "evidence_inputs_tracked_in_manifest_repo"
+            ]
+        )
+
+    def test_poc_acceptance_report_fails_reproducibility_for_dirty_evaluator(
+        self,
+    ) -> None:
+        payload = self.poc_acceptance_payload(
+            evaluator_commit="evaluator-head",
+            evaluator_commit_is_clean=False,
+        )
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual("fail", rows["reproducibility"]["status"])
+        self.assertEqual(
+            "evaluator-head",
+            payload["tested_environment"]["evaluator_commit"],
+        )
+        self.assertFalse(
+            payload["matrix_evidence"]["reproducibility"][
+                "evaluator_commit_is_clean"
+            ]
+        )
+
+    def test_git_cleanliness_can_ignore_generated_report_output(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            (temp_root / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+            subprocess.run(["git", "init"], cwd=temp_root, check=True, capture_output=True)
+            subprocess.run(["git", "add", "."], cwd=temp_root, check=True, capture_output=True)
+            subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "user.name=VeriDoc Test",
+                    "-c",
+                    "user.email=veridoc-test@example.invalid",
+                    "commit",
+                    "-m",
+                    "seed",
+                ],
+                cwd=temp_root,
+                check=True,
+                capture_output=True,
+            )
+            report_output = temp_root / "reports" / "poc_acceptance.json"
+            report_output.parent.mkdir()
+            report_output.write_text("{}", encoding="utf-8")
+
+            self.assertFalse(evaluate_dataset.current_git_worktree_clean(temp_root))
+            self.assertTrue(
+                evaluate_dataset.current_git_worktree_clean(
+                    temp_root,
+                    ignored_paths=(report_output,),
+                )
+            )
+            self.assertTrue(
+                evaluate_dataset.current_git_worktree_clean(
+                    temp_root,
+                    include_untracked=False,
+                )
+            )
+            (temp_root / "tracked.txt").write_text("modified\n", encoding="utf-8")
+            self.assertFalse(
+                evaluate_dataset.current_git_worktree_clean(
+                    temp_root,
+                    include_untracked=False,
+                )
+            )
+            (temp_root / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+            (temp_root / "other.json").write_text("{}", encoding="utf-8")
+            self.assertFalse(
+                evaluate_dataset.current_git_worktree_clean(
+                    temp_root,
+                    ignored_paths=(report_output,),
+                )
+            )
+
+    def test_poc_acceptance_report_cleanliness_counts_untracked_files(
+        self,
+    ) -> None:
+        payload = self.poc_acceptance_payload()
+        llm_report = evaluate_dataset.evaluate_llm_stability_report(
+            LLM_STABILITY_RUNS_PATH,
+            POC_COMPARISON_PATH,
+        )
+        harness = evaluate_dataset.P9HarnessReport(
+            manifest=POC_EVALUATION_MANIFEST_PATH,
+            results=tuple(payload["p9_harness_results"]),
+            llm_stability=llm_report.llm_stability,
+            poc_mode_comparison=llm_report.poc_mode_comparison,
+            llm_stability_source=LLM_STABILITY_RUNS_PATH,
+            poc_comparison_source=POC_COMPARISON_PATH,
+        )
+        clean_calls: list[dict[str, object]] = []
+
+        def fake_clean(
+            repo_root: Path,
+            *,
+            ignored_paths: tuple[Path, ...] = (),
+            include_untracked: bool = True,
+        ) -> bool:
+            clean_calls.append(
+                {
+                    "repo_root": repo_root,
+                    "ignored_paths": ignored_paths,
+                    "include_untracked": include_untracked,
+                }
+            )
+            return False if include_untracked else True
+
+        generated_report = REPO_ROOT / "reports" / "poc_acceptance.json"
+        with (
+            mock.patch.object(
+                evaluate_dataset,
+                "evaluate_p9_harness",
+                return_value=harness,
+            ),
+            mock.patch.object(
+                evaluate_dataset,
+                "current_git_commit",
+                return_value="tracked-head",
+            ),
+            mock.patch.object(
+                evaluate_dataset,
+                "current_stdout_path",
+                return_value=generated_report,
+            ),
+            mock.patch.object(
+                evaluate_dataset,
+                "current_git_worktree_clean",
+                side_effect=fake_clean,
+            ),
+        ):
+            report = evaluate_dataset.build_poc_acceptance_report(
+                POC_EVALUATION_MANIFEST_PATH,
+            )
+
+        self.assertGreaterEqual(len(clean_calls), 2)
+        self.assertTrue(
+            all(call["include_untracked"] is True for call in clean_calls)
+        )
+        self.assertTrue(
+            all(generated_report in call["ignored_paths"] for call in clean_calls)
+        )
+        payload = report.as_dict()
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual("fail", rows["reproducibility"]["status"])
+
+    def test_poc_acceptance_report_build_path_rejects_external_evidence(
+        self,
+    ) -> None:
+        payload = self.poc_acceptance_payload()
+        llm_report = evaluate_dataset.evaluate_llm_stability_report(
+            LLM_STABILITY_RUNS_PATH,
+            POC_COMPARISON_PATH,
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            external_source = Path(temp_dir) / "external_llm_runs.json"
+            harness = evaluate_dataset.P9HarnessReport(
+                manifest=POC_EVALUATION_MANIFEST_PATH,
+                results=tuple(payload["p9_harness_results"]),
+                llm_stability=llm_report.llm_stability,
+                poc_mode_comparison=llm_report.poc_mode_comparison,
+                llm_stability_source=external_source,
+                poc_comparison_source=POC_COMPARISON_PATH,
+            )
+            with (
+                mock.patch.object(
+                    evaluate_dataset,
+                    "evaluate_p9_harness",
+                    return_value=harness,
+                ) as mocked_harness,
+                mock.patch.object(
+                    evaluate_dataset,
+                    "current_git_commit",
+                    return_value="tracked-head",
+                ),
+                mock.patch.object(
+                    evaluate_dataset,
+                    "current_git_worktree_clean",
+                    return_value=True,
+                ),
+            ):
+                report = evaluate_dataset.build_poc_acceptance_report(
+                    POC_EVALUATION_MANIFEST_PATH,
+                    llm_stability_runs_path=external_source,
+                    poc_comparison_path=POC_COMPARISON_PATH,
+                )
+
+        mocked_harness.assert_called_once_with(
+            POC_EVALUATION_MANIFEST_PATH,
+            llm_stability_runs_path=external_source,
+            poc_comparison_path=POC_COMPARISON_PATH,
+        )
+        payload = report.as_dict()
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual("fail", rows["reproducibility"]["status"])
+        self.assertFalse(
+            payload["matrix_evidence"]["reproducibility"][
+                "evidence_inputs_tracked_in_manifest_repo"
+            ]
+        )
+
+    def test_poc_acceptance_report_resolves_explicit_inputs_from_manifest_repo(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            shutil.copytree(REPO_ROOT / "datasets", temp_root / "datasets")
+            custom_manifest_path = temp_root / "datasets" / "custom_p9_manifest.json"
+            shutil.copy2(POC_EVALUATION_MANIFEST_PATH, custom_manifest_path)
+            relative_stability = Path("datasets/custom/stability_runs.json")
+            relative_comparison = Path("datasets/custom/comparison.json")
+            harness = evaluate_dataset.P9HarnessReport(
+                manifest=custom_manifest_path,
+                results=(),
+                llm_stability=evaluate_dataset.LLMStabilityMetrics(
+                    input_id="synthetic",
+                    run_count=1,
+                    plan_agreement_rate=1.0,
+                    confirmed_value_agreement_rate=1.0,
+                    schema_failure_rate=0.0,
+                    repair_success_rate=1.0,
+                    deterministic_fallback_rate=0.0,
+                    external_ai_api_guard_violation_count=0,
+                    distinct_plan_count=1,
+                    distinct_confirmed_value_count=1,
+                    unstable_example_count=0,
+                    unstable_examples=(),
+                ),
+                poc_mode_comparison=evaluate_dataset.PoCComparisonMetrics(
+                    mode_count=0,
+                    high_risk_false_auto_confirmed_count=0,
+                    high_risk_false_auto_confirmed_target=0,
+                    target_met=True,
+                    manual_correction_time=evaluate_dataset.ManualCorrectionTimeMetrics(
+                        measurement_method="synthetic",
+                        baseline_minutes=1.0,
+                        assisted_minutes=0.5,
+                        reduction_minutes=0.5,
+                        reduction_rate=0.5,
+                        target_reduction_rate=0.5,
+                        target_met=True,
+                    ),
+                    modes=(),
+                    mode_diffs=(),
+                ),
+                llm_stability_source=temp_root / relative_stability,
+                poc_comparison_source=temp_root / relative_comparison,
+            )
+            with (
+                mock.patch.object(
+                    evaluate_dataset,
+                    "evaluate_p9_harness",
+                    return_value=harness,
+                ) as mocked_harness,
+                mock.patch.object(
+                    evaluate_dataset,
+                    "current_git_commit",
+                    return_value="tracked-head",
+                ),
+                mock.patch.object(
+                    evaluate_dataset,
+                    "current_git_worktree_clean",
+                    return_value=True,
+                ),
+            ):
+                evaluate_dataset.build_poc_acceptance_report(
+                    custom_manifest_path,
+                    llm_stability_runs_path=relative_stability,
+                    poc_comparison_path=relative_comparison,
+                )
+
+        mocked_harness.assert_called_once_with(
+            custom_manifest_path.resolve(),
+            llm_stability_runs_path=(temp_root / relative_stability).resolve(),
+            poc_comparison_path=(temp_root / relative_comparison).resolve(),
+        )
+
+    def test_llm_stability_report_resolves_custom_comparison_repo_root(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            shutil.copytree(REPO_ROOT / "datasets", temp_root / "datasets")
+            custom_comparison_path = temp_root / "datasets" / "custom" / "comparison.json"
+            custom_comparison_path.parent.mkdir()
+            shutil.copy2(POC_COMPARISON_PATH, custom_comparison_path)
+
+            with mock.patch.object(
+                evaluate_dataset,
+                "evaluate_poc_mode_comparison",
+                return_value=evaluate_dataset.evaluate_poc_mode_comparison(
+                    self.valid_poc_comparison_data(),
+                    repo_root=REPO_ROOT,
+                ),
+            ) as mocked_comparison:
+                evaluate_dataset.evaluate_llm_stability_report(
+                    temp_root / "datasets" / "gold" / "llm_stability_runs_v0.json",
+                    custom_comparison_path,
+                )
+
+        mocked_comparison.assert_called_once()
+        self.assertEqual(
+            temp_root.resolve(),
+            mocked_comparison.call_args.kwargs["repo_root"].resolve(),
+        )
+
+    def test_p9_harness_passes_manifest_repo_to_llm_stability_report(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            shutil.copytree(REPO_ROOT / "datasets", temp_root / "datasets")
+            custom_manifest_path = temp_root / "datasets" / "custom_p9_manifest.json"
+            shutil.copy2(POC_EVALUATION_MANIFEST_PATH, custom_manifest_path)
+            custom_comparison_path = temp_root / "reports" / "comparison.json"
+            custom_comparison_path.parent.mkdir()
+            shutil.copy2(POC_COMPARISON_PATH, custom_comparison_path)
+            stability_path = temp_root / "datasets" / "gold" / "llm_stability_runs_v0.json"
+            llm_report = evaluate_dataset.evaluate_llm_stability_report(
+                stability_path,
+                custom_comparison_path,
+                repo_root=temp_root,
+            )
+
+            with (
+                mock.patch.object(
+                    evaluate_dataset,
+                    "p9_evaluation_samples",
+                    return_value=(),
+                ),
+                mock.patch.object(
+                    evaluate_dataset,
+                    "evaluate_llm_stability_report",
+                    return_value=llm_report,
+                ) as mocked_llm_report,
+            ):
+                evaluate_dataset.evaluate_p9_harness(
+                    custom_manifest_path,
+                    llm_stability_runs_path=stability_path,
+                    poc_comparison_path=custom_comparison_path,
+                )
+
+        mocked_llm_report.assert_called_once_with(
+            stability_path,
+            custom_comparison_path,
+            repo_root=temp_root.resolve(),
+        )
+
+    def test_poc_acceptance_report_resolves_relative_manifest_before_harness(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            shutil.copytree(REPO_ROOT / "datasets", temp_root / "datasets")
+            custom_manifest_path = temp_root / "datasets" / "custom_p9_manifest.json"
+            shutil.copy2(POC_EVALUATION_MANIFEST_PATH, custom_manifest_path)
+            relative_manifest_path = Path(os.path.relpath(custom_manifest_path, REPO_ROOT))
+            harness = evaluate_dataset.P9HarnessReport(
+                manifest=custom_manifest_path.resolve(),
+                results=(),
+                llm_stability=evaluate_dataset.LLMStabilityMetrics(
+                    input_id="synthetic",
+                    run_count=1,
+                    plan_agreement_rate=1.0,
+                    confirmed_value_agreement_rate=1.0,
+                    schema_failure_rate=0.0,
+                    repair_success_rate=1.0,
+                    deterministic_fallback_rate=0.0,
+                    external_ai_api_guard_violation_count=0,
+                    distinct_plan_count=1,
+                    distinct_confirmed_value_count=1,
+                    unstable_example_count=0,
+                    unstable_examples=(),
+                ),
+                poc_mode_comparison=evaluate_dataset.PoCComparisonMetrics(
+                    mode_count=0,
+                    high_risk_false_auto_confirmed_count=0,
+                    high_risk_false_auto_confirmed_target=0,
+                    target_met=True,
+                    manual_correction_time=evaluate_dataset.ManualCorrectionTimeMetrics(
+                        measurement_method="synthetic",
+                        baseline_minutes=1.0,
+                        assisted_minutes=0.5,
+                        reduction_minutes=0.5,
+                        reduction_rate=0.5,
+                        target_reduction_rate=0.5,
+                        target_met=True,
+                    ),
+                    modes=(),
+                    mode_diffs=(),
+                ),
+                llm_stability_source=(
+                    temp_root / "datasets" / "gold" / "llm_stability_runs_v0.json"
+                ),
+                poc_comparison_source=(
+                    temp_root / "datasets" / "gold" / "poc_mode_comparison_v1.json"
+                ),
+            )
+            with (
+                mock.patch.object(
+                    evaluate_dataset,
+                    "evaluate_p9_harness",
+                    return_value=harness,
+                ) as mocked_harness,
+                mock.patch.object(
+                    evaluate_dataset,
+                    "current_git_commit",
+                    return_value="tracked-head",
+                ),
+                mock.patch.object(
+                    evaluate_dataset,
+                    "current_git_worktree_clean",
+                    return_value=True,
+                ),
+            ):
+                report = evaluate_dataset.build_poc_acceptance_report(
+                    relative_manifest_path,
+                )
+
+        mocked_harness.assert_called_once()
+        self.assertEqual(custom_manifest_path.resolve(), mocked_harness.call_args.args[0])
+        payload = report.as_dict()
+        self.assertEqual(
+            str(custom_manifest_path.resolve()),
+            payload["evidence"]["dataset_manifest"],
+        )
+
     def test_p9_harness_resolves_custom_manifest_under_datasets_from_repo_root(
         self,
     ) -> None:
@@ -313,7 +1374,302 @@ class EvaluateDatasetTest(unittest.TestCase):
 
         payload = report.as_dict()
         self.assertEqual(str(custom_manifest_path), payload["dataset_manifest"])
+        self.assertEqual(temp_root.resolve(), report.repo_root)
+        self.assertNotIn("repo_root", payload)
         self.assertGreater(payload["summary"]["case_count"], 0)
+
+    def test_poc_acceptance_reproducibility_uses_harness_repo_root(
+        self,
+    ) -> None:
+        payload = self.poc_acceptance_payload()
+        llm_report = evaluate_dataset.evaluate_llm_stability_report(
+            LLM_STABILITY_RUNS_PATH,
+            POC_COMPARISON_PATH,
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            shutil.copytree(REPO_ROOT / "datasets", temp_root / "datasets")
+            harness = evaluate_dataset.P9HarnessReport(
+                manifest=evaluate_dataset.DEFAULT_P9_HARNESS_MANIFEST,
+                results=tuple(payload["p9_harness_results"]),
+                llm_stability=llm_report.llm_stability,
+                poc_mode_comparison=llm_report.poc_mode_comparison,
+                llm_stability_source=evaluate_dataset.DEFAULT_LLM_STABILITY_RUNS,
+                poc_comparison_source=evaluate_dataset.DEFAULT_POC_COMPARISON,
+                repo_root=temp_root,
+            )
+            with mock.patch.object(
+                evaluate_dataset,
+                "poc_acceptance_tracked_repo_path",
+                return_value=True,
+            ) as mocked_tracked:
+                tracked = (
+                    evaluate_dataset.poc_acceptance_evidence_inputs_tracked_in_manifest_repo(
+                        harness
+                    )
+                )
+
+        self.assertTrue(tracked)
+        self.assertTrue(mocked_tracked.call_args_list)
+        self.assertEqual(
+            {temp_root.resolve()},
+            {call.args[1] for call in mocked_tracked.call_args_list},
+        )
+
+    def test_poc_acceptance_report_uses_custom_manifest_repo_for_commit(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            shutil.copytree(REPO_ROOT / "datasets", temp_root / "datasets")
+            custom_manifest_path = temp_root / "datasets" / "custom_p9_manifest.json"
+            shutil.copy2(POC_EVALUATION_MANIFEST_PATH, custom_manifest_path)
+            with mock.patch.object(
+                evaluate_dataset,
+                "current_git_commit",
+                return_value="manifest-head",
+            ) as mocked_commit:
+                report = evaluate_dataset.build_poc_acceptance_report(
+                    custom_manifest_path,
+                    llm_stability_runs_path=(
+                        temp_root / "datasets" / "gold" / "llm_stability_runs_v0.json"
+                    ),
+                    poc_comparison_path=(
+                        temp_root / "datasets" / "gold" / "poc_mode_comparison_v1.json"
+                    ),
+                )
+
+        mocked_commit.assert_has_calls(
+            [mock.call(temp_root.resolve()), mock.call(REPO_ROOT)]
+        )
+        payload = report.as_dict()
+        self.assertEqual("manifest-head", payload["tested_environment"]["commit"])
+        self.assertEqual(
+            "manifest-head",
+            payload["tested_environment"]["evaluator_commit"],
+        )
+        self.assertEqual(
+            str(custom_manifest_path.resolve()),
+            payload["evidence"]["dataset_manifest"],
+        )
+
+    def test_poc_acceptance_report_resolves_implicit_comparison_inputs_from_manifest_repo(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            shutil.copytree(REPO_ROOT / "datasets", temp_root / "datasets")
+            custom_manifest_path = temp_root / "datasets" / "custom_p9_manifest.json"
+            shutil.copy2(POC_EVALUATION_MANIFEST_PATH, custom_manifest_path)
+            with (
+                mock.patch.object(
+                    evaluate_dataset,
+                    "current_git_commit",
+                    return_value="manifest-head",
+                ),
+                mock.patch.object(
+                    evaluate_dataset,
+                    "current_git_worktree_clean",
+                    return_value=True,
+                ),
+            ):
+                report = evaluate_dataset.build_poc_acceptance_report(
+                    custom_manifest_path,
+                )
+
+        payload = report.as_dict()
+        self.assertEqual(
+            str(
+                temp_root.resolve()
+                / "datasets"
+                / "gold"
+                / "llm_stability_runs_v0.json"
+            ),
+            payload["evidence"]["llm_stability_runs"],
+        )
+        self.assertEqual(
+            str(
+                temp_root.resolve()
+                / "datasets"
+                / "gold"
+                / "poc_mode_comparison_v1.json"
+            ),
+            payload["evidence"]["poc_mode_comparison"],
+        )
+
+    def test_poc_acceptance_report_resolves_default_inputs_from_repo_when_cwd_differs(
+        self,
+    ) -> None:
+        payload = self.poc_acceptance_payload()
+        llm_report = evaluate_dataset.evaluate_llm_stability_report(
+            LLM_STABILITY_RUNS_PATH,
+            POC_COMPARISON_PATH,
+        )
+        harness = evaluate_dataset.P9HarnessReport(
+            manifest=POC_EVALUATION_MANIFEST_PATH.resolve(),
+            results=tuple(payload["p9_harness_results"]),
+            llm_stability=llm_report.llm_stability,
+            poc_mode_comparison=llm_report.poc_mode_comparison,
+            llm_stability_source=LLM_STABILITY_RUNS_PATH.resolve(),
+            poc_comparison_source=POC_COMPARISON_PATH.resolve(),
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            previous_cwd = Path.cwd()
+            os.chdir(temp_dir)
+            try:
+                with (
+                    mock.patch.object(
+                        evaluate_dataset,
+                        "evaluate_p9_harness",
+                        return_value=harness,
+                    ) as mocked_harness,
+                    mock.patch.object(
+                        evaluate_dataset,
+                        "current_git_commit",
+                        return_value="tracked-head",
+                    ),
+                    mock.patch.object(
+                        evaluate_dataset,
+                        "current_git_worktree_clean",
+                        return_value=True,
+                    ),
+                ):
+                    report = evaluate_dataset.build_poc_acceptance_report(
+                        POC_EVALUATION_MANIFEST_PATH.resolve(),
+                    )
+            finally:
+                os.chdir(previous_cwd)
+
+        mocked_harness.assert_called_once_with(
+            POC_EVALUATION_MANIFEST_PATH.resolve(),
+            llm_stability_runs_path=LLM_STABILITY_RUNS_PATH.resolve(),
+            poc_comparison_path=POC_COMPARISON_PATH.resolve(),
+        )
+        payload = report.as_dict()
+        self.assertEqual(
+            str(evaluate_dataset.DEFAULT_LLM_STABILITY_RUNS),
+            payload["evidence"]["llm_stability_runs"],
+        )
+        self.assertEqual(
+            str(evaluate_dataset.DEFAULT_POC_COMPARISON),
+            payload["evidence"]["poc_mode_comparison"],
+        )
+
+    def test_poc_acceptance_report_resolves_default_manifest_from_repo_when_cwd_differs(
+        self,
+    ) -> None:
+        payload = self.poc_acceptance_payload()
+        llm_report = evaluate_dataset.evaluate_llm_stability_report(
+            LLM_STABILITY_RUNS_PATH,
+            POC_COMPARISON_PATH,
+        )
+        harness = evaluate_dataset.P9HarnessReport(
+            manifest=POC_EVALUATION_MANIFEST_PATH.resolve(),
+            results=tuple(payload["p9_harness_results"]),
+            llm_stability=llm_report.llm_stability,
+            poc_mode_comparison=llm_report.poc_mode_comparison,
+            llm_stability_source=LLM_STABILITY_RUNS_PATH.resolve(),
+            poc_comparison_source=POC_COMPARISON_PATH.resolve(),
+            repo_root=REPO_ROOT,
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            previous_cwd = Path.cwd()
+            os.chdir(temp_dir)
+            try:
+                with (
+                    mock.patch.object(
+                        evaluate_dataset,
+                        "evaluate_p9_harness",
+                        return_value=harness,
+                    ) as mocked_harness,
+                    mock.patch.object(
+                        evaluate_dataset,
+                        "current_git_commit",
+                        return_value="tracked-head",
+                    ),
+                    mock.patch.object(
+                        evaluate_dataset,
+                        "current_git_worktree_clean",
+                        return_value=True,
+                    ),
+                ):
+                    report = evaluate_dataset.build_poc_acceptance_report()
+            finally:
+                os.chdir(previous_cwd)
+
+        mocked_harness.assert_called_once_with(
+            POC_EVALUATION_MANIFEST_PATH.resolve(),
+            llm_stability_runs_path=LLM_STABILITY_RUNS_PATH.resolve(),
+            poc_comparison_path=POC_COMPARISON_PATH.resolve(),
+        )
+        payload = report.as_dict()
+        self.assertEqual(
+            str(evaluate_dataset.DEFAULT_P9_HARNESS_MANIFEST),
+            payload["evidence"]["dataset_manifest"],
+        )
+
+    def test_poc_acceptance_report_resolves_explicit_inputs_from_repo_when_cwd_differs(
+        self,
+    ) -> None:
+        payload = self.poc_acceptance_payload()
+        llm_report = evaluate_dataset.evaluate_llm_stability_report(
+            LLM_STABILITY_RUNS_PATH,
+            POC_COMPARISON_PATH,
+        )
+        harness = evaluate_dataset.P9HarnessReport(
+            manifest=POC_EVALUATION_MANIFEST_PATH.resolve(),
+            results=tuple(payload["p9_harness_results"]),
+            llm_stability=llm_report.llm_stability,
+            poc_mode_comparison=llm_report.poc_mode_comparison,
+            llm_stability_source=LLM_STABILITY_RUNS_PATH.resolve(),
+            poc_comparison_source=POC_COMPARISON_PATH.resolve(),
+            repo_root=REPO_ROOT,
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            previous_cwd = Path.cwd()
+            os.chdir(temp_dir)
+            try:
+                with (
+                    mock.patch.object(
+                        evaluate_dataset,
+                        "evaluate_p9_harness",
+                        return_value=harness,
+                    ) as mocked_harness,
+                    mock.patch.object(
+                        evaluate_dataset,
+                        "current_git_commit",
+                        return_value="tracked-head",
+                    ),
+                    mock.patch.object(
+                        evaluate_dataset,
+                        "current_git_worktree_clean",
+                        return_value=True,
+                    ),
+                ):
+                    report = evaluate_dataset.build_poc_acceptance_report(
+                        POC_EVALUATION_MANIFEST_PATH.resolve(),
+                        llm_stability_runs_path=(
+                            evaluate_dataset.DEFAULT_LLM_STABILITY_RUNS
+                        ),
+                        poc_comparison_path=evaluate_dataset.DEFAULT_POC_COMPARISON,
+                    )
+            finally:
+                os.chdir(previous_cwd)
+
+        mocked_harness.assert_called_once_with(
+            POC_EVALUATION_MANIFEST_PATH.resolve(),
+            llm_stability_runs_path=LLM_STABILITY_RUNS_PATH.resolve(),
+            poc_comparison_path=POC_COMPARISON_PATH.resolve(),
+        )
+        payload = report.as_dict()
+        self.assertEqual(
+            str(evaluate_dataset.DEFAULT_LLM_STABILITY_RUNS),
+            payload["evidence"]["llm_stability_runs"],
+        )
+        self.assertEqual(
+            str(evaluate_dataset.DEFAULT_POC_COMPARISON),
+            payload["evidence"]["poc_mode_comparison"],
+        )
 
     def test_p9_harness_counts_blocked_conversion_status_as_failure(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".docx") as fixture_file:

@@ -8,13 +8,16 @@ from collections import Counter
 import json
 import math
 import os
+import platform
 import shlex
+import subprocess
 import sys
 import tempfile
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path, PureWindowsPath
-from typing import Any
+from typing import Any, Iterable
 from xml.etree import ElementTree
 from zipfile import ZipFile
 
@@ -35,6 +38,7 @@ LLM_STABILITY_RUNS_SCHEMA_VERSION = "veridoc-llm-stability-runs/v0"
 POC_MODE_COMPARISON_SCHEMA_VERSION = "veridoc-poc-mode-comparison/v1"
 GMP_ACCEPTANCE_SCHEMA_VERSION = "veridoc-gmp-acceptance/v1"
 P9_HARNESS_SCHEMA_VERSION = "veridoc-p9-poc-evaluation-harness/v0"
+POC_ACCEPTANCE_REPORT_SCHEMA_VERSION = "veridoc-poc-acceptance-report/v0"
 P9_EVALUATION_MANIFEST_SCHEMA_VERSION = "veridoc-poc-evaluation-dataset/v1"
 HIGH_RISK_LABELS_SCHEMA_VERSION = "veridoc-high-risk-labels/v0"
 FIXTURE_MANIFEST_SCHEMA_VERSION = "veridoc-eval-fixtures/v0"
@@ -297,6 +301,9 @@ class P9HarnessReport:
     results: tuple[dict[str, object], ...]
     llm_stability: LLMStabilityMetrics
     poc_mode_comparison: PoCComparisonMetrics
+    llm_stability_source: Path
+    poc_comparison_source: Path
+    repo_root: Path | None = None
 
     @property
     def failure_count(self) -> int:
@@ -327,9 +334,316 @@ class P9HarnessReport:
             },
             "results": list(self.results),
             "phase8_comparison": {
+                "llm_stability_source": str(self.llm_stability_source),
+                "poc_comparison_source": str(self.poc_comparison_source),
                 "llm_stability": self.llm_stability.as_dict(),
                 "poc_mode_comparison": self.poc_mode_comparison.as_dict(),
             },
+        }
+
+
+@dataclass(frozen=True)
+class PoCAcceptanceReport:
+    p9_harness: P9HarnessReport
+    generated_at: str
+    commit: str
+    commit_is_clean: bool = True
+    generation_command: str = (
+        "python3 scripts/evaluate_dataset.py --poc-acceptance-report"
+    )
+    evaluator_commit: str | None = None
+    evaluator_commit_is_clean: bool | None = None
+
+    def as_dict(self) -> dict[str, object]:
+        harness_payload = self.p9_harness.as_dict()
+        summary = harness_payload["summary"]
+        assert isinstance(summary, dict)
+        evaluator_commit = self.evaluator_commit or self.commit
+        evaluator_commit_is_clean = (
+            self.commit_is_clean
+            if self.evaluator_commit_is_clean is None
+            else self.evaluator_commit_is_clean
+        )
+        poc_comparison = self.p9_harness.poc_mode_comparison
+        llm_stability = self.p9_harness.llm_stability
+        results = list(self.p9_harness.results)
+        failed_results = [result for result in results if result.get("ok") is not True]
+        usable_results = [result for result in results if result.get("ok") is True]
+        artifact_failures = [
+            result
+            for result in results
+            if result.get("artifact_expectations_met") is not True
+        ]
+        structured_output_failures = poc_acceptance_structured_output_failures(results)
+        unaudited_results = [
+            result for result in results if result.get("audit_present") is not True
+        ]
+        by_mode = poc_acceptance_conversion_mode_results(results)
+        observed_representative_modes = {
+            str(result.get("representative_mode"))
+            for result in usable_results
+            if result.get("representative_mode") is not None
+        }
+        missing_representative_modes = sorted(
+            set(P9_REPRESENTATIVE_FLAGS_BY_MODE) - observed_representative_modes
+        )
+        observed_source_categories = {
+            str(result.get("sample_category"))
+            for result in usable_results
+            if result.get("sample_category") is not None
+        }
+        missing_source_categories = sorted(
+            P9_REQUIRED_SOURCE_CATEGORIES - observed_source_categories
+        )
+        external_violation_count = int(summary["external_ai_api_guard_violation_count"])
+        llm_scenario_failures = poc_acceptance_llm_scenario_failures(results)
+        high_quality_mode = poc_acceptance_required_mode(
+            poc_comparison,
+            "high_quality",
+        )
+        high_quality_source_linkage_rate = (
+            high_quality_mode.source_linkage_rate if high_quality_mode else 0.0
+        )
+        functionality_status = (
+            "fail"
+            if (
+                failed_results
+                or missing_representative_modes
+                or missing_source_categories
+                or not poc_comparison.manual_correction_time.target_met
+            )
+            else "pass"
+        )
+        llm_control_status = (
+            "fail"
+            if external_violation_count or llm_scenario_failures
+            else "unknown"
+            if llm_stability.unstable_example_count
+            else "pass"
+        )
+        evidence_inputs_tracked_in_manifest_repo = (
+            poc_acceptance_evidence_inputs_tracked_in_manifest_repo(self.p9_harness)
+        )
+        reproducibility_status = (
+            "pass"
+            if (
+                self.commit != "unknown"
+                and self.commit_is_clean
+                and evaluator_commit != "unknown"
+                and evaluator_commit_is_clean
+                and evidence_inputs_tracked_in_manifest_repo
+            )
+            else "fail"
+        )
+        acceptance_matrix = [
+            poc_acceptance_row(
+                "functionality",
+                "機能",
+                functionality_status,
+                (
+                    f"{summary['completed_count']} of {summary['case_count']} "
+                    "representative conversion runs completed without harness "
+                    "failures; missing representative modes: "
+                    f"{missing_representative_modes or 'none'}; missing source "
+                    f"categories: {missing_source_categories or 'none'}; manual "
+                    "correction target met: "
+                    f"{poc_comparison.manual_correction_time.target_met}."
+                ),
+                [
+                    "p9_harness.summary.completed_count",
+                    "p9_harness.results",
+                    "p9_harness.results[].representative_mode",
+                    "p9_harness.results[].sample_category",
+                    "poc_mode_comparison.manual_correction_time.target_met",
+                ],
+            ),
+            poc_acceptance_row(
+                "structured_output",
+                "構造化",
+                "fail" if structured_output_failures else "pass",
+                (
+                    f"{len(structured_output_failures)} runs failed primary "
+                    "artifact structure or expectations."
+                ),
+                [
+                    "p9_harness.results[].artifact_expectations_met",
+                    "p9_harness.results[].failure_reason",
+                ],
+            ),
+            poc_acceptance_row(
+                "llm_control",
+                "LLM制御",
+                llm_control_status,
+                (
+                    "External AI API guard violations: "
+                    f"{external_violation_count}; unstable LLM examples: "
+                    f"{llm_stability.unstable_example_count}; harness LLM "
+                    f"scenario failures: {len(llm_scenario_failures)}."
+                ),
+                [
+                    "p9_harness.summary.external_ai_api_guard_violation_count",
+                    "p9_harness.results[].llm_scenario",
+                    "p9_harness.results[].llm_status",
+                    "llm_stability_comparison.unstable_examples",
+                ],
+            ),
+            poc_acceptance_row(
+                "traceability",
+                "追跡性",
+                "pass" if high_quality_source_linkage_rate >= 1.0 else "fail",
+                (
+                    "High-quality PoC source linkage rate: "
+                    f"{high_quality_source_linkage_rate:.3f}."
+                ),
+                ["poc_mode_comparison.modes[].source_linkage_rate"],
+            ),
+            poc_acceptance_row(
+                "safety",
+                "安全性",
+                "pass"
+                if (
+                    poc_comparison.high_risk_false_auto_confirmed_count
+                    <= poc_comparison.high_risk_false_auto_confirmed_target
+                    and external_violation_count == 0
+                )
+                else "fail",
+                (
+                    "High-risk false auto-confirmed count: "
+                    f"{poc_comparison.high_risk_false_auto_confirmed_count}; "
+                    f"target: {poc_comparison.high_risk_false_auto_confirmed_target}."
+                ),
+                [
+                    "poc_mode_comparison.high_risk_false_auto_confirmed_count",
+                    "p9_harness.summary.external_ai_api_guard_violation_count",
+                ],
+            ),
+            poc_acceptance_row(
+                "logs",
+                "ログ",
+                "fail" if unaudited_results else "pass",
+                f"{len(unaudited_results)} harness rows lacked audit evidence.",
+                ["p9_harness.results[].audit_present"],
+            ),
+            poc_acceptance_row(
+                "security",
+                "セキュリティ",
+                "fail" if external_violation_count else "unknown",
+                (
+                    "External AI API guard violations: "
+                    f"{external_violation_count}; authenticated PoC API session "
+                    "checked: False."
+                ),
+                [
+                    "README.md Local PoC API authentication",
+                    "p9_harness.summary.external_ai_api_guard_violation_count",
+                ],
+            ),
+            poc_acceptance_row(
+                "reproducibility",
+                "再現性",
+                reproducibility_status,
+                (
+                    "Report records commit, dataset manifest, comparison "
+                    "inputs, and the generation command; commit is "
+                    f"{self.commit!r}; worktree clean: {self.commit_is_clean}; "
+                    "evidence inputs tracked in manifest repo: "
+                    f"{evidence_inputs_tracked_in_manifest_repo}."
+                ),
+                ["tested_environment", "evidence"],
+            ),
+        ]
+        criterion_status_counts = poc_acceptance_criterion_status_counts(
+            acceptance_matrix
+        )
+        matrix_evidence = poc_acceptance_matrix_evidence(
+            failed_results=failed_results,
+            artifact_failures=artifact_failures,
+            structured_output_failures=structured_output_failures,
+            unaudited_results=unaudited_results,
+            llm_scenario_failures=llm_scenario_failures,
+            observed_representative_modes=sorted(observed_representative_modes),
+            missing_representative_modes=missing_representative_modes,
+            observed_source_categories=sorted(observed_source_categories),
+            missing_source_categories=missing_source_categories,
+            high_quality_source_linkage_rate=high_quality_source_linkage_rate,
+            external_violation_count=external_violation_count,
+            poc_comparison=poc_comparison,
+            llm_stability=llm_stability,
+            commit=self.commit,
+            commit_is_clean=self.commit_is_clean,
+            evaluator_commit=evaluator_commit,
+            evaluator_commit_is_clean=evaluator_commit_is_clean,
+            evidence_inputs_tracked_in_manifest_repo=(
+                evidence_inputs_tracked_in_manifest_repo
+            ),
+        )
+
+        return {
+            "schema_version": POC_ACCEPTANCE_REPORT_SCHEMA_VERSION,
+            "title": "Phase 9 PoC Acceptance Report",
+            "criteria_source": "15.2_PoC受入基準",
+            "criteria_source_sections": ["§2", "§3", "§4", "§5", "§6"],
+            "generated_at": self.generated_at,
+            "tested_environment": {
+                "commit": self.commit,
+                "commit_is_clean": self.commit_is_clean,
+                "evaluator_commit": evaluator_commit,
+                "evaluator_commit_is_clean": evaluator_commit_is_clean,
+                "python": platform.python_version(),
+                "platform": platform.platform(),
+            },
+            "evidence": {
+                "dataset_manifest": str(
+                    poc_acceptance_top_level_evidence_path(self.p9_harness.manifest)
+                ),
+                "llm_stability_runs": str(
+                    poc_acceptance_top_level_evidence_path(
+                        self.p9_harness.llm_stability_source
+                    )
+                ),
+                "poc_mode_comparison": str(
+                    poc_acceptance_top_level_evidence_path(
+                        self.p9_harness.poc_comparison_source
+                    )
+                ),
+                "generation_command": self.generation_command,
+            },
+            "overall_status": poc_acceptance_overall_status(acceptance_matrix),
+            "criterion_status_counts": criterion_status_counts,
+            "acceptance_matrix": acceptance_matrix,
+            "matrix_evidence": matrix_evidence,
+            "fail_closed_conditions": poc_acceptance_fail_closed_conditions(
+                external_violation_count=external_violation_count,
+                poc_comparison=poc_comparison,
+                unaudited_results=unaudited_results,
+                llm_stability=llm_stability,
+                llm_scenario_failures=llm_scenario_failures,
+                structured_output_failures=structured_output_failures,
+            ),
+            "conversion_mode_results": by_mode,
+            "llm_stability_comparison": llm_stability.as_dict(),
+            "poc_mode_comparison": poc_comparison.as_dict(),
+            "p9_harness": harness_payload,
+            "p9_harness_results": results,
+            "review_ui_observations": {
+                "mode_diffs": list(poc_comparison.mode_diffs),
+                "manual_correction_time": poc_comparison.manual_correction_time.as_dict(),
+                "requires_review_count_by_mode": {
+                    mode.mode: mode.requires_review_count
+                    for mode in poc_comparison.modes
+                },
+                "warning_count_by_mode": {
+                    mode.mode: mode.warning_count for mode in poc_comparison.modes
+                },
+            },
+            "known_limitations": poc_acceptance_known_limitations(failed_results),
+            "follow_up_issue_candidates": poc_acceptance_follow_up_candidates(
+                failed_results,
+                llm_stability,
+                unaudited_results,
+                poc_comparison,
+            ),
+            "p9_harness_summary": summary,
         }
 
 
@@ -884,6 +1198,7 @@ def p9_result_for_unavailable_fixture(
         "fixture_id": fixture.get("id"),
         "source_fixture_id": fixture.get("fixture_id"),
         "title": fixture.get("title"),
+        "sample_category": fixture.get("sample_category"),
         "source_type": fixture.get("source_type"),
         "format": fixture.get("format"),
         "path": fixture.get("path"),
@@ -1292,6 +1607,7 @@ def p9_conversion_result(
         "fixture_id": fixture.get("id"),
         "source_fixture_id": fixture.get("fixture_id"),
         "title": fixture.get("title"),
+        "sample_category": fixture.get("sample_category"),
         "source_type": fixture.get("source_type"),
         "format": fixture.get("format"),
         "path": fixture.get("path"),
@@ -1369,13 +1685,729 @@ def evaluate_p9_harness(
     llm_report = evaluate_llm_stability_report(
         llm_stability_runs_path,
         poc_comparison_path,
+        repo_root=repo_root,
     )
     return P9HarnessReport(
         manifest=manifest_path,
         results=tuple(results),
         llm_stability=llm_report.llm_stability,
         poc_mode_comparison=llm_report.poc_mode_comparison,
+        llm_stability_source=llm_stability_runs_path,
+        poc_comparison_source=poc_comparison_path,
+        repo_root=repo_root,
     )
+
+
+def current_git_commit(repo_root: Path = REPO_ROOT) -> str:
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+    commit = completed.stdout.strip()
+    return commit if commit else "unknown"
+
+
+def current_stdout_path() -> Path | None:
+    for fd_path in (Path("/proc/self/fd/1"), Path("/dev/fd/1")):
+        try:
+            target = os.readlink(fd_path)
+        except OSError:
+            continue
+        path = Path(target)
+        if path.is_absolute():
+            return path
+    return None
+
+
+def git_status_exclude_pathspecs(
+    repo_root: Path,
+    ignored_paths: Iterable[Path],
+) -> list[str]:
+    pathspecs: list[str] = []
+    resolved_root = repo_root.resolve()
+    for ignored_path in ignored_paths:
+        try:
+            resolved_ignored = ignored_path.resolve()
+            relative_ignored = resolved_ignored.relative_to(resolved_root)
+        except (OSError, ValueError):
+            continue
+        pathspecs.append(f":(exclude){relative_ignored.as_posix()}")
+    return pathspecs
+
+
+def current_git_worktree_clean(
+    repo_root: Path = REPO_ROOT,
+    *,
+    ignored_paths: Iterable[Path] = (),
+    include_untracked: bool = True,
+) -> bool:
+    command = [
+        "git",
+        "status",
+        "--porcelain",
+        "--untracked-files=all" if include_untracked else "--untracked-files=no",
+    ]
+    exclude_pathspecs = git_status_exclude_pathspecs(repo_root, ignored_paths)
+    if exclude_pathspecs:
+        command.extend(["--", ".", *exclude_pathspecs])
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return False
+    return completed.stdout.strip() == ""
+
+
+def poc_acceptance_manifest_default_path(repo_root: Path, default_path: Path) -> Path:
+    if default_path.is_absolute():
+        return default_path
+    return repo_root / default_path
+
+
+def poc_acceptance_manifest_input_path(repo_root: Path, input_path: Path) -> Path:
+    if input_path.is_absolute():
+        return input_path
+    return repo_root / input_path
+
+
+def poc_acceptance_top_level_evidence_path(path: Path) -> Path:
+    try:
+        repo_root = poc_acceptance_report_repo_root(path)
+    except (EvaluationCaseError, OSError):
+        repo_root = REPO_ROOT
+    if repo_root.resolve() != REPO_ROOT.resolve() or not path.is_absolute():
+        return path
+    try:
+        return path.resolve().relative_to(repo_root.resolve())
+    except (OSError, ValueError):
+        return path
+
+
+def poc_acceptance_report_manifest_path(manifest_path: Path) -> Path:
+    if not manifest_path.is_absolute() and manifest_path == DEFAULT_P9_HARNESS_MANIFEST:
+        return REPO_ROOT / manifest_path
+    return manifest_path
+
+
+def build_poc_acceptance_report(
+    manifest_path: Path = DEFAULT_P9_HARNESS_MANIFEST,
+    *,
+    llm_stability_runs_path: Path | None = None,
+    poc_comparison_path: Path | None = None,
+    generation_command: str = (
+        "python3 scripts/evaluate_dataset.py --poc-acceptance-report"
+    ),
+) -> PoCAcceptanceReport:
+    report_manifest_path = poc_acceptance_report_manifest_path(manifest_path)
+    resolved_manifest_path = report_manifest_path.resolve()
+    manifest_repo_root = p9_manifest_repo_root(resolved_manifest_path)
+    evaluated_manifest_path = (
+        manifest_path
+        if (
+            manifest_repo_root.resolve() == REPO_ROOT.resolve()
+            and Path.cwd().resolve() == REPO_ROOT.resolve()
+            and not manifest_path.is_absolute()
+        )
+        else resolved_manifest_path
+    )
+    resolved_llm_stability_runs_path = (
+        poc_acceptance_manifest_input_path(manifest_repo_root, llm_stability_runs_path)
+        if llm_stability_runs_path is not None
+        else poc_acceptance_manifest_default_path(
+            manifest_repo_root,
+            DEFAULT_LLM_STABILITY_RUNS,
+        )
+    )
+    resolved_poc_comparison_path = (
+        poc_acceptance_manifest_input_path(manifest_repo_root, poc_comparison_path)
+        if poc_comparison_path is not None
+        else poc_acceptance_manifest_default_path(
+            manifest_repo_root,
+            DEFAULT_POC_COMPARISON,
+        )
+    )
+    p9_harness = evaluate_p9_harness(
+        evaluated_manifest_path,
+        llm_stability_runs_path=resolved_llm_stability_runs_path,
+        poc_comparison_path=resolved_poc_comparison_path,
+    )
+    ignored_cleanliness_paths = tuple(
+        path for path in (current_stdout_path(),) if path is not None
+    )
+    return PoCAcceptanceReport(
+        p9_harness=p9_harness,
+        generated_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        commit=current_git_commit(manifest_repo_root),
+        commit_is_clean=current_git_worktree_clean(
+            manifest_repo_root,
+            ignored_paths=ignored_cleanliness_paths,
+        ),
+        generation_command=generation_command,
+        evaluator_commit=current_git_commit(REPO_ROOT),
+        evaluator_commit_is_clean=current_git_worktree_clean(
+            REPO_ROOT,
+            ignored_paths=ignored_cleanliness_paths,
+        ),
+    )
+
+
+def poc_acceptance_generation_command(
+    *,
+    manifest_path: Path,
+    llm_stability_runs_path: Path | None,
+    poc_comparison_path: Path | None,
+) -> str:
+    command = ["python3", "scripts/evaluate_dataset.py", "--poc-acceptance-report"]
+    if manifest_path != DEFAULT_P9_HARNESS_MANIFEST:
+        command.append(str(manifest_path))
+    if llm_stability_runs_path is not None:
+        command.extend(["--llm-stability-runs", str(llm_stability_runs_path)])
+    if poc_comparison_path is not None:
+        command.extend(["--poc-comparison", str(poc_comparison_path)])
+    return shlex.join(command)
+
+
+def poc_acceptance_required_mode(
+    poc_comparison: PoCComparisonMetrics,
+    mode_name: str,
+) -> PoCModeMetrics | None:
+    for mode in poc_comparison.modes:
+        if mode.mode == mode_name:
+            return mode
+    return None
+
+
+def poc_acceptance_llm_scenario_failures(
+    results: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    failures: list[dict[str, object]] = []
+    for result in results:
+        if poc_acceptance_result_violates_llm_scenario(result):
+            failures.append(result)
+    return failures
+
+
+def poc_acceptance_result_violates_llm_scenario(result: dict[str, object]) -> bool:
+    llm_scenario = result.get("llm_scenario")
+    if llm_scenario not in P9_LLM_SCENARIOS:
+        return False
+    reason = str(result.get("failure_reason") or "")
+    if f"{llm_scenario} scenario" in reason:
+        return True
+    llm_status = result.get("llm_status")
+    if llm_scenario == "no_llm":
+        if result.get("llm_requested") is True:
+            return True
+        return llm_status not in {None, "not_run", "disabled"}
+    if llm_scenario == "llm_requested":
+        if llm_status == "disabled":
+            return True
+        if result.get("ok") is True and llm_status not in {"enabled", "blocked"}:
+            return True
+    return False
+
+
+def poc_acceptance_structured_output_failures(
+    results: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    failures: list[dict[str, object]] = []
+    for result in results:
+        reason = str(result.get("failure_reason") or "")
+        if (
+            result.get("artifact_expectations_met") is not True
+            or "expected exactly one primary artifact" in reason
+        ):
+            failures.append(result)
+    return failures
+
+
+def poc_acceptance_report_repo_root(manifest_path: Path) -> Path:
+    manifest = manifest_path if manifest_path.is_absolute() else REPO_ROOT / manifest_path
+    return p9_manifest_repo_root(manifest.resolve())
+
+
+def poc_acceptance_harness_repo_root(p9_harness: P9HarnessReport) -> Path:
+    if p9_harness.repo_root is not None:
+        return p9_harness.repo_root.resolve()
+    return poc_acceptance_report_repo_root(p9_harness.manifest)
+
+
+def poc_acceptance_path_in_repo(path: Path, repo_root: Path) -> bool:
+    resolved_root = repo_root.resolve()
+    candidate = path if path.is_absolute() else resolved_root / path
+    try:
+        resolved_candidate = candidate.resolve()
+    except OSError:
+        return False
+    return (
+        resolved_candidate == resolved_root
+        or resolved_candidate.is_relative_to(resolved_root)
+    )
+
+
+def poc_acceptance_tracked_repo_path(path: Path, repo_root: Path) -> bool:
+    if not poc_acceptance_path_in_repo(path, repo_root):
+        return False
+    resolved_root = repo_root.resolve()
+    candidate = path if path.is_absolute() else resolved_root / path
+    try:
+        relative_candidate = candidate.resolve().relative_to(resolved_root)
+        completed = subprocess.run(
+            [
+                "git",
+                "ls-files",
+                "--error-unmatch",
+                "--",
+                relative_candidate.as_posix(),
+            ],
+            cwd=resolved_root,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return False
+    return completed.returncode == 0
+
+
+def poc_acceptance_p9_input_paths(p9_harness: P9HarnessReport) -> tuple[Path, ...]:
+    repo_root = poc_acceptance_harness_repo_root(p9_harness)
+    paths: list[Path] = [
+        p9_harness.manifest,
+        p9_harness.llm_stability_source,
+        p9_harness.poc_comparison_source,
+    ]
+    paths.extend(
+        poc_acceptance_poc_comparison_input_paths(
+            p9_harness.poc_comparison_source,
+            repo_root,
+        )
+    )
+    try:
+        manifest = load_json(
+            p9_harness.manifest
+            if p9_harness.manifest.is_absolute()
+            else repo_root / p9_harness.manifest
+        )
+        paths.append(p9_fixture_manifest_path(manifest, repo_root))
+    except (EvaluationCaseError, OSError, json.JSONDecodeError):
+        paths.append(repo_root / EXPECTED_DATASET_MANIFEST)
+    for result in p9_harness.results:
+        result_path = result.get("path")
+        if isinstance(result_path, str) and result_path:
+            paths.append(Path(result_path))
+
+    unique_paths: list[Path] = []
+    seen_paths: set[str] = set()
+    for path in paths:
+        candidate = path if path.is_absolute() else repo_root / path
+        key = str(candidate)
+        if key not in seen_paths:
+            unique_paths.append(path)
+            seen_paths.add(key)
+    return tuple(unique_paths)
+
+
+def poc_acceptance_poc_comparison_input_paths(
+    poc_comparison_source: Path,
+    repo_root: Path,
+) -> tuple[Path, ...]:
+    comparison_path = (
+        poc_comparison_source
+        if poc_comparison_source.is_absolute()
+        else repo_root / poc_comparison_source
+    )
+    paths: list[Path] = []
+    try:
+        comparison_data = load_json(comparison_path)
+        paths.extend(
+            [
+                evaluation_cases_path_from_comparison(comparison_data, repo_root),
+                high_risk_labels_path_from_comparison(comparison_data, repo_root),
+            ]
+        )
+        fixture_manifest_path = manifest_path_from_cases(comparison_data, repo_root)
+        paths.append(fixture_manifest_path)
+        fixture_paths = fixture_paths_from_manifest(
+            load_json(fixture_manifest_path),
+            repo_root,
+        )
+        paths.extend(fixture_paths.values())
+    except (EvaluationCaseError, OSError, json.JSONDecodeError):
+        paths.extend(
+            [
+                repo_root / EXPECTED_EVALUATION_CASES,
+                repo_root / EXPECTED_HIGH_RISK_LABELS,
+                repo_root / EXPECTED_DATASET_MANIFEST,
+            ]
+        )
+    return tuple(paths)
+
+
+def poc_acceptance_evidence_inputs_tracked_in_manifest_repo(
+    p9_harness: P9HarnessReport,
+) -> bool:
+    repo_root = poc_acceptance_harness_repo_root(p9_harness)
+    return all(
+        poc_acceptance_tracked_repo_path(path, repo_root)
+        for path in poc_acceptance_p9_input_paths(p9_harness)
+    )
+
+
+def poc_acceptance_overall_status(
+    acceptance_matrix: list[dict[str, object]],
+) -> str:
+    return (
+        "pass"
+        if acceptance_matrix
+        and all(row.get("status") == "pass" for row in acceptance_matrix)
+        else "fail"
+    )
+
+
+def poc_acceptance_criterion_status_counts(
+    acceptance_matrix: list[dict[str, object]],
+) -> dict[str, int]:
+    counts = {"fail": 0, "pass": 0, "unknown": 0}
+    for row in acceptance_matrix:
+        status = str(row.get("status"))
+        counts[status] = counts.get(status, 0) + 1
+    return counts
+
+
+def poc_acceptance_row(
+    criterion_id: str,
+    criterion_label: str,
+    status: str,
+    evidence: str,
+    evidence_refs: list[str],
+) -> dict[str, object]:
+    return {
+        "criterion_id": criterion_id,
+        "criterion_label": criterion_label,
+        "status": status,
+        "evidence": evidence,
+        "evidence_refs": evidence_refs,
+    }
+
+
+def poc_acceptance_result_evidence_rows(
+    results: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    evidence_fields = (
+        "sample_id",
+        "fixture_id",
+        "sample_category",
+        "conversion_mode",
+        "representative_mode",
+        "llm_scenario",
+        "llm_status",
+        "ok",
+        "failure_reason",
+        "artifact_expectations_met",
+        "artifact_expectation_failures",
+        "audit_present",
+        "external_ai_api_guard_violation",
+    )
+    rows: list[dict[str, object]] = []
+    for result in results:
+        rows.append(
+            {
+                field: result[field]
+                for field in evidence_fields
+                if field in result
+            }
+        )
+    return rows
+
+
+def poc_acceptance_matrix_evidence(
+    *,
+    failed_results: list[dict[str, object]],
+    artifact_failures: list[dict[str, object]],
+    structured_output_failures: list[dict[str, object]],
+    unaudited_results: list[dict[str, object]],
+    llm_scenario_failures: list[dict[str, object]],
+    observed_representative_modes: list[str],
+    missing_representative_modes: list[str],
+    observed_source_categories: list[str],
+    missing_source_categories: list[str],
+    high_quality_source_linkage_rate: float,
+    external_violation_count: int,
+    poc_comparison: PoCComparisonMetrics,
+    llm_stability: LLMStabilityMetrics,
+    commit: str,
+    commit_is_clean: bool,
+    evaluator_commit: str,
+    evaluator_commit_is_clean: bool,
+    evidence_inputs_tracked_in_manifest_repo: bool,
+) -> dict[str, object]:
+    return {
+        "functionality": {
+            "observed_representative_modes": observed_representative_modes,
+            "missing_representative_modes": missing_representative_modes,
+            "observed_source_categories": observed_source_categories,
+            "missing_source_categories": missing_source_categories,
+            "manual_correction_time": poc_comparison.manual_correction_time.as_dict(),
+            "failed_rows": poc_acceptance_result_evidence_rows(failed_results),
+        },
+        "structured_output": {
+            "artifact_expectation_failures": poc_acceptance_result_evidence_rows(
+                artifact_failures
+            ),
+            "rows": poc_acceptance_result_evidence_rows(
+                structured_output_failures
+            ),
+        },
+        "llm_control": {
+            "external_ai_api_guard_violation_count": external_violation_count,
+            "unstable_examples": list(llm_stability.unstable_examples),
+            "scenario_failures": poc_acceptance_result_evidence_rows(
+                llm_scenario_failures
+            ),
+        },
+        "traceability": {
+            "high_quality_source_linkage_rate": high_quality_source_linkage_rate,
+        },
+        "safety": {
+            "high_risk_false_auto_confirmed_count": (
+                poc_comparison.high_risk_false_auto_confirmed_count
+            ),
+            "high_risk_false_auto_confirmed_target": (
+                poc_comparison.high_risk_false_auto_confirmed_target
+            ),
+            "external_ai_api_guard_violation_count": external_violation_count,
+        },
+        "logs": {
+            "rows": poc_acceptance_result_evidence_rows(unaudited_results),
+        },
+        "security": {
+            "external_ai_api_guard_violation_count": external_violation_count,
+            "authenticated_poc_api_session_checked": False,
+        },
+        "reproducibility": {
+            "commit": commit,
+            "commit_is_clean": commit_is_clean,
+            "evaluator_commit": evaluator_commit,
+            "evaluator_commit_is_clean": evaluator_commit_is_clean,
+            "evidence_inputs_tracked_in_manifest_repo": (
+                evidence_inputs_tracked_in_manifest_repo
+            ),
+        },
+    }
+
+
+def poc_acceptance_condition(
+    condition_id: str,
+    description: str,
+    status: str,
+    evidence: str,
+) -> dict[str, str]:
+    return {
+        "condition_id": condition_id,
+        "description": description,
+        "status": status,
+        "evidence": evidence,
+    }
+
+
+def poc_acceptance_conversion_mode_results(
+    results: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for conversion_mode in sorted({str(result["conversion_mode"]) for result in results}):
+        mode_results = [
+            result
+            for result in results
+            if str(result.get("conversion_mode")) == conversion_mode
+        ]
+        rows.append(
+            {
+                "conversion_mode": conversion_mode,
+                "case_count": len(mode_results),
+                "completed_count": sum(
+                    1 for result in mode_results if result.get("ok") is True
+                ),
+                "failure_count": sum(
+                    1 for result in mode_results if result.get("ok") is not True
+                ),
+                "llm_scenarios": sorted(
+                    {
+                        str(result.get("llm_scenario"))
+                        for result in mode_results
+                        if result.get("llm_scenario") is not None
+                    }
+                ),
+                "sample_ids": sorted(
+                    {
+                        str(result.get("sample_id"))
+                        for result in mode_results
+                        if result.get("sample_id") is not None
+                    }
+                ),
+            }
+        )
+    return rows
+
+
+def poc_acceptance_fail_closed_conditions(
+    *,
+    external_violation_count: int,
+    poc_comparison: PoCComparisonMetrics,
+    unaudited_results: list[dict[str, object]],
+    llm_stability: LLMStabilityMetrics,
+    llm_scenario_failures: list[dict[str, object]],
+    structured_output_failures: list[dict[str, object]],
+) -> list[dict[str, str]]:
+    return [
+        poc_acceptance_condition(
+            "original_absent_value_confirmed",
+            "原本に無い値の確定",
+            "pass"
+            if poc_comparison.high_risk_false_auto_confirmed_count
+            <= poc_comparison.high_risk_false_auto_confirmed_target
+            else "fail",
+            (
+                "High-risk false auto-confirmed count is "
+                f"{poc_comparison.high_risk_false_auto_confirmed_count}."
+            ),
+        ),
+        poc_acceptance_condition(
+            "llm_correction_or_completion",
+            "LLM補正/補完",
+            "fail"
+            if external_violation_count or llm_scenario_failures
+            else "unknown"
+            if llm_stability.unstable_example_count
+            else "pass",
+            (
+                "LLM stability evidence has "
+                f"{llm_stability.unstable_example_count} unstable examples; "
+                "harness LLM scenario failures: "
+                f"{len(llm_scenario_failures)}; external AI API guard "
+                f"violations: {external_violation_count}."
+            ),
+        ),
+        poc_acceptance_condition(
+            "unknown_source_normal_output",
+            "出典不明通常出力",
+            "fail" if structured_output_failures else "pass",
+            (
+                f"{len(structured_output_failures)} rows failed artifact/source "
+                "structure or expectations."
+            ),
+        ),
+        poc_acceptance_condition(
+            "high_risk_auto_confirm",
+            "高リスク自動確定",
+            "pass"
+            if poc_comparison.high_risk_false_auto_confirmed_count == 0
+            else "fail",
+            (
+                "High-risk false auto-confirmed count is "
+                f"{poc_comparison.high_risk_false_auto_confirmed_count}."
+            ),
+        ),
+        poc_acceptance_condition(
+            "audit_log_missing",
+            "ログ欠落",
+            "fail" if unaudited_results else "pass",
+            f"{len(unaudited_results)} rows lacked audit evidence.",
+        ),
+        poc_acceptance_condition(
+            "external_transmission",
+            "外部送信",
+            "pass" if external_violation_count == 0 else "fail",
+            f"External AI API guard violation count is {external_violation_count}.",
+        ),
+        poc_acceptance_condition(
+            "source_document_replacement",
+            "原本代替扱い",
+            "pass",
+            "The report is marked as PoC evidence and does not claim GMP production use.",
+        ),
+    ]
+
+
+def poc_acceptance_known_limitations(
+    failed_results: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    limitations: list[dict[str, object]] = [
+        {
+            "id": "not_go_no_go",
+            "description": "This report is not the final MVP go/no-go decision.",
+        },
+        {
+            "id": "not_gmp_validation",
+            "description": "This report is not a formal GMP validation document.",
+        },
+    ]
+    for result in failed_results[:5]:
+        limitations.append(
+            {
+                "id": f"p9_harness_failure_{result.get('sample_id')}",
+                "description": str(result.get("failure_reason")),
+                "conversion_mode": result.get("conversion_mode"),
+                "llm_scenario": result.get("llm_scenario"),
+            }
+        )
+    return limitations
+
+
+def poc_acceptance_follow_up_candidates(
+    failed_results: list[dict[str, object]],
+    llm_stability: LLMStabilityMetrics,
+    unaudited_results: list[dict[str, object]],
+    poc_comparison: PoCComparisonMetrics,
+) -> list[dict[str, str]]:
+    candidates: list[dict[str, str]] = []
+    if failed_results:
+        candidates.append(
+            {
+                "title": "Resolve failing P9 representative conversion harness rows",
+                "reason": f"{len(failed_results)} harness rows are not acceptance-ready.",
+            }
+        )
+    if llm_stability.unstable_example_count:
+        candidates.append(
+            {
+                "title": "Define acceptance threshold for LLM stability drift",
+                "reason": (
+                    f"{llm_stability.unstable_example_count} unstable examples "
+                    "remain in the synthetic stability record."
+                ),
+            }
+        )
+    if unaudited_results:
+        candidates.append(
+            {
+                "title": "Require audit evidence for all P9 harness outcomes",
+                "reason": f"{len(unaudited_results)} rows lacked audit evidence.",
+            }
+        )
+    if not poc_comparison.manual_correction_time.target_met:
+        candidates.append(
+            {
+                "title": "Close the PoC manual-correction-time acceptance gap",
+                "reason": (
+                    "Assisted review timing missed the configured "
+                    f"{poc_comparison.manual_correction_time.target_reduction_rate:.3f} "
+                    "reduction target."
+                ),
+            }
+        )
+    return candidates
 
 
 def validated_cell_text(cell: dict[str, Any], context: str) -> str:
@@ -1524,6 +2556,9 @@ def manifest_root_for_cases_path(cases_path: Path) -> Path:
 def repository_root_for_gold_path(gold_path: Path) -> Path:
     if gold_path.parent.name == "gold" and gold_path.parent.parent.name == "datasets":
         return gold_path.parent.parent.parent
+    for parent in gold_path.parents:
+        if parent.name == "datasets" and (parent / "fixtures" / "manifest.json").is_file():
+            return parent.parent
     return Path.cwd()
 
 
@@ -2961,10 +3996,16 @@ def evaluate_gmp_acceptance(
 def evaluate_llm_stability_report(
     llm_stability_runs_path: Path,
     poc_comparison_path: Path,
+    *,
+    repo_root: Path | None = None,
 ) -> LLMStabilityEvaluationReport:
     resolved_stability_path = llm_stability_runs_path.resolve()
     resolved_comparison_path = poc_comparison_path.resolve()
-    poc_repo_root = repository_root_for_gold_path(resolved_comparison_path)
+    poc_repo_root = (
+        repo_root.resolve()
+        if repo_root is not None
+        else repository_root_for_gold_path(resolved_comparison_path)
+    )
     return LLMStabilityEvaluationReport(
         llm_stability=evaluate_llm_stability(load_json(resolved_stability_path)),
         poc_mode_comparison=evaluate_poc_mode_comparison(
@@ -3012,12 +4053,44 @@ def main() -> int:
             "P9-01 fixture manifest entries."
         ),
     )
+    parser.add_argument(
+        "--poc-acceptance-report",
+        type=Path,
+        nargs="?",
+        const=DEFAULT_P9_HARNESS_MANIFEST,
+        help=(
+            "Emit the Phase9 PoC acceptance report that maps 15.2 criteria "
+            "to pass/fail/unknown evidence."
+        ),
+    )
     args = parser.parse_args()
+    selected_report_modes = [
+        args.p9_harness is not None,
+        args.poc_acceptance_report is not None,
+        args.gmp_acceptance is not None,
+        args.llm_stability_report,
+    ]
     if args.p9_harness is not None and args.gmp_acceptance is not None:
         parser.error("--p9-harness cannot be combined with --gmp-acceptance")
+    if sum(1 for selected in selected_report_modes if selected) > 1:
+        parser.error(
+            "--p9-harness, --poc-acceptance-report, --gmp-acceptance, and "
+            "--llm-stability-report cannot be combined"
+        )
 
     try:
-        if args.p9_harness is not None:
+        if args.poc_acceptance_report is not None:
+            metrics = build_poc_acceptance_report(
+                args.poc_acceptance_report,
+                llm_stability_runs_path=args.llm_stability_runs,
+                poc_comparison_path=args.poc_comparison,
+                generation_command=poc_acceptance_generation_command(
+                    manifest_path=args.poc_acceptance_report,
+                    llm_stability_runs_path=args.llm_stability_runs,
+                    poc_comparison_path=args.poc_comparison,
+                ),
+            )
+        elif args.p9_harness is not None:
             metrics = evaluate_p9_harness(
                 args.p9_harness,
                 llm_stability_runs_path=args.llm_stability_runs
