@@ -300,12 +300,14 @@ def _test_function_is_skipped_or_xfailed(
             "pytest.mark.skip",
             "pytest.mark.skipif",
             "pytest.mark.xfail",
+            "pytest.fixture",
             "unittest.skip",
             "unittest.skipIf",
             "unittest.skipUnless",
             "skip",
             "skipif",
             "xfail",
+            "fixture",
         }:
             return True
         if _decorator_is_empty_parametrize(decorator):
@@ -813,15 +815,6 @@ def _authenticated_success_status_observations(
         active_monkeypatch_fixture_names.difference_update(
             ordered_statement.bound_names_before
         )
-        env_tokens_seen = set(
-            _env_auth_tokens_after_statement(
-                statement,
-                env_tokens_seen,
-                monkeypatch_fixture_names=frozenset(
-                    active_monkeypatch_fixture_names
-                ),
-            )
-        )
         response_connections_seen = {
             connection_name
             for child in _walk_statement_without_nested_scopes(statement)
@@ -950,6 +943,15 @@ def _authenticated_success_status_observations(
         _update_name_literal_bindings_after_statement(
             statement, name_literal_bindings
         )
+        env_tokens_seen = set(
+            _env_auth_tokens_after_statement(
+                statement,
+                env_tokens_seen,
+                monkeypatch_fixture_names=frozenset(
+                    active_monkeypatch_fixture_names
+                ),
+            )
+        )
 
     return tuple(success_observations)
 
@@ -1006,8 +1008,7 @@ def _test_function_matches_success_ref_expectation(
 
 
 def _assigns_server_local_auth_tokens(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-    for ordered_statement in _ordered_function_statements(node.body):
-        statement = ordered_statement.statement
+    for statement in node.body:
         for child in _walk_statement_without_nested_scopes(statement):
             if _calls_setattr_local_auth_tokens(child):
                 return True
