@@ -935,6 +935,10 @@ class EvaluateDatasetTest(unittest.TestCase):
             "fail_closed": True,
             "mvp_before_gate_revision": "p9-mvp-before-pdf-eval-dependency-gate",
             "artifact_expectations_met": False,
+            "artifact_expectation_failures": [
+                "fail-closed MVP-before gate revision: "
+                "p9-mvp-before-pdf-eval-dependency-gate"
+            ],
             "failure_reason": "optional PDF dependency unavailable",
         }
 
@@ -946,6 +950,19 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertEqual(
             [],
             payload["matrix_evidence"]["llm_control"]["scenario_failures"],
+        )
+        self.assertEqual(
+            "p9-mvp-before-pdf-eval-dependency-gate",
+            payload["matrix_evidence"]["structured_output"]["rows"][0][
+                "mvp_before_gate_revision"
+            ],
+        )
+        self.assertTrue(
+            any(
+                candidate["title"]
+                == "Resolve fail-closed P9 MVP-before gate revisions"
+                for candidate in payload["follow_up_issue_candidates"]
+            )
         )
 
     def test_poc_acceptance_report_fails_llm_control_from_harness_fields(
@@ -2107,6 +2124,40 @@ class EvaluateDatasetTest(unittest.TestCase):
             [sample["representative_mode"] for sample in placeholders],
         )
 
+    def test_p9_evaluation_samples_track_missing_required_category_placeholder(
+        self,
+    ) -> None:
+        p9_manifest = copy.deepcopy(
+            evaluate_dataset.load_json(POC_EVALUATION_MANIFEST_PATH)
+        )
+        fixture_manifest = evaluate_dataset.load_json(FIXTURE_MANIFEST_PATH)
+        p9_manifest["samples"] = [
+            sample
+            for sample in p9_manifest["samples"]
+            if sample["id"] != "p9-record-pdf-001"
+        ]
+
+        samples = evaluate_dataset.p9_evaluation_samples(
+            p9_manifest, fixture_manifest
+        )
+
+        placeholders = [
+            sample
+            for sample in samples
+            if sample.get("dataset_status") == "manifest_placeholder"
+        ]
+        self.assertIn(
+            ("p9-record-pdf-002", "record_pdf", "pdf_to_word"),
+            [
+                (
+                    sample["sample_id"],
+                    sample["sample_category"],
+                    sample["representative_mode"],
+                )
+                for sample in placeholders
+            ],
+        )
+
     def test_p9_harness_counts_artifact_expectation_mismatch_as_failure(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".docx") as fixture_file:
             fixture_file.write(b"fixture")
@@ -2495,6 +2546,39 @@ class EvaluateDatasetTest(unittest.TestCase):
             result["mvp_before_gate_revision"],
         )
         self.assertFalse(result["artifact_expectations_met"])
+        self.assertEqual(
+            [
+                "fail-closed MVP-before gate revision: "
+                "p9-mvp-before-pdf-eval-dependency-gate"
+            ],
+            result["artifact_expectation_failures"],
+        )
+
+    def test_p9_runtime_review_warning_allowlist_is_exact(self) -> None:
+        self.assertTrue(
+            evaluate_dataset.p9_runtime_warning_is_review_only(
+                "blocks[12].bbox missing; block marked requires_review",
+                conversion_mode="excel_to_word",
+                allowed_prefixes=(),
+            )
+        )
+        self.assertTrue(
+            evaluate_dataset.p9_runtime_warning_is_review_only(
+                (
+                    "PDF table extraction candidate unavailable: tabula; "
+                    "xlsx artifact requires review"
+                ),
+                conversion_mode="pdf_to_excel",
+                allowed_prefixes=(),
+            )
+        )
+        self.assertFalse(
+            evaluate_dataset.p9_runtime_warning_is_review_only(
+                "unexpected parser degradation requires review by coincidence",
+                conversion_mode="pdf_to_excel",
+                allowed_prefixes=(),
+            )
+        )
 
     def test_p9_harness_checks_mode_specific_xlsx_expectations(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".docx") as fixture_file:

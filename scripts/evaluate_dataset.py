@@ -644,6 +644,7 @@ class PoCAcceptanceReport:
             },
             "known_limitations": poc_acceptance_known_limitations(failed_results),
             "follow_up_issue_candidates": poc_acceptance_follow_up_candidates(
+                results,
                 failed_results,
                 llm_stability,
                 unaudited_results,
@@ -1109,7 +1110,9 @@ def p9_evaluation_samples(
     observed_modes: set[str] = set()
     usable_modes: set[str] = set()
     observed_categories: set[str] = set()
+    usable_categories: set[str] = set()
     placeholder_by_mode: dict[str, dict[str, Any]] = {}
+    placeholder_by_category: dict[str, dict[str, Any]] = {}
     for sample in samples:
         if not isinstance(sample, dict):
             raise EvaluationCaseError("each P9 evaluation sample needs an object")
@@ -1135,22 +1138,21 @@ def p9_evaluation_samples(
                 raise EvaluationCaseError(
                     f"P9 sample {sample_id!r} must reference a fixture_manifest fixture"
                 )
-            placeholder_by_mode.setdefault(
-                representative_mode,
-                {
-                    "sample_id": sample_id,
-                    "sample_category": sample.get("category"),
-                    "dataset_status": sample.get("dataset_status"),
-                    "availability_reason": sample.get("availability_reason"),
-                    "evaluation_focus": sample.get("evaluation_focus"),
-                    "expected_warning_or_review_focus": sample.get(
-                        "expected_warning_or_review_focus"
-                    ),
-                    "fixture_id": fixture_id,
-                    "representative_mode": representative_mode,
-                    "conversion_mode": conversion_mode,
-                },
-            )
+            placeholder = {
+                "sample_id": sample_id,
+                "sample_category": sample.get("category"),
+                "dataset_status": sample.get("dataset_status"),
+                "availability_reason": sample.get("availability_reason"),
+                "evaluation_focus": sample.get("evaluation_focus"),
+                "expected_warning_or_review_focus": sample.get(
+                    "expected_warning_or_review_focus"
+                ),
+                "fixture_id": fixture_id,
+                "representative_mode": representative_mode,
+                "conversion_mode": conversion_mode,
+            }
+            placeholder_by_mode.setdefault(representative_mode, placeholder)
+            placeholder_by_category.setdefault(str(category), placeholder)
             continue
         if fixture is not None:
             p9_validate_representative_fixture_link(
@@ -1176,6 +1178,7 @@ def p9_evaluation_samples(
         )
         evaluation_samples.append(merged)
         usable_modes.add(representative_mode)
+        usable_categories.add(str(category))
 
     required_modes = set(P9_REPRESENTATIVE_FLAGS_BY_MODE)
     missing_modes = sorted(required_modes - observed_modes)
@@ -1203,10 +1206,23 @@ def p9_evaluation_samples(
             "P9 evaluation manifest has no representative for source category "
             f"{missing_categories[0]!r}"
         )
+    appended_placeholder_ids: set[str] = set()
     for missing_usable_mode in sorted(required_modes - usable_modes):
         placeholder = placeholder_by_mode.get(missing_usable_mode)
         if placeholder is not None:
             evaluation_samples.append(placeholder)
+            if isinstance(placeholder.get("sample_id"), str):
+                appended_placeholder_ids.add(str(placeholder["sample_id"]))
+    for missing_usable_category in sorted(P9_REQUIRED_SOURCE_CATEGORIES - usable_categories):
+        placeholder = placeholder_by_category.get(missing_usable_category)
+        placeholder_id = placeholder.get("sample_id") if placeholder else None
+        if (
+            placeholder is not None
+            and isinstance(placeholder_id, str)
+            and placeholder_id not in appended_placeholder_ids
+        ):
+            evaluation_samples.append(placeholder)
+            appended_placeholder_ids.add(placeholder_id)
     return evaluation_samples
 
 
@@ -1223,6 +1239,11 @@ def p9_result_for_unavailable_fixture(
         fixture.get("conversion_mode")
         if isinstance(fixture.get("conversion_mode"), str)
         else P9_CONVERSION_MODE_BY_MODE[mode]
+    )
+    artifact_expectation_failures = (
+        [f"fail-closed MVP-before gate revision: {mvp_before_gate_revision}"]
+        if fail_closed and mvp_before_gate_revision
+        else []
     )
     return {
         "sample_id": fixture.get("sample_id"),
@@ -1255,7 +1276,7 @@ def p9_result_for_unavailable_fixture(
         "external_ai_api_guard_violation": False,
         "conversion_status": "not_run",
         "artifact_expectations_met": False,
-        "artifact_expectation_failures": [],
+        "artifact_expectation_failures": artifact_expectation_failures,
     }
 
 
@@ -1530,10 +1551,34 @@ def p9_runtime_warning_is_review_only(
         return True
     if warning.startswith(allowed_prefixes):
         return True
-    return (
-        "requires review" in warning
-        or warning.endswith("marked requires_review")
-        or "marked block requires_review" in warning
+    return p9_runtime_warning_is_known_parser_review_gate(warning)
+
+
+def p9_runtime_warning_is_known_parser_review_gate(warning: str) -> bool:
+    if warning in {
+        "upload was treated as plain text; parser confidence requires review",
+        "JSON upload root is not an object; content requires review",
+        "PDF table extraction produced no selected table; xlsx artifact requires review",
+        "PDF table extraction candidates disagreed; xlsx artifact requires review",
+        (
+            "PDF table extraction selected table has incomplete cell boundaries; "
+            "xlsx artifact requires review"
+        ),
+    }:
+        return True
+    if (
+        warning.startswith("PDF table extraction candidate unavailable: ")
+        and warning.endswith("; xlsx artifact requires review")
+    ):
+        return True
+    if not warning.startswith("blocks["):
+        return False
+    block_index, separator, marker = warning.removeprefix("blocks[").partition("]")
+    if separator != "]" or not block_index.isdecimal():
+        return False
+    return marker in (
+        ".bbox missing; block marked requires_review",
+        ".parser marked block requires_review",
     )
 
 
@@ -2205,6 +2250,8 @@ def poc_acceptance_result_evidence_rows(
         "llm_scenario",
         "llm_status",
         "ok",
+        "fail_closed",
+        "mvp_before_gate_revision",
         "failure_reason",
         "artifact_expectations_met",
         "artifact_expectation_failures",
@@ -2457,12 +2504,33 @@ def poc_acceptance_known_limitations(
 
 
 def poc_acceptance_follow_up_candidates(
+    results: list[dict[str, object]],
     failed_results: list[dict[str, object]],
     llm_stability: LLMStabilityMetrics,
     unaudited_results: list[dict[str, object]],
     poc_comparison: PoCComparisonMetrics,
 ) -> list[dict[str, str]]:
     candidates: list[dict[str, str]] = []
+    gate_revisions = sorted(
+        {
+            str(result.get("mvp_before_gate_revision"))
+            for result in results
+            if result.get("fail_closed") is True
+            and isinstance(result.get("mvp_before_gate_revision"), str)
+        }
+    )
+    if gate_revisions:
+        candidates.append(
+            {
+                "title": "Resolve fail-closed P9 MVP-before gate revisions",
+                "reason": (
+                    f"{len(gate_revisions)} gate revision(s) still require "
+                    "follow-up: "
+                    + ", ".join(gate_revisions)
+                    + "."
+                ),
+            }
+        )
     if failed_results:
         candidates.append(
             {
