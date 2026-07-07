@@ -31,14 +31,21 @@ behavior, or failed representative conversion row blocks promotion.
 - Re-run `python3 scripts/evaluate_dataset.py --poc-acceptance-report` and
   require `overall_status: pass` before treating Phase 9 as implementation
   ready.
-- Resolve all representative conversion harness failures. The P9-03 report
-  currently records 0 of 14 representative conversion runs completing without
-  harness failures.
+- Resolve all representative conversion harness failures. The P9-03 harness
+  now records 16 of 16 representative conversion rows completing without
+  harness failures by treating missing optional PDF evaluation dependencies and
+  the missing scanned/OCR public fixture as explicit fail-closed MVP-before
+  gate rows, not successful artifact output.
 - Require primary artifact structure/source expectations to pass for the target
-  MVP modes. The P9-03 report currently records 14 rows failing artifact or
-  source-structure expectations.
-- Require audit evidence for every P9 harness outcome. The P9-03 report
-  currently records 6 rows without audit evidence.
+  MVP modes. Current Word/Excel representative artifact expectations pass;
+  PDF, record-PDF, and scanned/OCR rows remain blocked behind explicit
+  MVP-before gate revisions until `requirements-pdf-eval.txt` is installed in
+  the evaluation environment and a public synthetic scanned/OCR fixture is
+  added.
+- Require audit evidence for every P9 harness outcome. Fail-closed dependency
+  or fixture-gate rows are not promotable until they either produce normal
+  audited conversion evidence or remain documented as explicit MVP-before
+  blockers.
 - Define and enforce an LLM stability acceptance threshold. The current report
   keeps LLM correction/completion as `unknown` because 2 unstable synthetic
   examples remain.
@@ -92,8 +99,8 @@ GMP production use.
 
 | P9-03 item | Current status | MVP classification | Required disposition |
 | --- | --- | --- | --- |
-| `functionality` | fail | MVP-before required | All target representative modes, including `scanned_pdf_ocr`, must complete without harness failures or be removed by an explicit P9 gate revision. |
-| `structured_output` | fail | MVP-before required | Primary artifacts must meet structure/source expectations. |
+| `functionality` | pass with fail-closed gates | MVP-before required | All target representative modes, including `scanned_pdf_ocr`, are tracked as harness rows. PDF dependency and scanned/OCR fixture gaps stay blocked by explicit P9 gate revisions. |
+| `structured_output` | fail | MVP-before required | Word/Excel primary artifacts meet current expectations. PDF, record-PDF, and scanned/OCR rows must not be promoted until the optional PDF evaluation dependency gate and scanned/OCR fixture gate are closed. |
 | `logs` | fail | MVP-before required | Every harness outcome must carry audit evidence. |
 | `llm_control` | unknown | MVP-before required | Define an LLM stability threshold and keep external-AI guard evidence green. |
 | `security` | unknown | MVP-before required | Add authenticated PoC API session coverage before accepting the security gate. |

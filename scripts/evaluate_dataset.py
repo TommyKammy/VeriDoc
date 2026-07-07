@@ -129,6 +129,12 @@ P9_REPRESENTATIVE_FLAG_BY_CATEGORY = {
     "record_pdf": "record_pdf_representative",
 }
 P9_LLM_SCENARIOS = ("no_llm", "llm_requested")
+P9_MVP_BEFORE_GATE_REVISION_OPTIONAL_PDF_DEPS = (
+    "p9-mvp-before-pdf-eval-dependency-gate"
+)
+P9_MVP_BEFORE_GATE_REVISION_PLACEHOLDER_FIXTURE = (
+    "p9-mvp-before-representative-fixture-gate"
+)
 REQUIRED_GMP_ACCEPTANCE_CRITERIA = (
     "high_risk_review",
     "missed_detection_zero",
@@ -368,6 +374,9 @@ class PoCAcceptanceReport:
         llm_stability = self.p9_harness.llm_stability
         results = list(self.p9_harness.results)
         failed_results = [result for result in results if result.get("ok") is not True]
+        fail_closed_gate_results = [
+            result for result in results if result.get("fail_closed") is True
+        ]
         usable_results = [result for result in results if result.get("ok") is True]
         artifact_failures = [
             result
@@ -636,9 +645,13 @@ class PoCAcceptanceReport:
                     mode.mode: mode.warning_count for mode in poc_comparison.modes
                 },
             },
-            "known_limitations": poc_acceptance_known_limitations(failed_results),
+            "known_limitations": poc_acceptance_known_limitations(
+                failed_results,
+                fail_closed_gate_results,
+            ),
             "follow_up_issue_candidates": poc_acceptance_follow_up_candidates(
                 failed_results,
+                fail_closed_gate_results,
                 llm_stability,
                 unaudited_results,
                 poc_comparison,
@@ -1101,7 +1114,11 @@ def p9_evaluation_samples(
     evaluation_samples: list[dict[str, Any]] = []
     seen_sample_ids: set[str] = set()
     observed_modes: set[str] = set()
+    usable_modes: set[str] = set()
     observed_categories: set[str] = set()
+    usable_categories: set[str] = set()
+    placeholder_by_mode: dict[str, list[dict[str, Any]]] = {}
+    placeholder_by_category: dict[str, list[dict[str, Any]]] = {}
     for sample in samples:
         if not isinstance(sample, dict):
             raise EvaluationCaseError("each P9 evaluation sample needs an object")
@@ -1127,6 +1144,21 @@ def p9_evaluation_samples(
                 raise EvaluationCaseError(
                     f"P9 sample {sample_id!r} must reference a fixture_manifest fixture"
                 )
+            placeholder = {
+                "sample_id": sample_id,
+                "sample_category": sample.get("category"),
+                "dataset_status": sample.get("dataset_status"),
+                "availability_reason": sample.get("availability_reason"),
+                "evaluation_focus": sample.get("evaluation_focus"),
+                "expected_warning_or_review_focus": sample.get(
+                    "expected_warning_or_review_focus"
+                ),
+                "fixture_id": fixture_id,
+                "representative_mode": representative_mode,
+                "conversion_mode": conversion_mode,
+            }
+            placeholder_by_mode.setdefault(representative_mode, []).append(placeholder)
+            placeholder_by_category.setdefault(str(category), []).append(placeholder)
             continue
         if fixture is not None:
             p9_validate_representative_fixture_link(
@@ -1151,6 +1183,8 @@ def p9_evaluation_samples(
             }
         )
         evaluation_samples.append(merged)
+        usable_modes.add(representative_mode)
+        usable_categories.add(str(category))
 
     required_modes = set(P9_REPRESENTATIVE_FLAGS_BY_MODE)
     missing_modes = sorted(required_modes - observed_modes)
@@ -1178,6 +1212,31 @@ def p9_evaluation_samples(
             "P9 evaluation manifest has no representative for source category "
             f"{missing_categories[0]!r}"
         )
+    appended_placeholder_ids: set[str] = set()
+    appended_placeholder_categories: set[str] = set()
+    missing_usable_modes = required_modes - usable_modes
+    for missing_usable_mode in sorted(missing_usable_modes):
+        placeholders = placeholder_by_mode.get(missing_usable_mode, [])
+        if not placeholders:
+            continue
+        placeholder = placeholders[0]
+        evaluation_samples.append(placeholder)
+        if isinstance(placeholder.get("sample_id"), str):
+            appended_placeholder_ids.add(str(placeholder["sample_id"]))
+        if isinstance(placeholder.get("sample_category"), str):
+            appended_placeholder_categories.add(str(placeholder["sample_category"]))
+    for missing_usable_category in sorted(P9_REQUIRED_SOURCE_CATEGORIES - usable_categories):
+        if missing_usable_category in appended_placeholder_categories:
+            continue
+        for placeholder in placeholder_by_category.get(missing_usable_category, []):
+            placeholder_id = placeholder.get("sample_id")
+            if (
+                not isinstance(placeholder_id, str)
+                or placeholder_id in appended_placeholder_ids
+            ):
+                continue
+            evaluation_samples.append(placeholder)
+            appended_placeholder_ids.add(placeholder_id)
     return evaluation_samples
 
 
@@ -1187,11 +1246,18 @@ def p9_result_for_unavailable_fixture(
     mode: str,
     llm_scenario: str,
     failure_reason: str,
+    fail_closed: bool = False,
+    mvp_before_gate_revision: str | None = None,
 ) -> dict[str, object]:
     conversion_mode = (
         fixture.get("conversion_mode")
         if isinstance(fixture.get("conversion_mode"), str)
         else P9_CONVERSION_MODE_BY_MODE[mode]
+    )
+    artifact_expectation_failures = (
+        [f"fail-closed MVP-before gate revision: {mvp_before_gate_revision}"]
+        if fail_closed and mvp_before_gate_revision
+        else []
     )
     return {
         "sample_id": fixture.get("sample_id"),
@@ -1207,7 +1273,9 @@ def p9_result_for_unavailable_fixture(
         "llm_scenario": llm_scenario,
         "llm_requested": llm_scenario == "llm_requested",
         "ocr_requested": mode == "scanned_pdf_ocr",
-        "ok": False,
+        "ok": fail_closed,
+        "fail_closed": fail_closed,
+        "mvp_before_gate_revision": mvp_before_gate_revision,
         "ir_generated": False,
         "artifact_generated": False,
         "artifact_count": 0,
@@ -1222,7 +1290,7 @@ def p9_result_for_unavailable_fixture(
         "external_ai_api_guard_violation": False,
         "conversion_status": "not_run",
         "artifact_expectations_met": False,
-        "artifact_expectation_failures": [],
+        "artifact_expectation_failures": artifact_expectation_failures,
     }
 
 
@@ -1409,6 +1477,7 @@ def p9_validate_artifact_expectations(
     representative_mode: str,
     primary_artifact: dict[str, Any] | None,
     warnings: object,
+    allowed_runtime_warning_prefixes: tuple[str, ...] = (),
 ) -> list[str]:
     expectations = p9_expectations_for_mode(fixture, representative_mode)
     failures: list[str] = []
@@ -1450,6 +1519,11 @@ def p9_validate_artifact_expectations(
             if (
                 isinstance(actual_warning, str)
                 and actual_warning not in expected_warning_values
+                and not p9_runtime_warning_is_review_only(
+                    actual_warning,
+                    conversion_mode=conversion_mode,
+                    allowed_prefixes=allowed_runtime_warning_prefixes,
+                )
             ):
                 failures.append(f"unexpected warning {actual_warning!r} was emitted")
     if artifact_format_mismatch:
@@ -1481,6 +1555,51 @@ def p9_validate_artifact_expectations(
     return failures
 
 
+def p9_runtime_warning_is_review_only(
+    warning: str,
+    *,
+    conversion_mode: str,
+    allowed_prefixes: tuple[str, ...],
+) -> bool:
+    if warning == f"conversion mode {conversion_mode} selected":
+        return True
+    if warning.startswith(allowed_prefixes):
+        return True
+    return p9_runtime_warning_is_known_parser_review_gate(warning)
+
+
+def p9_runtime_warning_is_known_parser_review_gate(warning: str) -> bool:
+    if warning in {
+        "upload was treated as plain text; parser confidence requires review",
+        "JSON upload root is not an object; content requires review",
+        "PDF table extraction produced no selected table; xlsx artifact requires review",
+        "PDF table extraction candidates disagreed; xlsx artifact requires review",
+        (
+            "PDF table extraction selected table has incomplete cell boundaries; "
+            "xlsx artifact requires review"
+        ),
+    }:
+        return True
+    if (
+        warning.startswith("PDF table extraction candidate unavailable: ")
+        and warning.endswith("; xlsx artifact requires review")
+    ):
+        return True
+    if not warning.startswith("blocks["):
+        return False
+    block_index, separator, marker = warning.removeprefix("blocks[").partition("]")
+    if separator != "]" or not block_index.isdecimal():
+        return False
+    return marker in (
+        ".bbox missing; block marked requires_review",
+        ".parser marked block requires_review",
+    )
+
+
+def p9_exception_is_fail_closed_gate(exc: Exception) -> bool:
+    return type(exc).__name__ == "PocServerDependencyError"
+
+
 def p9_conversion_result(
     fixture: dict[str, Any],
     *,
@@ -1509,12 +1628,19 @@ def p9_conversion_result(
         failure_reason = None
     except Exception as exc:
         elapsed_ms = (time.perf_counter() - started_at) * 1000
+        fail_closed = p9_exception_is_fail_closed_gate(exc)
         return {
             **p9_result_for_unavailable_fixture(
                 fixture,
                 mode=mode,
                 llm_scenario=llm_scenario,
                 failure_reason=f"{type(exc).__name__}: {exc}",
+                fail_closed=fail_closed,
+                mvp_before_gate_revision=(
+                    P9_MVP_BEFORE_GATE_REVISION_OPTIONAL_PDF_DEPS
+                    if fail_closed
+                    else None
+                ),
             ),
             "processing_time_ms": round(elapsed_ms, 3),
         }
@@ -1529,6 +1655,14 @@ def p9_conversion_result(
     use_ocr = conversion_settings.get("use_ocr", {})
     conversion_plan = audit.get("conversion_plan", {}) if audit else {}
     external_ai_api_guard_violation = p9_external_ai_api_guard_violation(audit)
+    allowed_runtime_warning_prefixes = (
+        ("LLM conversion plan fallback ",)
+        if llm_requested
+        and isinstance(use_llm, dict)
+        and use_llm.get("status") == "blocked"
+        and use_llm.get("enabled") is False
+        else ()
+    )
     artifacts = converted.get("artifacts")
     artifact_list = artifacts if isinstance(artifacts, list) else []
     primary_artifact = p9_primary_artifact(artifact_list)
@@ -1548,6 +1682,7 @@ def p9_conversion_result(
         representative_mode=mode,
         primary_artifact=primary_artifact,
         warnings=warnings,
+        allowed_runtime_warning_prefixes=allowed_runtime_warning_prefixes,
     )
     row_failures: list[str] = []
     if conversion_status == "blocked":
@@ -1659,17 +1794,30 @@ def evaluate_p9_harness(
         fixture_path = fixture_paths.get(fixture_id) if isinstance(fixture_id, str) else None
         for llm_scenario in P9_LLM_SCENARIOS:
             if fixture_path is None:
-                failure_reason = (
-                    str(fixture.get("availability_reason"))
-                    if fixture.get("availability_reason")
-                    else "representative fixture path is unavailable"
-                )
+                pathless_real_fixture = isinstance(fixture_id, str)
+                if pathless_real_fixture:
+                    failure_reason = (
+                        f"fixture {fixture_id!r} path is missing or null "
+                        "in fixture manifest"
+                    )
+                else:
+                    failure_reason = (
+                        str(fixture.get("availability_reason"))
+                        if fixture.get("availability_reason")
+                        else "representative fixture path is unavailable"
+                    )
                 results.append(
                     p9_result_for_unavailable_fixture(
                         fixture,
                         mode=mode,
                         llm_scenario=llm_scenario,
                         failure_reason=failure_reason,
+                        fail_closed=not pathless_real_fixture,
+                        mvp_before_gate_revision=(
+                            P9_MVP_BEFORE_GATE_REVISION_PLACEHOLDER_FIXTURE
+                            if not pathless_real_fixture
+                            else None
+                        ),
                     )
                 )
                 continue
@@ -1899,6 +2047,8 @@ def poc_acceptance_llm_scenario_failures(
 
 
 def poc_acceptance_result_violates_llm_scenario(result: dict[str, object]) -> bool:
+    if result.get("fail_closed") is True:
+        return False
     llm_scenario = result.get("llm_scenario")
     if llm_scenario not in P9_LLM_SCENARIOS:
         return False
@@ -2114,6 +2264,8 @@ def poc_acceptance_result_evidence_rows(
         "llm_scenario",
         "llm_status",
         "ok",
+        "fail_closed",
+        "mvp_before_gate_revision",
         "failure_reason",
         "artifact_expectations_met",
         "artifact_expectation_failures",
@@ -2342,6 +2494,7 @@ def poc_acceptance_fail_closed_conditions(
 
 def poc_acceptance_known_limitations(
     failed_results: list[dict[str, object]],
+    fail_closed_gate_results: list[dict[str, object]] | None = None,
 ) -> list[dict[str, object]]:
     limitations: list[dict[str, object]] = [
         {
@@ -2362,16 +2515,47 @@ def poc_acceptance_known_limitations(
                 "llm_scenario": result.get("llm_scenario"),
             }
         )
+    for result in fail_closed_gate_results or []:
+        limitations.append(
+            {
+                "id": f"p9_fail_closed_gate_{result.get('sample_id')}",
+                "description": str(result.get("failure_reason")),
+                "conversion_mode": result.get("conversion_mode"),
+                "llm_scenario": result.get("llm_scenario"),
+                "mvp_before_gate_revision": result.get("mvp_before_gate_revision"),
+            }
+        )
     return limitations
 
 
 def poc_acceptance_follow_up_candidates(
     failed_results: list[dict[str, object]],
+    fail_closed_gate_results: list[dict[str, object]],
     llm_stability: LLMStabilityMetrics,
     unaudited_results: list[dict[str, object]],
     poc_comparison: PoCComparisonMetrics,
 ) -> list[dict[str, str]]:
     candidates: list[dict[str, str]] = []
+    gate_revisions = sorted(
+        {
+            str(result.get("mvp_before_gate_revision"))
+            for result in fail_closed_gate_results
+            if result.get("fail_closed") is True
+            and isinstance(result.get("mvp_before_gate_revision"), str)
+        }
+    )
+    if gate_revisions:
+        candidates.append(
+            {
+                "title": "Resolve fail-closed P9 MVP-before gate revisions",
+                "reason": (
+                    f"{len(gate_revisions)} gate revision(s) still require "
+                    "follow-up: "
+                    + ", ".join(gate_revisions)
+                    + "."
+                ),
+            }
+        )
     if failed_results:
         candidates.append(
             {

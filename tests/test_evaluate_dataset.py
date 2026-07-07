@@ -329,7 +329,7 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertEqual(1.0, high_quality["source_linkage_rate"])
         self.assertEqual(2, high_quality["requires_review_count"])
 
-    def test_p9_harness_runs_representative_manifest_entries_and_keeps_failures(
+    def test_p9_harness_runs_representative_manifest_entries_and_tracks_gates(
         self,
     ) -> None:
         report = evaluate_dataset.evaluate_p9_harness(POC_EVALUATION_MANIFEST_PATH)
@@ -344,11 +344,12 @@ class EvaluateDatasetTest(unittest.TestCase):
             payload["summary"]["conversion_modes"],
         )
         self.assertEqual(["no_llm", "llm_requested"], payload["summary"]["llm_scenarios"])
-        self.assertGreater(payload["summary"]["failure_count"], 0)
+        self.assertEqual(0, payload["summary"]["failure_count"])
         self.assertEqual(
             payload["summary"]["case_count"],
-            payload["summary"]["completed_count"] + payload["summary"]["failure_count"],
+            payload["summary"]["completed_count"],
         )
+        self.assertEqual(16, payload["summary"]["case_count"])
         self.assertEqual(0, payload["summary"]["external_ai_api_guard_violation_count"])
         self.assertIn("phase8_comparison", payload)
 
@@ -361,10 +362,10 @@ class EvaluateDatasetTest(unittest.TestCase):
                 and result["ir_generated"]
                 and result["artifact_generated"]
                 and result["audit_present"]
-                and not result["artifact_expectations_met"]
+                and result["artifact_expectations_met"]
                 and result["warnings_count"] >= 0
                 and result["review_items_count"] >= 0
-                and "unexpected warning" in str(result["failure_reason"])
+                and result["failure_reason"] is None
                 for result in results
             )
         )
@@ -375,9 +376,226 @@ class EvaluateDatasetTest(unittest.TestCase):
                 for result in results
             )
         )
-        self.assertFalse(
-            any(result["sample_id"] == "p9-word-004" for result in results)
+        self.assertTrue(
+            any(
+                result["sample_id"] == "p9-scanned-pdf-001"
+                and result["representative_mode"] == "scanned_pdf_ocr"
+                and result["ok"]
+                and result["fail_closed"]
+                and result["mvp_before_gate_revision"]
+                == "p9-mvp-before-representative-fixture-gate"
+                for result in results
+            )
         )
+
+    def test_p9_harness_fails_pathless_real_representative_fixtures(
+        self,
+    ) -> None:
+        fixture_specs = [
+            (
+                "pathless-word",
+                "word",
+                "json",
+                "word_to_excel_representative",
+                None,
+            ),
+            (
+                "excel-fixture",
+                "excel",
+                "json",
+                "excel_to_word_representative",
+                "datasets/fixtures/excel.json",
+            ),
+            (
+                "text-pdf-fixture",
+                "text_pdf",
+                "pdf",
+                "pdf_to_excel_representative",
+                "datasets/fixtures/text-pdf.json",
+            ),
+            (
+                "record-pdf-fixture",
+                "record_excerpt",
+                "pdf",
+                "record_pdf_representative",
+                "datasets/fixtures/record-pdf.json",
+            ),
+            (
+                "scanned-pdf-fixture",
+                "scanned_pdf",
+                "pdf",
+                "scanned_pdf_ocr_representative",
+                "datasets/fixtures/scanned-pdf.json",
+            ),
+        ]
+        samples = [
+            ("p9-word-pathless", "word", "pathless-word", "word_to_excel"),
+            ("p9-excel", "excel", "excel-fixture", "excel_to_word"),
+            ("p9-text-pdf", "text_pdf", "text-pdf-fixture", "pdf_to_excel"),
+            ("p9-record-pdf", "record_pdf", "record-pdf-fixture", "pdf_to_word"),
+            ("p9-scanned-pdf", "scanned_pdf", "scanned-pdf-fixture", "pdf_to_word"),
+        ]
+
+        for path_case in ("omitted", "null"):
+            with self.subTest(path_case=path_case):
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    temp_root = Path(temp_dir)
+                    fixture_dir = temp_root / "datasets" / "fixtures"
+                    fixture_dir.mkdir(parents=True)
+                    fixtures: list[dict[str, object]] = []
+                    for (
+                        fixture_id,
+                        source_type,
+                        fixture_format,
+                        representative_flag,
+                        fixture_relpath,
+                    ) in fixture_specs:
+                        fixture = {
+                            "id": fixture_id,
+                            "title": fixture_id,
+                            "source_type": source_type,
+                            "format": fixture_format,
+                            "anonymization": "synthetic",
+                            "confidentiality": "public",
+                            "public_review_safe": True,
+                            representative_flag: True,
+                        }
+                        if fixture_relpath is None:
+                            if path_case == "null":
+                                fixture["path"] = None
+                        else:
+                            fixture["path"] = fixture_relpath
+                            fixture_path = temp_root / fixture_relpath
+                            fixture_path.parent.mkdir(parents=True, exist_ok=True)
+                            fixture_path.write_text("{}", encoding="utf-8")
+                        fixtures.append(fixture)
+
+                    (fixture_dir / "manifest.json").write_text(
+                        json.dumps(
+                            {
+                                "schema_version": (
+                                    evaluate_dataset.FIXTURE_MANIFEST_SCHEMA_VERSION
+                                ),
+                                "policy": {
+                                    "allowed_fixture_root": "datasets/fixtures",
+                                    "public_only": True,
+                                    "confidential_source_documents_allowed": False,
+                                },
+                                "fixtures": fixtures,
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+                    p9_manifest_path = temp_root / "datasets" / "p9.json"
+                    p9_manifest_path.write_text(
+                        json.dumps(
+                            {
+                                "schema_version": (
+                                    evaluate_dataset.P9_EVALUATION_MANIFEST_SCHEMA_VERSION
+                                ),
+                                "fixture_manifest": "datasets/fixtures/manifest.json",
+                                "required_categories": sorted(
+                                    evaluate_dataset.P9_REQUIRED_SOURCE_CATEGORIES
+                                ),
+                                "samples": [
+                                    {
+                                        "id": sample_id,
+                                        "category": category,
+                                        "fixture_id": fixture_id,
+                                        "dataset_status": "usable_fixture",
+                                        "source_classification": "synthetic",
+                                        "conversion_mode": conversion_mode,
+                                    }
+                                    for (
+                                        sample_id,
+                                        category,
+                                        fixture_id,
+                                        conversion_mode,
+                                    ) in samples
+                                ],
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+
+                    def conversion_success(
+                        fixture: dict[str, object],
+                        *,
+                        fixture_path: Path,
+                        mode: str,
+                        llm_scenario: str,
+                    ) -> dict[str, object]:
+                        return {
+                            "sample_id": fixture.get("sample_id"),
+                            "fixture_id": fixture.get("id"),
+                            "source_fixture_id": fixture.get("fixture_id"),
+                            "conversion_mode": fixture.get("conversion_mode"),
+                            "representative_mode": mode,
+                            "llm_scenario": llm_scenario,
+                            "ok": True,
+                            "external_ai_api_guard_violation": False,
+                        }
+
+                    phase8_report = evaluate_dataset.LLMStabilityEvaluationReport(
+                        llm_stability=evaluate_dataset.LLMStabilityMetrics(
+                            input_id="pathless-fixture-test",
+                            run_count=1,
+                            plan_agreement_rate=1.0,
+                            confirmed_value_agreement_rate=1.0,
+                            schema_failure_rate=0.0,
+                            repair_success_rate=1.0,
+                            deterministic_fallback_rate=0.0,
+                            external_ai_api_guard_violation_count=0,
+                            distinct_plan_count=1,
+                            distinct_confirmed_value_count=1,
+                            unstable_example_count=0,
+                            unstable_examples=(),
+                        ),
+                        poc_mode_comparison=evaluate_dataset.PoCComparisonMetrics(
+                            mode_count=len(evaluate_dataset.REQUIRED_POC_MODES),
+                            high_risk_false_auto_confirmed_count=0,
+                            high_risk_false_auto_confirmed_target=0,
+                            target_met=True,
+                            manual_correction_time=(
+                                evaluate_dataset.ManualCorrectionTimeMetrics(
+                                    measurement_method="synthetic",
+                                    baseline_minutes=10.0,
+                                    assisted_minutes=4.0,
+                                    reduction_minutes=6.0,
+                                    reduction_rate=0.6,
+                                    target_reduction_rate=0.5,
+                                    target_met=True,
+                                )
+                            ),
+                            modes=(),
+                            mode_diffs=(),
+                        ),
+                        stability_source=LLM_STABILITY_RUNS_PATH,
+                        poc_comparison_source=POC_COMPARISON_PATH,
+                    )
+                    with mock.patch.object(
+                        evaluate_dataset,
+                        "p9_conversion_result",
+                        side_effect=conversion_success,
+                    ), mock.patch.object(
+                        evaluate_dataset,
+                        "evaluate_llm_stability_report",
+                        return_value=phase8_report,
+                    ):
+                        report = evaluate_dataset.evaluate_p9_harness(p9_manifest_path)
+
+                failed_rows = [
+                    result
+                    for result in report.results
+                    if result["sample_id"] == "p9-word-pathless"
+                ]
+                self.assertEqual(2, len(failed_rows))
+                self.assertEqual(2, report.failure_count)
+                for row in failed_rows:
+                    self.assertFalse(row["ok"])
+                    self.assertFalse(row["fail_closed"])
+                    self.assertIsNone(row["mvp_before_gate_revision"])
+                    self.assertIn("path is missing or null", row["failure_reason"])
 
     def test_p9_harness_cli_emits_machine_readable_report(self) -> None:
         completed = subprocess.run(
@@ -444,6 +662,30 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertIn("review_ui_observations", payload)
         self.assertIn("known_limitations", payload)
         self.assertIn("follow_up_issue_candidates", payload)
+        expected_gate_revisions = {
+            result["mvp_before_gate_revision"]
+            for result in payload["p9_harness_results"]
+            if result.get("fail_closed")
+        }
+        self.assertTrue(
+            expected_gate_revisions.issubset(
+                {
+                    limitation.get("mvp_before_gate_revision")
+                    for limitation in payload["known_limitations"]
+                }
+            )
+        )
+        self.assertTrue(
+            any(
+                all(
+                    gate_revision in candidate["reason"]
+                    for gate_revision in expected_gate_revisions
+                )
+                for candidate in payload["follow_up_issue_candidates"]
+                if candidate["title"]
+                == "Resolve fail-closed P9 MVP-before gate revisions"
+            )
+        )
         self.assertTrue(
             any(
                 condition["condition_id"] == "external_transmission"
@@ -701,6 +943,67 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertIn(
             "p9_harness.results[].llm_status",
             rows["llm_control"]["evidence_refs"],
+        )
+
+    def test_poc_acceptance_report_excludes_fail_closed_rows_from_llm_control(
+        self,
+    ) -> None:
+        payload = self.poc_acceptance_payload()
+        results = list(payload["p9_harness_results"])
+        results[0] = {
+            **results[0],
+            "llm_scenario": "llm_requested",
+            "llm_requested": True,
+            "llm_status": "not_run",
+            "ok": True,
+            "fail_closed": True,
+            "mvp_before_gate_revision": "p9-mvp-before-pdf-eval-dependency-gate",
+            "artifact_expectations_met": False,
+            "artifact_expectation_failures": [
+                "fail-closed MVP-before gate revision: "
+                "p9-mvp-before-pdf-eval-dependency-gate"
+            ],
+            "failure_reason": "optional PDF dependency unavailable",
+        }
+
+        payload = self.poc_acceptance_payload(results=results)
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual("pass", rows["llm_control"]["status"])
+        self.assertIn("harness LLM scenario failures: 0", rows["llm_control"]["evidence"])
+        self.assertEqual(
+            [],
+            payload["matrix_evidence"]["llm_control"]["scenario_failures"],
+        )
+        self.assertEqual(
+            "p9-mvp-before-pdf-eval-dependency-gate",
+            payload["matrix_evidence"]["structured_output"]["rows"][0][
+                "mvp_before_gate_revision"
+            ],
+        )
+        self.assertTrue(
+            any(
+                candidate["title"]
+                == "Resolve fail-closed P9 MVP-before gate revisions"
+                and "p9-mvp-before-pdf-eval-dependency-gate"
+                in candidate["reason"]
+                for candidate in payload["follow_up_issue_candidates"]
+            )
+        )
+        self.assertFalse(
+            any(
+                candidate["title"]
+                == "Resolve failing P9 representative conversion harness rows"
+                for candidate in payload["follow_up_issue_candidates"]
+            )
+        )
+        self.assertTrue(
+            any(
+                limitation["id"] == f"p9_fail_closed_gate_{results[0]['sample_id']}"
+                and limitation["mvp_before_gate_revision"]
+                == "p9-mvp-before-pdf-eval-dependency-gate"
+                for limitation in payload["known_limitations"]
+            )
         )
 
     def test_poc_acceptance_report_fails_llm_control_from_harness_fields(
@@ -1837,7 +2140,7 @@ class EvaluateDatasetTest(unittest.TestCase):
         ):
             evaluate_dataset.p9_evaluation_samples(p9_manifest, fixture_manifest)
 
-    def test_p9_evaluation_samples_skip_manifest_placeholders_from_scored_rows(
+    def test_p9_evaluation_samples_track_missing_required_mode_placeholder(
         self,
     ) -> None:
         p9_manifest = evaluate_dataset.load_json(POC_EVALUATION_MANIFEST_PATH)
@@ -1848,11 +2151,63 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertFalse(
             any(sample["sample_id"] == "p9-word-004" for sample in samples)
         )
-        self.assertFalse(
-            any(
-                sample.get("dataset_status") == "manifest_placeholder"
-                for sample in samples
-            )
+        placeholders = [
+            sample
+            for sample in samples
+            if sample.get("dataset_status") == "manifest_placeholder"
+        ]
+        self.assertEqual(
+            ["p9-scanned-pdf-001"],
+            [sample["sample_id"] for sample in placeholders],
+        )
+        self.assertEqual(
+            ["scanned_pdf_ocr"],
+            [sample["representative_mode"] for sample in placeholders],
+        )
+
+    def test_p9_evaluation_samples_track_missing_required_category_placeholder(
+        self,
+    ) -> None:
+        p9_manifest = copy.deepcopy(
+            evaluate_dataset.load_json(POC_EVALUATION_MANIFEST_PATH)
+        )
+        fixture_manifest = evaluate_dataset.load_json(FIXTURE_MANIFEST_PATH)
+        p9_manifest["samples"] = [
+            sample
+            for sample in p9_manifest["samples"]
+            if sample["id"] != "p9-record-pdf-001"
+        ]
+
+        samples = evaluate_dataset.p9_evaluation_samples(
+            p9_manifest, fixture_manifest
+        )
+
+        placeholders = [
+            sample
+            for sample in samples
+            if sample.get("dataset_status") == "manifest_placeholder"
+        ]
+        self.assertIn(
+            ("p9-record-pdf-002", "record_pdf", "pdf_to_word"),
+            [
+                (
+                    sample["sample_id"],
+                    sample["sample_category"],
+                    sample["representative_mode"],
+                )
+                for sample in placeholders
+            ],
+        )
+        self.assertIn(
+            ("p9-record-pdf-003", "record_pdf", "pdf_to_excel"),
+            [
+                (
+                    sample["sample_id"],
+                    sample["sample_category"],
+                    sample["representative_mode"],
+                )
+                for sample in placeholders
+            ],
         )
 
     def test_p9_harness_counts_artifact_expectation_mismatch_as_failure(self) -> None:
@@ -2141,6 +2496,140 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertIn(
             "unexpected warning 'unexpected review warning' was emitted",
             result["artifact_expectation_failures"],
+        )
+
+    def test_p9_harness_allows_review_only_runtime_warnings(self) -> None:
+        with tempfile.NamedTemporaryFile(suffix=".docx") as fixture_file:
+            fixture_file.write(b"fixture")
+            fixture_file.flush()
+            fixture = {
+                "id": "review-warning-fixture",
+                "sample_id": "p9-review-warning",
+                "path": "datasets/fixtures/word/review-warning.docx",
+                "source_type": "word",
+                "format": "docx",
+                "conversion_mode": "word_to_excel",
+                "word_to_excel_expectations": {"warnings": []},
+            }
+            artifact_content = (
+                REPO_ROOT
+                / "datasets"
+                / "fixtures"
+                / "excel"
+                / "excel-to-word-representative.xlsx"
+            ).read_bytes()
+
+            with mock.patch(
+                "services.api.poc_web.convert_uploaded_document",
+                return_value={
+                    "status": "requires_review",
+                    "document_ir": {"document": {"title": "review warning"}},
+                    "artifacts": [
+                        {
+                            "kind": "primary",
+                            "id": "primary-xlsx",
+                            "format": "xlsx",
+                            "content": artifact_content,
+                        }
+                    ],
+                    "warnings": [
+                        "conversion mode word_to_excel selected",
+                        "blocks[0].bbox missing; block marked requires_review",
+                    ],
+                    "review_items": [
+                        {
+                            "id": "review-1",
+                            "warnings": [
+                                "blocks[0].bbox missing; block marked requires_review"
+                            ],
+                        }
+                    ],
+                    "audit": {
+                        "conversion_settings": {
+                            "use_llm": {"status": "disabled"},
+                            "use_ocr": {"status": "disabled"},
+                        },
+                        "conversion_plan": {"status": "disabled"},
+                    },
+                },
+            ):
+                result = evaluate_dataset.p9_conversion_result(
+                    fixture,
+                    fixture_path=Path(fixture_file.name),
+                    mode="word_to_excel",
+                    llm_scenario="no_llm",
+                )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["artifact_expectations_met"])
+        self.assertEqual([], result["artifact_expectation_failures"])
+
+    def test_p9_harness_marks_optional_pdf_dependency_errors_fail_closed(self) -> None:
+        class PocServerDependencyError(RuntimeError):
+            pass
+
+        with tempfile.NamedTemporaryFile(suffix=".pdf") as fixture_file:
+            fixture_file.write(b"fixture")
+            fixture_file.flush()
+            fixture = {
+                "id": "pdf-dependency-fixture",
+                "sample_id": "p9-pdf-dependency",
+                "path": "datasets/fixtures/pdf/pdf-dependency.pdf",
+                "source_type": "text_pdf",
+                "format": "pdf",
+                "conversion_mode": "pdf_to_word",
+            }
+
+            with mock.patch(
+                "services.api.poc_web.convert_uploaded_document",
+                side_effect=PocServerDependencyError("pdf dependency unavailable"),
+            ):
+                result = evaluate_dataset.p9_conversion_result(
+                    fixture,
+                    fixture_path=Path(fixture_file.name),
+                    mode="pdf_to_word",
+                    llm_scenario="no_llm",
+                )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["fail_closed"])
+        self.assertEqual(
+            "p9-mvp-before-pdf-eval-dependency-gate",
+            result["mvp_before_gate_revision"],
+        )
+        self.assertFalse(result["artifact_expectations_met"])
+        self.assertEqual(
+            [
+                "fail-closed MVP-before gate revision: "
+                "p9-mvp-before-pdf-eval-dependency-gate"
+            ],
+            result["artifact_expectation_failures"],
+        )
+
+    def test_p9_runtime_review_warning_allowlist_is_exact(self) -> None:
+        self.assertTrue(
+            evaluate_dataset.p9_runtime_warning_is_review_only(
+                "blocks[12].bbox missing; block marked requires_review",
+                conversion_mode="excel_to_word",
+                allowed_prefixes=(),
+            )
+        )
+        self.assertTrue(
+            evaluate_dataset.p9_runtime_warning_is_review_only(
+                (
+                    "PDF table extraction candidate unavailable: tabula; "
+                    "xlsx artifact requires review"
+                ),
+                conversion_mode="pdf_to_excel",
+                allowed_prefixes=(),
+            )
+        )
+        self.assertFalse(
+            evaluate_dataset.p9_runtime_warning_is_review_only(
+                "unexpected parser degradation requires review by coincidence",
+                conversion_mode="pdf_to_excel",
+                allowed_prefixes=(),
+            )
         )
 
     def test_p9_harness_checks_mode_specific_xlsx_expectations(self) -> None:
