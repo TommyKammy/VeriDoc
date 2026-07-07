@@ -32,10 +32,10 @@ behavior, or failed representative conversion row blocks promotion.
   require `overall_status: pass` before treating Phase 9 as implementation
   ready.
 - Resolve all representative conversion harness failures. The P9-03 harness
-  now records 16 of 16 representative conversion rows completing without
-  harness failures by treating missing optional PDF evaluation dependencies and
-  the missing scanned/OCR public fixture as explicit fail-closed MVP-before
-  gate rows, not successful artifact output.
+  now records 8 of 16 representative conversion rows completing and 8 rows
+  failing closed because optional PDF evaluation dependencies or the public
+  scanned/OCR fixture are unavailable. Those rows remain explicit
+  MVP-before gate blockers, not successful artifact output.
 - Require primary artifact structure/source expectations to pass for the target
   MVP modes. Current Word/Excel representative artifact expectations pass;
   PDF, record-PDF, and scanned/OCR rows remain blocked behind explicit
@@ -99,7 +99,7 @@ GMP production use.
 
 | P9-03 item | Current status | MVP classification | Required disposition |
 | --- | --- | --- | --- |
-| `functionality` | pass with fail-closed gates | MVP-before required | All target representative modes, including `scanned_pdf_ocr`, are tracked as harness rows. PDF dependency and scanned/OCR fixture gaps stay blocked by explicit P9 gate revisions. |
+| `functionality` | fail | MVP-before required | All target representative modes, including `scanned_pdf_ocr`, are tracked as harness rows. PDF dependency and scanned/OCR fixture gaps fail closed under explicit P9 gate revisions until audited conversion evidence exists. |
 | `structured_output` | fail | MVP-before required | Word/Excel primary artifacts meet current expectations. PDF, record-PDF, and scanned/OCR rows must not be promoted until the optional PDF evaluation dependency gate and scanned/OCR fixture gate are closed. |
 | `logs` | fail | MVP-before required | Every harness outcome must carry audit evidence. |
 | `llm_control` | unknown | MVP-before required | Define an LLM stability threshold and keep external-AI guard evidence green. |
@@ -114,7 +114,7 @@ GMP production use.
 
 | Priority | Candidate | Depends on | Non-goals |
 | --- | --- | --- | --- |
-| P0 | Resolve failing P9 representative conversion harness rows, including the `scanned_pdf_ocr` mode | P9-03 report command and current P9 fixtures | No new document categories beyond P9 representative modes, no formal GMP validation, no desktop packaging |
+| P0 | Resolve fail-closed P9 MVP-before gate revisions, including the PDF dependency and `scanned_pdf_ocr` fixture gates | P9-03 report command and current P9 fixtures | No new document categories beyond P9 representative modes, no formal GMP validation, no desktop packaging |
 | P0 | Require audit evidence for all P9 harness outcomes | Harness row resolution or explicit audit schema update | No audit UI redesign, no external logging service migration |
 | P1 | Define acceptance threshold for LLM stability drift | Existing synthetic LLM stability runs and external-AI guard evidence | No model-provider replacement, no production prompt tuning |
 | P1 | Add authenticated PoC API acceptance coverage | Local PoC API authentication design in `README.md` | No tenant/account system redesign, no production SSO |
