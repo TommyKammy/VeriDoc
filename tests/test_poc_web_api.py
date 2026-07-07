@@ -6679,16 +6679,36 @@ def test_poc_http_api_rejects_no_auth_approval_before_workflow_validation(
 
 
 def test_poc_http_api_requires_configured_local_auth_token_for_review_events() -> None:
-    audit_event = _review_audit_event()
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    store = ReviewAuditEventStore()
+    server.review_event_store = store
+    server.local_auth_tokens = _local_auth_tokens()
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = json.dumps(_review_audit_event()).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/review-events",
+            body=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Content-Length": str(len(payload)),
+            },
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
 
-    status, body, events = _post_review_audit_event_with_store(audit_event, role_token=None)
-
-    assert status == 401
+    assert response.status == 401
     assert body == {
         "error": "auth_required",
         "message": "Authorization bearer token is required",
     }
-    assert events == []
+    assert store.list_events() == []
 
 
 def test_poc_http_api_rejects_role_token_without_principal_id() -> None:

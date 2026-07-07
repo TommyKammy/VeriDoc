@@ -114,6 +114,36 @@ POC_AUTH_SESSION_FAIL_CLOSED_EXPECTED_STATUS_BY_REF = {
     "tests/test_poc_web_api.py::test_poc_http_api_requires_configured_local_auth_token_for_review_events": 401,
     "tests/test_poc_web_api.py::test_poc_http_api_authenticates_job_events_before_parsing_payload": 401,
 }
+POC_AUTH_SESSION_FAIL_CLOSED_REF_EXPECTATIONS = {
+    "tests/test_poc_web_api.py::test_poc_http_api_authenticates_review_events_before_parsing_payload": {
+        "status_codes": frozenset((401,)),
+        "method": "POST",
+        "path": "/api/review-events",
+        "required_literals": frozenset(("{not valid json", "auth_required")),
+    },
+    "tests/test_poc_web_api.py::test_poc_http_api_rejects_read_only_review_role_before_parsing_payload": {
+        "status_codes": frozenset((403,)),
+        "method": "POST",
+        "path": "/api/review-events",
+        "required_literals": frozenset(
+            ("{not valid json", "Bearer viewer-token", "forbidden")
+        ),
+    },
+    "tests/test_poc_web_api.py::test_poc_http_api_requires_configured_local_auth_token_for_review_events": {
+        "status_codes": frozenset((401,)),
+        "method": "POST",
+        "path": "/api/review-events",
+        "required_literals": frozenset(
+            ("Authorization bearer token is required", "auth_required")
+        ),
+    },
+    "tests/test_poc_web_api.py::test_poc_http_api_authenticates_job_events_before_parsing_payload": {
+        "status_codes": frozenset((401,)),
+        "method": "POST",
+        "path": "/api/job-events",
+        "required_literals": frozenset(("{not valid json", "auth_required")),
+    },
+}
 POC_AUTH_SESSION_COVERAGE_INPUT_PATHS = (
     Path("README.md"),
     Path("tests/test_poc_web_api.py"),
@@ -267,6 +297,18 @@ def _test_function_is_skipped_or_xfailed(
         }:
             return True
     return False
+
+
+def _function_arg_names(node: ast.FunctionDef | ast.AsyncFunctionDef) -> frozenset[str]:
+    args = node.args
+    return frozenset(
+        arg.arg
+        for arg in (
+            *args.posonlyargs,
+            *args.args,
+            *args.kwonlyargs,
+        )
+    )
 
 
 def _constant_int_value(node: ast.AST) -> int | None:
@@ -486,11 +528,18 @@ class _AuthenticatedStatusObservation:
 
 
 def _string_literals_in_node(node: ast.AST) -> frozenset[str]:
-    return frozenset(
-        child.value
-        for child in ast.walk(node)
-        if isinstance(child, ast.Constant) and isinstance(child.value, str)
-    )
+    literals: set[str] = set()
+    for child in ast.walk(node):
+        if not isinstance(child, ast.Constant):
+            continue
+        if isinstance(child.value, str):
+            literals.add(child.value)
+        if isinstance(child.value, bytes):
+            try:
+                literals.add(child.value.decode("utf-8"))
+            except UnicodeDecodeError:
+                continue
+    return frozenset(literals)
 
 
 def _request_method_and_path(node: ast.Call) -> tuple[str | None, str | None]:
@@ -505,6 +554,9 @@ def _authenticated_success_status_observations(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> tuple[_AuthenticatedStatusObservation, ...]:
     env_tokens_seen: set[str] = set()
+    monkeypatch_fixture_names = frozenset(
+        name for name in _function_arg_names(node) if name == "monkeypatch"
+    )
     pending_request_by_connection: dict[
         str, _AuthenticatedStatusObservation
     ] = {}
@@ -513,7 +565,11 @@ def _authenticated_success_status_observations(
 
     for statement in _ordered_function_statements(node.body):
         env_tokens_seen = set(
-            _env_auth_tokens_after_statement(statement, env_tokens_seen)
+            _env_auth_tokens_after_statement(
+                statement,
+                env_tokens_seen,
+                monkeypatch_fixture_names=monkeypatch_fixture_names,
+            )
         )
         response_connections_seen = {
             connection_name
@@ -668,6 +724,8 @@ def _calls_setattr_local_auth_tokens(node: ast.AST) -> bool:
 def _env_auth_tokens_after_statement(
     node: ast.stmt,
     current_tokens: Iterable[str],
+    *,
+    monkeypatch_fixture_names: frozenset[str] = frozenset(),
 ) -> frozenset[str]:
     tokens = set(current_tokens)
     for child in ast.walk(node):
@@ -676,6 +734,8 @@ def _env_auth_tokens_after_statement(
             if (
                 isinstance(func, ast.Attribute)
                 and func.attr == "setenv"
+                and isinstance(func.value, ast.Name)
+                and func.value.id in monkeypatch_fixture_names
                 and len(child.args) >= 2
                 and _constant_string_value(child.args[0]) == POC_AUTH_SESSION_ENV_VAR
             ):
@@ -761,8 +821,16 @@ def _test_function_asserts_status_code(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
     expected_status: int,
 ) -> bool:
-    status_observation_keys: set[str] = set()
-    pending_response_connections: set[str] = set()
+    return bool(_asserted_status_observations(node, frozenset((expected_status,))))
+
+
+def _asserted_status_observations(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    status_codes: frozenset[int],
+) -> tuple[_AuthenticatedStatusObservation, ...]:
+    status_observations: dict[str, _AuthenticatedStatusObservation] = {}
+    pending_request_by_connection: dict[str, _AuthenticatedStatusObservation] = {}
+    asserted_observations: list[_AuthenticatedStatusObservation] = []
     for statement in _ordered_function_statements(node.body):
         response_connections_seen = {
             connection_name
@@ -777,42 +845,92 @@ def _test_function_asserts_status_code(
                 continue
             connection_name = _method_call_receiver_name(child, "request")
             if connection_name is not None:
-                pending_response_connections.add(connection_name)
+                method, path = _request_method_and_path(child)
+                pending_request_by_connection[connection_name] = (
+                    _AuthenticatedStatusObservation(
+                        tokens=frozenset(),
+                        env_tokens_before_request=frozenset(),
+                        request_method=method,
+                        request_path=path,
+                        string_literals=_string_literals_in_node(child),
+                    )
+                )
 
         if isinstance(statement, (ast.Assign, ast.AnnAssign)):
             targets = _assignment_targets(statement)
-            for target in targets:
-                for key in _assigned_observation_keys(target):
-                    status_observation_keys.discard(key)
-                    prefix = f"attr:{key}."
-                    status_observation_keys = {
-                        observed_key
-                        for observed_key in status_observation_keys
-                        if not observed_key.startswith(prefix)
-                    }
+            _clear_status_observations_for_targets(status_observations, targets)
             value = statement.value
             if isinstance(value, ast.Call):
                 for target in targets:
-                    status_observation_keys.update(_assigned_status_expr_keys(target))
+                    for key in _assigned_status_expr_keys(target):
+                        status_observations[key] = _AuthenticatedStatusObservation(
+                            tokens=frozenset(),
+                            env_tokens_before_request=frozenset(),
+                            string_literals=_string_literals_in_node(value),
+                        )
                 connection_name = _method_call_receiver_name(value, "getresponse")
-                if connection_name in pending_response_connections:
-                    pending_response_connections.discard(connection_name)
+                pending = pending_request_by_connection.pop(connection_name, None)
+                if pending is not None:
                     response_connections_recorded.add(connection_name)
                     for target in targets:
                         for name in _assigned_name_targets(target):
-                            status_observation_keys.add(
+                            status_observations[
                                 f"attr:name:{name}.status"
+                            ] = _AuthenticatedStatusObservation(
+                                tokens=frozenset(),
+                                env_tokens_before_request=frozenset(),
+                                request_method=pending.request_method,
+                                request_path=pending.request_path,
+                                string_literals=pending.string_literals,
                             )
-        pending_response_connections.difference_update(
-            response_connections_seen - response_connections_recorded
-        )
+        for connection_name in response_connections_seen - response_connections_recorded:
+            pending_request_by_connection.pop(connection_name, None)
 
         if isinstance(statement, ast.Assert):
             asserted_keys = _status_asserted_expr_keys(
-                statement, frozenset((expected_status,))
+                statement, status_codes
             )
-            if asserted_keys & status_observation_keys:
-                return True
+            status_code = _asserted_status_code(statement)
+            for key in asserted_keys:
+                observation = status_observations.get(key)
+                if observation is None:
+                    continue
+                asserted_observations.append(
+                    _AuthenticatedStatusObservation(
+                        tokens=observation.tokens,
+                        env_tokens_before_request=(
+                            observation.env_tokens_before_request
+                        ),
+                        status_code=status_code,
+                        request_method=observation.request_method,
+                        request_path=observation.request_path,
+                        string_literals=(
+                            observation.string_literals
+                            | _string_literals_in_node(statement)
+                        ),
+                    )
+                )
+    return tuple(asserted_observations)
+
+
+def _test_function_matches_fail_closed_ref_expectation(
+    ref: str,
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> bool:
+    expectation = POC_AUTH_SESSION_FAIL_CLOSED_REF_EXPECTATIONS[ref]
+    expected_status_codes = expectation.get("status_codes", frozenset())
+    expected_method = expectation.get("method")
+    expected_path = expectation.get("path")
+    required_literals = expectation.get("required_literals", frozenset())
+    function_literals = _string_literals_in_node(node)
+    if not required_literals.issubset(function_literals):
+        return False
+    for observation in _asserted_status_observations(node, expected_status_codes):
+        if expected_method is not None and observation.request_method != expected_method:
+            continue
+        if expected_path is not None and observation.request_path != expected_path:
+            continue
+        return True
     return False
 
 
@@ -868,10 +986,10 @@ def poc_auth_session_coverage_is_present(repo_root: Path = REPO_ROOT) -> bool:
         _path, test_name = ref.split("::", 1)
         if not _test_function_uses_env_auth_boundary(test_functions[test_name]):
             return False
-    for ref, expected_status in POC_AUTH_SESSION_FAIL_CLOSED_EXPECTED_STATUS_BY_REF.items():
+    for ref in POC_AUTH_SESSION_FAIL_CLOSED_COVERAGE_REFS:
         _path, test_name = ref.split("::", 1)
-        if not _test_function_asserts_status_code(
-            test_functions[test_name], expected_status
+        if not _test_function_matches_fail_closed_ref_expectation(
+            ref, test_functions[test_name]
         ):
             return False
     return True
