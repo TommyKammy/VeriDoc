@@ -75,6 +75,7 @@ def valid_poc_auth_success_ref_source(
         "test_poc_http_api_requires_admin_role_for_retry_job_event": (
             "    action = 'retry_conversion'\n"
             "    body = json.dumps({'action': action}).encode('utf-8')\n"
+            "    connection = HTTPConnection('127.0.0.1', server.server_port, timeout=5)\n"
             "    connection.request(\n"
             "        'POST',\n"
             "        '/api/job-events',\n"
@@ -120,6 +121,7 @@ def valid_poc_auth_fail_closed_ref_source(
     snippets: dict[str, str] = {
         "test_poc_http_api_authenticates_review_events_before_parsing_payload": (
             "    payload = b'{not valid json'\n"
+            "    connection = HTTPConnection('127.0.0.1', server.server_port, timeout=5)\n"
             "    connection.request(\n"
             "        'POST',\n"
             "        '/api/review-events',\n"
@@ -132,6 +134,7 @@ def valid_poc_auth_fail_closed_ref_source(
         ),
         "test_poc_http_api_rejects_read_only_review_role_before_parsing_payload": (
             "    payload = b'{not valid json'\n"
+            "    connection = HTTPConnection('127.0.0.1', server.server_port, timeout=5)\n"
             "    connection.request(\n"
             "        'POST',\n"
             "        '/api/review-events',\n"
@@ -146,6 +149,7 @@ def valid_poc_auth_fail_closed_ref_source(
             "    assert response.status == 403\n"
         ),
         "test_poc_http_api_requires_configured_local_auth_token_for_review_events": (
+            "    connection = HTTPConnection('127.0.0.1', server.server_port, timeout=5)\n"
             "    connection.request(\n"
             "        'POST',\n"
             "        '/api/review-events',\n"
@@ -159,6 +163,7 @@ def valid_poc_auth_fail_closed_ref_source(
         ),
         "test_poc_http_api_authenticates_job_events_before_parsing_payload": (
             "    payload = b'{not valid json'\n"
+            "    connection = HTTPConnection('127.0.0.1', server.server_port, timeout=5)\n"
             "    connection.request(\n"
             "        'POST',\n"
             "        '/api/job-events',\n"
@@ -2012,6 +2017,262 @@ class EvaluateDatasetTest(unittest.TestCase):
         rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
         self.assertEqual("unknown", rows["security"]["status"])
         self.assertFalse(
+            payload["matrix_evidence"]["security"][
+                "authenticated_poc_api_session_checked"
+            ]
+        )
+
+    def test_poc_acceptance_report_rejects_unittest_skipped_auth_ref(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            (temp_root / "tests").mkdir()
+            (temp_root / "README.md").write_text(
+                "## Local PoC API authentication\n"
+                "Set VERIDOC_LOCAL_AUTH_TOKENS for local role tokens.\n",
+                encoding="utf-8",
+            )
+            success_ref_names = valid_poc_auth_success_ref_source().replace(
+                "def test_poc_http_api_reads_local_auth_tokens_from_env_for_review_success",
+                "@unittest.skip('auth evidence disabled')\n"
+                "def test_poc_http_api_reads_local_auth_tokens_from_env_for_review_success",
+            )
+            fail_closed_ref_names = valid_poc_auth_fail_closed_ref_source()
+            (temp_root / "tests" / "test_poc_web_api.py").write_text(
+                f"{success_ref_names}\n{fail_closed_ref_names}\n",
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(
+                evaluate_dataset,
+                "poc_auth_session_coverage_inputs_tracked_in_repo",
+                return_value=True,
+            ):
+                payload = self.poc_acceptance_payload(harness_repo_root=temp_root)
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual("unknown", rows["security"]["status"])
+        self.assertFalse(
+            payload["matrix_evidence"]["security"][
+                "authenticated_poc_api_session_checked"
+            ]
+        )
+
+    def test_poc_acceptance_report_rejects_empty_parametrized_auth_ref(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            (temp_root / "tests").mkdir()
+            (temp_root / "README.md").write_text(
+                "## Local PoC API authentication\n"
+                "Set VERIDOC_LOCAL_AUTH_TOKENS for local role tokens.\n",
+                encoding="utf-8",
+            )
+            success_ref_names = valid_poc_auth_success_ref_source().replace(
+                "def test_poc_http_api_reads_local_auth_tokens_from_env_for_review_success",
+                "@pytest.mark.parametrize('case', [])\n"
+                "def test_poc_http_api_reads_local_auth_tokens_from_env_for_review_success",
+            )
+            fail_closed_ref_names = valid_poc_auth_fail_closed_ref_source()
+            (temp_root / "tests" / "test_poc_web_api.py").write_text(
+                f"{success_ref_names}\n{fail_closed_ref_names}\n",
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(
+                evaluate_dataset,
+                "poc_auth_session_coverage_inputs_tracked_in_repo",
+                return_value=True,
+            ):
+                payload = self.poc_acceptance_payload(harness_repo_root=temp_root)
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual("unknown", rows["security"]["status"])
+        self.assertFalse(
+            payload["matrix_evidence"]["security"][
+                "authenticated_poc_api_session_checked"
+            ]
+        )
+
+    def test_poc_acceptance_report_requires_direct_auth_principal_ids(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            (temp_root / "tests").mkdir()
+            (temp_root / "README.md").write_text(
+                "## Local PoC API authentication\n"
+                "Set VERIDOC_LOCAL_AUTH_TOKENS for local role tokens.\n",
+                encoding="utf-8",
+            )
+            success_ref_names = valid_poc_auth_success_ref_source(
+                local_auth_tokens_source=(
+                    "def _local_auth_tokens():\n"
+                    "    return {\n"
+                    "        'viewer-token': {'role': 'viewer'},\n"
+                    "        'reviewer-token': {'role': 'reviewer'},\n"
+                    "        'approver-token': {'role': 'approver'},\n"
+                    "        'admin-token': {'role': 'admin'},\n"
+                    "    }\n"
+                )
+            )
+            fail_closed_ref_names = valid_poc_auth_fail_closed_ref_source()
+            (temp_root / "tests" / "test_poc_web_api.py").write_text(
+                f"{success_ref_names}\n{fail_closed_ref_names}\n",
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(
+                evaluate_dataset,
+                "poc_auth_session_coverage_inputs_tracked_in_repo",
+                return_value=True,
+            ):
+                payload = self.poc_acceptance_payload(harness_repo_root=temp_root)
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual("unknown", rows["security"]["status"])
+        self.assertFalse(
+            payload["matrix_evidence"]["security"][
+                "authenticated_poc_api_session_checked"
+            ]
+        )
+
+    def test_poc_acceptance_report_ignores_unreachable_auth_helper_returns(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            (temp_root / "tests").mkdir()
+            (temp_root / "README.md").write_text(
+                "## Local PoC API authentication\n"
+                "Set VERIDOC_LOCAL_AUTH_TOKENS for local role tokens.\n",
+                encoding="utf-8",
+            )
+            success_ref_names = valid_poc_auth_success_ref_source(
+                local_auth_tokens_source=(
+                    "def _local_auth_tokens():\n"
+                    "    return None\n"
+                    "    return {\n"
+                    "        'admin-token': {'role': 'admin', 'principal_id': 'admin'},\n"
+                    "    }\n"
+                )
+            )
+            fail_closed_ref_names = valid_poc_auth_fail_closed_ref_source()
+            (temp_root / "tests" / "test_poc_web_api.py").write_text(
+                f"{success_ref_names}\n{fail_closed_ref_names}\n",
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(
+                evaluate_dataset,
+                "poc_auth_session_coverage_inputs_tracked_in_repo",
+                return_value=True,
+            ):
+                payload = self.poc_acceptance_payload(harness_repo_root=temp_root)
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual("unknown", rows["security"]["status"])
+        self.assertFalse(
+            payload["matrix_evidence"]["security"][
+                "authenticated_poc_api_session_checked"
+            ]
+        )
+
+    def test_poc_acceptance_report_rejects_fake_request_receiver(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            (temp_root / "tests").mkdir()
+            (temp_root / "README.md").write_text(
+                "## Local PoC API authentication\n"
+                "Set VERIDOC_LOCAL_AUTH_TOKENS for local role tokens.\n",
+                encoding="utf-8",
+            )
+            success_ref_names = valid_poc_auth_success_ref_source(
+                {
+                    "test_poc_http_api_requires_admin_role_for_retry_job_event": (
+                        "    action = 'retry_conversion'\n"
+                        "    body = json.dumps({'action': action}).encode('utf-8')\n"
+                        "    connection = FakeConnection()\n"
+                        "    connection.request(\n"
+                        "        'POST',\n"
+                        "        '/api/job-events',\n"
+                        "        body=body,\n"
+                        "        headers={'Authorization': 'Bearer admin-token'},\n"
+                        "    )\n"
+                        "    response = connection.getresponse()\n"
+                        "    assert response.status == 202\n"
+                    )
+                }
+            )
+            fail_closed_ref_names = valid_poc_auth_fail_closed_ref_source()
+            (temp_root / "tests" / "test_poc_web_api.py").write_text(
+                f"{success_ref_names}\n{fail_closed_ref_names}\n",
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(
+                evaluate_dataset,
+                "poc_auth_session_coverage_inputs_tracked_in_repo",
+                return_value=True,
+            ):
+                payload = self.poc_acceptance_payload(harness_repo_root=temp_root)
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual("unknown", rows["security"]["status"])
+        self.assertFalse(
+            payload["matrix_evidence"]["security"][
+                "authenticated_poc_api_session_checked"
+            ]
+        )
+
+    def test_poc_acceptance_report_allows_unrelated_local_auth_token_attribute(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            (temp_root / "tests").mkdir()
+            (temp_root / "README.md").write_text(
+                "## Local PoC API authentication\n"
+                "Set VERIDOC_LOCAL_AUTH_TOKENS for local role tokens.\n",
+                encoding="utf-8",
+            )
+            success_ref_names = valid_poc_auth_success_ref_source(
+                {
+                    "test_poc_http_api_reads_local_auth_tokens_from_env_for_review_success": (
+                        "    fixture.local_auth_tokens = {}\n"
+                        "    monkeypatch.setenv(\n"
+                        "        'VERIDOC_LOCAL_AUTH_TOKENS',\n"
+                        "        'reviewer:env-reviewer=env-reviewer-token',\n"
+                        "    )\n"
+                        "    status, body = _post_review_event_on_connection(\n"
+                        "        None,\n"
+                        "        _review_audit_event(conversion_id='conversion-env-auth'),\n"
+                        "        role_token='env-reviewer-token',\n"
+                        "    )\n"
+                        "    assert status == 202\n"
+                    )
+                }
+            )
+            fail_closed_ref_names = valid_poc_auth_fail_closed_ref_source()
+            (temp_root / "tests" / "test_poc_web_api.py").write_text(
+                f"{success_ref_names}\n{fail_closed_ref_names}\n",
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(
+                evaluate_dataset,
+                "poc_auth_session_coverage_inputs_tracked_in_repo",
+                return_value=True,
+            ):
+                payload = self.poc_acceptance_payload(harness_repo_root=temp_root)
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual("pass", rows["security"]["status"])
+        self.assertTrue(
             payload["matrix_evidence"]["security"][
                 "authenticated_poc_api_session_checked"
             ]

@@ -300,12 +300,28 @@ def _test_function_is_skipped_or_xfailed(
             "pytest.mark.skip",
             "pytest.mark.skipif",
             "pytest.mark.xfail",
+            "unittest.skip",
+            "unittest.skipIf",
+            "unittest.skipUnless",
             "skip",
             "skipif",
             "xfail",
         }:
             return True
+        if _decorator_is_empty_parametrize(decorator):
+            return True
     return False
+
+
+def _decorator_is_empty_parametrize(node: ast.AST) -> bool:
+    if not isinstance(node, ast.Call):
+        return False
+    if _dotted_name(node.func) not in {"pytest.mark.parametrize", "parametrize"}:
+        return False
+    if len(node.args) < 2:
+        return False
+    values = node.args[1]
+    return isinstance(values, (ast.List, ast.Tuple)) and not values.elts
 
 
 def _function_arg_names(node: ast.FunctionDef | ast.AsyncFunctionDef) -> frozenset[str]:
@@ -359,15 +375,18 @@ def _privileged_auth_tokens_in_node(node: ast.AST) -> frozenset[str]:
 
 
 def _local_auth_token_mapping_value_is_valid(node: ast.AST) -> bool:
-    if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return node.value.strip() in POC_AUTH_SESSION_ENV_ROLES
     if not isinstance(node, ast.Dict):
         return False
     role: str | None = None
+    principal_id: str | None = None
     for key, value in zip(node.keys, node.values, strict=False):
         if _constant_string_value(key) == "role":
             role = _constant_string_value(value)
-    return role in POC_AUTH_SESSION_ENV_ROLES
+        if _constant_string_value(key) == "principal_id":
+            principal_id = _constant_string_value(value)
+    return role in POC_AUTH_SESSION_ENV_ROLES and bool(
+        principal_id and principal_id.strip()
+    )
 
 
 def _local_auth_token_mapping_tokens(node: ast.AST) -> frozenset[str]:
@@ -393,6 +412,7 @@ def _local_auth_token_helper_tokens(
         for statement in node.body:
             if isinstance(statement, ast.Return):
                 tokens.update(_local_auth_token_mapping_tokens(statement.value))
+                break
         if tokens:
             helpers[name] = frozenset(tokens)
     return helpers
@@ -748,6 +768,26 @@ def _request_method_and_path(node: ast.Call) -> tuple[str | None, str | None]:
     return method, path
 
 
+def _node_references_poc_server_address(node: ast.AST) -> bool:
+    for child in ast.walk(node):
+        if (
+            isinstance(child, ast.Attribute)
+            and child.attr in {"server_address", "server_port"}
+            and isinstance(child.value, ast.Name)
+            and child.value.id == "server"
+        ):
+            return True
+    return False
+
+
+def _call_creates_poc_http_connection(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and _dotted_name(node.func) in {"HTTPConnection", "http.client.HTTPConnection"}
+        and _node_references_poc_server_address(node)
+    )
+
+
 def _authenticated_success_status_observations(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
     *,
@@ -763,6 +803,7 @@ def _authenticated_success_status_observations(
     pending_request_by_connection: dict[
         str, _AuthenticatedStatusObservation
     ] = {}
+    poc_connection_names: set[str] = set()
     status_observations: dict[str, _AuthenticatedStatusObservation] = {}
     success_observations: list[_AuthenticatedStatusObservation] = []
     name_literal_bindings: dict[str, frozenset[str]] = {}
@@ -781,13 +822,6 @@ def _authenticated_success_status_observations(
                 ),
             )
         )
-        direct_tokens_seen = set(
-            _direct_auth_tokens_after_statement(
-                statement,
-                direct_tokens_seen,
-                local_auth_token_helpers=local_auth_token_helpers,
-            )
-        )
         response_connections_seen = {
             connection_name
             for child in _walk_statement_without_nested_scopes(statement)
@@ -800,8 +834,20 @@ def _authenticated_success_status_observations(
         for child in _walk_statement_without_nested_scopes(statement):
             if not isinstance(child, ast.Call):
                 continue
+            configured_tokens = _setattr_local_auth_token_value_tokens(
+                child,
+                local_auth_token_helpers=local_auth_token_helpers,
+            )
+            if configured_tokens is not None:
+                direct_tokens_seen = set(configured_tokens)
+                continue
+            if _calls_delattr_local_auth_tokens(child):
+                direct_tokens_seen.clear()
+                continue
             connection_name = _method_call_receiver_name(child, "request")
             if connection_name is None:
+                continue
+            if connection_name not in poc_connection_names:
                 continue
             tokens = _call_privileged_auth_tokens(child)
             if tokens:
@@ -823,6 +869,19 @@ def _authenticated_success_status_observations(
             value = statement.value
             targets = _assignment_targets(statement)
             _clear_status_observations_for_targets(status_observations, targets)
+            for target in targets:
+                for name in _assigned_name_targets(target):
+                    if _call_creates_poc_http_connection(value):
+                        poc_connection_names.add(name)
+                    else:
+                        poc_connection_names.discard(name)
+                if _targets_server_local_auth_tokens(target):
+                    direct_tokens_seen = set(
+                        _direct_auth_token_value_tokens(
+                            value,
+                            local_auth_token_helpers=local_auth_token_helpers,
+                        )
+                    )
             if isinstance(value, ast.Call):
                 tokens = _call_privileged_auth_tokens(value)
                 if tokens:
@@ -957,10 +1016,7 @@ def _assigns_server_local_auth_tokens(node: ast.FunctionDef | ast.AsyncFunctionD
             targets = (
                 child.targets if isinstance(child, ast.Assign) else (child.target,)
             )
-            if any(
-                isinstance(target, ast.Attribute) and target.attr == "local_auth_tokens"
-                for target in targets
-            ):
+            if any(_targets_server_local_auth_tokens(target) for target in targets):
                 return True
     return False
 
@@ -971,6 +1027,8 @@ def _calls_setattr_local_auth_tokens(node: ast.AST) -> bool:
         and isinstance(node.func, ast.Name)
         and node.func.id == "setattr"
         and len(node.args) >= 2
+        and isinstance(node.args[0], ast.Name)
+        and node.args[0].id == "server"
         and _constant_string_value(node.args[1]) == "local_auth_tokens"
     )
 
