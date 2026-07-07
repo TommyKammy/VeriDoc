@@ -90,7 +90,7 @@ POC_AUTH_SESSION_README_REF = "README.md Local PoC API authentication"
 POC_AUTH_SESSION_COVERAGE_REFS = (
     "tests/test_poc_web_api.py::test_poc_http_api_authenticates_review_events_before_parsing_payload",
     "tests/test_poc_web_api.py::test_poc_http_api_rejects_read_only_review_role_before_parsing_payload",
-    "tests/test_poc_web_api.py::test_poc_http_api_records_desktop_upload_and_download_audit_events",
+    "tests/test_poc_web_api.py::test_poc_http_api_requires_configured_local_auth_token_for_review_events",
     "tests/test_poc_web_api.py::test_poc_http_api_authenticates_job_events_before_parsing_payload",
 )
 EXPECTED_SCOPE_PHASE = "phase0"
@@ -499,6 +499,7 @@ class PoCAcceptanceReport:
         llm_control_status = (
             "fail" if llm_stability_threshold_failures else "pass"
         )
+        manifest_repo_root = poc_acceptance_harness_repo_root(self.p9_harness)
         evidence_inputs_tracked_in_manifest_repo = (
             poc_acceptance_evidence_inputs_tracked_in_manifest_repo(self.p9_harness)
         )
@@ -514,7 +515,7 @@ class PoCAcceptanceReport:
             else "fail"
         )
         authenticated_poc_api_session_checked = (
-            poc_auth_session_coverage_is_present()
+            poc_auth_session_coverage_is_present(manifest_repo_root)
         )
         security_status = (
             "fail"

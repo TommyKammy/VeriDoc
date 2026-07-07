@@ -63,6 +63,7 @@ class EvaluateDatasetTest(unittest.TestCase):
         manifest: Path = POC_EVALUATION_MANIFEST_PATH,
         llm_stability_source: Path = LLM_STABILITY_RUNS_PATH,
         poc_comparison_source: Path = POC_COMPARISON_PATH,
+        harness_repo_root: Path | None = None,
         commit: str = "test-commit",
         commit_is_clean: bool = True,
         evaluator_commit: str | None = None,
@@ -149,6 +150,7 @@ class EvaluateDatasetTest(unittest.TestCase):
             poc_mode_comparison=poc_comparison,
             llm_stability_source=llm_stability_source,
             poc_comparison_source=poc_comparison_source,
+            repo_root=harness_repo_root,
         )
         report = evaluate_dataset.PoCAcceptanceReport(
             p9_harness=harness,
@@ -763,12 +765,39 @@ class EvaluateDatasetTest(unittest.TestCase):
             "tests/test_poc_web_api.py::test_poc_http_api_authenticates_review_events_before_parsing_payload",
             rows["security"]["evidence_refs"],
         )
+        self.assertIn(
+            "tests/test_poc_web_api.py::test_poc_http_api_requires_configured_local_auth_token_for_review_events",
+            rows["security"]["evidence_refs"],
+        )
+        self.assertNotIn(
+            "tests/test_poc_web_api.py::test_poc_http_api_records_desktop_upload_and_download_audit_events",
+            rows["security"]["evidence_refs"],
+        )
         self.assertTrue(
             payload["matrix_evidence"]["security"][
                 "authenticated_poc_api_session_checked"
             ]
         )
         self.assertEqual("pass", payload["overall_status"])
+
+    def test_poc_acceptance_report_checks_auth_session_coverage_in_manifest_repo(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            with mock.patch.object(
+                evaluate_dataset,
+                "poc_auth_session_coverage_is_present",
+                return_value=True,
+            ) as mocked_auth_coverage:
+                payload = self.poc_acceptance_payload(harness_repo_root=temp_root)
+
+        mocked_auth_coverage.assert_called_once_with(temp_root.resolve())
+        self.assertTrue(
+            payload["matrix_evidence"]["security"][
+                "authenticated_poc_api_session_checked"
+            ]
+        )
 
     def test_poc_acceptance_report_preserves_custom_evidence_paths(self) -> None:
         llm_stability_source = Path("datasets/custom/stability_runs.json")
