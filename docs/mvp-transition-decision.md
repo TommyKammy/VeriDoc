@@ -66,10 +66,10 @@ alone.
 
 | Stage | Target documents | Decision |
 | --- | --- | --- |
-| MVP-before | Representative synthetic Word, Excel, and PDF fixtures already covered by the P9 harness | Required to pass before implementation starts |
+| MVP-before | Representative synthetic Word, Excel, PDF, and scanned/OCR PDF modes required by the P9 harness | Required to pass before implementation starts, including the `scanned_pdf_ocr` representative mode currently counted by P9 |
 | MVP-1 | Editable Word and Excel review artifacts with explicit source links and audit evidence | Candidate MVP scope after P9 passes |
 | MVP-2 | PDF-to-review workflows where structure can be source-linked and marked for review | Follow after Word/Excel gates are stable |
-| Later | Scanned/OCR-heavy PDFs, layout-exact PDF reconstruction, confidential records | Out of initial MVP unless a separate gate proves accuracy, provenance, and auditability |
+| Later | Scanned/OCR production expansion beyond the P9 representative mode, layout-exact PDF reconstruction, confidential records | Out of initial MVP unless a separate gate proves accuracy, provenance, and auditability |
 
 ## GMP record PDF handling
 
@@ -92,7 +92,7 @@ GMP production use.
 
 | P9-03 item | Current status | MVP classification | Required disposition |
 | --- | --- | --- | --- |
-| `functionality` | fail | MVP-before required | All target representative modes must complete without harness failures. |
+| `functionality` | fail | MVP-before required | All target representative modes, including `scanned_pdf_ocr`, must complete without harness failures or be removed by an explicit P9 gate revision. |
 | `structured_output` | fail | MVP-before required | Primary artifacts must meet structure/source expectations. |
 | `logs` | fail | MVP-before required | Every harness outcome must carry audit evidence. |
 | `llm_control` | unknown | MVP-before required | Define an LLM stability threshold and keep external-AI guard evidence green. |
@@ -107,11 +107,11 @@ GMP production use.
 
 | Priority | Candidate | Depends on | Non-goals |
 | --- | --- | --- | --- |
-| P0 | Resolve failing P9 representative conversion harness rows | P9-03 report command and current P9 fixtures | No new document categories, no formal GMP validation, no desktop packaging |
+| P0 | Resolve failing P9 representative conversion harness rows, including the `scanned_pdf_ocr` mode | P9-03 report command and current P9 fixtures | No new document categories beyond P9 representative modes, no formal GMP validation, no desktop packaging |
 | P0 | Require audit evidence for all P9 harness outcomes | Harness row resolution or explicit audit schema update | No audit UI redesign, no external logging service migration |
 | P1 | Define acceptance threshold for LLM stability drift | Existing synthetic LLM stability runs and external-AI guard evidence | No model-provider replacement, no production prompt tuning |
 | P1 | Add authenticated PoC API acceptance coverage | Local PoC API authentication design in `README.md` | No tenant/account system redesign, no production SSO |
-| P2 | Stage PDF and scanned/OCR-heavy expansion | Passing Word/Excel/PDF review-artifact gates | No layout-exact PDF guarantee, no confidential source records |
+| P2 | Stage PDF and scanned/OCR expansion beyond the P9 representative gate | Passing Word/Excel/PDF/scanned-OCR representative gates | No layout-exact PDF guarantee, no confidential source records |
 | P2 | Prepare formal GMP validation plan | Stable synthetic GMP-08 report and quality-unit review availability | No claim that the PoC report is formal validation |
 
 ## Verification
@@ -119,4 +119,3 @@ GMP production use.
 - `python3 scripts/evaluate_dataset.py --poc-acceptance-report`
 - `python3 scripts/evaluate_dataset.py --gmp-acceptance datasets/gold/gmp_acceptance_v1.json`
 - `python3 scripts/ci/repo_hygiene.py`
-
