@@ -1775,8 +1775,6 @@ def poc_acceptance_manifest_default_path(repo_root: Path, default_path: Path) ->
 def poc_acceptance_manifest_input_path(repo_root: Path, input_path: Path) -> Path:
     if input_path.is_absolute():
         return input_path
-    if repo_root.resolve() == REPO_ROOT.resolve():
-        return input_path
     return repo_root / input_path
 
 
