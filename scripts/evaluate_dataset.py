@@ -1259,6 +1259,7 @@ def p9_result_for_unavailable_fixture(
         if fail_closed and mvp_before_gate_revision
         else []
     )
+    audit_failure_reason = f"{failure_reason}; conversion audit missing"
     return {
         "sample_id": fixture.get("sample_id"),
         "fixture_id": fixture.get("id"),
@@ -1273,7 +1274,7 @@ def p9_result_for_unavailable_fixture(
         "llm_scenario": llm_scenario,
         "llm_requested": llm_scenario == "llm_requested",
         "ocr_requested": mode == "scanned_pdf_ocr",
-        "ok": fail_closed,
+        "ok": False,
         "fail_closed": fail_closed,
         "mvp_before_gate_revision": mvp_before_gate_revision,
         "ir_generated": False,
@@ -1283,7 +1284,7 @@ def p9_result_for_unavailable_fixture(
         "review_items_count": 0,
         "audit_present": False,
         "processing_time_ms": 0.0,
-        "failure_reason": failure_reason,
+        "failure_reason": audit_failure_reason,
         "llm_status": "not_run",
         "llm_fallback_used": False,
         "use_ocr_status": "not_run",
@@ -2536,6 +2537,9 @@ def poc_acceptance_follow_up_candidates(
     poc_comparison: PoCComparisonMetrics,
 ) -> list[dict[str, str]]:
     candidates: list[dict[str, str]] = []
+    non_gate_failed_results = [
+        result for result in failed_results if result.get("fail_closed") is not True
+    ]
     gate_revisions = sorted(
         {
             str(result.get("mvp_before_gate_revision"))
@@ -2556,11 +2560,14 @@ def poc_acceptance_follow_up_candidates(
                 ),
             }
         )
-    if failed_results:
+    if non_gate_failed_results:
         candidates.append(
             {
                 "title": "Resolve failing P9 representative conversion harness rows",
-                "reason": f"{len(failed_results)} harness rows are not acceptance-ready.",
+                "reason": (
+                    f"{len(non_gate_failed_results)} harness rows are not "
+                    "acceptance-ready."
+                ),
             }
         )
     if llm_stability.unstable_example_count:
