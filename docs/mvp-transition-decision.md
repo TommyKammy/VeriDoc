@@ -10,8 +10,8 @@ python3 scripts/evaluate_dataset.py --poc-acceptance-report
 The report is generated from `datasets/poc_evaluation_manifest_v1.json`,
 `datasets/gold/llm_stability_runs_v0.json`, and
 `datasets/gold/poc_mode_comparison_v1.json`. The current P9-03 report marks
-the overall PoC acceptance status as `fail`, with 3 failed, 3 passed, and 2
-unknown criteria. It also states that the report is not the final MVP go/no-go
+the overall PoC acceptance status as `fail`, with 5 failed, 2 passed, and 1
+unknown criterion. It also states that the report is not the final MVP go/no-go
 decision and is not formal GMP validation.
 
 ## Recommendation
@@ -46,9 +46,12 @@ behavior, or failed representative conversion row blocks promotion.
   or fixture-gate rows are not promotable until they either produce normal
   audited conversion evidence or remain documented as explicit MVP-before
   blockers.
-- Define and enforce an LLM stability acceptance threshold. The current report
-  keeps LLM correction/completion as `unknown` because 2 unstable synthetic
-  examples remain.
+- Enforce the LLM stability acceptance threshold. The current report fails LLM
+  correction/completion because the synthetic runs have 2 unstable examples,
+  plan agreement below 1.0, confirmed-value agreement below 1.0, schema
+  failures above 0.0, and deterministic fallback above 0.0. External AI API
+  guard violations remain at 0 and are reported separately in the same LLM
+  control evidence.
 - Validate authenticated PoC API behavior before treating security as accepted.
   The current report records zero external AI API guard violations, but
   authenticated PoC API session coverage is still unchecked.
@@ -102,7 +105,7 @@ GMP production use.
 | `functionality` | fail | MVP-before required | All target representative modes, including `scanned_pdf_ocr`, are tracked as harness rows. PDF dependency and scanned/OCR fixture gaps fail closed under explicit P9 gate revisions until audited conversion evidence exists. |
 | `structured_output` | fail | MVP-before required | Word/Excel primary artifacts meet current expectations. PDF, record-PDF, and scanned/OCR rows must not be promoted until the optional PDF evaluation dependency gate and scanned/OCR fixture gate are closed. |
 | `logs` | fail | MVP-before required | Every harness outcome must carry audit evidence. |
-| `llm_control` | unknown | MVP-before required | Define an LLM stability threshold and keep external-AI guard evidence green. |
+| `llm_control` | fail | MVP-before required | The acceptance report requires plan agreement 1.0, confirmed-value agreement 1.0, schema failure rate 0.0, deterministic fallback rate 0.0, unstable examples 0, harness LLM scenario failures 0, and external AI API guard violations 0. Current synthetic runs miss the stability thresholds while external-AI guard evidence remains green. |
 | `security` | unknown | MVP-before required | Add authenticated PoC API session coverage before accepting the security gate. |
 | `traceability` | pass | Carry forward | Preserve source linkage as a non-regression gate. |
 | `safety` | pass | Carry forward | Preserve zero high-risk false auto-confirmation as a non-regression gate. |
@@ -116,7 +119,7 @@ GMP production use.
 | --- | --- | --- | --- |
 | P0 | Resolve fail-closed P9 MVP-before gate revisions, including the PDF dependency and `scanned_pdf_ocr` fixture gates | P9-03 report command and current P9 fixtures | No new document categories beyond P9 representative modes, no formal GMP validation, no desktop packaging |
 | P0 | Require audit evidence for all P9 harness outcomes | Harness row resolution or explicit audit schema update | No audit UI redesign, no external logging service migration |
-| P1 | Define acceptance threshold for LLM stability drift | Existing synthetic LLM stability runs and external-AI guard evidence | No model-provider replacement, no production prompt tuning |
+| P1 | Stabilize synthetic LLM correction/completion evidence against the acceptance threshold | Existing synthetic LLM stability runs and external-AI guard evidence | No model-provider replacement, no production prompt tuning |
 | P1 | Add authenticated PoC API acceptance coverage | Local PoC API authentication design in `README.md` | No tenant/account system redesign, no production SSO |
 | P2 | Stage PDF and scanned/OCR expansion beyond the P9 representative gate | Passing Word/Excel/PDF/scanned-OCR representative gates | No layout-exact PDF guarantee, no confidential source records |
 | P2 | Prepare formal GMP validation plan | Stable synthetic GMP-08 report and quality-unit review availability | No claim that the PoC report is formal validation |
