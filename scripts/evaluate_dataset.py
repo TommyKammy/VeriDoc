@@ -350,11 +350,19 @@ class PoCAcceptanceReport:
     generation_command: str = (
         "python3 scripts/evaluate_dataset.py --poc-acceptance-report"
     )
+    evaluator_commit: str | None = None
+    evaluator_commit_is_clean: bool | None = None
 
     def as_dict(self) -> dict[str, object]:
         harness_payload = self.p9_harness.as_dict()
         summary = harness_payload["summary"]
         assert isinstance(summary, dict)
+        evaluator_commit = self.evaluator_commit or self.commit
+        evaluator_commit_is_clean = (
+            self.commit_is_clean
+            if self.evaluator_commit_is_clean is None
+            else self.evaluator_commit_is_clean
+        )
         poc_comparison = self.p9_harness.poc_mode_comparison
         llm_stability = self.p9_harness.llm_stability
         results = list(self.p9_harness.results)
@@ -419,6 +427,8 @@ class PoCAcceptanceReport:
             if (
                 self.commit != "unknown"
                 and self.commit_is_clean
+                and evaluator_commit != "unknown"
+                and evaluator_commit_is_clean
                 and evidence_inputs_tracked_in_manifest_repo
             )
             else "fail"
@@ -557,6 +567,8 @@ class PoCAcceptanceReport:
             llm_stability=llm_stability,
             commit=self.commit,
             commit_is_clean=self.commit_is_clean,
+            evaluator_commit=evaluator_commit,
+            evaluator_commit_is_clean=evaluator_commit_is_clean,
             evidence_inputs_tracked_in_manifest_repo=(
                 evidence_inputs_tracked_in_manifest_repo
             ),
@@ -571,6 +583,8 @@ class PoCAcceptanceReport:
             "tested_environment": {
                 "commit": self.commit,
                 "commit_is_clean": self.commit_is_clean,
+                "evaluator_commit": evaluator_commit,
+                "evaluator_commit_is_clean": evaluator_commit_is_clean,
                 "python": platform.python_version(),
                 "platform": platform.platform(),
             },
@@ -587,9 +601,10 @@ class PoCAcceptanceReport:
             "fail_closed_conditions": poc_acceptance_fail_closed_conditions(
                 external_violation_count=external_violation_count,
                 poc_comparison=poc_comparison,
-                artifact_failures=artifact_failures,
                 unaudited_results=unaudited_results,
                 llm_stability=llm_stability,
+                llm_scenario_failures=llm_scenario_failures,
+                structured_output_failures=structured_output_failures,
             ),
             "conversion_mode_results": by_mode,
             "llm_stability_comparison": llm_stability.as_dict(),
@@ -1704,6 +1719,14 @@ def poc_acceptance_manifest_default_path(repo_root: Path, default_path: Path) ->
     return repo_root / default_path
 
 
+def poc_acceptance_manifest_input_path(repo_root: Path, input_path: Path) -> Path:
+    if input_path.is_absolute():
+        return input_path
+    if repo_root.resolve() == REPO_ROOT.resolve():
+        return input_path
+    return repo_root / input_path
+
+
 def build_poc_acceptance_report(
     manifest_path: Path = DEFAULT_P9_HARNESS_MANIFEST,
     *,
@@ -1715,7 +1738,7 @@ def build_poc_acceptance_report(
 ) -> PoCAcceptanceReport:
     manifest_repo_root = p9_manifest_repo_root(manifest_path.resolve())
     resolved_llm_stability_runs_path = (
-        llm_stability_runs_path
+        poc_acceptance_manifest_input_path(manifest_repo_root, llm_stability_runs_path)
         if llm_stability_runs_path is not None
         else poc_acceptance_manifest_default_path(
             manifest_repo_root,
@@ -1723,7 +1746,7 @@ def build_poc_acceptance_report(
         )
     )
     resolved_poc_comparison_path = (
-        poc_comparison_path
+        poc_acceptance_manifest_input_path(manifest_repo_root, poc_comparison_path)
         if poc_comparison_path is not None
         else poc_acceptance_manifest_default_path(
             manifest_repo_root,
@@ -1741,6 +1764,8 @@ def build_poc_acceptance_report(
         commit=current_git_commit(manifest_repo_root),
         commit_is_clean=current_git_worktree_clean(manifest_repo_root),
         generation_command=generation_command,
+        evaluator_commit=current_git_commit(REPO_ROOT),
+        evaluator_commit_is_clean=current_git_worktree_clean(REPO_ROOT),
     )
 
 
@@ -1857,17 +1882,45 @@ def poc_acceptance_tracked_repo_path(path: Path, repo_root: Path) -> bool:
     return completed.returncode == 0
 
 
+def poc_acceptance_p9_input_paths(p9_harness: P9HarnessReport) -> tuple[Path, ...]:
+    repo_root = poc_acceptance_report_repo_root(p9_harness.manifest)
+    paths: list[Path] = [
+        p9_harness.manifest,
+        p9_harness.llm_stability_source,
+        p9_harness.poc_comparison_source,
+    ]
+    try:
+        manifest = load_json(
+            p9_harness.manifest
+            if p9_harness.manifest.is_absolute()
+            else repo_root / p9_harness.manifest
+        )
+        paths.append(p9_fixture_manifest_path(manifest, repo_root))
+    except (EvaluationCaseError, OSError, json.JSONDecodeError):
+        paths.append(repo_root / EXPECTED_DATASET_MANIFEST)
+    for result in p9_harness.results:
+        result_path = result.get("path")
+        if isinstance(result_path, str) and result_path:
+            paths.append(Path(result_path))
+
+    unique_paths: list[Path] = []
+    seen_paths: set[str] = set()
+    for path in paths:
+        candidate = path if path.is_absolute() else repo_root / path
+        key = str(candidate)
+        if key not in seen_paths:
+            unique_paths.append(path)
+            seen_paths.add(key)
+    return tuple(unique_paths)
+
+
 def poc_acceptance_evidence_inputs_tracked_in_manifest_repo(
     p9_harness: P9HarnessReport,
 ) -> bool:
     repo_root = poc_acceptance_report_repo_root(p9_harness.manifest)
-    evidence_paths = (
-        p9_harness.manifest,
-        p9_harness.llm_stability_source,
-        p9_harness.poc_comparison_source,
-    )
     return all(
-        poc_acceptance_tracked_repo_path(path, repo_root) for path in evidence_paths
+        poc_acceptance_tracked_repo_path(path, repo_root)
+        for path in poc_acceptance_p9_input_paths(p9_harness)
     )
 
 
@@ -1953,6 +2006,8 @@ def poc_acceptance_matrix_evidence(
     llm_stability: LLMStabilityMetrics,
     commit: str,
     commit_is_clean: bool,
+    evaluator_commit: str,
+    evaluator_commit_is_clean: bool,
     evidence_inputs_tracked_in_manifest_repo: bool,
 ) -> dict[str, object]:
     return {
@@ -1999,6 +2054,8 @@ def poc_acceptance_matrix_evidence(
         "reproducibility": {
             "commit": commit,
             "commit_is_clean": commit_is_clean,
+            "evaluator_commit": evaluator_commit,
+            "evaluator_commit_is_clean": evaluator_commit_is_clean,
             "evidence_inputs_tracked_in_manifest_repo": (
                 evidence_inputs_tracked_in_manifest_repo
             ),
@@ -2063,9 +2120,10 @@ def poc_acceptance_fail_closed_conditions(
     *,
     external_violation_count: int,
     poc_comparison: PoCComparisonMetrics,
-    artifact_failures: list[dict[str, object]],
     unaudited_results: list[dict[str, object]],
     llm_stability: LLMStabilityMetrics,
+    llm_scenario_failures: list[dict[str, object]],
+    structured_output_failures: list[dict[str, object]],
 ) -> list[dict[str, str]]:
     return [
         poc_acceptance_condition(
@@ -2083,17 +2141,27 @@ def poc_acceptance_fail_closed_conditions(
         poc_acceptance_condition(
             "llm_correction_or_completion",
             "LLM補正/補完",
-            "unknown" if llm_stability.unstable_example_count else "pass",
+            "fail"
+            if external_violation_count or llm_scenario_failures
+            else "unknown"
+            if llm_stability.unstable_example_count
+            else "pass",
             (
                 "LLM stability evidence has "
-                f"{llm_stability.unstable_example_count} unstable examples."
+                f"{llm_stability.unstable_example_count} unstable examples; "
+                "harness LLM scenario failures: "
+                f"{len(llm_scenario_failures)}; external AI API guard "
+                f"violations: {external_violation_count}."
             ),
         ),
         poc_acceptance_condition(
             "unknown_source_normal_output",
             "出典不明通常出力",
-            "fail" if artifact_failures else "pass",
-            f"{len(artifact_failures)} rows failed artifact/source expectations.",
+            "fail" if structured_output_failures else "pass",
+            (
+                f"{len(structured_output_failures)} rows failed artifact/source "
+                "structure or expectations."
+            ),
         ),
         poc_acceptance_condition(
             "high_risk_auto_confirm",
