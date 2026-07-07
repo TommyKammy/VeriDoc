@@ -54,6 +54,10 @@ class EvaluateDatasetTest(unittest.TestCase):
         results: list[dict[str, object]] | None = None,
         llm_external_violation_count: int = 0,
         unstable_example_count: int = 0,
+        llm_plan_agreement_rate: float = 1.0,
+        llm_confirmed_value_agreement_rate: float = 1.0,
+        llm_schema_failure_rate: float = 0.0,
+        llm_deterministic_fallback_rate: float = 0.0,
         manual_correction_target_met: bool = True,
         source_linkage_rates: dict[str, float] | None = None,
         manifest: Path = POC_EVALUATION_MANIFEST_PATH,
@@ -91,11 +95,11 @@ class EvaluateDatasetTest(unittest.TestCase):
         llm_stability = evaluate_dataset.LLMStabilityMetrics(
             input_id="synthetic-report-test",
             run_count=1,
-            plan_agreement_rate=1.0,
-            confirmed_value_agreement_rate=1.0,
-            schema_failure_rate=0.0,
+            plan_agreement_rate=llm_plan_agreement_rate,
+            confirmed_value_agreement_rate=llm_confirmed_value_agreement_rate,
+            schema_failure_rate=llm_schema_failure_rate,
             repair_success_rate=1.0,
-            deterministic_fallback_rate=0.0,
+            deterministic_fallback_rate=llm_deterministic_fallback_rate,
             external_ai_api_guard_violation_count=llm_external_violation_count,
             distinct_plan_count=1,
             distinct_confirmed_value_count=1,
@@ -670,6 +674,7 @@ class EvaluateDatasetTest(unittest.TestCase):
             any(row["status"] == "fail" for row in payload["acceptance_matrix"])
         )
         self.assertIn("conversion_mode_results", payload)
+        self.assertIn("llm_stability_acceptance_threshold", payload)
         self.assertIn("llm_stability_comparison", payload)
         self.assertIn("review_ui_observations", payload)
         self.assertIn("known_limitations", payload)
@@ -705,6 +710,28 @@ class EvaluateDatasetTest(unittest.TestCase):
                 for condition in payload["fail_closed_conditions"]
             )
         )
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual("fail", rows["llm_control"]["status"])
+        self.assertIn(
+            "llm_stability_acceptance_threshold",
+            rows["llm_control"]["evidence_refs"],
+        )
+        self.assertEqual(
+            [
+                "plan_agreement_rate",
+                "confirmed_value_agreement_rate",
+                "schema_failure_rate",
+                "deterministic_fallback_rate",
+                "unstable_example_count",
+            ],
+            payload["matrix_evidence"]["llm_control"]["threshold_failures"],
+        )
+        self.assertEqual(
+            0,
+            payload["matrix_evidence"]["llm_control"][
+                "external_ai_api_guard_violation_count"
+            ],
+        )
 
     def test_poc_acceptance_report_treats_unknown_criteria_as_non_passing(
         self,
@@ -712,6 +739,21 @@ class EvaluateDatasetTest(unittest.TestCase):
         payload = self.poc_acceptance_payload()
 
         rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual("pass", rows["llm_control"]["status"])
+        self.assertIn(
+            "llm_stability_acceptance_threshold",
+            rows["llm_control"]["evidence_refs"],
+        )
+        self.assertEqual(
+            [],
+            payload["matrix_evidence"]["llm_control"]["threshold_failures"],
+        )
+        self.assertEqual(
+            0,
+            payload["matrix_evidence"]["llm_control"][
+                "external_ai_api_guard_violation_count"
+            ],
+        )
         self.assertEqual("unknown", rows["security"]["status"])
         self.assertEqual("fail", payload["overall_status"])
 
@@ -852,10 +894,14 @@ class EvaluateDatasetTest(unittest.TestCase):
         payload = self.poc_acceptance_payload(
             results=results,
             unstable_example_count=1,
+            llm_plan_agreement_rate=2 / 3,
+            llm_confirmed_value_agreement_rate=2 / 3,
+            llm_schema_failure_rate=2 / 3,
+            llm_deterministic_fallback_rate=1 / 3,
         )
 
         rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
-        self.assertEqual({"fail": 1, "pass": 5, "unknown": 2}, payload["criterion_status_counts"])
+        self.assertEqual({"fail": 2, "pass": 5, "unknown": 1}, payload["criterion_status_counts"])
         self.assertEqual("fail", rows["functionality"]["status"])
         self.assertIn("record_pdf", rows["functionality"]["evidence"])
         self.assertIn(
@@ -868,7 +914,24 @@ class EvaluateDatasetTest(unittest.TestCase):
                 "missing_source_categories"
             ],
         )
-        self.assertEqual("unknown", rows["llm_control"]["status"])
+        self.assertEqual("fail", rows["llm_control"]["status"])
+        self.assertIn("threshold failures", rows["llm_control"]["evidence"])
+        self.assertEqual(
+            [
+                "plan_agreement_rate",
+                "confirmed_value_agreement_rate",
+                "schema_failure_rate",
+                "deterministic_fallback_rate",
+                "unstable_example_count",
+            ],
+            payload["matrix_evidence"]["llm_control"]["threshold_failures"],
+        )
+        self.assertEqual(
+            0,
+            payload["matrix_evidence"]["llm_control"][
+                "external_ai_api_guard_violation_count"
+            ],
+        )
         self.assertEqual("unknown", rows["security"]["status"])
         self.assertEqual("fail", payload["overall_status"])
         self.assertTrue(
@@ -898,6 +961,59 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertEqual("fail", conditions["llm_correction_or_completion"]["status"])
         self.assertEqual("fail", conditions["external_transmission"]["status"])
         self.assertEqual("fail", payload["overall_status"])
+
+    def test_poc_acceptance_report_counts_harness_external_transmission_in_llm_control(
+        self,
+    ) -> None:
+        payload = self.poc_acceptance_payload()
+        results = list(payload["p9_harness_results"])
+        results[0] = {
+            **results[0],
+            "external_ai_api_guard_violation": True,
+        }
+
+        payload = self.poc_acceptance_payload(results=results)
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        conditions = {
+            condition["condition_id"]: condition
+            for condition in payload["fail_closed_conditions"]
+        }
+        self.assertEqual("fail", rows["llm_control"]["status"])
+        self.assertIn(
+            "External AI API guard violations: 1",
+            rows["llm_control"]["evidence"],
+        )
+        self.assertEqual("fail", conditions["llm_correction_or_completion"]["status"])
+        self.assertEqual("fail", conditions["external_transmission"]["status"])
+        self.assertEqual(
+            ["external_ai_api_guard_violation_count"],
+            payload["matrix_evidence"]["llm_control"]["threshold_failures"],
+        )
+        self.assertEqual(
+            1,
+            payload["matrix_evidence"]["llm_control"][
+                "external_ai_api_guard_violation_count"
+            ],
+        )
+
+    def test_poc_acceptance_report_feeds_threshold_failures_to_follow_ups(
+        self,
+    ) -> None:
+        payload = self.poc_acceptance_payload(llm_plan_agreement_rate=0.5)
+
+        self.assertTrue(
+            any(
+                candidate["title"]
+                == "Resolve LLM stability acceptance threshold failures"
+                and "plan_agreement_rate" in candidate["reason"]
+                for candidate in payload["follow_up_issue_candidates"]
+            )
+        )
+        self.assertEqual(
+            ["plan_agreement_rate"],
+            payload["matrix_evidence"]["llm_control"]["threshold_failures"],
+        )
 
     def test_poc_acceptance_report_fails_structured_output_on_duplicate_primary_artifacts(
         self,

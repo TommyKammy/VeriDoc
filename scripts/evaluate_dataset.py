@@ -211,6 +211,42 @@ class LLMStabilityMetrics:
 
 
 @dataclass(frozen=True)
+class LLMStabilityAcceptanceThreshold:
+    min_plan_agreement_rate: float = 1.0
+    min_confirmed_value_agreement_rate: float = 1.0
+    max_schema_failure_rate: float = 0.0
+    max_deterministic_fallback_rate: float = 0.0
+    max_external_ai_api_guard_violation_count: int = 0
+    max_unstable_example_count: int = 0
+    max_harness_llm_scenario_failure_count: int = 0
+
+    def as_dict(self) -> dict[str, float | int | str]:
+        return {
+            "scope": (
+                "MVP-before LLM correction/completion acceptance requires "
+                "deterministic synthetic outputs and no external AI API "
+                "transmission."
+            ),
+            "min_plan_agreement_rate": self.min_plan_agreement_rate,
+            "min_confirmed_value_agreement_rate": (
+                self.min_confirmed_value_agreement_rate
+            ),
+            "max_schema_failure_rate": self.max_schema_failure_rate,
+            "max_deterministic_fallback_rate": self.max_deterministic_fallback_rate,
+            "max_external_ai_api_guard_violation_count": (
+                self.max_external_ai_api_guard_violation_count
+            ),
+            "max_unstable_example_count": self.max_unstable_example_count,
+            "max_harness_llm_scenario_failure_count": (
+                self.max_harness_llm_scenario_failure_count
+            ),
+        }
+
+
+LLM_STABILITY_ACCEPTANCE_THRESHOLD = LLMStabilityAcceptanceThreshold()
+
+
+@dataclass(frozen=True)
 class PoCModeMetrics:
     mode: str
     table_extraction_rate: float
@@ -406,6 +442,11 @@ class PoCAcceptanceReport:
         )
         external_violation_count = int(summary["external_ai_api_guard_violation_count"])
         llm_scenario_failures = poc_acceptance_llm_scenario_failures(results)
+        llm_stability_threshold_failures = llm_stability_acceptance_failures(
+            llm_stability,
+            llm_scenario_failures=llm_scenario_failures,
+            external_ai_api_guard_violation_count=external_violation_count,
+        )
         high_quality_mode = poc_acceptance_required_mode(
             poc_comparison,
             "high_quality",
@@ -424,11 +465,7 @@ class PoCAcceptanceReport:
             else "pass"
         )
         llm_control_status = (
-            "fail"
-            if external_violation_count or llm_scenario_failures
-            else "unknown"
-            if llm_stability.unstable_example_count
-            else "pass"
+            "fail" if llm_stability_threshold_failures else "pass"
         )
         evidence_inputs_tracked_in_manifest_repo = (
             poc_acceptance_evidence_inputs_tracked_in_manifest_repo(self.p9_harness)
@@ -487,12 +524,15 @@ class PoCAcceptanceReport:
                     "External AI API guard violations: "
                     f"{external_violation_count}; unstable LLM examples: "
                     f"{llm_stability.unstable_example_count}; harness LLM "
-                    f"scenario failures: {len(llm_scenario_failures)}."
+                    f"scenario failures: {len(llm_scenario_failures)}; "
+                    "threshold failures: "
+                    f"{llm_stability_threshold_failures or 'none'}."
                 ),
                 [
                     "p9_harness.summary.external_ai_api_guard_violation_count",
                     "p9_harness.results[].llm_scenario",
                     "p9_harness.results[].llm_status",
+                    "llm_stability_acceptance_threshold",
                     "llm_stability_comparison.unstable_examples",
                 ],
             ),
@@ -578,6 +618,7 @@ class PoCAcceptanceReport:
             external_violation_count=external_violation_count,
             poc_comparison=poc_comparison,
             llm_stability=llm_stability,
+            llm_stability_threshold_failures=llm_stability_threshold_failures,
             commit=self.commit,
             commit_is_clean=self.commit_is_clean,
             evaluator_commit=evaluator_commit,
@@ -627,9 +668,15 @@ class PoCAcceptanceReport:
                 unaudited_results=unaudited_results,
                 llm_stability=llm_stability,
                 llm_scenario_failures=llm_scenario_failures,
+                llm_stability_threshold_failures=(
+                    llm_stability_threshold_failures
+                ),
                 structured_output_failures=structured_output_failures,
             ),
             "conversion_mode_results": by_mode,
+            "llm_stability_acceptance_threshold": (
+                LLM_STABILITY_ACCEPTANCE_THRESHOLD.as_dict()
+            ),
             "llm_stability_comparison": llm_stability.as_dict(),
             "poc_mode_comparison": poc_comparison.as_dict(),
             "p9_harness": harness_payload,
@@ -652,7 +699,7 @@ class PoCAcceptanceReport:
             "follow_up_issue_candidates": poc_acceptance_follow_up_candidates(
                 failed_results,
                 fail_closed_gate_results,
-                llm_stability,
+                llm_stability_threshold_failures,
                 unaudited_results,
                 poc_comparison,
             ),
@@ -2285,6 +2332,48 @@ def poc_acceptance_result_evidence_rows(
     return rows
 
 
+def llm_stability_acceptance_failures(
+    llm_stability: LLMStabilityMetrics,
+    *,
+    llm_scenario_failures: list[dict[str, object]],
+    external_ai_api_guard_violation_count: int | None = None,
+    threshold: LLMStabilityAcceptanceThreshold = LLM_STABILITY_ACCEPTANCE_THRESHOLD,
+) -> list[str]:
+    failures: list[str] = []
+    effective_external_violation_count = (
+        llm_stability.external_ai_api_guard_violation_count
+        if external_ai_api_guard_violation_count is None
+        else external_ai_api_guard_violation_count
+    )
+    if llm_stability.plan_agreement_rate < threshold.min_plan_agreement_rate:
+        failures.append("plan_agreement_rate")
+    if (
+        llm_stability.confirmed_value_agreement_rate
+        < threshold.min_confirmed_value_agreement_rate
+    ):
+        failures.append("confirmed_value_agreement_rate")
+    if llm_stability.schema_failure_rate > threshold.max_schema_failure_rate:
+        failures.append("schema_failure_rate")
+    if (
+        llm_stability.deterministic_fallback_rate
+        > threshold.max_deterministic_fallback_rate
+    ):
+        failures.append("deterministic_fallback_rate")
+    if (
+        effective_external_violation_count
+        > threshold.max_external_ai_api_guard_violation_count
+    ):
+        failures.append("external_ai_api_guard_violation_count")
+    if llm_stability.unstable_example_count > threshold.max_unstable_example_count:
+        failures.append("unstable_example_count")
+    if (
+        len(llm_scenario_failures)
+        > threshold.max_harness_llm_scenario_failure_count
+    ):
+        failures.append("harness_llm_scenario_failure_count")
+    return failures
+
+
 def poc_acceptance_matrix_evidence(
     *,
     failed_results: list[dict[str, object]],
@@ -2300,6 +2389,7 @@ def poc_acceptance_matrix_evidence(
     external_violation_count: int,
     poc_comparison: PoCComparisonMetrics,
     llm_stability: LLMStabilityMetrics,
+    llm_stability_threshold_failures: list[str],
     commit: str,
     commit_is_clean: bool,
     evaluator_commit: str,
@@ -2325,6 +2415,8 @@ def poc_acceptance_matrix_evidence(
         },
         "llm_control": {
             "external_ai_api_guard_violation_count": external_violation_count,
+            "threshold": LLM_STABILITY_ACCEPTANCE_THRESHOLD.as_dict(),
+            "threshold_failures": llm_stability_threshold_failures,
             "unstable_examples": list(llm_stability.unstable_examples),
             "scenario_failures": poc_acceptance_result_evidence_rows(
                 llm_scenario_failures
@@ -2421,6 +2513,7 @@ def poc_acceptance_fail_closed_conditions(
     unaudited_results: list[dict[str, object]],
     llm_stability: LLMStabilityMetrics,
     llm_scenario_failures: list[dict[str, object]],
+    llm_stability_threshold_failures: list[str],
     structured_output_failures: list[dict[str, object]],
 ) -> list[dict[str, str]]:
     return [
@@ -2439,17 +2532,14 @@ def poc_acceptance_fail_closed_conditions(
         poc_acceptance_condition(
             "llm_correction_or_completion",
             "LLM補正/補完",
-            "fail"
-            if external_violation_count or llm_scenario_failures
-            else "unknown"
-            if llm_stability.unstable_example_count
-            else "pass",
+            "fail" if llm_stability_threshold_failures else "pass",
             (
                 "LLM stability evidence has "
                 f"{llm_stability.unstable_example_count} unstable examples; "
                 "harness LLM scenario failures: "
                 f"{len(llm_scenario_failures)}; external AI API guard "
-                f"violations: {external_violation_count}."
+                f"violations: {external_violation_count}; threshold failures: "
+                f"{llm_stability_threshold_failures or 'none'}."
             ),
         ),
         poc_acceptance_condition(
@@ -2535,7 +2625,7 @@ def poc_acceptance_known_limitations(
 def poc_acceptance_follow_up_candidates(
     failed_results: list[dict[str, object]],
     fail_closed_gate_results: list[dict[str, object]],
-    llm_stability: LLMStabilityMetrics,
+    llm_stability_threshold_failures: list[str],
     unaudited_results: list[dict[str, object]],
     poc_comparison: PoCComparisonMetrics,
 ) -> list[dict[str, str]]:
@@ -2573,13 +2663,16 @@ def poc_acceptance_follow_up_candidates(
                 ),
             }
         )
-    if llm_stability.unstable_example_count:
+    if llm_stability_threshold_failures:
         candidates.append(
             {
-                "title": "Define acceptance threshold for LLM stability drift",
+                "title": "Resolve LLM stability acceptance threshold failures",
                 "reason": (
-                    f"{llm_stability.unstable_example_count} unstable examples "
-                    "remain in the synthetic stability record."
+                    f"{len(llm_stability_threshold_failures)} threshold "
+                    "failure(s) remain in the synthetic stability and P9 "
+                    "harness LLM-control evidence: "
+                    + ", ".join(llm_stability_threshold_failures)
+                    + "."
                 ),
             }
         )
