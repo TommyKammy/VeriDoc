@@ -478,6 +478,8 @@ def _test_function_is_skipped_or_xfailed(
             empty_parametrize_names=empty_parametrize_names,
         ):
             return True
+        if _decorator_parametrizes_names(decorator, frozenset(("monkeypatch",))):
+            return True
         if _dotted_name(decorator.func) not in {
             "pytest.mark.parametrize",
             "parametrize",
@@ -500,7 +502,50 @@ def _decorator_is_empty_parametrize(
     values = node.args[1]
     if isinstance(values, ast.Name):
         return True
-    return isinstance(values, (ast.List, ast.Tuple)) and not values.elts
+    if not isinstance(values, (ast.List, ast.Tuple)):
+        return False
+    if not values.elts:
+        return True
+    return all(_parametrize_value_is_skipped_or_xfailed(value) for value in values.elts)
+
+
+def _parametrize_value_is_skipped_or_xfailed(node: ast.AST) -> bool:
+    if not isinstance(node, ast.Call):
+        return False
+    if _dotted_name(node.func) not in {"pytest.param", "param"}:
+        return False
+    for keyword in node.keywords:
+        if keyword.arg == "marks" and _pytestmark_value_is_skipped_or_xfailed(
+            keyword.value
+        ):
+            return True
+    return False
+
+
+def _decorator_parametrizes_names(
+    node: ast.AST,
+    names: frozenset[str],
+) -> bool:
+    if not isinstance(node, ast.Call):
+        return False
+    if _dotted_name(node.func) not in {"pytest.mark.parametrize", "parametrize"}:
+        return False
+    if not node.args:
+        return False
+    arg_names: set[str] = set()
+    first_arg = node.args[0]
+    if isinstance(first_arg, ast.Constant) and isinstance(first_arg.value, str):
+        arg_names.update(
+            name.strip()
+            for name in first_arg.value.replace(",", " ").split()
+            if name.strip()
+        )
+    if isinstance(first_arg, (ast.List, ast.Tuple)):
+        for element in first_arg.elts:
+            value = _constant_string_value(element)
+            if value is not None:
+                arg_names.add(value)
+    return bool(arg_names & names)
 
 
 def _function_arg_names(node: ast.FunctionDef | ast.AsyncFunctionDef) -> frozenset[str]:
@@ -513,6 +558,50 @@ def _function_arg_names(node: ast.FunctionDef | ast.AsyncFunctionDef) -> frozens
             *args.kwonlyargs,
         )
     )
+
+
+def _function_required_positional_arg_count(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> int:
+    args = (*node.args.posonlyargs, *node.args.args)
+    return max(0, len(args) - len(node.args.defaults))
+
+
+def _function_required_keyword_only_arg_names(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> frozenset[str]:
+    return frozenset(
+        arg.arg
+        for arg, default in zip(
+            node.args.kwonlyargs,
+            node.args.kw_defaults,
+            strict=False,
+        )
+        if default is None
+    )
+
+
+def _function_accepts_no_arguments(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> bool:
+    return (
+        _function_required_positional_arg_count(node) == 0
+        and not _function_required_keyword_only_arg_names(node)
+    )
+
+
+def _call_satisfies_function_signature(
+    call: ast.Call,
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> bool:
+    required_positional = _function_required_positional_arg_count(node)
+    positional_capacity = len((*node.args.posonlyargs, *node.args.args))
+    if len(call.args) < required_positional:
+        return False
+    if node.args.vararg is None and len(call.args) > positional_capacity:
+        return False
+    keyword_names = {keyword.arg for keyword in call.keywords if keyword.arg}
+    return _function_required_keyword_only_arg_names(node).issubset(keyword_names)
 
 
 def _constant_int_value(node: ast.AST) -> int | None:
@@ -596,7 +685,9 @@ def _local_auth_token_helper_tokens(
 ) -> dict[str, frozenset[str]]:
     helpers: dict[str, frozenset[str]] = {}
     for name, node in _top_level_function_nodes(test_source).items():
-        if _test_function_is_skipped_or_xfailed(node):
+        if _test_function_is_skipped_or_xfailed(
+            node
+        ) or not _function_accepts_no_arguments(node):
             continue
         tokens: set[str] = set()
         for ordered_statement in _ordered_function_statements(node.body):
@@ -929,6 +1020,7 @@ class _TrustedPocStatusHelper:
     path: str
     payload_parameter: str
     payload_arg_position: int
+    function_node: ast.FunctionDef | ast.AsyncFunctionDef
 
 
 def _string_literals_in_node(node: ast.AST) -> frozenset[str]:
@@ -1082,6 +1174,7 @@ def _trusted_poc_status_helpers(test_source: str) -> dict[str, _TrustedPocStatus
                 path=expected_request[1],
                 payload_parameter=payload_arg,
                 payload_arg_position=1,
+                function_node=node,
             )
     return helpers
 
@@ -1118,11 +1211,14 @@ def _trusted_poc_status_helper_for_call(
     helper_name = _dotted_name(node.func)
     if helper_name not in trusted_status_helpers:
         return None
+    helper = trusted_status_helpers[helper_name]
+    if not _call_satisfies_function_signature(node, helper.function_node):
+        return None
     if not node.args or not isinstance(node.args[0], ast.Name):
         return None
     if node.args[0].id not in poc_connection_names:
         return None
-    return trusted_status_helpers[helper_name]
+    return helper
 
 
 def _request_uses_authorization_role_token(node: ast.Call) -> bool:
