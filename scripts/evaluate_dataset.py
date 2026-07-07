@@ -278,10 +278,18 @@ def _top_level_function_nodes(
         tree = ast.parse(test_source)
     except SyntaxError:
         return {}
+    functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
+    duplicate_names: set[str] = set()
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if node.name in functions:
+            duplicate_names.add(node.name)
+        functions[node.name] = node
     return {
-        node.name: node
-        for node in tree.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        name: node
+        for name, node in functions.items()
+        if name not in duplicate_names
     }
 
 
@@ -356,11 +364,7 @@ def _test_function_nodes(
     disabled_test_names = _function_test_opt_out_names(tree)
     return {
         name: node
-        for name, node in {
-            node.name: node
-            for node in tree.body
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        }.items()
+        for name, node in _top_level_function_nodes(test_source).items()
         if name not in disabled_test_names
         and not _test_function_is_skipped_or_xfailed(node)
     }
@@ -857,6 +861,14 @@ class _AuthenticatedStatusObservation:
     asserted_response_literals: frozenset[str] = frozenset()
 
 
+@dataclass(frozen=True)
+class _TrustedPocStatusHelper:
+    method: str
+    path: str
+    payload_parameter: str
+    payload_arg_position: int
+
+
 def _string_literals_in_node(node: ast.AST) -> frozenset[str]:
     literals: set[str] = set()
     for child in ast.walk(node):
@@ -926,44 +938,37 @@ def _request_method_and_path(node: ast.Call) -> tuple[str | None, str | None]:
     return method, path
 
 
-def _trusted_poc_status_helper_method_and_path(
-    node: ast.Call,
-    poc_connection_names: frozenset[str],
-    trusted_status_helpers: Mapping[str, tuple[str, str]] | None = None,
-) -> tuple[str | None, str | None] | None:
-    if trusted_status_helpers is None:
-        trusted_status_helpers = POC_AUTH_SESSION_TRUSTED_STATUS_HELPERS
-    helper_name = _dotted_name(node.func)
-    if helper_name not in trusted_status_helpers:
-        return None
-    if not node.args or not isinstance(node.args[0], ast.Name):
-        return None
-    if node.args[0].id not in poc_connection_names:
-        return None
-    return trusted_status_helpers[helper_name]
-
-
-def _trusted_poc_status_helpers(test_source: str) -> dict[str, tuple[str, str]]:
-    helpers: dict[str, tuple[str, str]] = {}
+def _trusted_poc_status_helpers(test_source: str) -> dict[str, _TrustedPocStatusHelper]:
+    helpers: dict[str, _TrustedPocStatusHelper] = {}
     functions = _top_level_function_nodes(test_source)
     for name, expected_request in POC_AUTH_SESSION_TRUSTED_STATUS_HELPERS.items():
         node = functions.get(name)
         if node is None or _test_function_is_skipped_or_xfailed(node):
             continue
-        if not node.args.args:
+        if len(node.args.args) < 2:
             continue
         connection_arg = node.args.args[0].arg
+        payload_arg = node.args.args[1].arg
         if not any(arg.arg == "role_token" for arg in node.args.kwonlyargs):
             continue
         saw_expected_request = False
         saw_role_token_header = False
+        saw_payload_body = False
         saw_response = False
         header_names_with_role_token: set[str] = set()
+        payload_bound_names = {payload_arg}
         for statement in node.body:
             header_names_with_role_token.update(
                 _header_names_assigned_authorization_role_token(statement)
             )
             for child in _walk_statement_without_nested_scopes(statement):
+                if isinstance(child, (ast.Assign, ast.AnnAssign)):
+                    value = child.value
+                    if value is not None and (
+                        _loaded_name_references(value) & payload_bound_names
+                    ):
+                        for target in _assignment_targets(child):
+                            payload_bound_names.update(_target_name_bindings(target))
                 if not isinstance(child, ast.Call):
                     continue
                 if _method_call_receiver_name(child, "request") == connection_arg:
@@ -978,11 +983,63 @@ def _trusted_poc_status_helpers(test_source: str) -> dict[str, tuple[str, str]]:
                                 frozenset(header_names_with_role_token),
                             )
                         )
+                        saw_payload_body = _request_body_references_names(
+                            child, frozenset(payload_bound_names)
+                        )
                 if _method_call_receiver_name(child, "getresponse") == connection_arg:
                     saw_response = True
-        if saw_expected_request and saw_role_token_header and saw_response:
-            helpers[name] = expected_request
+        if (
+            saw_expected_request
+            and saw_role_token_header
+            and saw_payload_body
+            and saw_response
+        ):
+            helpers[name] = _TrustedPocStatusHelper(
+                method=expected_request[0],
+                path=expected_request[1],
+                payload_parameter=payload_arg,
+                payload_arg_position=1,
+            )
     return helpers
+
+
+def _trusted_poc_status_helper_payload_literals(
+    node: ast.Call,
+    helper: _TrustedPocStatusHelper,
+    name_literal_bindings: Mapping[str, frozenset[str]],
+) -> frozenset[str]:
+    literals: set[str] = set()
+    if len(node.args) > helper.payload_arg_position:
+        literals.update(
+            _string_literals_with_bound_names(
+                node.args[helper.payload_arg_position],
+                name_literal_bindings,
+            )
+        )
+    for keyword in node.keywords:
+        if keyword.arg == helper.payload_parameter:
+            literals.update(
+                _string_literals_with_bound_names(
+                    keyword.value,
+                    name_literal_bindings,
+                )
+            )
+    return frozenset(literals)
+
+
+def _trusted_poc_status_helper_for_call(
+    node: ast.Call,
+    poc_connection_names: frozenset[str],
+    trusted_status_helpers: Mapping[str, _TrustedPocStatusHelper],
+) -> _TrustedPocStatusHelper | None:
+    helper_name = _dotted_name(node.func)
+    if helper_name not in trusted_status_helpers:
+        return None
+    if not node.args or not isinstance(node.args[0], ast.Name):
+        return None
+    if node.args[0].id not in poc_connection_names:
+        return None
+    return trusted_status_helpers[helper_name]
 
 
 def _request_uses_authorization_role_token(node: ast.Call) -> bool:
@@ -1007,6 +1064,20 @@ def _request_uses_authorization_role_token_header_name(
         if keyword.value.id in header_names:
             return True
     return False
+
+
+def _request_body_references_names(
+    node: ast.Call,
+    names: frozenset[str],
+) -> bool:
+    body_node: ast.AST | None = None
+    if len(node.args) >= 3:
+        body_node = node.args[2]
+    for keyword in node.keywords:
+        if keyword.arg == "body":
+            body_node = keyword.value
+            break
+    return bool(body_node is not None and _loaded_name_references(body_node) & names)
 
 
 def _header_names_assigned_authorization_role_token(node: ast.AST) -> frozenset[str]:
@@ -1108,12 +1179,12 @@ def _authenticated_success_status_observations(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
     *,
     local_auth_token_helpers: dict[str, frozenset[str]] | None = None,
-    trusted_status_helpers: Mapping[str, tuple[str, str]] | None = None,
+    trusted_status_helpers: Mapping[str, _TrustedPocStatusHelper] | None = None,
 ) -> tuple[_AuthenticatedStatusObservation, ...]:
     if local_auth_token_helpers is None:
         local_auth_token_helpers = {}
     if trusted_status_helpers is None:
-        trusted_status_helpers = POC_AUTH_SESSION_TRUSTED_STATUS_HELPERS
+        trusted_status_helpers = {}
     env_tokens_seen: set[str] = set()
     direct_tokens_seen: set[str] = set()
     active_monkeypatch_fixture_names = set(
@@ -1197,17 +1268,16 @@ def _authenticated_success_status_observations(
             if isinstance(value, ast.Call):
                 tokens = _call_privileged_auth_tokens(value)
                 if tokens:
-                    trusted_helper_request = (
-                        _trusted_poc_status_helper_method_and_path(
-                            value,
-                            frozenset(poc_connection_names),
-                            trusted_status_helpers=trusted_status_helpers,
-                        )
+                    trusted_helper = _trusted_poc_status_helper_for_call(
+                        value,
+                        frozenset(poc_connection_names),
+                        trusted_status_helpers,
                     )
-                    if trusted_helper_request is None:
+                    if trusted_helper is None:
                         tokens = frozenset()
                 if tokens:
-                    method, path = trusted_helper_request or (None, None)
+                    method = trusted_helper.method if trusted_helper is not None else None
+                    path = trusted_helper.path if trusted_helper is not None else None
                     observation = _AuthenticatedStatusObservation(
                         tokens=tokens,
                         env_tokens_before_request=frozenset(env_tokens_seen),
@@ -1216,6 +1286,12 @@ def _authenticated_success_status_observations(
                         request_path=path,
                         string_literals=_string_literals_with_bound_names(
                             value, name_literal_bindings
+                        )
+                        if trusted_helper is None
+                        else _trusted_poc_status_helper_payload_literals(
+                            value,
+                            trusted_helper,
+                            name_literal_bindings,
                         ),
                     )
                     for target in targets:
@@ -1248,6 +1324,19 @@ def _authenticated_success_status_observations(
                                 ] = observation
         for connection_name in response_connections_seen - response_connections_recorded:
             pending_request_by_connection.pop(connection_name, None)
+
+        if isinstance(statement, ast.Delete):
+            _clear_status_observations_for_targets(
+                status_observations, statement.targets
+            )
+            for target in statement.targets:
+                if _targets_server_local_auth_tokens(target):
+                    direct_tokens_seen.clear()
+                for name in _target_name_bindings(target):
+                    if name == "server":
+                        direct_tokens_seen.clear()
+                    poc_connection_names.discard(name)
+                    pending_request_by_connection.pop(name, None)
 
         if isinstance(statement, ast.Assert):
             for key in _success_status_asserted_expr_keys(statement):
@@ -1292,7 +1381,7 @@ def _test_function_has_authenticated_success_markers(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
     *,
     local_auth_token_helpers: dict[str, frozenset[str]] | None = None,
-    trusted_status_helpers: Mapping[str, tuple[str, str]] | None = None,
+    trusted_status_helpers: Mapping[str, _TrustedPocStatusHelper] | None = None,
 ) -> bool:
     return bool(
         _authenticated_success_status_observations(
@@ -1308,7 +1397,7 @@ def _test_function_matches_success_ref_expectation(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
     *,
     local_auth_token_helpers: dict[str, frozenset[str]] | None = None,
-    trusted_status_helpers: Mapping[str, tuple[str, str]] | None = None,
+    trusted_status_helpers: Mapping[str, _TrustedPocStatusHelper] | None = None,
 ) -> bool:
     expectation = POC_AUTH_SESSION_SUCCESS_REF_EXPECTATIONS.get(ref)
     if expectation is None:
@@ -1461,6 +1550,7 @@ def _test_function_uses_env_auth_boundary(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
     *,
     local_auth_token_helpers: dict[str, frozenset[str]] | None = None,
+    trusted_status_helpers: Mapping[str, _TrustedPocStatusHelper] | None = None,
 ) -> bool:
     if _assigns_server_local_auth_tokens(node):
         return False
@@ -1469,6 +1559,7 @@ def _test_function_uses_env_auth_boundary(
         for observation in _authenticated_success_status_observations(
             node,
             local_auth_token_helpers=local_auth_token_helpers,
+            trusted_status_helpers=trusted_status_helpers,
         )
     )
 
@@ -1477,12 +1568,14 @@ def _test_function_uses_direct_auth_boundary(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
     *,
     local_auth_token_helpers: dict[str, frozenset[str]] | None = None,
+    trusted_status_helpers: Mapping[str, _TrustedPocStatusHelper] | None = None,
 ) -> bool:
     return any(
         observation.tokens & observation.direct_tokens_before_request
         for observation in _authenticated_success_status_observations(
             node,
             local_auth_token_helpers=local_auth_token_helpers,
+            trusted_status_helpers=trusted_status_helpers,
         )
     )
 
@@ -1705,6 +1798,29 @@ def _asserted_status_observations(
         for connection_name in response_connections_seen - response_connections_recorded:
             pending_request_by_connection.pop(connection_name, None)
 
+        if isinstance(statement, ast.Delete):
+            _clear_status_observations_for_targets(
+                status_observations, statement.targets
+            )
+            deleted_names: set[str] = set()
+            for target in statement.targets:
+                if _targets_server_local_auth_tokens(target):
+                    direct_tokens_seen.clear()
+                deleted_names.update(_target_name_bindings(target))
+            for name in deleted_names:
+                if name == "server":
+                    direct_tokens_seen.clear()
+                poc_connection_names.discard(name)
+                pending_request_by_connection.pop(name, None)
+                asserted_literals_by_response_name.pop(name, None)
+            if deleted_names:
+                response_names_by_body_name = {
+                    body_name: response_name
+                    for body_name, response_name in response_names_by_body_name.items()
+                    if body_name not in deleted_names
+                    and response_name not in deleted_names
+                }
+
         if isinstance(statement, ast.Assert):
             assert_literals = _string_literals_in_node(statement)
             loaded_names = _loaded_name_references(statement)
@@ -1875,6 +1991,7 @@ def poc_auth_session_coverage_is_present(repo_root: Path = REPO_ROOT) -> bool:
         if not _test_function_uses_env_auth_boundary(
             test_functions[test_name],
             local_auth_token_helpers=local_auth_token_helpers,
+            trusted_status_helpers=trusted_status_helpers,
         ):
             return False
     for ref in set(POC_AUTH_SESSION_SUCCESS_COVERAGE_REFS) - set(
@@ -1884,6 +2001,7 @@ def poc_auth_session_coverage_is_present(repo_root: Path = REPO_ROOT) -> bool:
         if not _test_function_uses_direct_auth_boundary(
             test_functions[test_name],
             local_auth_token_helpers=local_auth_token_helpers,
+            trusted_status_helpers=trusted_status_helpers,
         ):
             return False
     for ref in POC_AUTH_SESSION_FAIL_CLOSED_COVERAGE_REFS:
