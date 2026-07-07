@@ -472,7 +472,7 @@ class PoCAcceptanceReport:
                     "p9_harness.summary.external_ai_api_guard_violation_count",
                     "p9_harness.results[].llm_scenario",
                     "p9_harness.results[].llm_status",
-                    "llm_stability.unstable_examples",
+                    "llm_stability_comparison.unstable_examples",
                 ],
             ),
             poc_acceptance_row(

@@ -535,6 +535,51 @@ class EvaluateDatasetTest(unittest.TestCase):
             payload["matrix_evidence"]["structured_output"],
         )
 
+    def test_poc_acceptance_report_matrix_refs_resolve_to_payload_evidence(
+        self,
+    ) -> None:
+        base_payload = self.poc_acceptance_payload()
+        results = list(base_payload["p9_harness_results"])
+        results[0] = {
+            **results[0],
+            "ok": False,
+            "failure_reason": "no_llm scenario LLM status 'enabled' is not disabled",
+            "llm_status": "enabled",
+        }
+        payload = self.poc_acceptance_payload(
+            results=results,
+            unstable_example_count=1,
+        )
+
+        def resolve_ref(ref: str) -> list[object]:
+            if " " in ref:
+                public_path = REPO_ROOT / ref.split(" ", 1)[0]
+                return [public_path] if public_path.exists() else []
+            values: list[object] = [payload]
+            for part in ref.split("."):
+                next_values: list[object] = []
+                if part.endswith("[]"):
+                    key = part[:-2]
+                    for value in values:
+                        if isinstance(value, dict) and isinstance(value.get(key), list):
+                            next_values.extend(value[key])
+                    values = next_values
+                    continue
+                for value in values:
+                    if isinstance(value, dict) and part in value:
+                        next_values.append(value[part])
+                values = next_values
+            return values
+
+        unresolved_refs = [
+            ref
+            for row in payload["acceptance_matrix"]
+            for ref in row["evidence_refs"]
+            if not resolve_ref(ref)
+        ]
+
+        self.assertEqual([], unresolved_refs)
+
     def test_poc_acceptance_report_fail_closed_matrix_keeps_backing_evidence(
         self,
     ) -> None:
@@ -771,6 +816,61 @@ class EvaluateDatasetTest(unittest.TestCase):
             "evidence inputs tracked in manifest repo: False",
             rows["reproducibility"]["evidence"],
         )
+        self.assertFalse(
+            payload["matrix_evidence"]["reproducibility"][
+                "evidence_inputs_tracked_in_manifest_repo"
+            ]
+        )
+
+    def test_poc_acceptance_report_build_path_rejects_external_evidence(
+        self,
+    ) -> None:
+        payload = self.poc_acceptance_payload()
+        llm_report = evaluate_dataset.evaluate_llm_stability_report(
+            LLM_STABILITY_RUNS_PATH,
+            POC_COMPARISON_PATH,
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            external_source = Path(temp_dir) / "external_llm_runs.json"
+            harness = evaluate_dataset.P9HarnessReport(
+                manifest=POC_EVALUATION_MANIFEST_PATH,
+                results=tuple(payload["p9_harness_results"]),
+                llm_stability=llm_report.llm_stability,
+                poc_mode_comparison=llm_report.poc_mode_comparison,
+                llm_stability_source=external_source,
+                poc_comparison_source=POC_COMPARISON_PATH,
+            )
+            with (
+                mock.patch.object(
+                    evaluate_dataset,
+                    "evaluate_p9_harness",
+                    return_value=harness,
+                ) as mocked_harness,
+                mock.patch.object(
+                    evaluate_dataset,
+                    "current_git_commit",
+                    return_value="tracked-head",
+                ),
+                mock.patch.object(
+                    evaluate_dataset,
+                    "current_git_worktree_clean",
+                    return_value=True,
+                ),
+            ):
+                report = evaluate_dataset.build_poc_acceptance_report(
+                    POC_EVALUATION_MANIFEST_PATH,
+                    llm_stability_runs_path=external_source,
+                    poc_comparison_path=POC_COMPARISON_PATH,
+                )
+
+        mocked_harness.assert_called_once_with(
+            POC_EVALUATION_MANIFEST_PATH,
+            llm_stability_runs_path=external_source,
+            poc_comparison_path=POC_COMPARISON_PATH,
+        )
+        payload = report.as_dict()
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual("fail", rows["reproducibility"]["status"])
         self.assertFalse(
             payload["matrix_evidence"]["reproducibility"][
                 "evidence_inputs_tracked_in_manifest_repo"
