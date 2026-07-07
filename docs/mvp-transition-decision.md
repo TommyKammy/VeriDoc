@@ -10,7 +10,7 @@ python3 scripts/evaluate_dataset.py --poc-acceptance-report
 The report is generated from `datasets/poc_evaluation_manifest_v1.json`,
 `datasets/gold/llm_stability_runs_v0.json`, and
 `datasets/gold/poc_mode_comparison_v1.json`. The current P9-03 report marks
-the overall PoC acceptance status as `fail`, with 5 failed, 2 passed, and 1
+the overall PoC acceptance status as `fail`, with 4 failed, 3 passed, and 1
 unknown criterion. It also states that the report is not the final MVP go/no-go
 decision and is not formal GMP validation.
 

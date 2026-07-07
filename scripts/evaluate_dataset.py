@@ -445,6 +445,7 @@ class PoCAcceptanceReport:
         llm_stability_threshold_failures = llm_stability_acceptance_failures(
             llm_stability,
             llm_scenario_failures=llm_scenario_failures,
+            external_ai_api_guard_violation_count=external_violation_count,
         )
         high_quality_mode = poc_acceptance_required_mode(
             poc_comparison,
@@ -698,7 +699,7 @@ class PoCAcceptanceReport:
             "follow_up_issue_candidates": poc_acceptance_follow_up_candidates(
                 failed_results,
                 fail_closed_gate_results,
-                llm_stability,
+                llm_stability_threshold_failures,
                 unaudited_results,
                 poc_comparison,
             ),
@@ -2335,9 +2336,15 @@ def llm_stability_acceptance_failures(
     llm_stability: LLMStabilityMetrics,
     *,
     llm_scenario_failures: list[dict[str, object]],
+    external_ai_api_guard_violation_count: int | None = None,
     threshold: LLMStabilityAcceptanceThreshold = LLM_STABILITY_ACCEPTANCE_THRESHOLD,
 ) -> list[str]:
     failures: list[str] = []
+    effective_external_violation_count = (
+        llm_stability.external_ai_api_guard_violation_count
+        if external_ai_api_guard_violation_count is None
+        else external_ai_api_guard_violation_count
+    )
     if llm_stability.plan_agreement_rate < threshold.min_plan_agreement_rate:
         failures.append("plan_agreement_rate")
     if (
@@ -2353,7 +2360,7 @@ def llm_stability_acceptance_failures(
     ):
         failures.append("deterministic_fallback_rate")
     if (
-        llm_stability.external_ai_api_guard_violation_count
+        effective_external_violation_count
         > threshold.max_external_ai_api_guard_violation_count
     ):
         failures.append("external_ai_api_guard_violation_count")
@@ -2618,7 +2625,7 @@ def poc_acceptance_known_limitations(
 def poc_acceptance_follow_up_candidates(
     failed_results: list[dict[str, object]],
     fail_closed_gate_results: list[dict[str, object]],
-    llm_stability: LLMStabilityMetrics,
+    llm_stability_threshold_failures: list[str],
     unaudited_results: list[dict[str, object]],
     poc_comparison: PoCComparisonMetrics,
 ) -> list[dict[str, str]]:
@@ -2656,13 +2663,16 @@ def poc_acceptance_follow_up_candidates(
                 ),
             }
         )
-    if llm_stability.unstable_example_count:
+    if llm_stability_threshold_failures:
         candidates.append(
             {
-                "title": "Define acceptance threshold for LLM stability drift",
+                "title": "Resolve LLM stability acceptance threshold failures",
                 "reason": (
-                    f"{llm_stability.unstable_example_count} unstable examples "
-                    "remain in the synthetic stability record."
+                    f"{len(llm_stability_threshold_failures)} threshold "
+                    "failure(s) remain in the synthetic stability and P9 "
+                    "harness LLM-control evidence: "
+                    + ", ".join(llm_stability_threshold_failures)
+                    + "."
                 ),
             }
         )
