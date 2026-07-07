@@ -599,29 +599,71 @@ def _statement_unconditionally_exits(statement: ast.stmt) -> bool:
     return False
 
 
+def _compound_statement_contains_exit(statement: ast.stmt) -> bool:
+    return any(
+        isinstance(child, ast.stmt) and _statement_unconditionally_exits(child)
+        for child in _walk_statement_without_nested_scopes(statement)
+    )
+
+
+@dataclass(frozen=True)
+class _OrderedFunctionStatement:
+    statement: ast.stmt
+    bound_names_before: frozenset[str] = frozenset()
+
+
+def _with_optional_var_bindings(node: ast.With | ast.AsyncWith) -> frozenset[str]:
+    names: set[str] = set()
+    for item in node.items:
+        if item.optional_vars is not None:
+            names.update(_target_name_bindings(item.optional_vars))
+    return frozenset(names)
+
+
 def _ordered_function_statements(
     statements: Iterable[ast.stmt],
-) -> Iterable[ast.stmt]:
+    *,
+    bound_names_before: frozenset[str] = frozenset(),
+) -> Iterable[_OrderedFunctionStatement]:
+    pending_bound_names = set(bound_names_before)
     for statement in statements:
         if isinstance(statement, (ast.Try, ast.TryStar)):
-            yield from _ordered_function_statements(statement.body)
-            yield from _ordered_function_statements(statement.orelse)
-            yield from _ordered_function_statements(statement.finalbody)
+            yield from _ordered_function_statements(
+                statement.body,
+                bound_names_before=frozenset(pending_bound_names),
+            )
+            yield from _ordered_function_statements(
+                statement.orelse,
+                bound_names_before=frozenset(pending_bound_names),
+            )
+            yield from _ordered_function_statements(
+                statement.finalbody,
+                bound_names_before=frozenset(pending_bound_names),
+            )
             continue
         if isinstance(
             statement,
             (ast.With, ast.AsyncWith),
         ):
+            pending_bound_names.update(_with_optional_var_bindings(statement))
             body_exited = False
-            for child in _ordered_function_statements(statement.body):
+            for child in _ordered_function_statements(
+                statement.body,
+                bound_names_before=frozenset(pending_bound_names),
+            ):
                 yield child
-                body_exited = _statement_unconditionally_exits(child)
+                body_exited = _statement_unconditionally_exits(child.statement)
             if body_exited:
                 break
             continue
         if isinstance(statement, (ast.For, ast.AsyncFor, ast.While, ast.If)):
+            if _compound_statement_contains_exit(statement):
+                break
             continue
-        yield statement
+        yield _OrderedFunctionStatement(
+            statement,
+            bound_names_before=frozenset(pending_bound_names),
+        )
         if _statement_unconditionally_exits(statement):
             break
 
@@ -725,7 +767,11 @@ def _authenticated_success_status_observations(
     success_observations: list[_AuthenticatedStatusObservation] = []
     name_literal_bindings: dict[str, frozenset[str]] = {}
 
-    for statement in _ordered_function_statements(node.body):
+    for ordered_statement in _ordered_function_statements(node.body):
+        statement = ordered_statement.statement
+        active_monkeypatch_fixture_names.difference_update(
+            ordered_statement.bound_names_before
+        )
         env_tokens_seen = set(
             _env_auth_tokens_after_statement(
                 statement,
@@ -901,7 +947,8 @@ def _test_function_matches_success_ref_expectation(
 
 
 def _assigns_server_local_auth_tokens(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-    for statement in _ordered_function_statements(node.body):
+    for ordered_statement in _ordered_function_statements(node.body):
+        statement = ordered_statement.statement
         for child in _walk_statement_without_nested_scopes(statement):
             if _calls_setattr_local_auth_tokens(child):
                 return True
@@ -1149,7 +1196,8 @@ def _asserted_status_observations(
     pending_request_by_connection: dict[str, _AuthenticatedStatusObservation] = {}
     asserted_observations: list[_AuthenticatedStatusObservation] = []
     name_literal_bindings: dict[str, frozenset[str]] = {}
-    for statement in _ordered_function_statements(node.body):
+    for ordered_statement in _ordered_function_statements(node.body):
+        statement = ordered_statement.statement
         response_connections_seen = {
             connection_name
             for child in _walk_statement_without_nested_scopes(statement)

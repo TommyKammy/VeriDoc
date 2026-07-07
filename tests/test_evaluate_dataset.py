@@ -74,10 +74,11 @@ def valid_poc_auth_success_ref_source(
         ),
         "test_poc_http_api_requires_admin_role_for_retry_job_event": (
             "    action = 'retry_conversion'\n"
+            "    body = json.dumps({'action': action}).encode('utf-8')\n"
             "    connection.request(\n"
             "        'POST',\n"
             "        '/api/job-events',\n"
-            "        body=b'{\"action\":\"retry_conversion\"}',\n"
+            "        body=body,\n"
             "        headers={'Authorization': 'Bearer admin-token'},\n"
             "    )\n"
             "    response = connection.getresponse()\n"
