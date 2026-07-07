@@ -344,16 +344,26 @@ class EvaluateDatasetTest(unittest.TestCase):
             payload["summary"]["conversion_modes"],
         )
         self.assertEqual(["no_llm", "llm_requested"], payload["summary"]["llm_scenarios"])
-        self.assertEqual(0, payload["summary"]["failure_count"])
+        self.assertEqual(16, payload["summary"]["case_count"])
         self.assertEqual(
             payload["summary"]["case_count"],
-            payload["summary"]["completed_count"],
+            payload["summary"]["completed_count"] + payload["summary"]["failure_count"],
         )
-        self.assertEqual(16, payload["summary"]["case_count"])
         self.assertEqual(0, payload["summary"]["external_ai_api_guard_violation_count"])
         self.assertIn("phase8_comparison", payload)
 
         results = payload["results"]
+        unaudited_results = [
+            result for result in results if result.get("audit_present") is not True
+        ]
+        self.assertTrue(unaudited_results)
+        self.assertTrue(
+            all(
+                result["ok"] is False
+                and "conversion audit missing" in str(result["failure_reason"])
+                for result in unaudited_results
+            )
+        )
         self.assertTrue(
             any(
                 result["sample_id"] == "p9-word-001"
@@ -380,8 +390,10 @@ class EvaluateDatasetTest(unittest.TestCase):
             any(
                 result["sample_id"] == "p9-scanned-pdf-001"
                 and result["representative_mode"] == "scanned_pdf_ocr"
-                and result["ok"]
+                and not result["ok"]
                 and result["fail_closed"]
+                and not result["audit_present"]
+                and "conversion audit missing" in str(result["failure_reason"])
                 and result["mvp_before_gate_revision"]
                 == "p9-mvp-before-representative-fixture-gate"
                 for result in results
@@ -1003,6 +1015,99 @@ class EvaluateDatasetTest(unittest.TestCase):
                 and limitation["mvp_before_gate_revision"]
                 == "p9-mvp-before-pdf-eval-dependency-gate"
                 for limitation in payload["known_limitations"]
+            )
+        )
+
+    def test_poc_acceptance_report_keeps_fail_closed_rows_out_of_generic_follow_up(
+        self,
+    ) -> None:
+        payload = self.poc_acceptance_payload()
+        base_results = list(payload["p9_harness_results"])
+        gate_results = []
+        for index, result in enumerate(base_results):
+            gate_results.append(
+                {
+                    **result,
+                    "sample_id": f"gate-sample-{index}",
+                    "ok": False,
+                    "fail_closed": True,
+                    "audit_present": False,
+                    "mvp_before_gate_revision": (
+                        "p9-mvp-before-placeholder-fixture-gate"
+                    ),
+                    "artifact_expectations_met": False,
+                    "artifact_expectation_failures": [
+                        "fail-closed MVP-before gate revision: "
+                        "p9-mvp-before-placeholder-fixture-gate"
+                    ],
+                    "failure_reason": (
+                        "representative fixture path is unavailable; "
+                        "conversion audit missing"
+                    ),
+                }
+            )
+        non_gate_failure = {
+            **base_results[0],
+            "sample_id": "non-gate-failure",
+            "ok": False,
+            "fail_closed": False,
+            "audit_present": False,
+            "mvp_before_gate_revision": None,
+            "artifact_expectations_met": False,
+            "artifact_expectation_failures": ["artifact hash missing"],
+            "failure_reason": "artifact hash missing",
+        }
+        results = [*gate_results, non_gate_failure]
+
+        payload = self.poc_acceptance_payload(results=results)
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual("fail", rows["functionality"]["status"])
+        self.assertEqual("fail", rows["logs"]["status"])
+        self.assertEqual(
+            [
+                "Resolve fail-closed P9 MVP-before gate revisions",
+                "Resolve failing P9 representative conversion harness rows",
+                "Require audit evidence for all P9 harness outcomes",
+            ],
+            [
+                candidate["title"]
+                for candidate in payload["follow_up_issue_candidates"]
+                if candidate["title"]
+                in {
+                    "Resolve fail-closed P9 MVP-before gate revisions",
+                    "Resolve failing P9 representative conversion harness rows",
+                    "Require audit evidence for all P9 harness outcomes",
+                }
+            ],
+        )
+        self.assertTrue(
+            any(
+                candidate["title"]
+                == "Resolve failing P9 representative conversion harness rows"
+                and "1 harness rows are not acceptance-ready." in candidate["reason"]
+                for candidate in payload["follow_up_issue_candidates"]
+            )
+        )
+        self.assertTrue(
+            any(
+                limitation["id"] == "p9_harness_failure_non-gate-failure"
+                for limitation in payload["known_limitations"]
+            )
+        )
+        self.assertFalse(
+            any(
+                str(limitation["id"]).startswith("p9_harness_failure_gate-sample-")
+                for limitation in payload["known_limitations"]
+            )
+        )
+        self.assertTrue(
+            all(
+                any(
+                    limitation["id"] == f"p9_fail_closed_gate_gate-sample-{index}"
+                    for limitation in payload["known_limitations"]
+                )
+                for index in range(len(gate_results))
             )
         )
 
@@ -2564,6 +2669,30 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertTrue(result["artifact_expectations_met"])
         self.assertEqual([], result["artifact_expectation_failures"])
 
+    def test_p9_harness_marks_unavailable_fail_closed_rows_as_audit_failures(
+        self,
+    ) -> None:
+        result = evaluate_dataset.p9_result_for_unavailable_fixture(
+            {
+                "id": "placeholder-scanned-pdf",
+                "sample_id": "p9-placeholder-scanned-pdf",
+                "sample_category": "scanned_pdf_ocr",
+                "source_type": "scanned_pdf",
+                "format": "pdf",
+                "conversion_mode": "pdf_to_excel",
+            },
+            mode="scanned_pdf_ocr",
+            llm_scenario="no_llm",
+            failure_reason="representative fixture path is unavailable",
+            fail_closed=True,
+            mvp_before_gate_revision="p9-mvp-before-placeholder-fixture-gate",
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["fail_closed"])
+        self.assertFalse(result["audit_present"])
+        self.assertIn("conversion audit missing", str(result["failure_reason"]))
+
     def test_p9_harness_marks_optional_pdf_dependency_errors_fail_closed(self) -> None:
         class PocServerDependencyError(RuntimeError):
             pass
@@ -2591,12 +2720,14 @@ class EvaluateDatasetTest(unittest.TestCase):
                     llm_scenario="no_llm",
                 )
 
-        self.assertTrue(result["ok"])
+        self.assertFalse(result["ok"])
         self.assertTrue(result["fail_closed"])
         self.assertEqual(
             "p9-mvp-before-pdf-eval-dependency-gate",
             result["mvp_before_gate_revision"],
         )
+        self.assertFalse(result["audit_present"])
+        self.assertIn("conversion audit missing", str(result["failure_reason"]))
         self.assertFalse(result["artifact_expectations_met"])
         self.assertEqual(
             [
