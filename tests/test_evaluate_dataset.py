@@ -388,6 +388,215 @@ class EvaluateDatasetTest(unittest.TestCase):
             )
         )
 
+    def test_p9_harness_fails_pathless_real_representative_fixtures(
+        self,
+    ) -> None:
+        fixture_specs = [
+            (
+                "pathless-word",
+                "word",
+                "json",
+                "word_to_excel_representative",
+                None,
+            ),
+            (
+                "excel-fixture",
+                "excel",
+                "json",
+                "excel_to_word_representative",
+                "datasets/fixtures/excel.json",
+            ),
+            (
+                "text-pdf-fixture",
+                "text_pdf",
+                "pdf",
+                "pdf_to_excel_representative",
+                "datasets/fixtures/text-pdf.json",
+            ),
+            (
+                "record-pdf-fixture",
+                "record_excerpt",
+                "pdf",
+                "record_pdf_representative",
+                "datasets/fixtures/record-pdf.json",
+            ),
+            (
+                "scanned-pdf-fixture",
+                "scanned_pdf",
+                "pdf",
+                "scanned_pdf_ocr_representative",
+                "datasets/fixtures/scanned-pdf.json",
+            ),
+        ]
+        samples = [
+            ("p9-word-pathless", "word", "pathless-word", "word_to_excel"),
+            ("p9-excel", "excel", "excel-fixture", "excel_to_word"),
+            ("p9-text-pdf", "text_pdf", "text-pdf-fixture", "pdf_to_excel"),
+            ("p9-record-pdf", "record_pdf", "record-pdf-fixture", "pdf_to_word"),
+            ("p9-scanned-pdf", "scanned_pdf", "scanned-pdf-fixture", "pdf_to_word"),
+        ]
+
+        for path_case in ("omitted", "null"):
+            with self.subTest(path_case=path_case):
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    temp_root = Path(temp_dir)
+                    fixture_dir = temp_root / "datasets" / "fixtures"
+                    fixture_dir.mkdir(parents=True)
+                    fixtures: list[dict[str, object]] = []
+                    for (
+                        fixture_id,
+                        source_type,
+                        fixture_format,
+                        representative_flag,
+                        fixture_relpath,
+                    ) in fixture_specs:
+                        fixture = {
+                            "id": fixture_id,
+                            "title": fixture_id,
+                            "source_type": source_type,
+                            "format": fixture_format,
+                            "anonymization": "synthetic",
+                            "confidentiality": "public",
+                            "public_review_safe": True,
+                            representative_flag: True,
+                        }
+                        if fixture_relpath is None:
+                            if path_case == "null":
+                                fixture["path"] = None
+                        else:
+                            fixture["path"] = fixture_relpath
+                            fixture_path = temp_root / fixture_relpath
+                            fixture_path.parent.mkdir(parents=True, exist_ok=True)
+                            fixture_path.write_text("{}", encoding="utf-8")
+                        fixtures.append(fixture)
+
+                    (fixture_dir / "manifest.json").write_text(
+                        json.dumps(
+                            {
+                                "schema_version": (
+                                    evaluate_dataset.FIXTURE_MANIFEST_SCHEMA_VERSION
+                                ),
+                                "policy": {
+                                    "allowed_fixture_root": "datasets/fixtures",
+                                    "public_only": True,
+                                    "confidential_source_documents_allowed": False,
+                                },
+                                "fixtures": fixtures,
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+                    p9_manifest_path = temp_root / "datasets" / "p9.json"
+                    p9_manifest_path.write_text(
+                        json.dumps(
+                            {
+                                "schema_version": (
+                                    evaluate_dataset.P9_EVALUATION_MANIFEST_SCHEMA_VERSION
+                                ),
+                                "fixture_manifest": "datasets/fixtures/manifest.json",
+                                "required_categories": sorted(
+                                    evaluate_dataset.P9_REQUIRED_SOURCE_CATEGORIES
+                                ),
+                                "samples": [
+                                    {
+                                        "id": sample_id,
+                                        "category": category,
+                                        "fixture_id": fixture_id,
+                                        "dataset_status": "usable_fixture",
+                                        "source_classification": "synthetic",
+                                        "conversion_mode": conversion_mode,
+                                    }
+                                    for (
+                                        sample_id,
+                                        category,
+                                        fixture_id,
+                                        conversion_mode,
+                                    ) in samples
+                                ],
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+
+                    def conversion_success(
+                        fixture: dict[str, object],
+                        *,
+                        fixture_path: Path,
+                        mode: str,
+                        llm_scenario: str,
+                    ) -> dict[str, object]:
+                        return {
+                            "sample_id": fixture.get("sample_id"),
+                            "fixture_id": fixture.get("id"),
+                            "source_fixture_id": fixture.get("fixture_id"),
+                            "conversion_mode": fixture.get("conversion_mode"),
+                            "representative_mode": mode,
+                            "llm_scenario": llm_scenario,
+                            "ok": True,
+                            "external_ai_api_guard_violation": False,
+                        }
+
+                    phase8_report = evaluate_dataset.LLMStabilityEvaluationReport(
+                        llm_stability=evaluate_dataset.LLMStabilityMetrics(
+                            input_id="pathless-fixture-test",
+                            run_count=1,
+                            plan_agreement_rate=1.0,
+                            confirmed_value_agreement_rate=1.0,
+                            schema_failure_rate=0.0,
+                            repair_success_rate=1.0,
+                            deterministic_fallback_rate=0.0,
+                            external_ai_api_guard_violation_count=0,
+                            distinct_plan_count=1,
+                            distinct_confirmed_value_count=1,
+                            unstable_example_count=0,
+                            unstable_examples=(),
+                        ),
+                        poc_mode_comparison=evaluate_dataset.PoCComparisonMetrics(
+                            mode_count=len(evaluate_dataset.REQUIRED_POC_MODES),
+                            high_risk_false_auto_confirmed_count=0,
+                            high_risk_false_auto_confirmed_target=0,
+                            target_met=True,
+                            manual_correction_time=(
+                                evaluate_dataset.ManualCorrectionTimeMetrics(
+                                    measurement_method="synthetic",
+                                    baseline_minutes=10.0,
+                                    assisted_minutes=4.0,
+                                    reduction_minutes=6.0,
+                                    reduction_rate=0.6,
+                                    target_reduction_rate=0.5,
+                                    target_met=True,
+                                )
+                            ),
+                            modes=(),
+                            mode_diffs=(),
+                        ),
+                        stability_source=LLM_STABILITY_RUNS_PATH,
+                        poc_comparison_source=POC_COMPARISON_PATH,
+                    )
+                    with mock.patch.object(
+                        evaluate_dataset,
+                        "p9_conversion_result",
+                        side_effect=conversion_success,
+                    ), mock.patch.object(
+                        evaluate_dataset,
+                        "evaluate_llm_stability_report",
+                        return_value=phase8_report,
+                    ):
+                        report = evaluate_dataset.evaluate_p9_harness(p9_manifest_path)
+
+                failed_rows = [
+                    result
+                    for result in report.results
+                    if result["sample_id"] == "p9-word-pathless"
+                ]
+                self.assertEqual(2, len(failed_rows))
+                self.assertEqual(2, report.failure_count)
+                for row in failed_rows:
+                    self.assertFalse(row["ok"])
+                    self.assertFalse(row["fail_closed"])
+                    self.assertIsNone(row["mvp_before_gate_revision"])
+                    self.assertIn("path is missing or null", row["failure_reason"])
+
     def test_p9_harness_cli_emits_machine_readable_report(self) -> None:
         completed = subprocess.run(
             [sys.executable, str(SCRIPT_PATH), "--p9-harness"],

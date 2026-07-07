@@ -1735,20 +1735,29 @@ def evaluate_p9_harness(
         fixture_path = fixture_paths.get(fixture_id) if isinstance(fixture_id, str) else None
         for llm_scenario in P9_LLM_SCENARIOS:
             if fixture_path is None:
-                failure_reason = (
-                    str(fixture.get("availability_reason"))
-                    if fixture.get("availability_reason")
-                    else "representative fixture path is unavailable"
-                )
+                pathless_real_fixture = isinstance(fixture_id, str)
+                if pathless_real_fixture:
+                    failure_reason = (
+                        f"fixture {fixture_id!r} path is missing or null "
+                        "in fixture manifest"
+                    )
+                else:
+                    failure_reason = (
+                        str(fixture.get("availability_reason"))
+                        if fixture.get("availability_reason")
+                        else "representative fixture path is unavailable"
+                    )
                 results.append(
                     p9_result_for_unavailable_fixture(
                         fixture,
                         mode=mode,
                         llm_scenario=llm_scenario,
                         failure_reason=failure_reason,
-                        fail_closed=True,
+                        fail_closed=not pathless_real_fixture,
                         mvp_before_gate_revision=(
                             P9_MVP_BEFORE_GATE_REVISION_PLACEHOLDER_FIXTURE
+                            if not pathless_real_fixture
+                            else None
                         ),
                     )
                 )
