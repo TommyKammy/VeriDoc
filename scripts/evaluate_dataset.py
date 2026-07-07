@@ -368,6 +368,7 @@ class PoCAcceptanceReport:
         llm_stability = self.p9_harness.llm_stability
         results = list(self.p9_harness.results)
         failed_results = [result for result in results if result.get("ok") is not True]
+        usable_results = [result for result in results if result.get("ok") is True]
         artifact_failures = [
             result
             for result in results
@@ -380,7 +381,7 @@ class PoCAcceptanceReport:
         by_mode = poc_acceptance_conversion_mode_results(results)
         observed_representative_modes = {
             str(result.get("representative_mode"))
-            for result in results
+            for result in usable_results
             if result.get("representative_mode") is not None
         }
         missing_representative_modes = sorted(
@@ -388,7 +389,7 @@ class PoCAcceptanceReport:
         )
         observed_source_categories = {
             str(result.get("sample_category"))
-            for result in results
+            for result in usable_results
             if result.get("sample_category") is not None
         }
         missing_source_categories = sorted(
@@ -560,7 +561,9 @@ class PoCAcceptanceReport:
             structured_output_failures=structured_output_failures,
             unaudited_results=unaudited_results,
             llm_scenario_failures=llm_scenario_failures,
+            observed_representative_modes=sorted(observed_representative_modes),
             missing_representative_modes=missing_representative_modes,
+            observed_source_categories=sorted(observed_source_categories),
             missing_source_categories=missing_source_categories,
             high_quality_source_linkage_rate=high_quality_source_linkage_rate,
             external_violation_count=external_violation_count,
@@ -2136,7 +2139,9 @@ def poc_acceptance_matrix_evidence(
     structured_output_failures: list[dict[str, object]],
     unaudited_results: list[dict[str, object]],
     llm_scenario_failures: list[dict[str, object]],
+    observed_representative_modes: list[str],
     missing_representative_modes: list[str],
+    observed_source_categories: list[str],
     missing_source_categories: list[str],
     high_quality_source_linkage_rate: float,
     external_violation_count: int,
@@ -2150,7 +2155,9 @@ def poc_acceptance_matrix_evidence(
 ) -> dict[str, object]:
     return {
         "functionality": {
+            "observed_representative_modes": observed_representative_modes,
             "missing_representative_modes": missing_representative_modes,
+            "observed_source_categories": observed_source_categories,
             "missing_source_categories": missing_source_categories,
             "manual_correction_time": poc_comparison.manual_correction_time.as_dict(),
             "failed_rows": poc_acceptance_result_evidence_rows(failed_results),

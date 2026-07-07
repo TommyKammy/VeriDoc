@@ -768,6 +768,30 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertIn("missing source categories", rows["functionality"]["evidence"])
         self.assertIn("record_pdf", rows["functionality"]["evidence"])
 
+    def test_poc_acceptance_report_counts_only_successful_rows_for_coverage(
+        self,
+    ) -> None:
+        payload = self.poc_acceptance_payload()
+        results = list(payload["p9_harness_results"])
+        for index, result in enumerate(results):
+            if result["sample_category"] == "record_pdf":
+                results[index] = {
+                    **result,
+                    "ok": False,
+                    "failure_reason": "representative fixture path is unavailable",
+                    "artifact_expectations_met": False,
+                }
+                break
+
+        payload = self.poc_acceptance_payload(results=results)
+
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        functionality_evidence = payload["matrix_evidence"]["functionality"]
+        self.assertEqual("fail", rows["functionality"]["status"])
+        self.assertIn("record_pdf", functionality_evidence["missing_source_categories"])
+        self.assertIn("pdf_to_word", functionality_evidence["missing_representative_modes"])
+        self.assertNotIn("record_pdf", functionality_evidence["observed_source_categories"])
+
     def test_poc_acceptance_report_requires_target_mode_traceability(
         self,
     ) -> None:
