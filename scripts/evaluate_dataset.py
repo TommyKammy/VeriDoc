@@ -1254,6 +1254,7 @@ def _asserted_status_observations(
     pending_request_by_connection: dict[str, _AuthenticatedStatusObservation] = {}
     asserted_observations: list[_AuthenticatedStatusObservation] = []
     name_literal_bindings: dict[str, frozenset[str]] = {}
+    poc_connection_names: set[str] = set()
     for ordered_statement in _ordered_function_statements(node.body):
         statement = ordered_statement.statement
         response_connections_seen = {
@@ -1268,24 +1269,33 @@ def _asserted_status_observations(
             if not isinstance(child, ast.Call):
                 continue
             connection_name = _method_call_receiver_name(child, "request")
-            if connection_name is not None:
-                method, path = _request_method_and_path(child)
-                pending_request_by_connection[connection_name] = (
-                    _AuthenticatedStatusObservation(
-                        tokens=frozenset(),
-                        env_tokens_before_request=frozenset(),
-                        request_method=method,
-                        request_path=path,
-                        string_literals=_string_literals_with_bound_names(
-                            child, name_literal_bindings
-                        ),
-                    )
+            if connection_name is None:
+                continue
+            if connection_name not in poc_connection_names:
+                continue
+            method, path = _request_method_and_path(child)
+            pending_request_by_connection[connection_name] = (
+                _AuthenticatedStatusObservation(
+                    tokens=frozenset(),
+                    env_tokens_before_request=frozenset(),
+                    request_method=method,
+                    request_path=path,
+                    string_literals=_string_literals_with_bound_names(
+                        child, name_literal_bindings
+                    ),
                 )
+            )
 
         if isinstance(statement, (ast.Assign, ast.AnnAssign)):
             targets = _assignment_targets(statement)
             _clear_status_observations_for_targets(status_observations, targets)
             value = statement.value
+            for target in targets:
+                for name in _assigned_name_targets(target):
+                    if _call_creates_poc_http_connection(value):
+                        poc_connection_names.add(name)
+                    else:
+                        poc_connection_names.discard(name)
             if isinstance(value, ast.Call):
                 for target in targets:
                     for key in _assigned_status_expr_keys(target):
