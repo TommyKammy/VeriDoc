@@ -474,6 +474,54 @@ def _assignment_targets(
     return node.targets if isinstance(node, ast.Assign) else (node.target,)
 
 
+def _walk_statement_without_nested_scopes(node: ast.AST) -> tuple[ast.AST, ...]:
+    nodes: list[ast.AST] = []
+
+    class Visitor(ast.NodeVisitor):
+        def generic_visit(self, child: ast.AST) -> None:
+            nodes.append(child)
+            super().generic_visit(child)
+
+        def visit_FunctionDef(self, child: ast.FunctionDef) -> None:
+            nodes.append(child)
+
+        def visit_AsyncFunctionDef(self, child: ast.AsyncFunctionDef) -> None:
+            nodes.append(child)
+
+        def visit_ClassDef(self, child: ast.ClassDef) -> None:
+            nodes.append(child)
+
+        def visit_Lambda(self, child: ast.Lambda) -> None:
+            nodes.append(child)
+
+    Visitor().visit(node)
+    return tuple(nodes)
+
+
+def _target_name_bindings(target: ast.AST) -> frozenset[str]:
+    if isinstance(target, ast.Name):
+        return frozenset((target.id,))
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return frozenset(
+            name
+            for element in target.elts
+            for name in _target_name_bindings(element)
+        )
+    return frozenset()
+
+
+def _statement_bound_names(node: ast.stmt) -> frozenset[str]:
+    names: set[str] = set()
+    for child in _walk_statement_without_nested_scopes(node):
+        if isinstance(child, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            for target in _assignment_targets(child):
+                names.update(_target_name_bindings(target))
+        if isinstance(child, ast.Delete):
+            for target in child.targets:
+                names.update(_target_name_bindings(target))
+    return frozenset(names)
+
+
 def _clear_status_observations_for_targets(
     status_observations: dict[str, "_AuthenticatedStatusObservation"],
     targets: Iterable[ast.AST],
@@ -556,7 +604,7 @@ def _authenticated_success_status_observations(
 ) -> tuple[_AuthenticatedStatusObservation, ...]:
     env_tokens_seen: set[str] = set()
     direct_tokens_seen: set[str] = set()
-    monkeypatch_fixture_names = frozenset(
+    active_monkeypatch_fixture_names = set(
         name for name in _function_arg_names(node) if name == "monkeypatch"
     )
     pending_request_by_connection: dict[
@@ -570,7 +618,9 @@ def _authenticated_success_status_observations(
             _env_auth_tokens_after_statement(
                 statement,
                 env_tokens_seen,
-                monkeypatch_fixture_names=monkeypatch_fixture_names,
+                monkeypatch_fixture_names=frozenset(
+                    active_monkeypatch_fixture_names
+                ),
             )
         )
         direct_tokens_seen = set(
@@ -578,14 +628,14 @@ def _authenticated_success_status_observations(
         )
         response_connections_seen = {
             connection_name
-            for child in ast.walk(statement)
+            for child in _walk_statement_without_nested_scopes(statement)
             if isinstance(child, ast.Call)
             for connection_name in (_method_call_receiver_name(child, "getresponse"),)
             if connection_name is not None
         }
         response_connections_recorded: set[str] = set()
 
-        for child in ast.walk(statement):
+        for child in _walk_statement_without_nested_scopes(statement):
             if not isinstance(child, ast.Call):
                 continue
             connection_name = _method_call_receiver_name(child, "request")
@@ -669,6 +719,10 @@ def _authenticated_success_status_observations(
                         )
                     )
 
+        active_monkeypatch_fixture_names.difference_update(
+            _statement_bound_names(statement)
+        )
+
     return tuple(success_observations)
 
 
@@ -710,17 +764,20 @@ def _test_function_matches_success_ref_expectation(
 
 
 def _assigns_server_local_auth_tokens(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-    for child in ast.walk(node):
-        if _calls_setattr_local_auth_tokens(child):
-            return True
-        if not isinstance(child, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
-            continue
-        targets = child.targets if isinstance(child, ast.Assign) else (child.target,)
-        if any(
-            isinstance(target, ast.Attribute) and target.attr == "local_auth_tokens"
-            for target in targets
-        ):
-            return True
+    for statement in _ordered_function_statements(node.body):
+        for child in _walk_statement_without_nested_scopes(statement):
+            if _calls_setattr_local_auth_tokens(child):
+                return True
+            if not isinstance(child, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+                continue
+            targets = (
+                child.targets if isinstance(child, ast.Assign) else (child.target,)
+            )
+            if any(
+                isinstance(target, ast.Attribute) and target.attr == "local_auth_tokens"
+                for target in targets
+            ):
+                return True
     return False
 
 
@@ -741,7 +798,7 @@ def _env_auth_tokens_after_statement(
     monkeypatch_fixture_names: frozenset[str] = frozenset(),
 ) -> frozenset[str]:
     tokens = set(current_tokens)
-    for child in ast.walk(node):
+    for child in _walk_statement_without_nested_scopes(node):
         if isinstance(child, ast.Call):
             func = child.func
             if (
@@ -844,7 +901,7 @@ def _direct_auth_tokens_after_statement(
     current_tokens: Iterable[str],
 ) -> frozenset[str]:
     tokens = set(current_tokens)
-    for child in ast.walk(node):
+    for child in _walk_statement_without_nested_scopes(node):
         if isinstance(child, ast.Call):
             configured_tokens = _setattr_local_auth_token_value_tokens(child)
             if configured_tokens is not None:
@@ -908,13 +965,13 @@ def _asserted_status_observations(
     for statement in _ordered_function_statements(node.body):
         response_connections_seen = {
             connection_name
-            for child in ast.walk(statement)
+            for child in _walk_statement_without_nested_scopes(statement)
             if isinstance(child, ast.Call)
             for connection_name in (_method_call_receiver_name(child, "getresponse"),)
             if connection_name is not None
         }
         response_connections_recorded: set[str] = set()
-        for child in ast.walk(statement):
+        for child in _walk_statement_without_nested_scopes(statement):
             if not isinstance(child, ast.Call):
                 continue
             connection_name = _method_call_receiver_name(child, "request")
