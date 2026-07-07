@@ -1671,6 +1671,7 @@ def evaluate_p9_harness(
     llm_report = evaluate_llm_stability_report(
         llm_stability_runs_path,
         poc_comparison_path,
+        repo_root=repo_root,
     )
     return P9HarnessReport(
         manifest=manifest_path,
@@ -1816,14 +1817,12 @@ def build_poc_acceptance_report(
         commit_is_clean=current_git_worktree_clean(
             manifest_repo_root,
             ignored_paths=ignored_cleanliness_paths,
-            include_untracked=False,
         ),
         generation_command=generation_command,
         evaluator_commit=current_git_commit(REPO_ROOT),
         evaluator_commit_is_clean=current_git_worktree_clean(
             REPO_ROOT,
             ignored_paths=ignored_cleanliness_paths,
-            include_untracked=False,
         ),
     )
 
@@ -3952,10 +3951,16 @@ def evaluate_gmp_acceptance(
 def evaluate_llm_stability_report(
     llm_stability_runs_path: Path,
     poc_comparison_path: Path,
+    *,
+    repo_root: Path | None = None,
 ) -> LLMStabilityEvaluationReport:
     resolved_stability_path = llm_stability_runs_path.resolve()
     resolved_comparison_path = poc_comparison_path.resolve()
-    poc_repo_root = repository_root_for_gold_path(resolved_comparison_path)
+    poc_repo_root = (
+        repo_root.resolve()
+        if repo_root is not None
+        else repository_root_for_gold_path(resolved_comparison_path)
+    )
     return LLMStabilityEvaluationReport(
         llm_stability=evaluate_llm_stability(load_json(resolved_stability_path)),
         poc_mode_comparison=evaluate_poc_mode_comparison(

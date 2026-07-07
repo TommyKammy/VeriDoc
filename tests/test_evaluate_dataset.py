@@ -977,6 +977,77 @@ class EvaluateDatasetTest(unittest.TestCase):
                 )
             )
 
+    def test_poc_acceptance_report_cleanliness_counts_untracked_files(
+        self,
+    ) -> None:
+        payload = self.poc_acceptance_payload()
+        llm_report = evaluate_dataset.evaluate_llm_stability_report(
+            LLM_STABILITY_RUNS_PATH,
+            POC_COMPARISON_PATH,
+        )
+        harness = evaluate_dataset.P9HarnessReport(
+            manifest=POC_EVALUATION_MANIFEST_PATH,
+            results=tuple(payload["p9_harness_results"]),
+            llm_stability=llm_report.llm_stability,
+            poc_mode_comparison=llm_report.poc_mode_comparison,
+            llm_stability_source=LLM_STABILITY_RUNS_PATH,
+            poc_comparison_source=POC_COMPARISON_PATH,
+        )
+        clean_calls: list[dict[str, object]] = []
+
+        def fake_clean(
+            repo_root: Path,
+            *,
+            ignored_paths: tuple[Path, ...] = (),
+            include_untracked: bool = True,
+        ) -> bool:
+            clean_calls.append(
+                {
+                    "repo_root": repo_root,
+                    "ignored_paths": ignored_paths,
+                    "include_untracked": include_untracked,
+                }
+            )
+            return False if include_untracked else True
+
+        generated_report = REPO_ROOT / "reports" / "poc_acceptance.json"
+        with (
+            mock.patch.object(
+                evaluate_dataset,
+                "evaluate_p9_harness",
+                return_value=harness,
+            ),
+            mock.patch.object(
+                evaluate_dataset,
+                "current_git_commit",
+                return_value="tracked-head",
+            ),
+            mock.patch.object(
+                evaluate_dataset,
+                "current_stdout_path",
+                return_value=generated_report,
+            ),
+            mock.patch.object(
+                evaluate_dataset,
+                "current_git_worktree_clean",
+                side_effect=fake_clean,
+            ),
+        ):
+            report = evaluate_dataset.build_poc_acceptance_report(
+                POC_EVALUATION_MANIFEST_PATH,
+            )
+
+        self.assertGreaterEqual(len(clean_calls), 2)
+        self.assertTrue(
+            all(call["include_untracked"] is True for call in clean_calls)
+        )
+        self.assertTrue(
+            all(generated_report in call["ignored_paths"] for call in clean_calls)
+        )
+        payload = report.as_dict()
+        rows = {row["criterion_id"]: row for row in payload["acceptance_matrix"]}
+        self.assertEqual("fail", rows["reproducibility"]["status"])
+
     def test_poc_acceptance_report_build_path_rejects_external_evidence(
         self,
     ) -> None:
@@ -1135,6 +1206,48 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertEqual(
             temp_root.resolve(),
             mocked_comparison.call_args.kwargs["repo_root"].resolve(),
+        )
+
+    def test_p9_harness_passes_manifest_repo_to_llm_stability_report(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            shutil.copytree(REPO_ROOT / "datasets", temp_root / "datasets")
+            custom_manifest_path = temp_root / "datasets" / "custom_p9_manifest.json"
+            shutil.copy2(POC_EVALUATION_MANIFEST_PATH, custom_manifest_path)
+            custom_comparison_path = temp_root / "reports" / "comparison.json"
+            custom_comparison_path.parent.mkdir()
+            shutil.copy2(POC_COMPARISON_PATH, custom_comparison_path)
+            stability_path = temp_root / "datasets" / "gold" / "llm_stability_runs_v0.json"
+            llm_report = evaluate_dataset.evaluate_llm_stability_report(
+                stability_path,
+                custom_comparison_path,
+                repo_root=temp_root,
+            )
+
+            with (
+                mock.patch.object(
+                    evaluate_dataset,
+                    "p9_evaluation_samples",
+                    return_value=(),
+                ),
+                mock.patch.object(
+                    evaluate_dataset,
+                    "evaluate_llm_stability_report",
+                    return_value=llm_report,
+                ) as mocked_llm_report,
+            ):
+                evaluate_dataset.evaluate_p9_harness(
+                    custom_manifest_path,
+                    llm_stability_runs_path=stability_path,
+                    poc_comparison_path=custom_comparison_path,
+                )
+
+        mocked_llm_report.assert_called_once_with(
+            stability_path,
+            custom_comparison_path,
+            repo_root=temp_root.resolve(),
         )
 
     def test_poc_acceptance_report_resolves_relative_manifest_before_harness(
