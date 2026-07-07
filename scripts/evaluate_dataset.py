@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 from collections import Counter
 import json
 import math
@@ -102,6 +103,10 @@ POC_AUTH_SESSION_COVERAGE_REFS = (
     *POC_AUTH_SESSION_SUCCESS_COVERAGE_REFS,
     *POC_AUTH_SESSION_FAIL_CLOSED_COVERAGE_REFS,
 )
+POC_AUTH_SESSION_SUCCESS_TOKEN_LITERALS = frozenset(
+    ("reviewer-token", "approver-token", "admin-token")
+)
+POC_AUTH_SESSION_SUCCESS_STATUS_CODES = frozenset((200, 202))
 EXPECTED_SCOPE_PHASE = "phase0"
 PUBLIC_FIXTURE_ANONYMIZATION_VALUES = {"anonymized", "synthetic"}
 PUBLIC_LLM_STABILITY_SOURCE_KINDS = {"anonymized_text", "synthetic_text"}
@@ -168,6 +173,53 @@ def poc_auth_session_coverage_evidence_refs() -> tuple[str, ...]:
     return (POC_AUTH_SESSION_README_REF, *POC_AUTH_SESSION_COVERAGE_REFS)
 
 
+def _test_function_nodes(
+    test_source: str,
+) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
+    try:
+        tree = ast.parse(test_source)
+    except SyntaxError:
+        return {}
+    return {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+
+def _constant_int_value(node: ast.AST) -> int | None:
+    if not isinstance(node, ast.Constant):
+        return None
+    if isinstance(node.value, bool) or not isinstance(node.value, int):
+        return None
+    return node.value
+
+
+def _compare_mentions_success_status(node: ast.Compare) -> bool:
+    values = (_constant_int_value(part) for part in (node.left, *node.comparators))
+    return any(value in POC_AUTH_SESSION_SUCCESS_STATUS_CODES for value in values)
+
+
+def _test_function_has_authenticated_success_markers(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> bool:
+    string_literals = {
+        child.value
+        for child in ast.walk(node)
+        if isinstance(child, ast.Constant) and isinstance(child.value, str)
+    }
+    has_configured_privileged_token = any(
+        token in literal
+        for literal in string_literals
+        for token in POC_AUTH_SESSION_SUCCESS_TOKEN_LITERALS
+    )
+    has_success_status_assertion = any(
+        isinstance(child, ast.Compare) and _compare_mentions_success_status(child)
+        for child in ast.walk(node)
+    )
+    return has_configured_privileged_token and has_success_status_assertion
+
+
 def poc_auth_session_coverage_is_present(repo_root: Path = REPO_ROOT) -> bool:
     readme_path = repo_root / "README.md"
     test_path = repo_root / "tests" / "test_poc_web_api.py"
@@ -182,9 +234,16 @@ def poc_auth_session_coverage_is_present(repo_root: Path = REPO_ROOT) -> bool:
     if "VERIDOC_LOCAL_AUTH_TOKENS" not in readme:
         return False
 
+    test_functions = _test_function_nodes(test_source)
     for ref in POC_AUTH_SESSION_COVERAGE_REFS:
         _path, test_name = ref.split("::", 1)
-        if f"def {test_name}(" not in test_source:
+        if test_name not in test_functions:
+            return False
+    for ref in POC_AUTH_SESSION_SUCCESS_COVERAGE_REFS:
+        _path, test_name = ref.split("::", 1)
+        if not _test_function_has_authenticated_success_markers(
+            test_functions[test_name]
+        ):
             return False
     return True
 
