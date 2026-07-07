@@ -120,6 +120,7 @@ POC_AUTH_SESSION_FAIL_CLOSED_REF_EXPECTATIONS = {
         "method": "POST",
         "path": "/api/review-events",
         "required_literals": frozenset(("{not valid json", "auth_required")),
+        "asserted_literals": frozenset(("auth_required",)),
     },
     "tests/test_poc_web_api.py::test_poc_http_api_rejects_read_only_review_role_before_parsing_payload": {
         "status_codes": frozenset((403,)),
@@ -128,6 +129,7 @@ POC_AUTH_SESSION_FAIL_CLOSED_REF_EXPECTATIONS = {
         "required_literals": frozenset(
             ("{not valid json", "Bearer viewer-token", "forbidden")
         ),
+        "asserted_literals": frozenset(("forbidden",)),
     },
     "tests/test_poc_web_api.py::test_poc_http_api_requires_configured_local_auth_token_for_review_events": {
         "status_codes": frozenset((401,)),
@@ -136,12 +138,16 @@ POC_AUTH_SESSION_FAIL_CLOSED_REF_EXPECTATIONS = {
         "required_literals": frozenset(
             ("Authorization bearer token is required", "auth_required")
         ),
+        "asserted_literals": frozenset(
+            ("Authorization bearer token is required", "auth_required")
+        ),
     },
     "tests/test_poc_web_api.py::test_poc_http_api_authenticates_job_events_before_parsing_payload": {
         "status_codes": frozenset((401,)),
         "method": "POST",
         "path": "/api/job-events",
         "required_literals": frozenset(("{not valid json", "auth_required")),
+        "asserted_literals": frozenset(("auth_required",)),
     },
 }
 POC_AUTH_SESSION_COVERAGE_INPUT_PATHS = (
@@ -153,6 +159,9 @@ POC_AUTH_SESSION_SUCCESS_TOKEN_LITERALS = frozenset(
 )
 POC_AUTH_SESSION_SUCCESS_STATUS_CODES = frozenset((200, 202))
 POC_AUTH_SESSION_ENV_ROLES = frozenset(("viewer", "reviewer", "approver", "admin"))
+POC_AUTH_SESSION_TRUSTED_STATUS_HELPERS = {
+    "_post_review_event_on_connection": ("POST", "/api/review-events"),
+}
 POC_AUTH_SESSION_SUCCESS_REF_EXPECTATIONS = {
     "tests/test_poc_web_api.py::test_poc_http_api_reads_local_auth_tokens_from_env_for_review_success": {
         "tokens": frozenset(("env-reviewer-token",)),
@@ -270,12 +279,61 @@ def _top_level_function_nodes(
     }
 
 
+def _pytestmark_value_is_skipped_or_xfailed(node: ast.AST) -> bool:
+    mark_name = _dotted_name(node)
+    if mark_name in {
+        "pytest.mark.skip",
+        "pytest.mark.skipif",
+        "pytest.mark.xfail",
+        "skip",
+        "skipif",
+        "xfail",
+    }:
+        return True
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        return any(
+            _pytestmark_value_is_skipped_or_xfailed(element)
+            for element in node.elts
+        )
+    return False
+
+
+def _module_is_skipped_or_xfailed(tree: ast.Module) -> bool:
+    for statement in tree.body:
+        if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
+            continue
+        targets = (
+            statement.targets
+            if isinstance(statement, ast.Assign)
+            else (statement.target,)
+        )
+        if not any(
+            isinstance(target, ast.Name) and target.id == "pytestmark"
+            for target in targets
+        ):
+            continue
+        value = statement.value
+        if value is not None and _pytestmark_value_is_skipped_or_xfailed(value):
+            return True
+    return False
+
+
 def _test_function_nodes(
     test_source: str,
 ) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
+    try:
+        tree = ast.parse(test_source)
+    except SyntaxError:
+        return {}
+    if _module_is_skipped_or_xfailed(tree):
+        return {}
     return {
         name: node
-        for name, node in _top_level_function_nodes(test_source).items()
+        for name, node in {
+            node.name: node
+            for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }.items()
         if not _test_function_is_skipped_or_xfailed(node)
     }
 
@@ -411,7 +469,8 @@ def _local_auth_token_helper_tokens(
     helpers: dict[str, frozenset[str]] = {}
     for name, node in _top_level_function_nodes(test_source).items():
         tokens: set[str] = set()
-        for statement in node.body:
+        for ordered_statement in _ordered_function_statements(node.body):
+            statement = ordered_statement.statement
             if isinstance(statement, ast.Return):
                 tokens.update(_local_auth_token_mapping_tokens(statement.value))
                 break
@@ -650,10 +709,15 @@ def _ordered_function_statements(
     pending_bound_names = set(bound_names_before)
     for statement in statements:
         if isinstance(statement, (ast.Try, ast.TryStar)):
-            yield from _ordered_function_statements(
+            body_exited = False
+            for child in _ordered_function_statements(
                 statement.body,
                 bound_names_before=frozenset(pending_bound_names),
-            )
+            ):
+                yield child
+                body_exited = _statement_unconditionally_exits(child.statement)
+            if body_exited:
+                break
             yield from _ordered_function_statements(
                 statement.orelse,
                 bound_names_before=frozenset(pending_bound_names),
@@ -724,6 +788,14 @@ def _string_literals_in_node(node: ast.AST) -> frozenset[str]:
     return frozenset(literals)
 
 
+def _asserted_string_literals_in_node(node: ast.AST) -> frozenset[str]:
+    literals: set[str] = set()
+    for child in ast.walk(node):
+        if isinstance(child, ast.Assert):
+            literals.update(_string_literals_in_node(child))
+    return frozenset(literals)
+
+
 def _loaded_name_references(node: ast.AST) -> frozenset[str]:
     return frozenset(
         child.id
@@ -768,6 +840,20 @@ def _request_method_and_path(node: ast.Call) -> tuple[str | None, str | None]:
     method = _constant_string_value(node.args[0]) if len(node.args) >= 1 else None
     path = _constant_string_value(node.args[1]) if len(node.args) >= 2 else None
     return method, path
+
+
+def _trusted_poc_status_helper_method_and_path(
+    node: ast.Call,
+    poc_connection_names: frozenset[str],
+) -> tuple[str | None, str | None] | None:
+    helper_name = _dotted_name(node.func)
+    if helper_name not in POC_AUTH_SESSION_TRUSTED_STATUS_HELPERS:
+        return None
+    if not node.args or not isinstance(node.args[0], ast.Name):
+        return None
+    if node.args[0].id not in poc_connection_names:
+        return None
+    return POC_AUTH_SESSION_TRUSTED_STATUS_HELPERS[helper_name]
 
 
 def _node_references_poc_server_address(node: ast.AST) -> bool:
@@ -864,6 +950,8 @@ def _authenticated_success_status_observations(
             _clear_status_observations_for_targets(status_observations, targets)
             for target in targets:
                 for name in _assigned_name_targets(target):
+                    if name == "server":
+                        direct_tokens_seen.clear()
                     if _call_creates_poc_http_connection(value):
                         poc_connection_names.add(name)
                     else:
@@ -878,10 +966,21 @@ def _authenticated_success_status_observations(
             if isinstance(value, ast.Call):
                 tokens = _call_privileged_auth_tokens(value)
                 if tokens:
+                    trusted_helper_request = (
+                        _trusted_poc_status_helper_method_and_path(
+                            value, frozenset(poc_connection_names)
+                        )
+                    )
+                    if trusted_helper_request is None:
+                        tokens = frozenset()
+                if tokens:
+                    method, path = trusted_helper_request or (None, None)
                     observation = _AuthenticatedStatusObservation(
                         tokens=tokens,
                         env_tokens_before_request=frozenset(env_tokens_seen),
                         direct_tokens_before_request=frozenset(direct_tokens_seen),
+                        request_method=method,
+                        request_path=path,
                         string_literals=_string_literals_with_bound_names(
                             value, name_literal_bindings
                         ),
@@ -1364,8 +1463,11 @@ def _test_function_matches_fail_closed_ref_expectation(
     expected_method = expectation.get("method")
     expected_path = expectation.get("path")
     required_literals = expectation.get("required_literals", frozenset())
+    asserted_literals = expectation.get("asserted_literals", frozenset())
     function_literals = _string_literals_in_node(node)
     if not required_literals.issubset(function_literals):
+        return False
+    if not asserted_literals.issubset(_asserted_string_literals_in_node(node)):
         return False
     for observation in _asserted_status_observations(node, expected_status_codes):
         if expected_method is not None and observation.request_method != expected_method:
