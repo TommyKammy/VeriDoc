@@ -1266,6 +1266,64 @@ class _PocAuthSessionValidationStep:
     ref_is_present: Callable[[_PocAuthSessionEvidenceContext, str], bool]
 
 
+@dataclass(frozen=True)
+class _PocAuthSessionSuccessRefExpectation:
+    tokens: frozenset[str]
+    status_codes: frozenset[int]
+    method: str | None
+    path: str | None
+    auth_source: str | None
+    required_literals: frozenset[str]
+
+
+@dataclass(frozen=True)
+class _PocAuthSessionFailClosedRefExpectation:
+    status_codes: frozenset[int]
+    method: str | None
+    path: str | None
+    auth_tokens: frozenset[str]
+    auth_source: str | None
+    forbid_auth_tokens: bool
+    required_literals: frozenset[str]
+    asserted_literals: frozenset[str]
+
+    @property
+    def request_literals(self) -> frozenset[str]:
+        return self.required_literals - self.asserted_literals
+
+
+def _poc_auth_session_success_ref_expectation(
+    ref: str,
+) -> _PocAuthSessionSuccessRefExpectation | None:
+    expectation = POC_AUTH_SESSION_SUCCESS_REF_EXPECTATIONS.get(ref)
+    if expectation is None:
+        return None
+    return _PocAuthSessionSuccessRefExpectation(
+        tokens=expectation.get("tokens", frozenset()),
+        status_codes=expectation.get("status_codes", frozenset()),
+        method=expectation.get("method"),
+        path=expectation.get("path"),
+        auth_source=expectation.get("auth_source"),
+        required_literals=expectation.get("required_literals", frozenset()),
+    )
+
+
+def _poc_auth_session_fail_closed_ref_expectation(
+    ref: str,
+) -> _PocAuthSessionFailClosedRefExpectation:
+    expectation = POC_AUTH_SESSION_FAIL_CLOSED_REF_EXPECTATIONS[ref]
+    return _PocAuthSessionFailClosedRefExpectation(
+        status_codes=expectation.get("status_codes", frozenset()),
+        method=expectation.get("method"),
+        path=expectation.get("path"),
+        auth_tokens=expectation.get("auth_tokens", frozenset()),
+        auth_source=expectation.get("auth_source"),
+        forbid_auth_tokens=bool(expectation.get("forbid_auth_tokens", False)),
+        required_literals=expectation.get("required_literals", frozenset()),
+        asserted_literals=expectation.get("asserted_literals", frozenset()),
+    )
+
+
 def _string_literals_in_node(node: ast.AST) -> frozenset[str]:
     literals: set[str] = set()
     for child in ast.walk(node):
@@ -2137,7 +2195,7 @@ def _test_function_matches_success_ref_expectation(
     trusted_status_helpers: Mapping[str, _TrustedPocStatusHelper] | None = None,
     module_shadowed_http_constructor_names: frozenset[str] = frozenset(),
 ) -> bool:
-    expectation = POC_AUTH_SESSION_SUCCESS_REF_EXPECTATIONS.get(ref)
+    expectation = _poc_auth_session_success_ref_expectation(ref)
     if expectation is None:
         return _test_function_has_authenticated_success_markers(
             node,
@@ -2147,39 +2205,39 @@ def _test_function_matches_success_ref_expectation(
                 module_shadowed_http_constructor_names
             ),
         )
-    expected_tokens = expectation.get("tokens", frozenset())
-    expected_status_codes = expectation.get("status_codes", frozenset())
-    expected_method = expectation.get("method")
-    expected_path = expectation.get("path")
-    auth_source = expectation.get("auth_source")
-    required_literals = expectation.get("required_literals", frozenset())
     for observation in _authenticated_success_status_observations(
         node,
         local_auth_token_helpers=local_auth_token_helpers,
         trusted_status_helpers=trusted_status_helpers,
         module_shadowed_http_constructor_names=module_shadowed_http_constructor_names,
     ):
-        if not required_literals.issubset(observation.string_literals):
+        if not expectation.required_literals.issubset(observation.string_literals):
             continue
-        if expected_tokens and not observation.tokens & expected_tokens:
+        if expectation.tokens and not observation.tokens & expectation.tokens:
             continue
         if (
-            expected_status_codes
-            and observation.status_code not in expected_status_codes
+            expectation.status_codes
+            and observation.status_code not in expectation.status_codes
         ):
             continue
-        if auth_source == "env":
+        if expectation.auth_source == "env":
             if not observation.tokens & observation.env_tokens_before_request:
                 continue
             if observation.direct_tokens_before_request:
                 continue
-        if auth_source == "direct" and not (
+        if expectation.auth_source == "direct" and not (
             observation.tokens & observation.direct_tokens_before_request
         ):
             continue
-        if expected_method is not None and observation.request_method != expected_method:
+        if (
+            expectation.method is not None
+            and observation.request_method != expectation.method
+        ):
             continue
-        if expected_path is not None and observation.request_path != expected_path:
+        if (
+            expectation.path is not None
+            and observation.request_path != expectation.path
+        ):
             continue
         return True
     return False
@@ -2774,19 +2832,10 @@ def _test_function_matches_fail_closed_ref_expectation(
     local_auth_token_helpers: dict[str, frozenset[str]] | None = None,
     module_shadowed_http_constructor_names: frozenset[str] = frozenset(),
 ) -> bool:
-    expectation = POC_AUTH_SESSION_FAIL_CLOSED_REF_EXPECTATIONS[ref]
-    expected_status_codes = expectation.get("status_codes", frozenset())
-    expected_method = expectation.get("method")
-    expected_path = expectation.get("path")
-    expected_auth_tokens = expectation.get("auth_tokens", frozenset())
-    auth_source = expectation.get("auth_source")
-    forbid_auth_tokens = bool(expectation.get("forbid_auth_tokens", False))
-    required_literals = expectation.get("required_literals", frozenset())
-    asserted_literals = expectation.get("asserted_literals", frozenset())
-    request_literals = required_literals - asserted_literals
+    expectation = _poc_auth_session_fail_closed_ref_expectation(ref)
     for observation in _asserted_status_observations(
         node,
-        expected_status_codes,
+        expectation.status_codes,
         local_auth_token_helpers=local_auth_token_helpers,
         module_shadowed_http_constructor_names=module_shadowed_http_constructor_names,
     ):
@@ -2795,9 +2844,9 @@ def _test_function_matches_fail_closed_ref_expectation(
             or observation.direct_tokens_before_request
         ):
             continue
-        if auth_source == "env":
+        if expectation.auth_source == "env":
             configured_tokens = observation.env_tokens_before_request
-        elif auth_source == "direct":
+        elif expectation.auth_source == "direct":
             configured_tokens = observation.direct_tokens_before_request
         else:
             configured_tokens = (
@@ -2806,20 +2855,28 @@ def _test_function_matches_fail_closed_ref_expectation(
             )
         if not configured_tokens:
             continue
-        if forbid_auth_tokens and observation.tokens:
+        if expectation.forbid_auth_tokens and observation.tokens:
             continue
-        if expected_auth_tokens:
-            if not observation.tokens & expected_auth_tokens:
+        if expectation.auth_tokens:
+            if not observation.tokens & expectation.auth_tokens:
                 continue
             if not observation.tokens & configured_tokens:
                 continue
-        if not request_literals.issubset(observation.string_literals):
+        if not expectation.request_literals.issubset(observation.string_literals):
             continue
-        if not asserted_literals.issubset(observation.asserted_response_literals):
+        if not expectation.asserted_literals.issubset(
+            observation.asserted_response_literals
+        ):
             continue
-        if expected_method is not None and observation.request_method != expected_method:
+        if (
+            expectation.method is not None
+            and observation.request_method != expectation.method
+        ):
             continue
-        if expected_path is not None and observation.request_path != expected_path:
+        if (
+            expectation.path is not None
+            and observation.request_path != expectation.path
+        ):
             continue
         return True
     return False
