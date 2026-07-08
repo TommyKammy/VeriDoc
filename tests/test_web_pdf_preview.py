@@ -55,6 +55,23 @@ def test_review_item_can_jump_to_preview_bbox() -> None:
     assert "state.previewPage = item.source_page" in html
 
 
+def test_direct_convert_activates_review_before_pdf_preview_render() -> None:
+    html = _web_html()
+    render_result = re.search(
+        r"function renderResult\(result\) \{(?P<body>.*?)\n      \}",
+        html,
+        flags=re.S,
+    )
+
+    assert render_result is not None
+    body = render_result.group("body")
+    assert "function navigateToScreen(screenId)" in html
+    assert 'location.hash = targetScreen;' in html
+    assert body.index('navigateToScreen("review");') < body.index(
+        "renderSourcePreview(result);"
+    )
+
+
 def test_template_state_clear_resets_credential_bound_form_fields() -> None:
     html = _web_html()
 
