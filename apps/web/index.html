@@ -155,6 +155,88 @@
         font-size: 14px;
       }
 
+      .shell-body {
+        display: grid;
+        grid-template-columns: 196px minmax(0, 1fr);
+        gap: 16px;
+        align-items: start;
+      }
+
+      .side-nav {
+        position: sticky;
+        top: 16px;
+        display: grid;
+        gap: 4px;
+        padding: 8px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: #f8fafc;
+      }
+
+      .side-nav button {
+        justify-content: flex-start;
+        width: 100%;
+        border-color: transparent;
+        background: transparent;
+        color: #344154;
+      }
+
+      .side-nav button:hover,
+      .side-nav button:focus {
+        border-color: #b8c7da;
+        background: #fff;
+      }
+
+      .side-nav button[aria-current="page"] {
+        border-color: #b8c7da;
+        background: #e8f1fc;
+        color: var(--brand-dark);
+        font-weight: 680;
+      }
+
+      .screen-stack {
+        min-width: 0;
+      }
+
+      .app-screen {
+        min-width: 0;
+      }
+
+      .screen-heading {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 8px 16px;
+        margin-bottom: 14px;
+      }
+
+      .screen-heading p {
+        max-width: 68ch;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .dashboard-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+        gap: 12px;
+      }
+
+      .dashboard-item {
+        display: grid;
+        gap: 6px;
+        padding: 12px;
+        border: 1px solid #e5e9f0;
+        border-radius: 8px;
+        background: #f8fafc;
+      }
+
+      .dashboard-item span {
+        color: var(--muted);
+        font-size: 13px;
+      }
+
       .layout {
         display: grid;
         grid-template-columns: minmax(0, 1.25fr) minmax(320px, 0.75fr);
@@ -582,8 +664,15 @@
 
       @media (max-width: 860px) {
         header,
+        .shell-body,
         .layout {
           display: block;
+        }
+
+        .side-nav {
+          position: static;
+          grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+          margin-bottom: 16px;
         }
 
         .layout > section + section {
@@ -597,9 +686,9 @@
     </style>
   </head>
   <body>
-    <main>
+    <main id="app-shell" class="app-shell">
       <header>
-        <h1>VeriDoc Jobs</h1>
+        <h1>VeriDoc</h1>
         <div class="auth-controls">
           <div class="field">
             <label for="auth-token">API token</label>
@@ -611,8 +700,54 @@
         </div>
       </header>
 
-      <div class="layout">
-        <section class="panel" aria-labelledby="jobs-title">
+      <div class="shell-body">
+        <nav id="app-navigation" class="side-nav" aria-label="Primary">
+          <button type="button" data-nav-target="dashboard">Dashboard</button>
+          <button type="button" data-nav-target="upload">Upload</button>
+          <button type="button" data-nav-target="jobs">Jobs</button>
+          <button type="button" data-nav-target="review">Review</button>
+          <button type="button" data-nav-target="templates">Templates</button>
+          <button type="button" data-nav-target="audit">Audit</button>
+          <button type="button" data-nav-target="admin">Admin</button>
+        </nav>
+
+        <div class="screen-stack">
+          <section id="screen-dashboard" class="app-screen panel" data-app-screen="dashboard" aria-labelledby="dashboard-title">
+            <div class="screen-heading">
+              <div>
+                <h2 id="dashboard-title">Dashboard</h2>
+                <p>Operational entry point for conversion work, review readiness, templates, and audit evidence.</p>
+              </div>
+            </div>
+            <div class="dashboard-grid">
+              <div class="dashboard-item">
+                <h3>Upload</h3>
+                <span>Start direct conversion from a document or Phase0 JSON file.</span>
+              </div>
+              <div class="dashboard-item">
+                <h3>Jobs</h3>
+                <span>Track queued, running, succeeded, and failed conversion jobs.</span>
+              </div>
+              <div class="dashboard-item">
+                <h3>Review</h3>
+                <span>Inspect warnings, source locations, artifacts, and debug JSON after conversion.</span>
+              </div>
+              <div class="dashboard-item">
+                <h3>Audit</h3>
+                <span>Filter and export conversion and review event evidence.</span>
+              </div>
+            </div>
+          </section>
+
+          <section id="screen-jobs" class="app-screen" data-app-screen="jobs" aria-labelledby="jobs-screen-title" hidden>
+            <div class="screen-heading">
+              <div>
+                <h2 id="jobs-screen-title">Jobs</h2>
+                <p>Create conversion jobs, inspect current status, and trigger supported job actions.</p>
+              </div>
+            </div>
+            <div class="layout">
+              <section class="panel" aria-labelledby="jobs-title">
           <div class="toolbar">
             <h2 id="jobs-title">Conversion jobs</h2>
             <button id="refresh-jobs" class="secondary" type="button">Refresh jobs</button>
@@ -686,12 +821,16 @@
             </div>
             <pre id="detail-raw"></pre>
           </div>
-        </section>
-      </div>
+              </section>
+            </div>
+          </section>
 
-      <section class="panel" style="margin-top: 16px" aria-labelledby="templates-title">
-        <div class="toolbar">
-          <h2 id="templates-title">Templates</h2>
+          <section id="screen-templates" class="app-screen panel" data-app-screen="templates" aria-labelledby="templates-title" hidden>
+        <div class="screen-heading">
+          <div>
+            <h2 id="templates-title">Templates</h2>
+            <p>Register controlled template versions used by conversion and review workflows.</p>
+          </div>
           <button id="refresh-templates" class="secondary" type="button">Refresh templates</button>
         </div>
         <div class="form-grid" style="margin-top: 14px">
@@ -765,8 +904,14 @@
         </div>
       </section>
 
-      <section class="panel" style="margin-top: 16px" aria-labelledby="direct-title">
-        <h2 id="direct-title">Direct convert</h2>
+          <section id="screen-upload" class="app-screen panel" data-app-screen="upload" aria-labelledby="upload-title" hidden>
+        <div class="screen-heading">
+          <div>
+            <h2 id="upload-title">Upload</h2>
+            <p>Submit a document or Phase0 JSON for direct conversion with explicit conversion settings.</p>
+          </div>
+        </div>
+        <h3 id="direct-title">Direct convert</h3>
         <div class="form-grid" style="margin-top: 14px">
           <div
             class="field"
@@ -799,6 +944,15 @@
             <input id="direct-use-ocr" type="checkbox" />
           </div>
           <button id="convert-button" type="button">Convert now</button>
+        </div>
+      </section>
+
+          <section id="screen-review" class="app-screen panel" data-app-screen="review" aria-labelledby="review-title" hidden>
+        <div class="screen-heading">
+          <div>
+            <h2 id="review-title">Review</h2>
+            <p>Inspect conversion warnings, review items, source locations, artifacts, and debug JSON.</p>
+          </div>
         </div>
         <div
           data-poc-ui-region="review"
@@ -869,9 +1023,12 @@
         </div>
       </section>
 
-      <section class="panel" style="margin-top: 16px" aria-labelledby="audit-title">
-        <div class="toolbar">
-          <h2 id="audit-title">Audit log</h2>
+          <section id="screen-audit" class="app-screen panel" data-app-screen="audit" aria-labelledby="audit-title" hidden>
+        <div class="screen-heading">
+          <div>
+            <h2 id="audit-title">Audit log</h2>
+            <p>Filter audit events and export JSON evidence for conversion and review activity.</p>
+          </div>
           <div class="audit-actions">
             <button id="refresh-audit" class="secondary" type="button">Refresh audit</button>
             <button id="export-audit" class="secondary" type="button">Export JSON</button>
@@ -908,6 +1065,17 @@
         <div id="audit-empty" class="empty" hidden>No audit events match the current filters.</div>
       </section>
 
+          <section id="screen-admin" class="app-screen panel" data-app-screen="admin" aria-labelledby="admin-title" hidden>
+            <div class="screen-heading">
+              <div>
+                <h2 id="admin-title">Admin</h2>
+                <p>Administrative settings, authentication policy, and desktop integration controls are reserved for later implementation.</p>
+              </div>
+            </div>
+            <div class="empty">Production authentication, SSO, and desktop integration are out of scope for this phase.</div>
+          </section>
+        </div>
+      </div>
     </main>
 
     <script type="module">
@@ -1021,6 +1189,16 @@
       const pdfSourceFrame = document.querySelector("#pdf-source-frame");
       const bboxLayer = document.querySelector("#bbox-layer");
       const bboxInvalid = document.querySelector("#bbox-invalid");
+      const appScreens = Array.from(document.querySelectorAll("[data-app-screen]"));
+      const appNavControls = Array.from(document.querySelectorAll("[data-nav-target]"));
+      const appScreenIds = new Set(appScreens.map((screen) => screen.dataset.appScreen));
+
+      appNavControls.forEach((control) => {
+        control.addEventListener("click", () => {
+          location.hash = control.dataset.navTarget;
+        });
+      });
+      window.addEventListener("hashchange", routeFromHash);
 
       authToken.value = activeAuthToken();
       saveAuthToken.addEventListener("click", () => {
@@ -1730,6 +1908,21 @@
         pageStatus.className = isError ? "page-status error" : "page-status";
       }
 
+      function routeFromHash() {
+        const hashScreen = location.hash.replace(/^#/, "");
+        activateScreen(appScreenIds.has(hashScreen) ? hashScreen : "dashboard");
+      }
+
+      function activateScreen(screenId) {
+        appScreens.forEach((screen) => {
+          screen.hidden = screen.dataset.appScreen !== screenId;
+        });
+        appNavControls.forEach((control) => {
+          const isActive = control.dataset.navTarget === screenId;
+          control.setAttribute("aria-current", isActive ? "page" : "false");
+        });
+      }
+
       function renderResult(result) {
         state.latestResult = result;
         state.availableReviewActions = Array.isArray(result.available_review_actions)
@@ -1763,6 +1956,7 @@
         resultPanel.hidden = false;
         rawPanel.hidden = false;
         renderSourcePreview(result);
+        location.hash = "review";
       }
 
       function renderDirectConvertError(errorPayload) {
@@ -1785,6 +1979,7 @@
         clearPreview();
         resultPanel.hidden = false;
         rawPanel.hidden = true;
+        location.hash = "review";
       }
 
       function sanitizedUserMessage(errorPayload) {
@@ -2643,6 +2838,7 @@
         return fetch(url, { ...options, headers, signal });
       }
 
+      routeFromHash();
       loadJobs();
       loadTemplates();
     </script>

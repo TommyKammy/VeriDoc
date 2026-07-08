@@ -1764,7 +1764,8 @@ def test_pdf_to_excel_representative_table_fixture_renders_xlsx_artifact(
             "C6",
             "D6",
         )
-        for ref, expected_ref in zip(report_table_refs, expectations["cells"], strict=True):
+        assert len(report_table_refs) == len(expectations["cells"]), fixture["id"]
+        for ref, expected_ref in zip(report_table_refs, expectations["cells"]):
             expected = expectations["cells"][expected_ref]
             assert cells[ref] == (expected["value"], expected["value_type"]), fixture["id"]
 
@@ -11508,6 +11509,46 @@ def test_web_direct_convert_defines_phase6_review_information_architecture() -> 
         "`audit`",
     ]:
         assert snippet in readme
+
+
+def test_web_app_shell_defines_phase10_navigation_and_screen_frames() -> None:
+    html = Path("apps/web/index.html").read_text(encoding="utf-8")
+    parser = _PocUiRegionParser()
+    parser.feed(html)
+
+    expected_screens = {
+        "dashboard": "Dashboard",
+        "upload": "Upload",
+        "jobs": "Jobs",
+        "review": "Review",
+        "templates": "Templates",
+        "audit": "Audit",
+        "admin": "Admin",
+    }
+
+    for screen, label in expected_screens.items():
+        assert f'data-nav-target="{screen}"' in html
+        assert f'data-app-screen="{screen}"' in html
+        assert label in html
+
+    assert 'id="app-shell"' in html
+    assert 'id="app-navigation"' in html
+    assert "window.addEventListener(\"hashchange\", routeFromHash)" in html
+    assert "function routeFromHash()" in html
+    assert "function activateScreen(screenId)" in html
+    assert "location.hash" in html
+
+    preserved_regions = {
+        "upload": ["content_base64", "document_ir"],
+        "conversion-settings": ["conversion_mode", "use_llm", "use_ocr"],
+        "review": ["review_items", "warnings", "document_ir"],
+        "artifact-downloads": ["artifacts[]", "download", "audit"],
+        "detail-json": ["document_ir", "review_items", "warnings", "artifacts[]", "audit"],
+    }
+    for region, fields in preserved_regions.items():
+        assert region in parser.region_fields
+        for field in fields:
+            assert field in parser.region_fields[region]
 
 
 def test_web_direct_convert_download_uses_primary_artifact_before_debug_json() -> None:
