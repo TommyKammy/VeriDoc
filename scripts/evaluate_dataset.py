@@ -16,7 +16,7 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
 from typing import Any, Callable, Iterable, Mapping
 from xml.etree import ElementTree
@@ -25,6 +25,9 @@ from zipfile import ZipFile
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+UTC = timezone.utc
+AST_TRY_STATEMENT_TYPES = (ast.Try, *(t for t in (getattr(ast, "TryStar", None),) if t))
 
 from core.llm.conversion_plan import ConversionPlanValidationError, validate_conversion_plan
 
@@ -678,11 +681,7 @@ def _function_required_keyword_only_arg_names(
 ) -> frozenset[str]:
     return frozenset(
         arg.arg
-        for arg, default in zip(
-            node.args.kwonlyargs,
-            node.args.kw_defaults,
-            strict=False,
-        )
+        for arg, default in zip(node.args.kwonlyargs, node.args.kw_defaults)
         if default is None
     )
 
@@ -803,7 +802,7 @@ def _local_auth_token_mapping_value_is_valid(
         return False
     role: str | None = None
     principal_id: str | None = None
-    for key, value in zip(node.keys, node.values, strict=False):
+    for key, value in zip(node.keys, node.values):
         if _constant_string_value(key) == "role":
             role = _constant_string_value(value)
         if _constant_string_value(key) == "principal_id":
@@ -819,7 +818,7 @@ def _local_auth_token_mapping_tokens(node: ast.AST) -> frozenset[str]:
     if not isinstance(node, ast.Dict):
         return frozenset()
     tokens: set[str] = set()
-    for key, value in zip(node.keys, node.values, strict=False):
+    for key, value in zip(node.keys, node.values):
         token = _constant_string_value(key)
         if (
             token in POC_AUTH_SESSION_AUTH_TOKEN_LITERALS
@@ -878,7 +877,7 @@ def _auth_header_tokens_in_node(
     if not isinstance(node, ast.Dict):
         return frozenset()
     tokens: set[str] = set()
-    for key, value in zip(node.keys, node.values, strict=False):
+    for key, value in zip(node.keys, node.values):
         if _constant_string_value(key) != "Authorization":
             continue
         for header_value in _literal_string_values(value, name_literal_bindings):
@@ -965,7 +964,7 @@ def _status_asserted_expr_keys(
         return frozenset()
     keys = {
         key
-        for part, value in zip(parts, values, strict=False)
+        for part, value in zip(parts, values)
         if value is None
         for key in (_status_expr_key(part),)
         if key is not None
@@ -1168,7 +1167,7 @@ def _ordered_function_statements(
 ) -> Iterable[_OrderedFunctionStatement]:
     pending_bound_names = set(bound_names_before)
     for statement in statements:
-        if isinstance(statement, (ast.Try, ast.TryStar)):
+        if isinstance(statement, AST_TRY_STATEMENT_TYPES):
             body_exited = False
             for child in _ordered_function_statements(
                 statement.body,
@@ -1755,7 +1754,7 @@ def _request_uses_authorization_role_token(node: ast.Call) -> bool:
     for keyword in node.keywords:
         if keyword.arg != "headers" or not isinstance(keyword.value, ast.Dict):
             continue
-        for key, value in zip(keyword.value.keys, keyword.value.values, strict=False):
+        for key, value in zip(keyword.value.keys, keyword.value.values):
             if _constant_string_value(key) != "Authorization":
                 continue
             if _value_formats_bearer_role_token(value):
@@ -1824,7 +1823,7 @@ def _authorization_header_assignment_name(target: ast.AST) -> str | None:
 
 
 def _headers_dict_uses_authorization_role_token(node: ast.Dict) -> bool:
-    for key, value in zip(node.keys, node.values, strict=False):
+    for key, value in zip(node.keys, node.values):
         if _constant_string_value(key) != "Authorization":
             continue
         if _value_formats_bearer_role_token(value):
