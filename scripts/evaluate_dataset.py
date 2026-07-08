@@ -2001,6 +2001,27 @@ def _discard_unrecorded_response_requests(
         pending_request_by_connection.pop(connection_name, None)
 
 
+def _pending_request_observation(
+    node: ast.Call,
+    *,
+    tokens: frozenset[str],
+    env_tokens_seen: Iterable[str],
+    direct_tokens_seen: Iterable[str],
+    name_literal_bindings: Mapping[str, frozenset[str]],
+) -> _AuthenticatedStatusObservation:
+    method, path = _request_method_and_path(node)
+    return _AuthenticatedStatusObservation(
+        tokens=tokens,
+        env_tokens_before_request=frozenset(env_tokens_seen),
+        direct_tokens_before_request=frozenset(direct_tokens_seen),
+        request_method=method,
+        request_path=path,
+        string_literals=_string_literals_with_bound_names(
+            node, name_literal_bindings
+        ),
+    )
+
+
 def _pending_response_status_observation(
     pending: _AuthenticatedStatusObservation,
     *,
@@ -2106,17 +2127,13 @@ def _authenticated_success_status_observations(
                 continue
             tokens = _call_privileged_auth_tokens(child, name_literal_bindings)
             if tokens:
-                method, path = _request_method_and_path(child)
                 pending_request_by_connection[connection_name] = (
-                    _AuthenticatedStatusObservation(
+                    _pending_request_observation(
+                        child,
                         tokens=tokens,
-                        env_tokens_before_request=frozenset(env_tokens_seen),
-                        direct_tokens_before_request=frozenset(direct_tokens_seen),
-                        request_method=method,
-                        request_path=path,
-                        string_literals=_string_literals_with_bound_names(
-                            child, name_literal_bindings
-                        ),
+                        env_tokens_seen=env_tokens_seen,
+                        direct_tokens_seen=direct_tokens_seen,
+                        name_literal_bindings=name_literal_bindings,
                     )
                 )
 
@@ -2711,7 +2728,6 @@ def _asserted_status_observations(
                 continue
             if connection_name not in poc_connection_names:
                 continue
-            method, path = _request_method_and_path(child)
             tokens = _call_privileged_auth_tokens(
                 child,
                 name_literal_bindings,
@@ -2720,15 +2736,12 @@ def _asserted_status_observations(
                 auth_header_tokens_by_name,
             )
             pending_request_by_connection[connection_name] = (
-                _AuthenticatedStatusObservation(
+                _pending_request_observation(
+                    child,
                     tokens=tokens,
-                    env_tokens_before_request=frozenset(env_tokens_seen),
-                    direct_tokens_before_request=frozenset(direct_tokens_seen),
-                    request_method=method,
-                    request_path=path,
-                    string_literals=_string_literals_with_bound_names(
-                        child, name_literal_bindings
-                    ),
+                    env_tokens_seen=env_tokens_seen,
+                    direct_tokens_seen=direct_tokens_seen,
+                    name_literal_bindings=name_literal_bindings,
                 )
             )
 
