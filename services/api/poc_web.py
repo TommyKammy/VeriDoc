@@ -609,7 +609,10 @@ def convert_uploaded_document(
     """Convert one uploaded PoC document into IR, review details, and download bytes."""
     safe_filename = _safe_filename(filename)
     selected_conversion_mode = _validate_conversion_mode(conversion_mode)
-    requested_output_format = _validate_direct_output_format(output_format)
+    requested_output_format = _validate_direct_output_format_for_conversion_mode(
+        conversion_mode=selected_conversion_mode,
+        output_format=_validate_direct_output_format(output_format),
+    )
     requested_template_id = _validate_optional_template_id(template_id)
     requested_template = _direct_convert_template_snapshot(
         requested_template_id,
@@ -4029,6 +4032,22 @@ def _validate_direct_output_format(value: Any) -> str | None:
         return None
     if output_format not in DIRECT_CONVERT_OUTPUT_FORMATS:
         raise ValueError(f"unsupported output_format: {output_format}")
+    return output_format
+
+
+def _validate_direct_output_format_for_conversion_mode(
+    *,
+    conversion_mode: str,
+    output_format: str | None,
+) -> str | None:
+    if output_format in {None, "json"}:
+        return output_format
+    mode_output_format = PRIMARY_ARTIFACT_FORMAT_BY_CONVERSION_MODE.get(conversion_mode)
+    if mode_output_format is not None and output_format != mode_output_format:
+        raise ValueError(
+            f"output_format {output_format} conflicts with conversion_mode "
+            f"{conversion_mode}; expected {mode_output_format}"
+        )
     return output_format
 
 

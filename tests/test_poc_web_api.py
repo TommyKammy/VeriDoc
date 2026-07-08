@@ -549,6 +549,32 @@ def test_convert_uploaded_document_uses_requested_output_format_for_primary_arti
     assert result["artifacts"][1]["id"] == "debug-json"
 
 
+def test_convert_uploaded_document_rejects_output_format_that_conflicts_with_mode() -> None:
+    parser_output = {
+        "source_type": "pdf",
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 320,
+                "height": 240,
+                "unit": "pt",
+                "fragments": [{"text": "Lot: SAMPLE-001", "confidence": 0.91}],
+            }
+        ],
+    }
+
+    with pytest.raises(
+        ValueError,
+        match="output_format docx conflicts with conversion_mode pdf_to_excel; expected xlsx",
+    ):
+        convert_uploaded_document(
+            filename="phase0-output.json",
+            content=json.dumps(parser_output).encode("utf-8"),
+            conversion_mode="pdf_to_excel",
+            output_format="docx",
+        )
+
+
 def test_convert_uploaded_document_rejects_unknown_template_id_before_audit() -> None:
     parser_output = {
         "pages": [
@@ -10192,6 +10218,8 @@ def test_bundled_web_ui_exposes_template_management_and_job_binding() -> None:
     assert "async function saveTemplateVersion()" in html
     assert "async function loadTemplateDetail(templateId)" in html
     assert "function renderTemplateDetail(template)" in html
+    assert "function activeTemplates()" in html
+    assert 'state.templates.filter((template) => template.status === "active")' in html
     assert 'apiFetch("/api/templates")' in html
     assert 'apiFetch("/api/templates", {' in html
     assert "document_type: templateDocumentType.value" in html
@@ -10205,6 +10233,8 @@ def test_bundled_web_ui_exposes_template_management_and_job_binding() -> None:
     assert "template_id: jobTemplate.value || undefined" in html
     assert "job.template.template_version" in html
     assert "clearTemplateState()" in html
+    assert "...selectableDirectTemplates.map((template) =>" in html
+    assert "selectableDirectTemplates.some(" in html
 
 
 def test_bundled_web_ui_clears_credential_bound_state_when_auth_token_changes() -> None:
@@ -11064,6 +11094,52 @@ def test_poc_http_api_rejects_inactive_direct_convert_template_id() -> None:
     assert body == {
         "error": "invalid_upload",
         "message": "template_id is inactive",
+    }
+
+
+def test_poc_http_api_rejects_conflicting_direct_convert_output_format() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = json.dumps(
+            {
+                "filename": "phase0-output.json",
+                "content": json.dumps(
+                    {
+                        "source_type": "pdf",
+                        "pages": [
+                            {
+                                "page_number": 1,
+                                "width": 320,
+                                "height": 240,
+                                "unit": "pt",
+                                "fragments": [{"text": "Lot: SAMPLE-001", "confidence": 0.95}],
+                            }
+                        ],
+                    }
+                ),
+                "conversion_mode": "pdf_to_excel",
+                "output_format": "docx",
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/convert",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 400
+    assert body == {
+        "error": "invalid_upload",
+        "message": "output_format docx conflicts with conversion_mode pdf_to_excel; expected xlsx",
     }
 
 

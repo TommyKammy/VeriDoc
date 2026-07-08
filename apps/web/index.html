@@ -1801,6 +1801,7 @@
       }
 
       function renderTemplates() {
+        const selectableDirectTemplates = activeTemplates();
         templateList.replaceChildren(...state.templates.map(renderTemplateItem));
         templatesEmpty.hidden = state.templates.length > 0;
         const selectedTemplate = jobTemplate.value;
@@ -1813,16 +1814,24 @@
         );
         directTemplate.replaceChildren(
           option("No template", ""),
-          ...state.templates.map((template) =>
+          ...selectableDirectTemplates.map((template) =>
             option(`${template.name} v${template.current_version}`, template.template_id)
           )
         );
         if (state.templates.some((template) => template.template_id === selectedTemplate)) {
           jobTemplate.value = selectedTemplate;
         }
-        if (state.templates.some((template) => template.template_id === selectedDirectTemplate)) {
+        if (
+          selectableDirectTemplates.some(
+            (template) => template.template_id === selectedDirectTemplate
+          )
+        ) {
           directTemplate.value = selectedDirectTemplate;
         }
+      }
+
+      function activeTemplates() {
+        return state.templates.filter((template) => template.status === "active");
       }
 
       function renderTemplateItem(template) {
@@ -1846,7 +1855,7 @@
         select.textContent = "Use for jobs";
         select.addEventListener("click", () => {
           jobTemplate.value = template.template_id;
-          directTemplate.value = template.template_id;
+          if (template.status === "active") directTemplate.value = template.template_id;
           setPageStatus(`Selected ${template.template_id} for new jobs.`);
         });
         const actions = document.createElement("div");
