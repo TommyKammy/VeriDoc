@@ -11551,6 +11551,58 @@ def test_web_app_shell_defines_phase10_navigation_and_screen_frames() -> None:
             assert field in parser.region_fields[region]
 
 
+def test_web_phase10_screens_own_migrated_poc_capabilities() -> None:
+    html = Path("apps/web/index.html").read_text(encoding="utf-8")
+    parser = _PocUiRegionParser()
+    parser.feed(html)
+
+    expected_screen_regions = {
+        "jobs": [
+            "job_id",
+            "status",
+            "mode",
+            "template_id",
+            "download_result",
+            "retry_conversion",
+        ],
+        "templates": [
+            "template_id",
+            "version",
+            "document_type",
+            "fields",
+            "anchors",
+            "validation_rules",
+            "output_mapping",
+        ],
+        "audit": ["job_id", "document_id", "action", "events", "export"],
+    }
+
+    for region, fields in expected_screen_regions.items():
+        assert region in parser.region_fields
+        for field in fields:
+            assert field in parser.region_fields[region]
+
+    expected_region_elements = {
+        "jobs": [
+            "refresh-jobs",
+            "create-job",
+            "jobs-body",
+            "detail-download",
+            "detail-retry",
+        ],
+        "templates": [
+            "refresh-templates",
+            "save-template",
+            "template-list",
+            "template-detail-raw",
+        ],
+        "audit": ["refresh-audit", "export-audit", "audit-body", "audit-empty"],
+    }
+    for region, element_ids in expected_region_elements.items():
+        for element_id in element_ids:
+            assert region in parser.element_regions[element_id]
+
+
 def test_web_direct_convert_download_uses_primary_artifact_before_debug_json() -> None:
     html = Path("apps/web/index.html").read_text(encoding="utf-8")
 

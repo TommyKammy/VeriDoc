@@ -739,7 +739,15 @@
             </div>
           </section>
 
-          <section id="screen-jobs" class="app-screen" data-app-screen="jobs" aria-labelledby="jobs-screen-title" hidden>
+          <section
+            id="screen-jobs"
+            class="app-screen"
+            data-app-screen="jobs"
+            data-poc-ui-region="jobs"
+            data-api-fields="job_id status mode template_id download_result retry_conversion"
+            aria-labelledby="jobs-screen-title"
+            hidden
+          >
             <div class="screen-heading">
               <div>
                 <h2 id="jobs-screen-title">Jobs</h2>
@@ -825,7 +833,15 @@
             </div>
           </section>
 
-          <section id="screen-templates" class="app-screen panel" data-app-screen="templates" aria-labelledby="templates-title" hidden>
+          <section
+            id="screen-templates"
+            class="app-screen panel"
+            data-app-screen="templates"
+            data-poc-ui-region="templates"
+            data-api-fields="template_id version document_type fields anchors validation_rules output_mapping"
+            aria-labelledby="templates-title"
+            hidden
+          >
         <div class="screen-heading">
           <div>
             <h2 id="templates-title">Templates</h2>
@@ -1023,7 +1039,15 @@
         </div>
       </section>
 
-          <section id="screen-audit" class="app-screen panel" data-app-screen="audit" aria-labelledby="audit-title" hidden>
+          <section
+            id="screen-audit"
+            class="app-screen panel"
+            data-app-screen="audit"
+            data-poc-ui-region="audit"
+            data-api-fields="job_id document_id action events export"
+            aria-labelledby="audit-title"
+            hidden
+          >
         <div class="screen-heading">
           <div>
             <h2 id="audit-title">Audit log</h2>
