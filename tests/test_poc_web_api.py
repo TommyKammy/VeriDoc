@@ -738,12 +738,26 @@ def test_convert_uploaded_document_adopts_schema_valid_local_llm_plan(monkeypatc
         lambda: (FakeLocalLLMAdapter(), None),
     )
 
+    disabled_result = convert_uploaded_document(
+        filename="phase8-output.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+        use_llm=False,
+    )
     result = convert_uploaded_document(
         filename="phase8-output.json",
         content=json.dumps(parser_output).encode("utf-8"),
         use_llm=True,
     )
 
+    assert disabled_result["audit"]["conversion_settings"]["use_llm"] == {
+        "requested": False,
+        "enabled": False,
+        "status": "disabled",
+        "support_status": "available",
+    }
+    assert disabled_result["audit"]["llm"]["support_status"] == "available"
+    assert disabled_result["audit"]["llm"]["model"] == "fake-local-model"
+    assert disabled_result["audit"]["llm"]["base_url_type"] == "local"
     assert synthetic_inputs
     assert "Lot: SAMPLE-001" in synthetic_inputs[0]
     assert result["warnings"] == []
@@ -11355,6 +11369,7 @@ def test_poc_http_api_rejects_external_llm_endpoint_before_conversion(
                 ),
                 "conversion_mode": "auto",
                 "use_llm": True,
+                "use_ocr": True,
             }
         ).encode("utf-8")
         connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
@@ -11380,6 +11395,14 @@ def test_poc_http_api_rejects_external_llm_endpoint_before_conversion(
         "reason": "non_local_endpoint",
         "support_status": "rejected",
         "message": "LLM conversion blocked: configured endpoint must be local-only",
+    }
+    assert body["audit"]["conversion_settings"]["use_ocr"] == {
+        "requested": True,
+        "enabled": False,
+        "status": "unsupported",
+        "support_status": "unsupported",
+        "reason": "not_implemented",
+        "message": "OCR conversion setting is not implemented in the local PoC API",
     }
     assert body["warnings"] == [
         "LLM conversion blocked: configured endpoint must be local-only"
@@ -11837,8 +11860,11 @@ def test_web_upload_settings_distinguishes_unsupported_and_blocked_states() -> N
     assert "External AI endpoints are rejected; document content stays on the local API boundary." in html
     assert "GMP review is always required before operational use; local-only conversion does not certify GMP suitability." in html
     assert 'id="conversion-setting-status"' in html
+    assert html.index('id="result-panel"') < html.index('id="conversion-setting-status"')
+    assert html.index('id="conversion-setting-status"') < html.index('id="direct-convert-error"')
     assert "renderConversionSettingStatus(result.audit?.conversion_settings, result.audit?.llm)" in html
     assert "function renderConversionSettingStatus(conversionSettings, llmAudit)" in html
+    assert 'if (!conversionSettings || typeof conversionSettings !== "object")' in html
     assert "support_status" in html
     assert "not_configured" in html
     assert "runtime_unavailable" in html

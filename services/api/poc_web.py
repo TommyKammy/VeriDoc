@@ -765,7 +765,7 @@ def _local_llm_conversion_plan_state(
     use_llm: bool,
 ) -> dict[str, Any]:
     if not use_llm:
-        reason = _configured_llm_rejection_reason()
+        adapter, reason = _configured_llm_conversion_plan_adapter()
         disabled_setting = _llm_conversion_setting(False, reason)
         return {
             "setting": disabled_setting,
@@ -777,8 +777,8 @@ def _local_llm_conversion_plan_state(
             ),
             "llm_audit": _llm_audit(
                 setting=disabled_setting,
-                adapter=None,
-                parameters={},
+                adapter=adapter if reason is None else None,
+                parameters=_llm_adapter_audit_parameters(adapter) if reason is None else {},
             ),
         }
 
@@ -1210,7 +1210,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             conversion_mode = _validate_conversion_mode(request.get("conversion_mode"))
             use_llm = _validate_conversion_setting_boolean(request, "use_llm")
             use_ocr = _validate_conversion_setting_boolean(request, "use_ocr")
-            llm_rejection = _llm_configuration_rejection(use_llm=use_llm)
+            llm_rejection = _llm_configuration_rejection(use_llm=use_llm, use_ocr=use_ocr)
             if llm_rejection is not None:
                 self._send_json(llm_rejection, status=400)
                 return
@@ -4144,6 +4144,9 @@ def _llm_conversion_setting(
         "enabled": False,
         "status": "requested" if requested else "disabled",
     }
+    if reason is None:
+        setting["support_status"] = "available"
+        return setting
     if reason is not None:
         setting["support_status"] = _llm_support_status(reason)
         setting["reason"] = reason
@@ -4185,7 +4188,7 @@ def _llm_support_status(reason: str | None) -> str:
     return "invalid_configuration"
 
 
-def _llm_configuration_rejection(*, use_llm: bool) -> dict[str, Any] | None:
+def _llm_configuration_rejection(*, use_llm: bool, use_ocr: bool) -> dict[str, Any] | None:
     if not use_llm:
         return None
     reason = _configured_llm_rejection_reason()
@@ -4203,6 +4206,7 @@ def _llm_configuration_rejection(*, use_llm: bool) -> dict[str, Any] | None:
                     message=_llm_configuration_warning(reason),
                     support_status=_llm_support_status(reason),
                 ),
+                "use_ocr": _unsupported_conversion_setting(use_ocr),
             }
         },
     }

@@ -1068,7 +1068,6 @@
               <span>JSON is retained for audit/debug output, not required for choosing conversion settings.</span>
             </div>
           </div>
-          <div id="conversion-setting-status" class="empty" hidden></div>
         </div>
       </section>
 
@@ -1088,6 +1087,7 @@
             <div class="page-status">
               Review decisions are made from warnings, review items, source locations, and artifact actions.
             </div>
+            <div id="conversion-setting-status" class="empty" hidden></div>
             <div
               id="direct-convert-error"
               class="error"
@@ -2387,6 +2387,10 @@
       function renderConversionSettingStatus(conversionSettings, llmAudit) {
         const statusPanel = document.querySelector("#conversion-setting-status");
         statusPanel.replaceChildren();
+        if (!conversionSettings || typeof conversionSettings !== "object") {
+          statusPanel.hidden = true;
+          return;
+        }
         const useLlm = conversionSettings?.use_llm || {};
         const useOcr = conversionSettings?.use_ocr || {};
         const items = [
