@@ -3018,6 +3018,19 @@ class EvaluateDatasetTest(unittest.TestCase):
             ]
         )
 
+    def test_poc_acceptance_report_rejects_auth_token_helper_called_with_args(
+        self,
+    ) -> None:
+        test_source = valid_poc_auth_success_ref_source().replace(
+            "server.local_auth_tokens = _local_auth_tokens()\n",
+            "server.local_auth_tokens = _local_auth_tokens('viewer-token')\n",
+        )
+        test_source = f"{test_source}\n{valid_poc_auth_fail_closed_ref_source()}"
+
+        self.assertFalse(
+            self.poc_auth_session_coverage_is_present_for_source(test_source)
+        )
+
     def test_poc_acceptance_report_rejects_shadowed_auth_token_helper(
         self,
     ) -> None:
@@ -3563,6 +3576,45 @@ class EvaluateDatasetTest(unittest.TestCase):
             payload["matrix_evidence"]["security"][
                 "authenticated_poc_api_session_checked"
             ]
+        )
+
+    def test_poc_acceptance_report_rejects_trusted_helper_extra_kwargs(
+        self,
+    ) -> None:
+        success_ref_names = valid_poc_auth_success_ref_source(
+            {
+                "test_poc_http_api_reads_local_auth_tokens_from_env_for_review_success": (
+                    "    monkeypatch.setenv(\n"
+                    "        'VERIDOC_LOCAL_AUTH_TOKENS',\n"
+                    "        'reviewer:env-reviewer=env-reviewer-token',\n"
+                    "    )\n"
+                    "    connection = HTTPConnection('127.0.0.1', server.server_port, timeout=5)\n"
+                    "    status, body = _post_review_event_on_connection(\n"
+                    "        connection,\n"
+                    "        _review_audit_event(conversion_id='conversion-env-auth'),\n"
+                    "        role_token='env-reviewer-token',\n"
+                    "        trusted_by_name_only=True,\n"
+                    "    )\n"
+                    "    assert status == 202\n"
+                )
+            },
+            trusted_helper_source=(
+                "def _post_review_event_on_connection(connection, audit_event, *, role_token, **kwargs):\n"
+                "    payload = json.dumps({'audit_event': audit_event}).encode('utf-8')\n"
+                "    connection.request(\n"
+                "        'POST',\n"
+                "        '/api/review-events',\n"
+                "        body=payload,\n"
+                "        headers={'Authorization': f'Bearer {role_token}'},\n"
+                "    )\n"
+                "    response = connection.getresponse()\n"
+                "    return response.status, {}\n"
+            ),
+        )
+        test_source = f"{success_ref_names}\n{valid_poc_auth_fail_closed_ref_source()}"
+
+        self.assertFalse(
+            self.poc_auth_session_coverage_is_present_for_source(test_source)
         )
 
     def test_poc_acceptance_report_rejects_fake_fail_closed_request_receiver(

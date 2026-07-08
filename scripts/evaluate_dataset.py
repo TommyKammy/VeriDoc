@@ -709,6 +709,8 @@ def _call_satisfies_function_signature(
     call: ast.Call,
     node: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> bool:
+    if any(keyword.arg is None for keyword in call.keywords):
+        return False
     required_positional = _function_required_positional_arg_count(node)
     positional_args = (*node.args.posonlyargs, *node.args.args)
     positional_capacity = len(positional_args)
@@ -729,9 +731,7 @@ def _call_satisfies_function_signature(
             *node.args.kwonlyargs,
         )
     }
-    if node.args.kwarg is None and not keyword_names.issubset(
-        accepted_keyword_names
-    ):
+    if not keyword_names.issubset(accepted_keyword_names):
         return False
     return _function_required_keyword_only_arg_names(node).issubset(keyword_names)
 
@@ -2399,6 +2399,8 @@ def _direct_auth_token_value_tokens(
     if local_auth_token_helpers is None:
         local_auth_token_helpers = {}
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+        if node.args or node.keywords:
+            return frozenset()
         return local_auth_token_helpers.get(node.func.id, frozenset())
     return _local_auth_token_mapping_tokens(node)
 
