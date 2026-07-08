@@ -1990,6 +1990,18 @@ def _response_connections_seen(statement: ast.stmt) -> frozenset[str]:
     )
 
 
+def _discard_unrecorded_response_requests(
+    pending_request_by_connection: dict[str, _AuthenticatedStatusObservation],
+    *,
+    response_connections_seen: Iterable[str],
+    response_connections_recorded: Iterable[str],
+) -> None:
+    for connection_name in set(response_connections_seen) - set(
+        response_connections_recorded
+    ):
+        pending_request_by_connection.pop(connection_name, None)
+
+
 def _authenticated_success_status_observations(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
     *,
@@ -2183,10 +2195,13 @@ def _authenticated_success_status_observations(
                         for target in targets:
                             for name in _assigned_name_targets(target):
                                 status_observations[
-                                    f"attr:name:{name}.status"
-                                ] = observation
-        for connection_name in response_connections_seen - response_connections_recorded:
-            pending_request_by_connection.pop(connection_name, None)
+                                f"attr:name:{name}.status"
+                            ] = observation
+        _discard_unrecorded_response_requests(
+            pending_request_by_connection,
+            response_connections_seen=response_connections_seen,
+            response_connections_recorded=response_connections_recorded,
+        )
 
         for child in _walk_statement_without_nested_scopes(statement):
             _clear_status_observations_for_targets(
@@ -2795,8 +2810,11 @@ def _asserted_status_observations(
                     for target in targets:
                         for body_name in _assigned_name_targets(target):
                             response_names_by_body_name[body_name] = response_name
-        for connection_name in response_connections_seen - response_connections_recorded:
-            pending_request_by_connection.pop(connection_name, None)
+        _discard_unrecorded_response_requests(
+            pending_request_by_connection,
+            response_connections_seen=response_connections_seen,
+            response_connections_recorded=response_connections_recorded,
+        )
 
         for child in _walk_statement_without_nested_scopes(statement):
             _clear_status_observations_for_targets(
