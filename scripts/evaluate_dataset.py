@@ -18,7 +18,7 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PureWindowsPath
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 from xml.etree import ElementTree
 from zipfile import ZipFile
 
@@ -1245,6 +1245,12 @@ class _PocAuthSessionEvidenceContext:
     local_auth_token_helpers: Mapping[str, frozenset[str]]
     trusted_status_helpers: Mapping[str, _TrustedPocStatusHelper]
     module_shadowed_http_constructor_names: frozenset[str]
+
+
+@dataclass(frozen=True)
+class _PocAuthSessionValidationStep:
+    refs: tuple[str, ...]
+    ref_is_present: Callable[[_PocAuthSessionEvidenceContext, str], bool]
 
 
 def _string_literals_in_node(node: ast.AST) -> frozenset[str]:
@@ -2946,6 +2952,37 @@ def _poc_auth_session_fail_closed_ref_is_present(
     )
 
 
+def _poc_auth_session_validation_steps() -> tuple[_PocAuthSessionValidationStep, ...]:
+    return (
+        _PocAuthSessionValidationStep(
+            refs=POC_AUTH_SESSION_SUCCESS_COVERAGE_REFS,
+            ref_is_present=_poc_auth_session_success_ref_is_present,
+        ),
+        _PocAuthSessionValidationStep(
+            refs=POC_AUTH_SESSION_ENV_SUCCESS_COVERAGE_REFS,
+            ref_is_present=_poc_auth_session_env_success_ref_is_present,
+        ),
+        _PocAuthSessionValidationStep(
+            refs=_poc_auth_session_direct_success_refs(),
+            ref_is_present=_poc_auth_session_direct_success_ref_is_present,
+        ),
+        _PocAuthSessionValidationStep(
+            refs=POC_AUTH_SESSION_FAIL_CLOSED_COVERAGE_REFS,
+            ref_is_present=_poc_auth_session_fail_closed_ref_is_present,
+        ),
+    )
+
+
+def _poc_auth_session_validation_steps_are_present(
+    context: _PocAuthSessionEvidenceContext,
+) -> bool:
+    return all(
+        step.ref_is_present(context, ref)
+        for step in _poc_auth_session_validation_steps()
+        for ref in step.refs
+    )
+
+
 def poc_auth_session_coverage_is_present(repo_root: Path = REPO_ROOT) -> bool:
     readme_path = repo_root / "README.md"
     test_path = repo_root / "tests" / "test_poc_web_api.py"
@@ -2964,24 +3001,7 @@ def poc_auth_session_coverage_is_present(repo_root: Path = REPO_ROOT) -> bool:
         return False
     if not _poc_auth_session_required_refs_exist(context):
         return False
-    return (
-        all(
-            _poc_auth_session_success_ref_is_present(context, ref)
-            for ref in POC_AUTH_SESSION_SUCCESS_COVERAGE_REFS
-        )
-        and all(
-            _poc_auth_session_env_success_ref_is_present(context, ref)
-            for ref in POC_AUTH_SESSION_ENV_SUCCESS_COVERAGE_REFS
-        )
-        and all(
-            _poc_auth_session_direct_success_ref_is_present(context, ref)
-            for ref in _poc_auth_session_direct_success_refs()
-        )
-        and all(
-            _poc_auth_session_fail_closed_ref_is_present(context, ref)
-            for ref in POC_AUTH_SESSION_FAIL_CLOSED_COVERAGE_REFS
-        )
-    )
+    return _poc_auth_session_validation_steps_are_present(context)
 
 
 @dataclass(frozen=True)
