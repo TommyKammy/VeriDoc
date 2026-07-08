@@ -649,12 +649,18 @@ def _call_satisfies_function_signature(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> bool:
     required_positional = _function_required_positional_arg_count(node)
-    positional_capacity = len((*node.args.posonlyargs, *node.args.args))
+    positional_args = (*node.args.posonlyargs, *node.args.args)
+    positional_capacity = len(positional_args)
     if len(call.args) < required_positional:
         return False
     if node.args.vararg is None and len(call.args) > positional_capacity:
         return False
     keyword_names = {keyword.arg for keyword in call.keywords if keyword.arg}
+    already_bound_positional_names = {
+        arg.arg for arg in positional_args[: len(call.args)]
+    }
+    if keyword_names & already_bound_positional_names:
+        return False
     accepted_keyword_names = {
         arg.arg
         for arg in (
@@ -1621,10 +1627,22 @@ def _call_creates_poc_server(node: ast.AST) -> bool:
 def _call_creates_poc_http_connection(
     node: ast.AST,
     poc_server_names: frozenset[str],
+    *,
+    shadowed_constructor_names: frozenset[str] = frozenset(),
 ) -> bool:
+    constructor_name = _dotted_name(node.func) if isinstance(node, ast.Call) else None
+    if (
+        constructor_name == "HTTPConnection"
+        and "HTTPConnection" in shadowed_constructor_names
+    ):
+        return False
+    if constructor_name == "http.client.HTTPConnection" and (
+        "http" in shadowed_constructor_names
+    ):
+        return False
     if not (
         isinstance(node, ast.Call)
-        and _dotted_name(node.func) in {"HTTPConnection", "http.client.HTTPConnection"}
+        and constructor_name in {"HTTPConnection", "http.client.HTTPConnection"}
         and len(node.args) >= 2
     ):
         return False
@@ -1660,12 +1678,19 @@ def _authenticated_success_status_observations(
     shadowed_local_auth_helper_names = set(
         _function_arg_names(node) & frozenset(local_auth_token_helpers)
     )
+    shadowed_http_constructor_names = set(
+        _function_arg_names(node) & frozenset(("HTTPConnection", "http"))
+    )
     os_module_available = "os" not in _function_arg_names(node)
 
     for ordered_statement in _ordered_function_statements(node.body):
         statement = ordered_statement.statement
         if "os" in ordered_statement.bound_names_before:
             os_module_available = False
+        shadowed_http_constructor_names.update(
+            ordered_statement.bound_names_before
+            & frozenset(("HTTPConnection", "http"))
+        )
         active_monkeypatch_fixture_names.difference_update(
             ordered_statement.bound_names_before
         )
@@ -1735,6 +1760,9 @@ def _authenticated_success_status_observations(
                     if _call_creates_poc_http_connection(
                         value,
                         frozenset(poc_server_names),
+                        shadowed_constructor_names=frozenset(
+                            shadowed_http_constructor_names
+                        ),
                     ):
                         poc_connection_names.add(name)
                     else:
@@ -1861,6 +1889,9 @@ def _authenticated_success_status_observations(
         )
         if "os" in _statement_bound_names(statement):
             os_module_available = False
+        shadowed_http_constructor_names.update(
+            _statement_bound_names(statement) & frozenset(("HTTPConnection", "http"))
+        )
 
     return tuple(success_observations)
 
@@ -2226,11 +2257,18 @@ def _asserted_status_observations(
     shadowed_local_auth_helper_names = set(
         _function_arg_names(node) & frozenset(local_auth_token_helpers)
     )
+    shadowed_http_constructor_names = set(
+        _function_arg_names(node) & frozenset(("HTTPConnection", "http"))
+    )
     os_module_available = "os" not in _function_arg_names(node)
     for ordered_statement in _ordered_function_statements(node.body):
         statement = ordered_statement.statement
         if "os" in ordered_statement.bound_names_before:
             os_module_available = False
+        shadowed_http_constructor_names.update(
+            ordered_statement.bound_names_before
+            & frozenset(("HTTPConnection", "http"))
+        )
         active_monkeypatch_fixture_names.difference_update(
             ordered_statement.bound_names_before
         )
@@ -2311,6 +2349,9 @@ def _asserted_status_observations(
                     if _call_creates_poc_http_connection(
                         value,
                         frozenset(poc_server_names),
+                        shadowed_constructor_names=frozenset(
+                            shadowed_http_constructor_names
+                        ),
                     ):
                         poc_connection_names.add(name)
                     else:
@@ -2443,6 +2484,9 @@ def _asserted_status_observations(
         )
         if "os" in _statement_bound_names(statement):
             os_module_available = False
+        shadowed_http_constructor_names.update(
+            _statement_bound_names(statement) & frozenset(("HTTPConnection", "http"))
+        )
         direct_tokens_seen = set(
             _direct_auth_tokens_after_statement(
                 statement,
