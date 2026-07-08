@@ -246,6 +246,35 @@ class EvaluateDatasetTest(unittest.TestCase):
     def valid_high_risk_labels_data(self) -> dict[str, object]:
         return copy.deepcopy(evaluate_dataset.load_json(HIGH_RISK_LABELS_PATH))
 
+    def poc_auth_session_coverage_is_present_for_source(
+        self,
+        test_source: str,
+        *,
+        module_prefix: str = "",
+        module_suffix: str = "",
+    ) -> bool:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            (temp_root / "tests").mkdir()
+            (temp_root / "README.md").write_text(
+                "## Local PoC API authentication\n"
+                "Set VERIDOC_LOCAL_AUTH_TOKENS for local role tokens.\n",
+                encoding="utf-8",
+            )
+            (temp_root / "tests" / "test_poc_web_api.py").write_text(
+                f"{module_prefix}\n{test_source}\n{module_suffix}\n",
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(
+                evaluate_dataset,
+                "poc_auth_session_coverage_inputs_tracked_in_repo",
+                return_value=True,
+            ):
+                return evaluate_dataset.poc_auth_session_coverage_is_present(
+                    temp_root
+                )
+
     def poc_acceptance_payload(
         self,
         *,
@@ -4859,6 +4888,122 @@ class EvaluateDatasetTest(unittest.TestCase):
             payload["matrix_evidence"]["security"][
                 "authenticated_poc_api_session_checked"
             ]
+        )
+
+    def test_poc_auth_coverage_rejects_rebound_required_test(
+        self,
+    ) -> None:
+        success_ref_names = valid_poc_auth_success_ref_source()
+        fail_closed_ref_names = valid_poc_auth_fail_closed_ref_source()
+        test_name = evaluate_dataset.POC_AUTH_SESSION_SUCCESS_COVERAGE_REFS[0].split(
+            "::", 1
+        )[1]
+
+        self.assertFalse(
+            self.poc_auth_session_coverage_is_present_for_source(
+                f"{success_ref_names}\n{fail_closed_ref_names}",
+                module_suffix=f"{test_name} = lambda: None\n",
+            )
+        )
+
+    def test_poc_auth_coverage_rejects_module_http_connection_shadow(
+        self,
+    ) -> None:
+        self.assertFalse(
+            self.poc_auth_session_coverage_is_present_for_source(
+                f"{valid_poc_auth_success_ref_source()}\n"
+                f"{valid_poc_auth_fail_closed_ref_source()}",
+                module_prefix=(
+                    "def HTTPConnection(*args, **kwargs):\n"
+                    "    return object()\n"
+                ),
+            )
+        )
+
+    def test_poc_auth_coverage_clears_env_auth_when_os_environ_cleared(
+        self,
+    ) -> None:
+        env_ref_name = evaluate_dataset.POC_AUTH_SESSION_ENV_SUCCESS_COVERAGE_REFS[
+            0
+        ].split("::", 1)[1]
+        success_ref_names = valid_poc_auth_success_ref_source(
+            {
+                env_ref_name: (
+                    "    monkeypatch.setenv(\n"
+                    "        'VERIDOC_LOCAL_AUTH_TOKENS',\n"
+                    "        'reviewer:env-reviewer=env-reviewer-token',\n"
+                    "    )\n"
+                    "    os.environ.clear()\n"
+                    "    connection = HTTPConnection('127.0.0.1', server.server_port, timeout=5)\n"
+                    "    status, body = _post_review_event_on_connection(\n"
+                    "        connection,\n"
+                    "        _review_audit_event(conversion_id='conversion-env-auth'),\n"
+                    "        role_token='env-reviewer-token',\n"
+                    "    )\n"
+                    "    assert status == 202\n"
+                )
+            }
+        )
+
+        self.assertFalse(
+            self.poc_auth_session_coverage_is_present_for_source(
+                f"{success_ref_names}\n{valid_poc_auth_fail_closed_ref_source()}",
+                module_prefix="import os\n",
+            )
+        )
+
+    def test_poc_auth_coverage_rejects_rebound_trusted_status_helper(
+        self,
+    ) -> None:
+        env_ref_name = evaluate_dataset.POC_AUTH_SESSION_ENV_SUCCESS_COVERAGE_REFS[
+            0
+        ].split("::", 1)[1]
+        success_ref_names = valid_poc_auth_success_ref_source(
+            {
+                env_ref_name: (
+                    "    monkeypatch.setenv(\n"
+                    "        'VERIDOC_LOCAL_AUTH_TOKENS',\n"
+                    "        'reviewer:env-reviewer=env-reviewer-token',\n"
+                    "    )\n"
+                    "    connection = HTTPConnection('127.0.0.1', server.server_port, timeout=5)\n"
+                    "    _post_review_event_on_connection = lambda *args, **kwargs: (202, {})\n"
+                    "    status, body = _post_review_event_on_connection(\n"
+                    "        connection,\n"
+                    "        _review_audit_event(conversion_id='conversion-env-auth'),\n"
+                    "        role_token='env-reviewer-token',\n"
+                    "    )\n"
+                    "    assert status == 202\n"
+                )
+            }
+        )
+
+        self.assertFalse(
+            self.poc_auth_session_coverage_is_present_for_source(
+                f"{success_ref_names}\n{valid_poc_auth_fail_closed_ref_source()}"
+            )
+        )
+
+    def test_poc_auth_coverage_rejects_non_exact_bearer_helper(
+        self,
+    ) -> None:
+        trusted_helper_source = (
+            "def _post_review_event_on_connection(connection, audit_event, *, role_token):\n"
+            "    payload = json.dumps({'audit_event': audit_event}).encode('utf-8')\n"
+            "    connection.request(\n"
+            "        'POST',\n"
+            "        '/api/review-events',\n"
+            "        body=payload,\n"
+            "        headers={'Authorization': f'prefix Bearer {role_token}'},\n"
+            "    )\n"
+            "    response = connection.getresponse()\n"
+            "    return response.status, {}\n"
+        )
+
+        self.assertFalse(
+            self.poc_auth_session_coverage_is_present_for_source(
+                f"{valid_poc_auth_success_ref_source(trusted_helper_source=trusted_helper_source)}\n"
+                f"{valid_poc_auth_fail_closed_ref_source()}"
+            )
         )
 
     def test_poc_acceptance_report_rejects_try_else_after_return(

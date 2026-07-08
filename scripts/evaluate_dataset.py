@@ -296,17 +296,52 @@ def _top_level_function_nodes(
         return {}
     functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
     duplicate_names: set[str] = set()
+    rebound_names: set[str] = set()
     for node in tree.body:
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if node.name in functions:
+                duplicate_names.add(node.name)
+            functions[node.name] = node
             continue
-        if node.name in functions:
-            duplicate_names.add(node.name)
-        functions[node.name] = node
+        rebound_names.update(_top_level_rebound_function_names(node, functions))
     return {
         name: node
         for name, node in functions.items()
-        if name not in duplicate_names
+        if name not in duplicate_names and name not in rebound_names
     }
+
+
+def _top_level_rebound_function_names(
+    node: ast.stmt,
+    functions: Mapping[str, ast.FunctionDef | ast.AsyncFunctionDef],
+) -> frozenset[str]:
+    rebound: set[str] = set()
+    if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+        for target in _assignment_targets(node):
+            rebound.update(_target_name_bindings(target) & functions.keys())
+    if isinstance(node, ast.Delete):
+        for target in node.targets:
+            rebound.update(_target_name_bindings(target) & functions.keys())
+    return frozenset(rebound)
+
+
+def _module_shadowed_runtime_names(
+    tree: ast.Module,
+    names: frozenset[str],
+) -> frozenset[str]:
+    shadowed: set[str] = set()
+    for statement in tree.body:
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if statement.name in names:
+                shadowed.add(statement.name)
+            continue
+        if isinstance(statement, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            for target in _assignment_targets(statement):
+                shadowed.update(_target_name_bindings(target) & names)
+        if isinstance(statement, ast.Delete):
+            for target in statement.targets:
+                shadowed.update(_target_name_bindings(target) & names)
+    return frozenset(shadowed)
 
 
 def _pytestmark_value_is_skipped_or_xfailed(node: ast.AST) -> bool:
@@ -1633,28 +1668,22 @@ def _headers_dict_uses_authorization_role_token(node: ast.Dict) -> bool:
 
 def _value_formats_bearer_role_token(node: ast.AST) -> bool:
     if isinstance(node, ast.JoinedStr):
-        saw_bearer_literal = any(
-            isinstance(value, ast.Constant)
-            and isinstance(value.value, str)
-            and "Bearer " in value.value
-            for value in node.values
+        return (
+            len(node.values) == 2
+            and isinstance(node.values[0], ast.Constant)
+            and node.values[0].value == "Bearer "
+            and isinstance(node.values[1], ast.FormattedValue)
+            and isinstance(node.values[1].value, ast.Name)
+            and node.values[1].value.id == "role_token"
         )
-        saw_role_token = any(
-            isinstance(value, ast.FormattedValue)
-            and isinstance(value.value, ast.Name)
-            and value.value.id == "role_token"
-            for value in node.values
-        )
-        return saw_bearer_literal and saw_role_token
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
         parts = _string_concatenation_parts(node)
-        return any(
-            isinstance(part, ast.Constant)
-            and isinstance(part.value, str)
-            and "Bearer " in part.value
-            for part in parts
-        ) and any(
-            isinstance(part, ast.Name) and part.id == "role_token" for part in parts
+        return (
+            len(parts) == 2
+            and isinstance(parts[0], ast.Constant)
+            and parts[0].value == "Bearer "
+            and isinstance(parts[1], ast.Name)
+            and parts[1].id == "role_token"
         )
     return False
 
@@ -1790,6 +1819,7 @@ def _authenticated_success_status_observations(
     *,
     local_auth_token_helpers: dict[str, frozenset[str]] | None = None,
     trusted_status_helpers: Mapping[str, _TrustedPocStatusHelper] | None = None,
+    module_shadowed_http_constructor_names: frozenset[str] = frozenset(),
 ) -> tuple[_AuthenticatedStatusObservation, ...]:
     if local_auth_token_helpers is None:
         local_auth_token_helpers = {}
@@ -1812,7 +1842,11 @@ def _authenticated_success_status_observations(
         _function_arg_names(node) & frozenset(local_auth_token_helpers)
     )
     shadowed_http_constructor_names = set(
-        _function_arg_names(node) & frozenset(("HTTPConnection", "http"))
+        module_shadowed_http_constructor_names
+        | (_function_arg_names(node) & frozenset(("HTTPConnection", "http")))
+    )
+    shadowed_trusted_status_helper_names = set(
+        _function_arg_names(node) & frozenset(trusted_status_helpers)
     )
     os_module_available = "os" not in _function_arg_names(node)
 
@@ -1829,6 +1863,9 @@ def _authenticated_success_status_observations(
         )
         shadowed_local_auth_helper_names.update(
             ordered_statement.bound_names_before & frozenset(local_auth_token_helpers)
+        )
+        shadowed_trusted_status_helper_names.update(
+            ordered_statement.bound_names_before & frozenset(trusted_status_helpers)
         )
         visible_local_auth_token_helpers = _visible_local_auth_token_helpers(
             local_auth_token_helpers,
@@ -1910,10 +1947,15 @@ def _authenticated_success_status_observations(
             if isinstance(value, ast.Call):
                 tokens = _call_privileged_auth_tokens(value, name_literal_bindings)
                 if tokens:
-                    trusted_helper = _trusted_poc_status_helper_for_call(
-                        value,
-                        frozenset(poc_connection_names),
-                        trusted_status_helpers,
+                    helper_name = _dotted_name(value.func)
+                    trusted_helper = (
+                        None
+                        if helper_name in shadowed_trusted_status_helper_names
+                        else _trusted_poc_status_helper_for_call(
+                            value,
+                            frozenset(poc_connection_names),
+                            trusted_status_helpers,
+                        )
                     )
                     if trusted_helper is None:
                         tokens = frozenset()
@@ -2016,6 +2058,9 @@ def _authenticated_success_status_observations(
         shadowed_local_auth_helper_names.update(
             _statement_bound_names(statement) & frozenset(local_auth_token_helpers)
         )
+        shadowed_trusted_status_helper_names.update(
+            _statement_bound_names(statement) & frozenset(trusted_status_helpers)
+        )
         _update_name_literal_bindings_after_statement(
             statement, name_literal_bindings
         )
@@ -2043,12 +2088,16 @@ def _test_function_has_authenticated_success_markers(
     *,
     local_auth_token_helpers: dict[str, frozenset[str]] | None = None,
     trusted_status_helpers: Mapping[str, _TrustedPocStatusHelper] | None = None,
+    module_shadowed_http_constructor_names: frozenset[str] = frozenset(),
 ) -> bool:
     return bool(
         _authenticated_success_status_observations(
             node,
             local_auth_token_helpers=local_auth_token_helpers,
             trusted_status_helpers=trusted_status_helpers,
+            module_shadowed_http_constructor_names=(
+                module_shadowed_http_constructor_names
+            ),
         )
     )
 
@@ -2059,6 +2108,7 @@ def _test_function_matches_success_ref_expectation(
     *,
     local_auth_token_helpers: dict[str, frozenset[str]] | None = None,
     trusted_status_helpers: Mapping[str, _TrustedPocStatusHelper] | None = None,
+    module_shadowed_http_constructor_names: frozenset[str] = frozenset(),
 ) -> bool:
     expectation = POC_AUTH_SESSION_SUCCESS_REF_EXPECTATIONS.get(ref)
     if expectation is None:
@@ -2066,6 +2116,9 @@ def _test_function_matches_success_ref_expectation(
             node,
             local_auth_token_helpers=local_auth_token_helpers,
             trusted_status_helpers=trusted_status_helpers,
+            module_shadowed_http_constructor_names=(
+                module_shadowed_http_constructor_names
+            ),
         )
     expected_tokens = expectation.get("tokens", frozenset())
     expected_status_codes = expectation.get("status_codes", frozenset())
@@ -2077,6 +2130,7 @@ def _test_function_matches_success_ref_expectation(
         node,
         local_auth_token_helpers=local_auth_token_helpers,
         trusted_status_helpers=trusted_status_helpers,
+        module_shadowed_http_constructor_names=module_shadowed_http_constructor_names,
     ):
         if not required_literals.issubset(observation.string_literals):
             continue
@@ -2171,6 +2225,13 @@ def _env_auth_tokens_after_statement(
                 and _constant_string_value(child.args[0]) == POC_AUTH_SESSION_ENV_VAR
             ):
                 tokens.clear()
+            if (
+                os_module_available
+                and isinstance(func, ast.Attribute)
+                and func.attr == "clear"
+                and _is_os_environ_node(func.value)
+            ):
+                tokens.clear()
         if not isinstance(child, (ast.Assign, ast.AnnAssign)):
             continue
         targets = child.targets if isinstance(child, ast.Assign) else (child.target,)
@@ -2226,6 +2287,7 @@ def _test_function_uses_env_auth_boundary(
     *,
     local_auth_token_helpers: dict[str, frozenset[str]] | None = None,
     trusted_status_helpers: Mapping[str, _TrustedPocStatusHelper] | None = None,
+    module_shadowed_http_constructor_names: frozenset[str] = frozenset(),
 ) -> bool:
     if _assigns_server_local_auth_tokens(node):
         return False
@@ -2235,6 +2297,9 @@ def _test_function_uses_env_auth_boundary(
             node,
             local_auth_token_helpers=local_auth_token_helpers,
             trusted_status_helpers=trusted_status_helpers,
+            module_shadowed_http_constructor_names=(
+                module_shadowed_http_constructor_names
+            ),
         )
     )
 
@@ -2244,6 +2309,7 @@ def _test_function_uses_direct_auth_boundary(
     *,
     local_auth_token_helpers: dict[str, frozenset[str]] | None = None,
     trusted_status_helpers: Mapping[str, _TrustedPocStatusHelper] | None = None,
+    module_shadowed_http_constructor_names: frozenset[str] = frozenset(),
 ) -> bool:
     return any(
         observation.tokens & observation.direct_tokens_before_request
@@ -2251,6 +2317,9 @@ def _test_function_uses_direct_auth_boundary(
             node,
             local_auth_token_helpers=local_auth_token_helpers,
             trusted_status_helpers=trusted_status_helpers,
+            module_shadowed_http_constructor_names=(
+                module_shadowed_http_constructor_names
+            ),
         )
     )
 
@@ -2379,6 +2448,7 @@ def _asserted_status_observations(
     status_codes: frozenset[int],
     *,
     local_auth_token_helpers: dict[str, frozenset[str]] | None = None,
+    module_shadowed_http_constructor_names: frozenset[str] = frozenset(),
 ) -> tuple[_AuthenticatedStatusObservation, ...]:
     if local_auth_token_helpers is None:
         local_auth_token_helpers = {}
@@ -2400,7 +2470,8 @@ def _asserted_status_observations(
         _function_arg_names(node) & frozenset(local_auth_token_helpers)
     )
     shadowed_http_constructor_names = set(
-        _function_arg_names(node) & frozenset(("HTTPConnection", "http"))
+        module_shadowed_http_constructor_names
+        | (_function_arg_names(node) & frozenset(("HTTPConnection", "http")))
     )
     os_module_available = "os" not in _function_arg_names(node)
     for ordered_statement in _ordered_function_statements(node.body):
@@ -2672,6 +2743,7 @@ def _test_function_matches_fail_closed_ref_expectation(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
     *,
     local_auth_token_helpers: dict[str, frozenset[str]] | None = None,
+    module_shadowed_http_constructor_names: frozenset[str] = frozenset(),
 ) -> bool:
     expectation = POC_AUTH_SESSION_FAIL_CLOSED_REF_EXPECTATIONS[ref]
     expected_status_codes = expectation.get("status_codes", frozenset())
@@ -2687,6 +2759,7 @@ def _test_function_matches_fail_closed_ref_expectation(
         node,
         expected_status_codes,
         local_auth_token_helpers=local_auth_token_helpers,
+        module_shadowed_http_constructor_names=module_shadowed_http_constructor_names,
     ):
         if not (
             observation.env_tokens_before_request
@@ -2759,7 +2832,15 @@ def poc_auth_session_coverage_is_present(repo_root: Path = REPO_ROOT) -> bool:
         return False
     if POC_AUTH_SESSION_ENV_VAR not in readme:
         return False
+    try:
+        test_tree = ast.parse(test_source)
+    except SyntaxError:
+        return False
 
+    module_shadowed_http_constructor_names = _module_shadowed_runtime_names(
+        test_tree,
+        frozenset(("HTTPConnection", "http")),
+    )
     test_functions = _test_function_nodes(test_source)
     local_auth_token_helpers = _local_auth_token_helper_tokens(test_source)
     trusted_status_helpers = _trusted_poc_status_helpers(test_source)
@@ -2774,6 +2855,9 @@ def poc_auth_session_coverage_is_present(repo_root: Path = REPO_ROOT) -> bool:
             test_functions[test_name],
             local_auth_token_helpers=local_auth_token_helpers,
             trusted_status_helpers=trusted_status_helpers,
+            module_shadowed_http_constructor_names=(
+                module_shadowed_http_constructor_names
+            ),
         ):
             return False
     for ref in POC_AUTH_SESSION_ENV_SUCCESS_COVERAGE_REFS:
@@ -2782,6 +2866,9 @@ def poc_auth_session_coverage_is_present(repo_root: Path = REPO_ROOT) -> bool:
             test_functions[test_name],
             local_auth_token_helpers=local_auth_token_helpers,
             trusted_status_helpers=trusted_status_helpers,
+            module_shadowed_http_constructor_names=(
+                module_shadowed_http_constructor_names
+            ),
         ):
             return False
     for ref in set(POC_AUTH_SESSION_SUCCESS_COVERAGE_REFS) - set(
@@ -2792,6 +2879,9 @@ def poc_auth_session_coverage_is_present(repo_root: Path = REPO_ROOT) -> bool:
             test_functions[test_name],
             local_auth_token_helpers=local_auth_token_helpers,
             trusted_status_helpers=trusted_status_helpers,
+            module_shadowed_http_constructor_names=(
+                module_shadowed_http_constructor_names
+            ),
         ):
             return False
     for ref in POC_AUTH_SESSION_FAIL_CLOSED_COVERAGE_REFS:
@@ -2800,6 +2890,9 @@ def poc_auth_session_coverage_is_present(repo_root: Path = REPO_ROOT) -> bool:
             ref,
             test_functions[test_name],
             local_auth_token_helpers=local_auth_token_helpers,
+            module_shadowed_http_constructor_names=(
+                module_shadowed_http_constructor_names
+            ),
         ):
             return False
     return True
