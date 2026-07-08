@@ -11559,6 +11559,7 @@ def test_web_phase10_screens_own_migrated_poc_capabilities() -> None:
     expected_screen_regions = {
         "jobs": [
             "job_id",
+            "filename",
             "status",
             "mode",
             "template_id",
@@ -11571,6 +11572,8 @@ def test_web_phase10_screens_own_migrated_poc_capabilities() -> None:
             "document_type",
             "fields",
             "anchors",
+            "tables",
+            "risk_rank",
             "validation_rules",
             "output_mapping",
         ],
