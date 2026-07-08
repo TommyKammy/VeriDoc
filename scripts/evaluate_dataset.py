@@ -1292,6 +1292,15 @@ class _PocAuthSessionFailClosedRefExpectation:
         return self.required_literals - self.asserted_literals
 
 
+@dataclass(frozen=True)
+class _PocAuthInitialObservationScope:
+    active_monkeypatch_fixture_names: frozenset[str]
+    shadowed_local_auth_helper_names: frozenset[str]
+    shadowed_http_constructor_names: frozenset[str]
+    function_arg_names: frozenset[str]
+    os_module_available: bool
+
+
 def _poc_auth_session_success_ref_expectation(
     ref: str,
 ) -> _PocAuthSessionSuccessRefExpectation | None:
@@ -1321,6 +1330,29 @@ def _poc_auth_session_fail_closed_ref_expectation(
         forbid_auth_tokens=bool(expectation.get("forbid_auth_tokens", False)),
         required_literals=expectation.get("required_literals", frozenset()),
         asserted_literals=expectation.get("asserted_literals", frozenset()),
+    )
+
+
+def _initial_poc_auth_observation_scope(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    *,
+    local_auth_token_helpers: Mapping[str, frozenset[str]],
+    module_shadowed_http_constructor_names: frozenset[str],
+) -> _PocAuthInitialObservationScope:
+    function_arg_names = _function_arg_names(node)
+    return _PocAuthInitialObservationScope(
+        active_monkeypatch_fixture_names=frozenset(
+            name for name in function_arg_names if name == "monkeypatch"
+        ),
+        shadowed_local_auth_helper_names=(
+            function_arg_names & frozenset(local_auth_token_helpers)
+        ),
+        shadowed_http_constructor_names=(
+            module_shadowed_http_constructor_names
+            | (function_arg_names & frozenset(("HTTPConnection", "http")))
+        ),
+        function_arg_names=function_arg_names,
+        os_module_available="os" not in function_arg_names,
     )
 
 
@@ -1899,6 +1931,16 @@ def _call_creates_poc_http_connection(
     ) and _node_references_poc_server_port(node.args[1], poc_server_names)
 
 
+def _response_connections_seen(statement: ast.stmt) -> frozenset[str]:
+    return frozenset(
+        connection_name
+        for child in _walk_statement_without_nested_scopes(statement)
+        if isinstance(child, ast.Call)
+        for connection_name in (_method_call_receiver_name(child, "getresponse"),)
+        if connection_name is not None
+    )
+
+
 def _authenticated_success_status_observations(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
     *,
@@ -1912,8 +1954,13 @@ def _authenticated_success_status_observations(
         trusted_status_helpers = {}
     env_tokens_seen: set[str] = set()
     direct_tokens_seen: set[str] = set()
+    initial_scope = _initial_poc_auth_observation_scope(
+        node,
+        local_auth_token_helpers=local_auth_token_helpers,
+        module_shadowed_http_constructor_names=module_shadowed_http_constructor_names,
+    )
     active_monkeypatch_fixture_names = set(
-        name for name in _function_arg_names(node) if name == "monkeypatch"
+        initial_scope.active_monkeypatch_fixture_names
     )
     pending_request_by_connection: dict[
         str, _AuthenticatedStatusObservation
@@ -1924,16 +1971,15 @@ def _authenticated_success_status_observations(
     success_observations: list[_AuthenticatedStatusObservation] = []
     name_literal_bindings: dict[str, frozenset[str]] = {}
     shadowed_local_auth_helper_names = set(
-        _function_arg_names(node) & frozenset(local_auth_token_helpers)
+        initial_scope.shadowed_local_auth_helper_names
     )
     shadowed_http_constructor_names = set(
-        module_shadowed_http_constructor_names
-        | (_function_arg_names(node) & frozenset(("HTTPConnection", "http")))
+        initial_scope.shadowed_http_constructor_names
     )
     shadowed_trusted_status_helper_names = set(
-        _function_arg_names(node) & frozenset(trusted_status_helpers)
+        initial_scope.function_arg_names & frozenset(trusted_status_helpers)
     )
-    os_module_available = "os" not in _function_arg_names(node)
+    os_module_available = initial_scope.os_module_available
 
     for ordered_statement in _ordered_function_statements(node.body):
         statement = ordered_statement.statement
@@ -1956,13 +2002,7 @@ def _authenticated_success_status_observations(
             local_auth_token_helpers,
             shadowed_local_auth_helper_names,
         )
-        response_connections_seen = {
-            connection_name
-            for child in _walk_statement_without_nested_scopes(statement)
-            if isinstance(child, ast.Call)
-            for connection_name in (_method_call_receiver_name(child, "getresponse"),)
-            if connection_name is not None
-        }
+        response_connections_seen = _response_connections_seen(statement)
         response_connections_recorded: set[str] = set()
 
         for child in _walk_statement_without_nested_scopes(statement):
@@ -2541,8 +2581,13 @@ def _asserted_status_observations(
         local_auth_token_helpers = {}
     env_tokens_seen: set[str] = set()
     direct_tokens_seen: set[str] = set()
+    initial_scope = _initial_poc_auth_observation_scope(
+        node,
+        local_auth_token_helpers=local_auth_token_helpers,
+        module_shadowed_http_constructor_names=module_shadowed_http_constructor_names,
+    )
     active_monkeypatch_fixture_names = set(
-        name for name in _function_arg_names(node) if name == "monkeypatch"
+        initial_scope.active_monkeypatch_fixture_names
     )
     status_observations: dict[str, _AuthenticatedStatusObservation] = {}
     pending_request_by_connection: dict[str, _AuthenticatedStatusObservation] = {}
@@ -2554,13 +2599,12 @@ def _asserted_status_observations(
     poc_server_names: set[str] = set()
     poc_connection_names: set[str] = set()
     shadowed_local_auth_helper_names = set(
-        _function_arg_names(node) & frozenset(local_auth_token_helpers)
+        initial_scope.shadowed_local_auth_helper_names
     )
     shadowed_http_constructor_names = set(
-        module_shadowed_http_constructor_names
-        | (_function_arg_names(node) & frozenset(("HTTPConnection", "http")))
+        initial_scope.shadowed_http_constructor_names
     )
-    os_module_available = "os" not in _function_arg_names(node)
+    os_module_available = initial_scope.os_module_available
     for ordered_statement in _ordered_function_statements(node.body):
         statement = ordered_statement.statement
         if "os" in ordered_statement.bound_names_before:
@@ -2579,13 +2623,7 @@ def _asserted_status_observations(
             local_auth_token_helpers,
             shadowed_local_auth_helper_names,
         )
-        response_connections_seen = {
-            connection_name
-            for child in _walk_statement_without_nested_scopes(statement)
-            if isinstance(child, ast.Call)
-            for connection_name in (_method_call_receiver_name(child, "getresponse"),)
-            if connection_name is not None
-        }
+        response_connections_seen = _response_connections_seen(statement)
         response_connections_recorded: set[str] = set()
         for child in _walk_statement_without_nested_scopes(statement):
             if not isinstance(child, ast.Call):
