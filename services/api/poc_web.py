@@ -78,6 +78,7 @@ PRIMARY_ARTIFACT_FORMAT_BY_CONVERSION_MODE = {
     "word_to_excel": "xlsx",
     "excel_to_word": "docx",
 }
+DIRECT_CONVERT_OUTPUT_FORMATS = {"json", "docx", "xlsx"}
 DESKTOP_CLIENT_HEADER = "X-VeriDoc-Desktop-Client"
 DESKTOP_CLIENT_HEADER_VALUE = "VeriDocDesktop"
 DESKTOP_SAVE_PROOF_HEADER = "X-VeriDoc-Desktop-Save-Proof"
@@ -601,10 +602,22 @@ def convert_uploaded_document(
     conversion_mode: str = "auto",
     use_llm: bool = False,
     use_ocr: bool = False,
+    output_format: str | None = None,
+    template_id: str | None = None,
+    template_store: TemplateStore | None = None,
 ) -> dict[str, Any]:
     """Convert one uploaded PoC document into IR, review details, and download bytes."""
     safe_filename = _safe_filename(filename)
     selected_conversion_mode = _validate_conversion_mode(conversion_mode)
+    requested_output_format = _validate_direct_output_format_for_conversion_mode(
+        conversion_mode=selected_conversion_mode,
+        output_format=_validate_direct_output_format(output_format),
+    )
+    requested_template_id = _validate_optional_template_id(template_id)
+    requested_template = _direct_convert_template_snapshot(
+        requested_template_id,
+        template_store=template_store,
+    )
     conversion_settings = _conversion_settings(use_llm=use_llm, use_ocr=use_ocr)
     conversion_id = _conversion_id()
     source_sha256 = _sha256_hex(content)
@@ -640,13 +653,18 @@ def convert_uploaded_document(
     ]
     primary_artifact: dict[str, Any] | None = None
     primary_warning: str | None = None
+    primary_format = _direct_convert_primary_artifact_format(
+        conversion_mode=selected_conversion_mode,
+        output_format=requested_output_format,
+    )
     if validation.ok:
         primary_artifact, primary_warning = _render_primary_artifact(
             document_ir_dict,
             source_filename=safe_filename,
             conversion_mode=selected_conversion_mode,
+            artifact_format=primary_format,
         )
-    elif selected_conversion_mode in PRIMARY_ARTIFACT_FORMAT_BY_CONVERSION_MODE:
+    elif primary_format is not None:
         primary_warning = "primary artifact generation skipped: document IR validation failed"
     if primary_warning is not None:
         warnings.append(primary_warning)
@@ -671,6 +689,11 @@ def convert_uploaded_document(
         "warnings": {"count": len(warnings)},
         "review_items": {"count": len(review_items)},
     }
+    if requested_output_format is not None:
+        audit["requested_output_format"] = requested_output_format
+    if requested_template_id is not None:
+        audit["template_id"] = requested_template_id
+        audit["template"] = requested_template
     download_payload = {
         "document_ir": document_ir_dict,
         "validation": asdict(validation),
@@ -1169,6 +1192,9 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 conversion_mode=conversion_mode,
                 use_llm=use_llm,
                 use_ocr=use_ocr,
+                output_format=request.get("output_format"),
+                template_id=request.get("template_id"),
+                template_store=self._template_store(),
             )
         except PocServerDependencyError as exc:
             self._send_json(
@@ -2660,19 +2686,45 @@ def _artifact_audit_metadata(
     }
 
 
+def _direct_convert_primary_artifact_format(
+    *,
+    conversion_mode: str,
+    output_format: str | None,
+) -> str | None:
+    if output_format == "json":
+        return None
+    if output_format in {"docx", "xlsx"}:
+        return output_format
+    return PRIMARY_ARTIFACT_FORMAT_BY_CONVERSION_MODE.get(conversion_mode)
+
+
+def _direct_convert_template_snapshot(
+    template_id: str | None,
+    *,
+    template_store: TemplateStore | None,
+) -> dict[str, Any] | None:
+    if template_id is None:
+        return None
+    store = DEFAULT_TEMPLATE_STORE if template_store is None else template_store
+    try:
+        return store.latest_job_snapshot(template_id)
+    except KeyError as exc:
+        raise ValueError("template_id is unknown") from exc
+
+
 def _render_primary_artifact(
     document_ir: dict[str, Any],
     *,
     source_filename: str,
     conversion_mode: str,
+    artifact_format: str | None,
 ) -> tuple[dict[str, Any] | None, str | None]:
-    primary_format = PRIMARY_ARTIFACT_FORMAT_BY_CONVERSION_MODE.get(conversion_mode)
-    if primary_format is None:
+    if artifact_format is None:
         return None, None
     filename = _artifact_filename(
         source_filename,
         conversion_mode=conversion_mode,
-        artifact_format=primary_format,
+        artifact_format=artifact_format,
         role="primary",
     )
     try:
@@ -2682,17 +2734,18 @@ def _render_primary_artifact(
                 document_ir,
                 output_path=output_path,
                 conversion_mode=conversion_mode,
+                artifact_format=artifact_format,
             )
             content = output_path.read_bytes()
     except (OSError, ValueError) as exc:
         return None, f"primary artifact generation failed: {exc}"
     return (
         {
-            "id": f"primary-{primary_format}",
+            "id": f"primary-{artifact_format}",
             "kind": "primary",
-            "format": primary_format,
+            "format": artifact_format,
             "filename": filename,
-            "content_type": ARTIFACT_CONTENT_TYPES[primary_format],
+            "content_type": ARTIFACT_CONTENT_TYPES[artifact_format],
             "size_bytes": len(content),
             "sha256": _sha256_hex(content),
             "content": content,
@@ -2715,21 +2768,22 @@ def _render_primary_artifact_file(
     *,
     output_path: Path,
     conversion_mode: str,
+    artifact_format: str,
 ) -> None:
-    if conversion_mode == "pdf_to_word":
+    if artifact_format == "docx" and conversion_mode == "pdf_to_word":
         render_editable_docx_from_pdf_ir(document_ir, output_path)
         return
-    if conversion_mode in {"excel_to_word"}:
+    if artifact_format == "docx":
         render_docx_from_ir(document_ir, output_path)
         return
-    if conversion_mode in {"pdf_to_excel", "word_to_excel"}:
+    if artifact_format == "xlsx":
         render_xlsx_from_ir(
             document_ir,
             output_path,
             render_plan=_xlsx_primary_render_plan(document_ir),
         )
         return
-    raise ValueError(f"primary artifact rendering is unsupported for {conversion_mode}")
+    raise ValueError(f"primary artifact rendering is unsupported for {artifact_format}")
 
 
 def _xlsx_primary_render_plan(document_ir: dict[str, Any]) -> dict[str, Any]:
@@ -3966,6 +4020,46 @@ def _validate_conversion_mode(value: Any) -> str:
     if mode not in CONVERSION_MODE_SOURCE_TYPES:
         raise ValueError(f"unsupported conversion_mode: {mode}")
     return mode
+
+
+def _validate_direct_output_format(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("output_format must be a string")
+    output_format = value.strip()
+    if not output_format:
+        return None
+    if output_format not in DIRECT_CONVERT_OUTPUT_FORMATS:
+        raise ValueError(f"unsupported output_format: {output_format}")
+    return output_format
+
+
+def _validate_direct_output_format_for_conversion_mode(
+    *,
+    conversion_mode: str,
+    output_format: str | None,
+) -> str | None:
+    if output_format in {None, "json"}:
+        return output_format
+    mode_output_format = PRIMARY_ARTIFACT_FORMAT_BY_CONVERSION_MODE.get(conversion_mode)
+    if mode_output_format is not None and output_format != mode_output_format:
+        raise ValueError(
+            f"output_format {output_format} conflicts with conversion_mode "
+            f"{conversion_mode}; expected {mode_output_format}"
+        )
+    return output_format
+
+
+def _validate_optional_template_id(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("template_id must be a string")
+    template_id = value.strip()
+    if not template_id:
+        return None
+    return _validate_template_id(template_id)
 
 
 def _validate_conversion_setting_boolean(request: dict[str, Any], field_name: str) -> bool:

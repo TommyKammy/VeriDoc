@@ -491,6 +491,111 @@ def test_convert_uploaded_document_returns_artifact_manifest_contract() -> None:
     ]
 
 
+def test_convert_uploaded_document_records_requested_upload_settings_metadata() -> None:
+    parser_output = {
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 320,
+                "height": 240,
+                "unit": "pt",
+                "fragments": [{"text": "Lot: SAMPLE-001", "confidence": 0.91}],
+            }
+        ]
+    }
+
+    result = convert_uploaded_document(
+        filename="phase0-output.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+        output_format="docx",
+        template_id="batch-record",
+    )
+
+    assert result["audit"]["requested_output_format"] == "docx"
+    assert result["audit"]["template_id"] == "batch-record"
+    assert result["audit"]["template"] == {
+        "template_id": "batch-record",
+        "template_version": 1,
+        "name": "Batch Record",
+    }
+
+
+def test_convert_uploaded_document_uses_requested_output_format_for_primary_artifact() -> None:
+    parser_output = {
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 320,
+                "height": 240,
+                "unit": "pt",
+                "fragments": [{"text": "Lot: SAMPLE-001", "confidence": 0.91}],
+            }
+        ]
+    }
+
+    result = convert_uploaded_document(
+        filename="phase0-output.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+        conversion_mode="auto",
+        output_format="docx",
+    )
+
+    assert result["audit"]["requested_output_format"] == "docx"
+    assert result["artifacts"][0]["kind"] == "primary"
+    assert result["artifacts"][0]["format"] == "docx"
+    assert result["artifacts"][0]["content_type"] == (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    )
+    assert result["artifacts"][1]["id"] == "debug-json"
+
+
+def test_convert_uploaded_document_rejects_output_format_that_conflicts_with_mode() -> None:
+    parser_output = {
+        "source_type": "pdf",
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 320,
+                "height": 240,
+                "unit": "pt",
+                "fragments": [{"text": "Lot: SAMPLE-001", "confidence": 0.91}],
+            }
+        ],
+    }
+
+    with pytest.raises(
+        ValueError,
+        match="output_format docx conflicts with conversion_mode pdf_to_excel; expected xlsx",
+    ):
+        convert_uploaded_document(
+            filename="phase0-output.json",
+            content=json.dumps(parser_output).encode("utf-8"),
+            conversion_mode="pdf_to_excel",
+            output_format="docx",
+        )
+
+
+def test_convert_uploaded_document_rejects_unknown_template_id_before_audit() -> None:
+    parser_output = {
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 320,
+                "height": 240,
+                "unit": "pt",
+                "fragments": [{"text": "Lot: SAMPLE-001", "confidence": 0.91}],
+            }
+        ]
+    }
+
+    with pytest.raises(ValueError, match="template_id is unknown"):
+        convert_uploaded_document(
+            filename="phase0-output.json",
+            content=json.dumps(parser_output).encode("utf-8"),
+            template_id="missing-template",
+        )
+
+
 def test_convert_uploaded_document_adopts_schema_valid_local_llm_plan(monkeypatch: pytest.MonkeyPatch) -> None:
     parser_output = {
         "pages": [
@@ -10113,6 +10218,8 @@ def test_bundled_web_ui_exposes_template_management_and_job_binding() -> None:
     assert "async function saveTemplateVersion()" in html
     assert "async function loadTemplateDetail(templateId)" in html
     assert "function renderTemplateDetail(template)" in html
+    assert "function activeTemplates()" in html
+    assert 'state.templates.filter((template) => template.status === "active")' in html
     assert 'apiFetch("/api/templates")' in html
     assert 'apiFetch("/api/templates", {' in html
     assert "document_type: templateDocumentType.value" in html
@@ -10126,6 +10233,8 @@ def test_bundled_web_ui_exposes_template_management_and_job_binding() -> None:
     assert "template_id: jobTemplate.value || undefined" in html
     assert "job.template.template_version" in html
     assert "clearTemplateState()" in html
+    assert "...selectableDirectTemplates.map((template) =>" in html
+    assert "selectableDirectTemplates.some(" in html
 
 
 def test_bundled_web_ui_clears_credential_bound_state_when_auth_token_changes() -> None:
@@ -10930,6 +11039,110 @@ def test_poc_http_api_rejects_unknown_conversion_mode() -> None:
     }
 
 
+def test_poc_http_api_rejects_inactive_direct_convert_template_id() -> None:
+    template_store = poc_web.TemplateStore()
+    template_store.register_template(
+        {
+            "template_id": "retired-template",
+            "name": "Retired Template",
+            "category": "manufacturing",
+            "status": "inactive",
+            "fields": [{"field_id": "lot_number", "label": "Lot number", "required": True}],
+            "change_reason": "Retire template before direct conversion",
+            "actor": {"principal_id": "qa-maintainer", "role": "admin"},
+        }
+    )
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.template_store = template_store
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = json.dumps(
+            {
+                "filename": "phase0-output.json",
+                "content": json.dumps(
+                    {
+                        "pages": [
+                            {
+                                "page_number": 1,
+                                "width": 320,
+                                "height": 240,
+                                "unit": "pt",
+                                "fragments": [{"text": "Lot: SAMPLE-001", "confidence": 0.95}],
+                            }
+                        ]
+                    }
+                ),
+                "conversion_mode": "auto",
+                "template_id": "retired-template",
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/convert",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 400
+    assert body == {
+        "error": "invalid_upload",
+        "message": "template_id is inactive",
+    }
+
+
+def test_poc_http_api_rejects_conflicting_direct_convert_output_format() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = json.dumps(
+            {
+                "filename": "phase0-output.json",
+                "content": json.dumps(
+                    {
+                        "source_type": "pdf",
+                        "pages": [
+                            {
+                                "page_number": 1,
+                                "width": 320,
+                                "height": 240,
+                                "unit": "pt",
+                                "fragments": [{"text": "Lot: SAMPLE-001", "confidence": 0.95}],
+                            }
+                        ],
+                    }
+                ),
+                "conversion_mode": "pdf_to_excel",
+                "output_format": "docx",
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/convert",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 400
+    assert body == {
+        "error": "invalid_upload",
+        "message": "output_format docx conflicts with conversion_mode pdf_to_excel; expected xlsx",
+    }
+
+
 def test_poc_http_api_reflects_unavailable_llm_and_unsupported_ocr_settings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -11445,6 +11658,60 @@ def test_web_direct_convert_selects_and_posts_llm_ocr_settings() -> None:
     assert "use_ocr: directUseOcr.checked" in html
     assert "use_llm" in parser.region_fields["conversion-settings"]
     assert "use_ocr" in parser.region_fields["conversion-settings"]
+
+
+def test_web_upload_settings_exposes_phase10_input_and_conversion_controls() -> None:
+    html = Path("apps/web/index.html").read_text(encoding="utf-8")
+    parser = _PocUiRegionParser()
+    parser.feed(html)
+    click_handler = re.search(
+        r'button\.addEventListener\("click", async \(\) => \{(?P<body>.*?)\n      \}\);',
+        html,
+        re.DOTALL,
+    )
+
+    expected_controls = [
+        'id="upload-dropzone"',
+        'id="upload-format-status"',
+        'id="direct-output-format"',
+        'id="direct-template"',
+        'id="direct-use-ocr"',
+        'id="direct-use-llm"',
+        'id="gmp-setting-notice"',
+        'id="unsupported-settings-note"',
+    ]
+    for control in expected_controls:
+        assert control in html
+
+    assert 'accept=".pdf,.docx,.xlsx,.json,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/json"' in html
+    assert '<option value="">Primary artifact from mode</option>' in html
+    assert '<option value="json">Audit/debug JSON</option>' in html
+    assert '<option value="docx">DOCX</option>' in html
+    assert '<option value="xlsx">XLSX</option>' in html
+    assert html.index('<option value="">Primary artifact from mode</option>') < html.index(
+        '<option value="json">Audit/debug JSON</option>'
+    )
+    assert '<option value="">No template</option>' in html
+    assert "PDF / DOCX / XLSX" in html
+    assert "JSON is retained for audit/debug output, not required for choosing conversion settings." in html
+
+    assert "conversion-settings" in parser.region_fields
+    for field in [
+        "conversion_mode",
+        "output_format",
+        "template_id",
+        "use_llm",
+        "use_ocr",
+        "gmp_notice",
+        "unsupported_settings",
+    ]:
+        assert field in parser.region_fields["conversion-settings"]
+
+    assert click_handler is not None
+    click_body = click_handler.group("body")
+    assert "output_format: directOutputFormat.value || undefined" in click_body
+    assert "template_id: directTemplate.value || undefined" in click_body
+    assert "updateUploadFormatStatus(file)" in html
 
 
 def test_web_direct_convert_defines_phase6_review_information_architecture() -> None:
