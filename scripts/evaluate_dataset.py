@@ -2001,6 +2001,22 @@ def _discard_unrecorded_response_requests(
         pending_request_by_connection.pop(connection_name, None)
 
 
+def _pending_response_status_observation(
+    pending: _AuthenticatedStatusObservation,
+    *,
+    response_name: str | None = None,
+) -> _AuthenticatedStatusObservation:
+    return _AuthenticatedStatusObservation(
+        tokens=pending.tokens,
+        env_tokens_before_request=pending.env_tokens_before_request,
+        direct_tokens_before_request=pending.direct_tokens_before_request,
+        response_name=response_name,
+        request_method=pending.request_method,
+        request_path=pending.request_path,
+        string_literals=pending.string_literals,
+    )
+
+
 def _authenticated_success_status_observations(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
     *,
@@ -2179,23 +2195,12 @@ def _authenticated_success_status_observations(
                     )
                     response_connections_recorded.add(connection_name)
                     if pending is not None:
-                        observation = _AuthenticatedStatusObservation(
-                            tokens=pending.tokens,
-                            env_tokens_before_request=(
-                                pending.env_tokens_before_request
-                            ),
-                            direct_tokens_before_request=(
-                                pending.direct_tokens_before_request
-                            ),
-                            request_method=pending.request_method,
-                            request_path=pending.request_path,
-                            string_literals=pending.string_literals,
-                        )
+                        observation = _pending_response_status_observation(pending)
                         for target in targets:
                             for name in _assigned_name_targets(target):
                                 status_observations[
-                                f"attr:name:{name}.status"
-                            ] = observation
+                                    f"attr:name:{name}.status"
+                                ] = observation
         _discard_unrecorded_response_requests(
             pending_request_by_connection,
             response_connections_seen=response_connections_seen,
@@ -2789,18 +2794,9 @@ def _asserted_status_observations(
                             asserted_literals_by_response_name.setdefault(name, set())
                             status_observations[
                                 f"attr:name:{name}.status"
-                            ] = _AuthenticatedStatusObservation(
-                                tokens=pending.tokens,
-                                env_tokens_before_request=(
-                                    pending.env_tokens_before_request
-                                ),
-                                direct_tokens_before_request=(
-                                    pending.direct_tokens_before_request
-                                ),
+                            ] = _pending_response_status_observation(
+                                pending,
                                 response_name=name,
-                                request_method=pending.request_method,
-                                request_path=pending.request_path,
-                                string_literals=pending.string_literals,
                             )
                 response_read_names = _response_read_receiver_names(value)
                 for response_name in response_read_names:
