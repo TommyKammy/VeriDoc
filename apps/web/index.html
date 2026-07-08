@@ -744,7 +744,7 @@
             class="app-screen"
             data-app-screen="jobs"
             data-poc-ui-region="jobs"
-            data-api-fields="job_id idempotency_key filename status display_status progress_percent warning_count mode created_at updated_at attempts error template_id template template.name template.template_version hashes hash_verification has_result available_actions available_actions.action available_actions.label open_detail download_result retry_conversion audit_event"
+            data-api-fields="job_id idempotency_key filename status display_status progress_percent warning_count mode created_at updated_at attempts error template_id template template.name template.template_version hashes hash_verification has_result available_actions available_actions.action available_actions.label available_actions.enabled available_actions.audit_event available_actions.audit_event.event_type available_actions.audit_event.job_status open_detail download_result retry_conversion audit_event"
             aria-labelledby="jobs-screen-title"
             hidden
           >
@@ -838,7 +838,7 @@
             class="app-screen panel"
             data-app-screen="templates"
             data-poc-ui-region="templates"
-            data-api-fields="template_id name category version current_version field_count version_count versions document_type status change_reason actor fields anchors tables risk_rank validation_rules output_mapping change_history content created_at updated_at recorded_at approval"
+            data-api-fields="template_id name category version current_version field_count version_count versions document_type status change_reason actor actor.principal_id actor.role fields anchors tables risk_rank validation_rules output_mapping change_history content created_at updated_at recorded_at approval"
             aria-labelledby="templates-title"
             hidden
           >
@@ -1044,7 +1044,7 @@
             class="app-screen panel"
             data-app-screen="audit"
             data-poc-ui-region="audit"
-            data-api-fields="job_id document_id block_id action job_events event_type job_status source_sha256 output_sha256 filename saved_filename download_filename size_bytes content_type review_events occurred_at actor actor.role actor.id audit_events audit_kind sequence event_hash prev_event_hash integrity_algorithm conversion_id source_page source_bbox original_text revised_text warnings"
+            data-api-fields="job_id document_id block_id action job_events event_type job_status source_sha256 output_sha256 filename saved_filename download_filename mode size_bytes content_type review_events occurred_at actor actor.role actor.id actor_id audit_events audit_kind sequence event_hash prev_event_hash integrity_algorithm conversion_id source_page source_bbox original_text revised_text warnings"
             aria-labelledby="audit-title"
             hidden
           >
