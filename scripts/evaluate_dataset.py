@@ -438,6 +438,11 @@ def _module_disables_test_collection(tree: ast.Module) -> bool:
 def _function_test_opt_out_names(tree: ast.Module) -> frozenset[str]:
     disabled: set[str] = set()
     for statement in tree.body:
+        if isinstance(statement, ast.Expr):
+            disabled_name = _setattr_disabled_test_name(statement.value)
+            if disabled_name is not None:
+                disabled.add(disabled_name)
+            continue
         if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
             continue
         if not (
@@ -458,6 +463,27 @@ def _function_test_opt_out_names(tree: ast.Module) -> frozenset[str]:
             ):
                 disabled.add(target.value.id)
     return frozenset(disabled)
+
+
+def _setattr_sets_falsey_test_marker(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "setattr"
+        and len(node.args) >= 3
+        and _constant_string_value(node.args[1]) == "__test__"
+        and isinstance(node.args[2], ast.Constant)
+        and not bool(node.args[2].value)
+    )
+
+
+def _setattr_disabled_test_name(node: ast.AST) -> str | None:
+    if not _setattr_sets_falsey_test_marker(node):
+        return None
+    assert isinstance(node, ast.Call)
+    if isinstance(node.args[0], ast.Name):
+        return node.args[0].id
+    return None
 
 
 def _empty_collection_literal_names(tree: ast.Module) -> frozenset[str]:
@@ -970,6 +996,24 @@ def _walk_statement_without_nested_scopes(node: ast.AST) -> tuple[ast.AST, ...]:
         def visit_Lambda(self, child: ast.Lambda) -> None:
             nodes.append(child)
 
+        def visit_BoolOp(self, child: ast.BoolOp) -> None:
+            nodes.append(child)
+
+        def visit_IfExp(self, child: ast.IfExp) -> None:
+            nodes.append(child)
+
+        def visit_ListComp(self, child: ast.ListComp) -> None:
+            nodes.append(child)
+
+        def visit_SetComp(self, child: ast.SetComp) -> None:
+            nodes.append(child)
+
+        def visit_DictComp(self, child: ast.DictComp) -> None:
+            nodes.append(child)
+
+        def visit_GeneratorExp(self, child: ast.GeneratorExp) -> None:
+            nodes.append(child)
+
     Visitor().visit(node)
     return tuple(nodes)
 
@@ -1013,6 +1057,18 @@ def _clear_status_observations_for_targets(
                 status_observations.pop(observed_key, None)
 
 
+def _setattr_status_targets(node: ast.AST) -> tuple[ast.Attribute, ...]:
+    if not (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "setattr"
+        and len(node.args) >= 2
+        and _constant_string_value(node.args[1]) == "status"
+    ):
+        return ()
+    return (ast.Attribute(value=node.args[0], attr="status", ctx=ast.Store()),)
+
+
 def _statement_unconditionally_exits(statement: ast.stmt) -> bool:
     if isinstance(statement, (ast.Return, ast.Raise)):
         return True
@@ -1024,8 +1080,10 @@ def _statement_unconditionally_exits(statement: ast.stmt) -> bool:
         return True
     if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call):
         return _dotted_name(statement.value.func) in {
+            "pytest.fail",
             "pytest.skip",
             "pytest.xfail",
+            "fail",
             "skip",
             "xfail",
         }
@@ -1051,6 +1109,14 @@ def _with_optional_var_bindings(node: ast.With | ast.AsyncWith) -> frozenset[str
         if item.optional_vars is not None:
             names.update(_target_name_bindings(item.optional_vars))
     return frozenset(names)
+
+
+def _with_statement_uses_pytest_raises(node: ast.With | ast.AsyncWith) -> bool:
+    return any(
+        isinstance(item.context_expr, ast.Call)
+        and _dotted_name(item.context_expr.func) in {"pytest.raises", "raises"}
+        for item in node.items
+    )
 
 
 def _ordered_function_statements(
@@ -1083,6 +1149,8 @@ def _ordered_function_statements(
             statement,
             (ast.With, ast.AsyncWith),
         ):
+            if _with_statement_uses_pytest_raises(statement):
+                continue
             pending_bound_names.update(_with_optional_var_bindings(statement))
             body_exited = False
             for child in _ordered_function_statements(
@@ -1259,6 +1327,39 @@ def _mutated_name_bindings(node: ast.stmt) -> frozenset[str]:
         ):
             names.add(child.func.value.id)
     return frozenset(names)
+
+
+def _mutates_server_local_auth_tokens(node: ast.stmt) -> bool:
+    for child in _walk_statement_without_nested_scopes(node):
+        if (
+            isinstance(child, ast.Call)
+            and isinstance(child.func, ast.Attribute)
+            and child.func.attr
+            in {
+                "clear",
+                "pop",
+                "popitem",
+                "setdefault",
+                "update",
+            }
+            and _targets_server_local_auth_tokens(child.func.value)
+        ):
+            return True
+        if isinstance(child, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            for target in _assignment_targets(child):
+                if (
+                    isinstance(target, ast.Subscript)
+                    and _targets_server_local_auth_tokens(target.value)
+                ):
+                    return True
+        if isinstance(child, ast.Delete):
+            for target in child.targets:
+                if (
+                    isinstance(target, ast.Subscript)
+                    and _targets_server_local_auth_tokens(target.value)
+                ):
+                    return True
+    return False
 
 
 def _request_method_and_path(node: ast.Call) -> tuple[str | None, str | None]:
@@ -1484,6 +1585,11 @@ def _request_body_references_names(
         if keyword.arg == "body":
             body_node = keyword.value
             break
+    if body_node is not None and any(
+        isinstance(child, (ast.BoolOp, ast.IfExp, ast.Lambda))
+        for child in ast.walk(body_node)
+    ):
+        return False
     return bool(body_node is not None and _loaded_name_references(body_node) & names)
 
 
@@ -1583,13 +1689,33 @@ def _node_references_poc_server_port(
 ) -> bool:
     for child in ast.walk(node):
         if (
+            _server_address_subscript_index(child) == 1
+            and isinstance(child.value, ast.Attribute)
+            and isinstance(child.value.value, ast.Name)
+            and child.value.value.id in poc_server_names
+        ):
+            return True
+        if (
             isinstance(child, ast.Attribute)
-            and child.attr in {"server_port", "server_address"}
+            and child.attr == "server_port"
             and isinstance(child.value, ast.Name)
             and child.value.id in poc_server_names
         ):
             return True
     return False
+
+
+def _server_address_subscript_index(node: ast.AST) -> int | None:
+    if not isinstance(node, ast.Subscript):
+        return None
+    if not (
+        isinstance(node.value, ast.Attribute)
+        and node.value.attr == "server_address"
+        and isinstance(node.value.value, ast.Name)
+    ):
+        return None
+    index = _constant_int_value(node.slice)
+    return index if index in {0, 1} else None
 
 
 def _node_references_poc_server_host(
@@ -1601,12 +1727,19 @@ def _node_references_poc_server_host(
         return True
     for child in ast.walk(node):
         if (
+            _server_address_subscript_index(child) == 0
+            and isinstance(child.value, ast.Attribute)
+            and isinstance(child.value.value, ast.Name)
+            and child.value.value.id in poc_server_names
+        ):
+            return True
+        if (
             isinstance(child, ast.Attribute)
-            and child.attr == "server_address"
+            and child.attr == "server_port"
             and isinstance(child.value, ast.Name)
             and child.value.id in poc_server_names
         ):
-            return True
+            return False
     return False
 
 
@@ -1834,6 +1967,12 @@ def _authenticated_success_status_observations(
         for connection_name in response_connections_seen - response_connections_recorded:
             pending_request_by_connection.pop(connection_name, None)
 
+        for child in _walk_statement_without_nested_scopes(statement):
+            _clear_status_observations_for_targets(
+                status_observations,
+                _setattr_status_targets(child),
+            )
+
         if isinstance(statement, ast.Delete):
             _clear_status_observations_for_targets(
                 status_observations, statement.targets
@@ -1847,6 +1986,9 @@ def _authenticated_success_status_observations(
                     poc_server_names.discard(name)
                     poc_connection_names.discard(name)
                     pending_request_by_connection.pop(name, None)
+
+        if _mutates_server_local_auth_tokens(statement):
+            direct_tokens_seen.clear()
 
         if isinstance(statement, ast.Assert):
             for key in _success_status_asserted_expr_keys(statement):
@@ -2401,6 +2543,12 @@ def _asserted_status_observations(
         for connection_name in response_connections_seen - response_connections_recorded:
             pending_request_by_connection.pop(connection_name, None)
 
+        for child in _walk_statement_without_nested_scopes(statement):
+            _clear_status_observations_for_targets(
+                status_observations,
+                _setattr_status_targets(child),
+            )
+
         if isinstance(statement, ast.Delete):
             _clear_status_observations_for_targets(
                 status_observations, statement.targets
@@ -2430,6 +2578,8 @@ def _asserted_status_observations(
             auth_header_tokens_by_name.pop(name, None)
             response_names_by_body_name.pop(name, None)
             asserted_literals_by_response_name.pop(name, None)
+        if _mutates_server_local_auth_tokens(statement):
+            direct_tokens_seen.clear()
 
         if isinstance(statement, ast.Assert):
             assert_literals = _string_literals_in_node(statement)
