@@ -1239,6 +1239,14 @@ class _TrustedPocStatusHelper:
     function_node: ast.FunctionDef | ast.AsyncFunctionDef
 
 
+@dataclass(frozen=True)
+class _PocAuthSessionEvidenceContext:
+    test_functions: Mapping[str, ast.FunctionDef | ast.AsyncFunctionDef]
+    local_auth_token_helpers: Mapping[str, frozenset[str]]
+    trusted_status_helpers: Mapping[str, _TrustedPocStatusHelper]
+    module_shadowed_http_constructor_names: frozenset[str]
+
+
 def _string_literals_in_node(node: ast.AST) -> frozenset[str]:
     literals: set[str] = set()
     for child in ast.walk(node):
@@ -2821,6 +2829,123 @@ def _is_os_environ_node(node: ast.AST) -> bool:
     )
 
 
+def _poc_auth_session_test_name_from_ref(ref: str) -> str:
+    _path, test_name = ref.split("::", 1)
+    return test_name
+
+
+def _poc_auth_session_direct_success_refs() -> tuple[str, ...]:
+    env_success_refs = frozenset(POC_AUTH_SESSION_ENV_SUCCESS_COVERAGE_REFS)
+    return tuple(
+        ref
+        for ref in POC_AUTH_SESSION_SUCCESS_COVERAGE_REFS
+        if ref not in env_success_refs
+    )
+
+
+def _poc_auth_session_evidence_context(
+    test_source: str,
+) -> _PocAuthSessionEvidenceContext | None:
+    try:
+        test_tree = ast.parse(test_source)
+    except SyntaxError:
+        return None
+    return _PocAuthSessionEvidenceContext(
+        test_functions=_test_function_nodes(test_source),
+        local_auth_token_helpers=_local_auth_token_helper_tokens(test_source),
+        trusted_status_helpers=_trusted_poc_status_helpers(test_source),
+        module_shadowed_http_constructor_names=_module_shadowed_runtime_names(
+            test_tree,
+            frozenset(("HTTPConnection", "http")),
+        ),
+    )
+
+
+def _poc_auth_session_test_node(
+    context: _PocAuthSessionEvidenceContext,
+    ref: str,
+) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+    return context.test_functions.get(_poc_auth_session_test_name_from_ref(ref))
+
+
+def _poc_auth_session_required_refs_exist(
+    context: _PocAuthSessionEvidenceContext,
+) -> bool:
+    return all(
+        _poc_auth_session_test_node(context, ref) is not None
+        for ref in POC_AUTH_SESSION_COVERAGE_REFS
+    )
+
+
+def _poc_auth_session_success_ref_is_present(
+    context: _PocAuthSessionEvidenceContext,
+    ref: str,
+) -> bool:
+    test_node = _poc_auth_session_test_node(context, ref)
+    if test_node is None:
+        return False
+    return _test_function_matches_success_ref_expectation(
+        ref,
+        test_node,
+        local_auth_token_helpers=context.local_auth_token_helpers,
+        trusted_status_helpers=context.trusted_status_helpers,
+        module_shadowed_http_constructor_names=(
+            context.module_shadowed_http_constructor_names
+        ),
+    )
+
+
+def _poc_auth_session_env_success_ref_is_present(
+    context: _PocAuthSessionEvidenceContext,
+    ref: str,
+) -> bool:
+    test_node = _poc_auth_session_test_node(context, ref)
+    if test_node is None:
+        return False
+    return _test_function_uses_env_auth_boundary(
+        test_node,
+        local_auth_token_helpers=context.local_auth_token_helpers,
+        trusted_status_helpers=context.trusted_status_helpers,
+        module_shadowed_http_constructor_names=(
+            context.module_shadowed_http_constructor_names
+        ),
+    )
+
+
+def _poc_auth_session_direct_success_ref_is_present(
+    context: _PocAuthSessionEvidenceContext,
+    ref: str,
+) -> bool:
+    test_node = _poc_auth_session_test_node(context, ref)
+    if test_node is None:
+        return False
+    return _test_function_uses_direct_auth_boundary(
+        test_node,
+        local_auth_token_helpers=context.local_auth_token_helpers,
+        trusted_status_helpers=context.trusted_status_helpers,
+        module_shadowed_http_constructor_names=(
+            context.module_shadowed_http_constructor_names
+        ),
+    )
+
+
+def _poc_auth_session_fail_closed_ref_is_present(
+    context: _PocAuthSessionEvidenceContext,
+    ref: str,
+) -> bool:
+    test_node = _poc_auth_session_test_node(context, ref)
+    if test_node is None:
+        return False
+    return _test_function_matches_fail_closed_ref_expectation(
+        ref,
+        test_node,
+        local_auth_token_helpers=context.local_auth_token_helpers,
+        module_shadowed_http_constructor_names=(
+            context.module_shadowed_http_constructor_names
+        ),
+    )
+
+
 def poc_auth_session_coverage_is_present(repo_root: Path = REPO_ROOT) -> bool:
     readme_path = repo_root / "README.md"
     test_path = repo_root / "tests" / "test_poc_web_api.py"
@@ -2834,70 +2959,29 @@ def poc_auth_session_coverage_is_present(repo_root: Path = REPO_ROOT) -> bool:
         return False
     if POC_AUTH_SESSION_ENV_VAR not in readme:
         return False
-    try:
-        test_tree = ast.parse(test_source)
-    except SyntaxError:
+    context = _poc_auth_session_evidence_context(test_source)
+    if context is None:
         return False
-
-    module_shadowed_http_constructor_names = _module_shadowed_runtime_names(
-        test_tree,
-        frozenset(("HTTPConnection", "http")),
+    if not _poc_auth_session_required_refs_exist(context):
+        return False
+    return (
+        all(
+            _poc_auth_session_success_ref_is_present(context, ref)
+            for ref in POC_AUTH_SESSION_SUCCESS_COVERAGE_REFS
+        )
+        and all(
+            _poc_auth_session_env_success_ref_is_present(context, ref)
+            for ref in POC_AUTH_SESSION_ENV_SUCCESS_COVERAGE_REFS
+        )
+        and all(
+            _poc_auth_session_direct_success_ref_is_present(context, ref)
+            for ref in _poc_auth_session_direct_success_refs()
+        )
+        and all(
+            _poc_auth_session_fail_closed_ref_is_present(context, ref)
+            for ref in POC_AUTH_SESSION_FAIL_CLOSED_COVERAGE_REFS
+        )
     )
-    test_functions = _test_function_nodes(test_source)
-    local_auth_token_helpers = _local_auth_token_helper_tokens(test_source)
-    trusted_status_helpers = _trusted_poc_status_helpers(test_source)
-    for ref in POC_AUTH_SESSION_COVERAGE_REFS:
-        _path, test_name = ref.split("::", 1)
-        if test_name not in test_functions:
-            return False
-    for ref in POC_AUTH_SESSION_SUCCESS_COVERAGE_REFS:
-        _path, test_name = ref.split("::", 1)
-        if not _test_function_matches_success_ref_expectation(
-            ref,
-            test_functions[test_name],
-            local_auth_token_helpers=local_auth_token_helpers,
-            trusted_status_helpers=trusted_status_helpers,
-            module_shadowed_http_constructor_names=(
-                module_shadowed_http_constructor_names
-            ),
-        ):
-            return False
-    for ref in POC_AUTH_SESSION_ENV_SUCCESS_COVERAGE_REFS:
-        _path, test_name = ref.split("::", 1)
-        if not _test_function_uses_env_auth_boundary(
-            test_functions[test_name],
-            local_auth_token_helpers=local_auth_token_helpers,
-            trusted_status_helpers=trusted_status_helpers,
-            module_shadowed_http_constructor_names=(
-                module_shadowed_http_constructor_names
-            ),
-        ):
-            return False
-    for ref in set(POC_AUTH_SESSION_SUCCESS_COVERAGE_REFS) - set(
-        POC_AUTH_SESSION_ENV_SUCCESS_COVERAGE_REFS
-    ):
-        _path, test_name = ref.split("::", 1)
-        if not _test_function_uses_direct_auth_boundary(
-            test_functions[test_name],
-            local_auth_token_helpers=local_auth_token_helpers,
-            trusted_status_helpers=trusted_status_helpers,
-            module_shadowed_http_constructor_names=(
-                module_shadowed_http_constructor_names
-            ),
-        ):
-            return False
-    for ref in POC_AUTH_SESSION_FAIL_CLOSED_COVERAGE_REFS:
-        _path, test_name = ref.split("::", 1)
-        if not _test_function_matches_fail_closed_ref_expectation(
-            ref,
-            test_functions[test_name],
-            local_auth_token_helpers=local_auth_token_helpers,
-            module_shadowed_http_constructor_names=(
-                module_shadowed_http_constructor_names
-            ),
-        ):
-            return False
-    return True
 
 
 @dataclass(frozen=True)
