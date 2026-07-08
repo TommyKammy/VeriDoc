@@ -397,7 +397,13 @@ def test_convert_uploaded_document_surfaces_review_items_and_download_payload() 
     assert downloaded["document_ir"]["blocks"][0]["review"]["requires_review"] is True
 
 
-def test_convert_uploaded_document_returns_artifact_manifest_contract() -> None:
+def test_convert_uploaded_document_returns_artifact_manifest_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("VERIDOC_STANDARD_OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("VERIDOC_STANDARD_MODEL", raising=False)
+    monkeypatch.delenv("VERIDOC_HIGH_QUALITY_OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("VERIDOC_HIGH_QUALITY_MODEL", raising=False)
     parser_output = {
         "pages": [
             {
@@ -438,13 +444,30 @@ def test_convert_uploaded_document_returns_artifact_manifest_contract() -> None:
         "source_sha256": result["hashes"]["source_sha256"],
         "conversion_mode": "auto",
         "conversion_settings": {
-            "use_llm": {"requested": False, "enabled": False, "status": "disabled"},
-            "use_ocr": {"requested": False, "enabled": False, "status": "disabled"},
+            "use_llm": {
+                "requested": False,
+                "enabled": False,
+                "status": "disabled",
+                "support_status": "not_configured",
+                "reason": "missing_configured_profile",
+                "message": "LLM conversion plan unavailable: no configured local LLM profile",
+            },
+            "use_ocr": {
+                "requested": False,
+                "enabled": False,
+                "status": "disabled",
+                "support_status": "unsupported",
+                "reason": "not_implemented",
+                "message": "OCR conversion setting is not implemented in the local PoC API",
+            },
         },
         "llm": {
             "requested": False,
             "enabled": False,
             "status": "disabled",
+            "support_status": "not_configured",
+            "reason": "missing_configured_profile",
+            "message": "LLM conversion plan unavailable: no configured local LLM profile",
             "model": None,
             "base_url_type": None,
             "prompt": {"id": "veridoc_conversion_plan", "version": "poc-08"},
@@ -518,6 +541,75 @@ def test_convert_uploaded_document_records_requested_upload_settings_metadata() 
         "template_version": 1,
         "name": "Batch Record",
     }
+
+
+def test_convert_uploaded_document_exposes_conversion_setting_support_states(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("VERIDOC_STANDARD_OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("VERIDOC_STANDARD_MODEL", raising=False)
+    monkeypatch.delenv("VERIDOC_HIGH_QUALITY_OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("VERIDOC_HIGH_QUALITY_MODEL", raising=False)
+    parser_output = {
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 320,
+                "height": 240,
+                "unit": "pt",
+                "fragments": [{"text": "Lot: SAMPLE-001", "confidence": 0.91}],
+            }
+        ]
+    }
+
+    disabled_result = convert_uploaded_document(
+        filename="phase0-output.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+    )
+    fallback_result = convert_uploaded_document(
+        filename="phase0-output.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+        use_llm=True,
+        use_ocr=True,
+    )
+
+    assert disabled_result["audit"]["conversion_settings"]["use_ocr"] == {
+        "requested": False,
+        "enabled": False,
+        "status": "disabled",
+        "support_status": "unsupported",
+        "reason": "not_implemented",
+        "message": "OCR conversion setting is not implemented in the local PoC API",
+    }
+    assert disabled_result["audit"]["conversion_settings"]["use_llm"] == {
+        "requested": False,
+        "enabled": False,
+        "status": "disabled",
+        "support_status": "not_configured",
+        "reason": "missing_configured_profile",
+        "message": "LLM conversion plan unavailable: no configured local LLM profile",
+    }
+    assert fallback_result["audit"]["conversion_settings"]["use_ocr"] == {
+        "requested": True,
+        "enabled": False,
+        "status": "unsupported",
+        "support_status": "unsupported",
+        "reason": "not_implemented",
+        "message": "OCR conversion setting is not implemented in the local PoC API",
+    }
+    assert fallback_result["audit"]["conversion_settings"]["use_llm"] == {
+        "requested": True,
+        "enabled": False,
+        "status": "blocked",
+        "support_status": "not_configured",
+        "reason": "missing_configured_profile",
+        "message": "LLM conversion plan unavailable: no configured local LLM profile",
+    }
+    assert fallback_result["audit"]["llm"]["support_status"] == "not_configured"
+    assert fallback_result["audit"]["llm"]["reason"] == "missing_configured_profile"
+    assert fallback_result["audit"]["llm"]["message"] == (
+        "LLM conversion plan unavailable: no configured local LLM profile"
+    )
 
 
 def test_convert_uploaded_document_uses_requested_output_format_for_primary_artifact() -> None:
@@ -646,12 +738,26 @@ def test_convert_uploaded_document_adopts_schema_valid_local_llm_plan(monkeypatc
         lambda: (FakeLocalLLMAdapter(), None),
     )
 
+    disabled_result = convert_uploaded_document(
+        filename="phase8-output.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+        use_llm=False,
+    )
     result = convert_uploaded_document(
         filename="phase8-output.json",
         content=json.dumps(parser_output).encode("utf-8"),
         use_llm=True,
     )
 
+    assert disabled_result["audit"]["conversion_settings"]["use_llm"] == {
+        "requested": False,
+        "enabled": False,
+        "status": "disabled",
+        "support_status": "available",
+    }
+    assert disabled_result["audit"]["llm"]["support_status"] == "available"
+    assert disabled_result["audit"]["llm"]["model"] == "fake-local-model"
+    assert disabled_result["audit"]["llm"]["base_url_type"] == "local"
     assert synthetic_inputs
     assert "Lot: SAMPLE-001" in synthetic_inputs[0]
     assert result["warnings"] == []
@@ -659,6 +765,7 @@ def test_convert_uploaded_document_adopts_schema_valid_local_llm_plan(monkeypatc
         "requested": True,
         "enabled": True,
         "status": "enabled",
+        "support_status": "available",
     }
     assert result["audit"]["conversion_plan"] == {
         "requested": True,
@@ -681,6 +788,7 @@ def test_convert_uploaded_document_adopts_schema_valid_local_llm_plan(monkeypatc
         "prompt": {"id": "veridoc_conversion_plan", "version": "poc-08"},
         "schema_version": 1,
         "parameters": {"max_tokens": 1024, "timeout_seconds": 30},
+        "support_status": "available",
     }
     assert result["document_ir"]["blocks"][0]["text"] == "Lot: SAMPLE-001"
     downloaded = json.loads(result["download"]["content"])
@@ -763,6 +871,8 @@ def test_convert_uploaded_document_falls_back_for_schema_invalid_local_llm_plan(
         "enabled": False,
         "status": "blocked",
         "reason": "schema_invalid",
+        "support_status": "invalid_configuration",
+        "message": "LLM conversion plan rejected: schema invalid",
     }
     assert result["audit"]["conversion_plan"] == {
         "requested": True,
@@ -842,6 +952,8 @@ def test_convert_uploaded_document_falls_back_when_local_llm_plan_raises_validat
         "enabled": False,
         "status": "blocked",
         "reason": "schema_invalid",
+        "support_status": "invalid_configuration",
+        "message": "LLM conversion plan rejected: schema invalid",
     }
     assert result["audit"]["conversion_plan"] == {
         "requested": True,
@@ -4557,6 +4669,9 @@ def test_convert_uploaded_pdf_preserves_ocr_low_confidence_from_v0_metadata(
         "requested": False,
         "enabled": False,
         "status": "disabled",
+        "support_status": "unsupported",
+        "reason": "not_implemented",
+        "message": "OCR conversion setting is not implemented in the local PoC API",
     }
     assert result["document_ir"]["blocks"][0]["extractor"]["name"] == "scanned_pdf_ocr"
     assert result["document_ir"]["blocks"][0]["review"]["requires_review"] is True
@@ -11193,8 +11308,17 @@ def test_poc_http_api_reflects_unavailable_llm_and_unsupported_ocr_settings(
             "enabled": False,
             "status": "blocked",
             "reason": "missing_configured_profile",
+            "support_status": "not_configured",
+            "message": "LLM conversion plan unavailable: no configured local LLM profile",
         },
-        "use_ocr": {"requested": True, "enabled": False, "status": "unsupported"},
+        "use_ocr": {
+            "requested": True,
+            "enabled": False,
+            "status": "unsupported",
+            "support_status": "unsupported",
+            "reason": "not_implemented",
+            "message": "OCR conversion setting is not implemented in the local PoC API",
+        },
     }
     assert (
         "LLM conversion plan fallback llm_fallback_unavailable: "
@@ -11245,6 +11369,7 @@ def test_poc_http_api_rejects_external_llm_endpoint_before_conversion(
                 ),
                 "conversion_mode": "auto",
                 "use_llm": True,
+                "use_ocr": True,
             }
         ).encode("utf-8")
         connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
@@ -11268,6 +11393,16 @@ def test_poc_http_api_rejects_external_llm_endpoint_before_conversion(
         "enabled": False,
         "status": "blocked",
         "reason": "non_local_endpoint",
+        "support_status": "rejected",
+        "message": "LLM conversion blocked: configured endpoint must be local-only",
+    }
+    assert body["audit"]["conversion_settings"]["use_ocr"] == {
+        "requested": True,
+        "enabled": False,
+        "status": "unsupported",
+        "support_status": "unsupported",
+        "reason": "not_implemented",
+        "message": "OCR conversion setting is not implemented in the local PoC API",
     }
     assert body["warnings"] == [
         "LLM conversion blocked: configured endpoint must be local-only"
@@ -11400,6 +11535,7 @@ def test_poc_http_api_allows_configured_local_llm_endpoint(
         "requested": True,
         "enabled": True,
         "status": "enabled",
+        "support_status": "available",
     }
     assert body["audit"]["conversion_plan"]["status"] == "adopted"
     assert body["audit"]["conversion_plan"]["plan"] == plan
@@ -11712,6 +11848,31 @@ def test_web_upload_settings_exposes_phase10_input_and_conversion_controls() -> 
     assert "output_format: directOutputFormat.value || undefined" in click_body
     assert "template_id: directTemplate.value || undefined" in click_body
     assert "updateUploadFormatStatus(file)" in html
+
+
+def test_web_upload_settings_distinguishes_unsupported_and_blocked_states() -> None:
+    html = Path("apps/web/index.html").read_text(encoding="utf-8")
+    parser = _PocUiRegionParser()
+    parser.feed(html)
+
+    assert "OCR is not implemented in this local PoC; enabling it records an unsupported request." in html
+    assert "LLM unset, local LLM unavailable, and external endpoint rejection are shown separately after conversion." in html
+    assert "External AI endpoints are rejected; document content stays on the local API boundary." in html
+    assert "GMP review is always required before operational use; local-only conversion does not certify GMP suitability." in html
+    assert 'id="conversion-setting-status"' in html
+    assert html.index('id="result-panel"') < html.index('id="conversion-setting-status"')
+    assert html.index('id="conversion-setting-status"') < html.index('id="direct-convert-error"')
+    assert "renderConversionSettingStatus(result.audit?.conversion_settings, result.audit?.llm)" in html
+    assert "function renderConversionSettingStatus(conversionSettings, llmAudit)" in html
+    assert 'if (!conversionSettings || typeof conversionSettings !== "object")' in html
+    assert "support_status" in html
+    assert "not_configured" in html
+    assert "runtime_unavailable" in html
+    assert "non_local_endpoint" in html
+    assert "placeholder_api_key" in html
+    assert "conversion_settings.use_llm.support_status" in parser.region_fields["conversion-settings"]
+    assert "conversion_settings.use_ocr.support_status" in parser.region_fields["conversion-settings"]
+    assert "llm.reason" in parser.region_fields["conversion-settings"]
 
 
 def test_web_direct_convert_defines_phase6_review_information_architecture() -> None:

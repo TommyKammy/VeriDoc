@@ -764,8 +764,9 @@ def _local_llm_conversion_plan_state(
     *,
     use_llm: bool,
 ) -> dict[str, Any]:
-    disabled_setting = {"requested": False, "enabled": False, "status": "disabled"}
     if not use_llm:
+        adapter, reason = _configured_llm_conversion_plan_adapter()
+        disabled_setting = _llm_conversion_setting(False, reason)
         return {
             "setting": disabled_setting,
             "warnings": [],
@@ -776,8 +777,8 @@ def _local_llm_conversion_plan_state(
             ),
             "llm_audit": _llm_audit(
                 setting=disabled_setting,
-                adapter=None,
-                parameters={},
+                adapter=adapter if reason is None else None,
+                parameters=_llm_adapter_audit_parameters(adapter) if reason is None else {},
             ),
         }
 
@@ -786,7 +787,12 @@ def _local_llm_conversion_plan_state(
         reason = rejection_reason or "missing_configured_profile"
         warning_code = _llm_fallback_warning_code(reason)
         return {
-            "setting": _blocked_conversion_setting(True, reason),
+            "setting": _blocked_conversion_setting(
+                True,
+                reason,
+                message=_llm_conversion_plan_warning(reason),
+                support_status=_llm_support_status(reason),
+            ),
             "warnings": [_llm_conversion_plan_fallback_warning(reason=reason, warning_code=warning_code)],
             "audit": _conversion_plan_audit(
                 requested=True,
@@ -801,6 +807,8 @@ def _local_llm_conversion_plan_state(
                     "enabled": False,
                     "status": "blocked",
                     "reason": reason,
+                    "support_status": _llm_support_status(reason),
+                    "message": _llm_conversion_plan_warning(reason),
                 },
                 adapter=None,
                 parameters={},
@@ -817,7 +825,12 @@ def _local_llm_conversion_plan_state(
         warning_code = _llm_fallback_warning_code(reason)
         rejected_plan = exc.plan if isinstance(exc.plan, dict) else plan
         return {
-            "setting": _blocked_conversion_setting(True, reason),
+            "setting": _blocked_conversion_setting(
+                True,
+                reason,
+                message=_llm_conversion_plan_warning(reason),
+                support_status=_llm_support_status(reason),
+            ),
             "warnings": [
                 _llm_conversion_plan_fallback_warning(reason=reason, warning_code=warning_code)
             ],
@@ -830,7 +843,12 @@ def _local_llm_conversion_plan_state(
                 plan=rejected_plan if isinstance(rejected_plan, dict) else None,
             ),
             "llm_audit": _llm_audit(
-                setting=_blocked_conversion_setting(True, reason),
+                setting=_blocked_conversion_setting(
+                    True,
+                    reason,
+                    message=_llm_conversion_plan_warning(reason),
+                    support_status=_llm_support_status(reason),
+                ),
                 adapter=adapter,
                 parameters=llm_parameters,
             ),
@@ -839,7 +857,12 @@ def _local_llm_conversion_plan_state(
         reason = _llm_plan_unavailable_reason(exc)
         warning_code = _llm_fallback_warning_code(reason)
         return {
-            "setting": _blocked_conversion_setting(True, reason),
+            "setting": _blocked_conversion_setting(
+                True,
+                reason,
+                message=_llm_conversion_plan_warning(reason),
+                support_status=_llm_support_status(reason),
+            ),
             "warnings": [_llm_conversion_plan_fallback_warning(reason=reason, warning_code=warning_code)],
             "audit": _conversion_plan_audit(
                 requested=True,
@@ -849,14 +872,19 @@ def _local_llm_conversion_plan_state(
                 warning_code=warning_code,
             ),
             "llm_audit": _llm_audit(
-                setting=_blocked_conversion_setting(True, reason),
+                setting=_blocked_conversion_setting(
+                    True,
+                    reason,
+                    message=_llm_conversion_plan_warning(reason),
+                    support_status=_llm_support_status(reason),
+                ),
                 adapter=adapter,
                 parameters=llm_parameters,
             ),
         }
 
     return {
-        "setting": {"requested": True, "enabled": True, "status": "enabled"},
+        "setting": _llm_conversion_setting(True, None, enabled=True),
         "warnings": [],
         "audit": _conversion_plan_audit(
             requested=True,
@@ -866,7 +894,7 @@ def _local_llm_conversion_plan_state(
             include_plan=True,
         ),
         "llm_audit": _llm_audit(
-            setting={"requested": True, "enabled": True, "status": "enabled"},
+            setting=_llm_conversion_setting(True, None, enabled=True),
             adapter=adapter,
             parameters=llm_parameters,
         ),
@@ -905,7 +933,7 @@ def _llm_audit(
     adapter: Any | None,
     parameters: dict[str, Any],
 ) -> dict[str, Any]:
-    return {
+    audit = {
         "requested": setting.get("requested") is True,
         "enabled": setting.get("enabled") is True,
         "status": setting.get("status"),
@@ -918,6 +946,10 @@ def _llm_audit(
         "schema_version": CONVERSION_PLAN_SCHEMA_VERSION,
         "parameters": sanitize_audit_parameters(parameters),
     }
+    for field_name in ("support_status", "reason", "message"):
+        if field_name in setting:
+            audit[field_name] = setting[field_name]
+    return audit
 
 
 def _llm_adapter_model(adapter: Any | None) -> str | None:
@@ -1178,7 +1210,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             conversion_mode = _validate_conversion_mode(request.get("conversion_mode"))
             use_llm = _validate_conversion_setting_boolean(request, "use_llm")
             use_ocr = _validate_conversion_setting_boolean(request, "use_ocr")
-            llm_rejection = _llm_configuration_rejection(use_llm=use_llm)
+            llm_rejection = _llm_configuration_rejection(use_llm=use_llm, use_ocr=use_ocr)
             if llm_rejection is not None:
                 self._send_json(llm_rejection, status=400)
                 return
@@ -4078,11 +4110,7 @@ def _conversion_settings(*, use_llm: bool, use_ocr: bool) -> dict[str, dict[str,
     validated_use_llm = _validate_conversion_setting_value(use_llm, "use_llm")
     validated_use_ocr = _validate_conversion_setting_value(use_ocr, "use_ocr")
     return {
-        "use_llm": {
-            "requested": validated_use_llm,
-            "enabled": False,
-            "status": "requested" if validated_use_llm else "disabled",
-        },
+        "use_llm": _llm_conversion_setting(validated_use_llm, None),
         "use_ocr": _unsupported_conversion_setting(validated_use_ocr),
     }
 
@@ -4092,19 +4120,75 @@ def _unsupported_conversion_setting(requested: bool) -> dict[str, Any]:
         "requested": requested,
         "enabled": False,
         "status": "unsupported" if requested else "disabled",
+        "support_status": "unsupported",
+        "reason": "not_implemented",
+        "message": UNSUPPORTED_CONVERSION_SETTING_WARNINGS["use_ocr"],
     }
 
 
-def _blocked_conversion_setting(requested: bool, reason: str) -> dict[str, Any]:
-    return {
+def _llm_conversion_setting(
+    requested: bool,
+    reason: str | None,
+    *,
+    enabled: bool = False,
+) -> dict[str, Any]:
+    if enabled:
+        return {
+            "requested": requested,
+            "enabled": True,
+            "status": "enabled",
+            "support_status": "available",
+        }
+    setting = {
+        "requested": requested,
+        "enabled": False,
+        "status": "requested" if requested else "disabled",
+    }
+    if reason is None:
+        setting["support_status"] = "available"
+        return setting
+    if reason is not None:
+        setting["support_status"] = _llm_support_status(reason)
+        setting["reason"] = reason
+        setting["message"] = _llm_conversion_plan_warning(reason)
+    return setting
+
+
+def _blocked_conversion_setting(
+    requested: bool,
+    reason: str,
+    *,
+    message: str | None = None,
+    support_status: str | None = None,
+) -> dict[str, Any]:
+    setting = {
         "requested": requested,
         "enabled": False,
         "status": "blocked",
         "reason": reason,
     }
+    if support_status is not None:
+        setting["support_status"] = support_status
+    if message is not None:
+        setting["message"] = message
+    return setting
 
 
-def _llm_configuration_rejection(*, use_llm: bool) -> dict[str, Any] | None:
+def _llm_support_status(reason: str | None) -> str:
+    if reason is None:
+        return "available"
+    if reason == "missing_configured_profile":
+        return "not_configured"
+    if reason == "runtime_unavailable":
+        return "runtime_unavailable"
+    if reason in {"non_local_endpoint", "placeholder_api_key"}:
+        return "rejected"
+    if reason == "missing_required_model":
+        return "not_configured"
+    return "invalid_configuration"
+
+
+def _llm_configuration_rejection(*, use_llm: bool, use_ocr: bool) -> dict[str, Any] | None:
     if not use_llm:
         return None
     reason = _configured_llm_rejection_reason()
@@ -4116,7 +4200,13 @@ def _llm_configuration_rejection(*, use_llm: bool) -> dict[str, Any] | None:
         "warnings": [_llm_configuration_warning(reason)],
         "audit": {
             "conversion_settings": {
-                "use_llm": _blocked_conversion_setting(True, reason),
+                "use_llm": _blocked_conversion_setting(
+                    True,
+                    reason,
+                    message=_llm_configuration_warning(reason),
+                    support_status=_llm_support_status(reason),
+                ),
+                "use_ocr": _unsupported_conversion_setting(use_ocr),
             }
         },
     }
