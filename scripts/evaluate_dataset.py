@@ -428,7 +428,9 @@ def _module_disables_test_collection(tree: ast.Module) -> bool:
             for target in targets
         ):
             continue
-        if isinstance(statement.value, ast.Constant) and statement.value.value is False:
+        if isinstance(statement.value, ast.Constant) and not bool(
+            statement.value.value
+        ):
             return True
     return False
 
@@ -440,7 +442,7 @@ def _function_test_opt_out_names(tree: ast.Module) -> frozenset[str]:
             continue
         if not (
             isinstance(statement.value, ast.Constant)
-            and statement.value.value is False
+            and not bool(statement.value.value)
         ):
             continue
         targets = (
