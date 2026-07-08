@@ -5445,6 +5445,42 @@ def test_poc_http_api_scopes_review_actions_by_conversion_role() -> None:
     assert approver_body["available_review_actions"] == ["edit", "approve"]
 
 
+def test_poc_http_api_reads_local_auth_tokens_from_env_for_review_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "VERIDOC_LOCAL_AUTH_TOKENS",
+        "reviewer:env-reviewer=env-reviewer-token",
+    )
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    store = ReviewAuditEventStore()
+    server.review_event_store = store
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        status, body = _post_review_event_on_connection(
+            connection,
+            _review_audit_event(
+                conversion_id="conversion-env-auth",
+                revised_text="Lot: SAMPLE-001 env corrected",
+            ),
+            role_token="env-reviewer-token",
+        )
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert status == 202
+    assert body["audit_event"]["actor"] == {
+        "id": "local-principal:env-reviewer",
+        "role": "reviewer",
+    }
+    assert [event["conversion_id"] for event in store.list_events()] == [
+        "conversion-env-auth"
+    ]
+
+
 def test_poc_http_api_excludes_no_auth_approval_action(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -6643,16 +6679,36 @@ def test_poc_http_api_rejects_no_auth_approval_before_workflow_validation(
 
 
 def test_poc_http_api_requires_configured_local_auth_token_for_review_events() -> None:
-    audit_event = _review_audit_event()
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    store = ReviewAuditEventStore()
+    server.review_event_store = store
+    server.local_auth_tokens = _local_auth_tokens()
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = json.dumps(_review_audit_event()).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/review-events",
+            body=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Content-Length": str(len(payload)),
+            },
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
 
-    status, body, events = _post_review_audit_event_with_store(audit_event, role_token=None)
-
-    assert status == 401
+    assert response.status == 401
     assert body == {
         "error": "auth_required",
         "message": "Authorization bearer token is required",
     }
-    assert events == []
+    assert store.list_events() == []
 
 
 def test_poc_http_api_rejects_role_token_without_principal_id() -> None:
