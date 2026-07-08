@@ -88,6 +88,7 @@ EXPECTED_GMP_ACCEPTANCE_SOD_SCOPE = (
 )
 EXPECTED_GMP_ACCEPTANCE_SOD_NO_AUTH_NOTE = "no-auth approval attempts are forbidden"
 POC_AUTH_SESSION_README_REF = "README.md Local PoC API authentication"
+POC_AUTH_SESSION_README_HEADING = "## Local PoC API authentication"
 POC_AUTH_SESSION_ENV_VAR = "VERIDOC_LOCAL_AUTH_TOKENS"
 POC_AUTH_SESSION_ENV_SUCCESS_COVERAGE_REFS = (
     "tests/test_poc_web_api.py::test_poc_http_api_reads_local_auth_tokens_from_env_for_review_success",
@@ -1237,6 +1238,12 @@ class _TrustedPocStatusHelper:
     payload_parameter: str
     payload_arg_position: int
     function_node: ast.FunctionDef | ast.AsyncFunctionDef
+
+
+@dataclass(frozen=True)
+class _PocAuthSessionEvidenceSources:
+    readme: str
+    test_source: str
 
 
 @dataclass(frozen=True)
@@ -2849,6 +2856,27 @@ def _poc_auth_session_direct_success_refs() -> tuple[str, ...]:
     )
 
 
+def _poc_auth_session_evidence_sources(
+    repo_root: Path,
+) -> _PocAuthSessionEvidenceSources | None:
+    try:
+        return _PocAuthSessionEvidenceSources(
+            readme=(repo_root / "README.md").read_text(encoding="utf-8"),
+            test_source=(repo_root / "tests" / "test_poc_web_api.py").read_text(
+                encoding="utf-8"
+            ),
+        )
+    except OSError:
+        return None
+
+
+def _poc_auth_session_readme_evidence_is_present(readme: str) -> bool:
+    return (
+        POC_AUTH_SESSION_README_HEADING in readme
+        and POC_AUTH_SESSION_ENV_VAR in readme
+    )
+
+
 def _poc_auth_session_evidence_context(
     test_source: str,
 ) -> _PocAuthSessionEvidenceContext | None:
@@ -2984,19 +3012,12 @@ def _poc_auth_session_validation_steps_are_present(
 
 
 def poc_auth_session_coverage_is_present(repo_root: Path = REPO_ROOT) -> bool:
-    readme_path = repo_root / "README.md"
-    test_path = repo_root / "tests" / "test_poc_web_api.py"
-    try:
-        readme = readme_path.read_text(encoding="utf-8")
-        test_source = test_path.read_text(encoding="utf-8")
-    except OSError:
+    sources = _poc_auth_session_evidence_sources(repo_root)
+    if sources is None:
         return False
-
-    if "## Local PoC API authentication" not in readme:
+    if not _poc_auth_session_readme_evidence_is_present(sources.readme):
         return False
-    if POC_AUTH_SESSION_ENV_VAR not in readme:
-        return False
-    context = _poc_auth_session_evidence_context(test_source)
+    context = _poc_auth_session_evidence_context(sources.test_source)
     if context is None:
         return False
     if not _poc_auth_session_required_refs_exist(context):
