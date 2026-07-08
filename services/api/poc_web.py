@@ -78,6 +78,7 @@ PRIMARY_ARTIFACT_FORMAT_BY_CONVERSION_MODE = {
     "word_to_excel": "xlsx",
     "excel_to_word": "docx",
 }
+DIRECT_CONVERT_OUTPUT_FORMATS = {"json", "docx", "xlsx"}
 DESKTOP_CLIENT_HEADER = "X-VeriDoc-Desktop-Client"
 DESKTOP_CLIENT_HEADER_VALUE = "VeriDocDesktop"
 DESKTOP_SAVE_PROOF_HEADER = "X-VeriDoc-Desktop-Save-Proof"
@@ -601,10 +602,14 @@ def convert_uploaded_document(
     conversion_mode: str = "auto",
     use_llm: bool = False,
     use_ocr: bool = False,
+    output_format: str | None = None,
+    template_id: str | None = None,
 ) -> dict[str, Any]:
     """Convert one uploaded PoC document into IR, review details, and download bytes."""
     safe_filename = _safe_filename(filename)
     selected_conversion_mode = _validate_conversion_mode(conversion_mode)
+    requested_output_format = _validate_direct_output_format(output_format)
+    requested_template_id = _validate_optional_template_id(template_id)
     conversion_settings = _conversion_settings(use_llm=use_llm, use_ocr=use_ocr)
     conversion_id = _conversion_id()
     source_sha256 = _sha256_hex(content)
@@ -671,6 +676,10 @@ def convert_uploaded_document(
         "warnings": {"count": len(warnings)},
         "review_items": {"count": len(review_items)},
     }
+    if requested_output_format is not None:
+        audit["requested_output_format"] = requested_output_format
+    if requested_template_id is not None:
+        audit["template_id"] = requested_template_id
     download_payload = {
         "document_ir": document_ir_dict,
         "validation": asdict(validation),
@@ -1169,6 +1178,8 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 conversion_mode=conversion_mode,
                 use_llm=use_llm,
                 use_ocr=use_ocr,
+                output_format=request.get("output_format"),
+                template_id=request.get("template_id"),
             )
         except PocServerDependencyError as exc:
             self._send_json(
@@ -3966,6 +3977,30 @@ def _validate_conversion_mode(value: Any) -> str:
     if mode not in CONVERSION_MODE_SOURCE_TYPES:
         raise ValueError(f"unsupported conversion_mode: {mode}")
     return mode
+
+
+def _validate_direct_output_format(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("output_format must be a string")
+    output_format = value.strip()
+    if not output_format:
+        return None
+    if output_format not in DIRECT_CONVERT_OUTPUT_FORMATS:
+        raise ValueError(f"unsupported output_format: {output_format}")
+    return output_format
+
+
+def _validate_optional_template_id(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("template_id must be a string")
+    template_id = value.strip()
+    if not template_id:
+        return None
+    return _validate_template_id(template_id)
 
 
 def _validate_conversion_setting_boolean(request: dict[str, Any], field_name: str) -> bool:

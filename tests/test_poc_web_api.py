@@ -491,6 +491,30 @@ def test_convert_uploaded_document_returns_artifact_manifest_contract() -> None:
     ]
 
 
+def test_convert_uploaded_document_records_requested_upload_settings_metadata() -> None:
+    parser_output = {
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 320,
+                "height": 240,
+                "unit": "pt",
+                "fragments": [{"text": "Lot: SAMPLE-001", "confidence": 0.91}],
+            }
+        ]
+    }
+
+    result = convert_uploaded_document(
+        filename="phase0-output.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+        output_format="docx",
+        template_id="batch-record",
+    )
+
+    assert result["audit"]["requested_output_format"] == "docx"
+    assert result["audit"]["template_id"] == "batch-record"
+
+
 def test_convert_uploaded_document_adopts_schema_valid_local_llm_plan(monkeypatch: pytest.MonkeyPatch) -> None:
     parser_output = {
         "pages": [
@@ -11445,6 +11469,56 @@ def test_web_direct_convert_selects_and_posts_llm_ocr_settings() -> None:
     assert "use_ocr: directUseOcr.checked" in html
     assert "use_llm" in parser.region_fields["conversion-settings"]
     assert "use_ocr" in parser.region_fields["conversion-settings"]
+
+
+def test_web_upload_settings_exposes_phase10_input_and_conversion_controls() -> None:
+    html = Path("apps/web/index.html").read_text(encoding="utf-8")
+    parser = _PocUiRegionParser()
+    parser.feed(html)
+    click_handler = re.search(
+        r'button\.addEventListener\("click", async \(\) => \{(?P<body>.*?)\n      \}\);',
+        html,
+        re.DOTALL,
+    )
+
+    expected_controls = [
+        'id="upload-dropzone"',
+        'id="upload-format-status"',
+        'id="direct-output-format"',
+        'id="direct-template"',
+        'id="direct-use-ocr"',
+        'id="direct-use-llm"',
+        'id="gmp-setting-notice"',
+        'id="unsupported-settings-note"',
+    ]
+    for control in expected_controls:
+        assert control in html
+
+    assert 'accept=".pdf,.docx,.xlsx,.json,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/json"' in html
+    assert '<option value="json">Audit/debug JSON</option>' in html
+    assert '<option value="docx">DOCX</option>' in html
+    assert '<option value="xlsx">XLSX</option>' in html
+    assert '<option value="">No template</option>' in html
+    assert "PDF / DOCX / XLSX" in html
+    assert "JSON is retained for audit/debug output, not required for choosing conversion settings." in html
+
+    assert "conversion-settings" in parser.region_fields
+    for field in [
+        "conversion_mode",
+        "output_format",
+        "template_id",
+        "use_llm",
+        "use_ocr",
+        "gmp_notice",
+        "unsupported_settings",
+    ]:
+        assert field in parser.region_fields["conversion-settings"]
+
+    assert click_handler is not None
+    click_body = click_handler.group("body")
+    assert "output_format: directOutputFormat.value" in click_body
+    assert "template_id: directTemplate.value || undefined" in click_body
+    assert "updateUploadFormatStatus(file)" in html
 
 
 def test_web_direct_convert_defines_phase6_review_information_architecture() -> None:

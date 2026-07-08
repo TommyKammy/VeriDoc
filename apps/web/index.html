@@ -283,6 +283,57 @@
         padding: 0;
       }
 
+      .upload-dropzone {
+        display: grid;
+        gap: 8px;
+        align-content: center;
+        min-height: 142px;
+        padding: 18px;
+        border: 1px dashed #aebbd0;
+        border-radius: 8px;
+        background: #f8fafc;
+      }
+
+      .upload-dropzone:focus-within,
+      .upload-dropzone.drag-over {
+        border-color: var(--brand);
+        background: #eef5ff;
+      }
+
+      .upload-dropzone strong {
+        color: #263243;
+      }
+
+      .upload-dropzone .page-status {
+        min-height: 0;
+      }
+
+      .setting-summary {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+        gap: 10px;
+        margin-top: 14px;
+      }
+
+      .setting-summary-item {
+        display: grid;
+        gap: 5px;
+        padding: 10px;
+        border: 1px solid #e5e9f0;
+        border-radius: 8px;
+        background: #f8fafc;
+      }
+
+      .setting-summary-item strong {
+        color: #263243;
+        font-size: 14px;
+      }
+
+      .setting-summary-item span {
+        color: var(--muted);
+        font-size: 13px;
+      }
+
       .table-wrap {
         overflow: auto;
         margin-top: 14px;
@@ -924,23 +975,38 @@
         <div class="screen-heading">
           <div>
             <h2 id="upload-title">Upload</h2>
-            <p>Submit a document or Phase0 JSON for direct conversion with explicit conversion settings.</p>
+            <p>Submit a PDF, Word, or Excel document and confirm the conversion settings before review.</p>
           </div>
         </div>
-        <h3 id="direct-title">Direct convert</h3>
-        <div class="form-grid" style="margin-top: 14px">
+        <div
+          id="upload-dropzone"
+          class="upload-dropzone"
+          data-poc-ui-region="upload"
+          data-api-fields="content_base64 document_ir source_filename source_type"
+        >
+          <strong>Drop a document here or choose a file</strong>
+          <div class="page-status">PDF / DOCX / XLSX are checked before conversion. Phase0 JSON remains supported for PoC replay.</div>
           <div
             class="field"
-            data-poc-ui-region="upload"
-            data-api-fields="content_base64 document_ir"
           >
             <label for="document-file">Document or Phase0 JSON</label>
-            <input id="document-file" type="file" />
+            <input
+              id="document-file"
+              type="file"
+              accept=".pdf,.docx,.xlsx,.json,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/json"
+            />
           </div>
+          <div id="upload-format-status" class="page-status" role="status">No file selected.</div>
+        </div>
+
+        <div
+          data-poc-ui-region="conversion-settings"
+          data-api-fields="conversion_mode output_format template_id use_llm use_ocr gmp_notice unsupported_settings"
+        >
+          <h3 id="direct-title" style="margin-top: 16px">Conversion settings</h3>
+          <div class="form-grid" style="margin-top: 14px">
           <div
             class="field"
-            data-poc-ui-region="conversion-settings"
-            data-api-fields="conversion_mode use_llm use_ocr"
           >
             <label for="direct-conversion-mode">Conversion mode</label>
             <select id="direct-conversion-mode">
@@ -951,15 +1017,48 @@
               <option value="excel_to_word">excel_to_word</option>
             </select>
           </div>
-          <div class="field setting-toggle" data-api-fields="use_llm">
+          <div class="field">
+            <label for="direct-output-format">Output format</label>
+            <select id="direct-output-format">
+              <option value="json">Audit/debug JSON</option>
+              <option value="docx">DOCX</option>
+              <option value="xlsx">XLSX</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="direct-template">Template</label>
+            <select id="direct-template">
+              <option value="">No template</option>
+            </select>
+          </div>
+          <div class="field setting-toggle">
             <label for="direct-use-llm">Use LLM</label>
             <input id="direct-use-llm" type="checkbox" />
           </div>
-          <div class="field setting-toggle" data-api-fields="use_ocr">
+          <div class="field setting-toggle">
             <label for="direct-use-ocr">Use OCR</label>
             <input id="direct-use-ocr" type="checkbox" />
           </div>
           <button id="convert-button" type="button">Convert now</button>
+          </div>
+          <div class="setting-summary">
+            <div class="setting-summary-item">
+              <strong>Format check</strong>
+              <span>PDF, DOCX, XLSX, and Phase0 JSON are accepted by the PoC upload route.</span>
+            </div>
+            <div class="setting-summary-item">
+              <strong>GMP注意</strong>
+              <span id="gmp-setting-notice">Conversion output requires operator review before GMP use.</span>
+            </div>
+            <div class="setting-summary-item">
+              <strong>Unsupported settings</strong>
+              <span id="unsupported-settings-note">OCR and template enforcement are displayed for P10-04 follow-up; unsupported settings remain disabled server-side.</span>
+            </div>
+            <div class="setting-summary-item">
+              <strong>JSON role</strong>
+              <span>JSON is retained for audit/debug output, not required for choosing conversion settings.</span>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -1180,7 +1279,11 @@
       };
 
       const input = document.querySelector("#document-file");
+      const uploadDropzone = document.querySelector("#upload-dropzone");
+      const uploadFormatStatus = document.querySelector("#upload-format-status");
       const directConversionMode = document.querySelector("#direct-conversion-mode");
+      const directOutputFormat = document.querySelector("#direct-output-format");
+      const directTemplate = document.querySelector("#direct-template");
       const directUseLlm = document.querySelector("#direct-use-llm");
       const directUseOcr = document.querySelector("#direct-use-ocr");
       const button = document.querySelector("#convert-button");
@@ -1260,8 +1363,23 @@
       input.addEventListener("change", () => {
         state.directConversionToken += 1;
         button.disabled = false;
+        updateUploadFormatStatus(input.files[0]);
         clearSourcePreview();
         clearReviewResult();
+      });
+      uploadDropzone.addEventListener("dragover", (event) => {
+        event.preventDefault();
+        uploadDropzone.classList.add("drag-over");
+      });
+      uploadDropzone.addEventListener("dragleave", () => {
+        uploadDropzone.classList.remove("drag-over");
+      });
+      uploadDropzone.addEventListener("drop", (event) => {
+        event.preventDefault();
+        uploadDropzone.classList.remove("drag-over");
+        if (!event.dataTransfer?.files?.length) return;
+        input.files = event.dataTransfer.files;
+        input.dispatchEvent(new Event("change", { bubbles: true }));
       });
       previewPageSelect.addEventListener("change", () => {
         state.previewPage = Number(previewPageSelect.value);
@@ -1287,6 +1405,8 @@
               filename: file.name,
               content_base64: contentBase64,
               conversion_mode: directConversionMode.value,
+              output_format: directOutputFormat.value,
+              template_id: directTemplate.value || undefined,
               use_llm: directUseLlm.checked,
               use_ocr: directUseOcr.checked,
             }),
@@ -1684,14 +1804,24 @@
         templateList.replaceChildren(...state.templates.map(renderTemplateItem));
         templatesEmpty.hidden = state.templates.length > 0;
         const selectedTemplate = jobTemplate.value;
+        const selectedDirectTemplate = directTemplate.value;
         jobTemplate.replaceChildren(
           option("none", ""),
           ...state.templates.map((template) =>
             option(`${template.name} v${template.current_version}`, template.template_id)
           )
         );
+        directTemplate.replaceChildren(
+          option("No template", ""),
+          ...state.templates.map((template) =>
+            option(`${template.name} v${template.current_version}`, template.template_id)
+          )
+        );
         if (state.templates.some((template) => template.template_id === selectedTemplate)) {
           jobTemplate.value = selectedTemplate;
+        }
+        if (state.templates.some((template) => template.template_id === selectedDirectTemplate)) {
+          directTemplate.value = selectedDirectTemplate;
         }
       }
 
@@ -1716,6 +1846,7 @@
         select.textContent = "Use for jobs";
         select.addEventListener("click", () => {
           jobTemplate.value = template.template_id;
+          directTemplate.value = template.template_id;
           setPageStatus(`Selected ${template.template_id} for new jobs.`);
         });
         const actions = document.createElement("div");
@@ -1782,6 +1913,19 @@
 
       function jsonText(value) {
         return JSON.stringify(value, null, 2);
+      }
+
+      function updateUploadFormatStatus(file) {
+        if (!file) {
+          uploadFormatStatus.textContent = "No file selected.";
+          return;
+        }
+        const extension = file.name.split(".").pop()?.toLowerCase() || "";
+        const allowed = ["pdf", "docx", "xlsx", "json"];
+        const label = allowed.includes(extension)
+          ? `${extension.toUpperCase()} accepted for local PoC conversion.`
+          : "Unsupported extension. Choose PDF, DOCX, XLSX, or Phase0 JSON.";
+        uploadFormatStatus.textContent = `${file.name}: ${label}`;
       }
 
       function option(label, value) {
