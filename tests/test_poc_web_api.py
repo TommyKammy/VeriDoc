@@ -11559,6 +11559,7 @@ def test_web_phase10_screens_own_migrated_poc_capabilities() -> None:
     expected_screen_regions = {
         "jobs": [
             "job_id",
+            "idempotency_key",
             "filename",
             "status",
             "mode",
@@ -11569,9 +11570,11 @@ def test_web_phase10_screens_own_migrated_poc_capabilities() -> None:
             "template",
             "template_name",
             "template_version",
+            "available_actions",
             "open_detail",
             "download_result",
             "retry_conversion",
+            "audit_event",
         ],
         "templates": [
             "template_id",
@@ -11592,6 +11595,12 @@ def test_web_phase10_screens_own_migrated_poc_capabilities() -> None:
             "risk_rank",
             "validation_rules",
             "output_mapping",
+            "change_history",
+            "content",
+            "created_at",
+            "updated_at",
+            "recorded_at",
+            "approval",
         ],
         "audit": [
             "job_id",
@@ -11603,6 +11612,17 @@ def test_web_phase10_screens_own_migrated_poc_capabilities() -> None:
             "occurred_at",
             "actor",
             "audit_events",
+            "audit_kind",
+            "sequence",
+            "event_hash",
+            "prev_event_hash",
+            "integrity_algorithm",
+            "conversion_id",
+            "source_page",
+            "source_bbox",
+            "original_text",
+            "revised_text",
+            "warnings",
         ],
     }
 
