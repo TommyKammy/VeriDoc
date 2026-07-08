@@ -12278,6 +12278,50 @@ def test_web_phase10_screens_own_migrated_poc_capabilities() -> None:
             assert region in parser.element_regions[element_id]
 
 
+def test_web_jobs_screen_renders_phase12_4_tracking_fields() -> None:
+    html = Path("apps/web/index.html").read_text(encoding="utf-8")
+
+    render_row = re.search(
+        r"function renderJobRow\(job\) \{(?P<body>.*?)\n      \}",
+        html,
+        re.DOTALL,
+    )
+    render_detail = re.search(
+        r"function renderDetail\(job\) \{(?P<body>.*?)\n      \}",
+        html,
+        re.DOTALL,
+    )
+
+    assert render_row is not None
+    assert render_detail is not None
+    row_body = render_row.group("body")
+    detail_body = render_detail.group("body")
+    for heading in (
+        "<th>Progress</th>",
+        "<th>Warnings</th>",
+        "<th>Artifacts</th>",
+        "<th>Retry</th>",
+    ):
+        assert heading in html
+    for detail_id in (
+        "detail-progress",
+        "detail-warnings",
+        "detail-artifacts",
+        "detail-retry-availability",
+    ):
+        assert f'id="{detail_id}"' in html
+    for field_name in (
+        "display_status",
+        "progress_percent",
+        "warning_count",
+        "has_result",
+        "available_actions",
+        "error",
+    ):
+        assert f"job.{field_name}" in row_body
+        assert f"job.{field_name}" in detail_body
+
+
 def test_web_direct_convert_download_uses_primary_artifact_before_debug_json() -> None:
     html = Path("apps/web/index.html").read_text(encoding="utf-8")
 
