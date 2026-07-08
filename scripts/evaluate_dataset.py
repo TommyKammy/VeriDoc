@@ -1301,6 +1301,15 @@ class _PocAuthInitialObservationScope:
     os_module_available: bool
 
 
+@dataclass(frozen=True)
+class _PocAuthStatementObservationScope:
+    active_monkeypatch_fixture_names: frozenset[str]
+    shadowed_local_auth_helper_names: frozenset[str]
+    shadowed_http_constructor_names: frozenset[str]
+    os_module_available: bool
+    visible_local_auth_token_helpers: dict[str, frozenset[str]]
+
+
 def _poc_auth_session_success_ref_expectation(
     ref: str,
 ) -> _PocAuthSessionSuccessRefExpectation | None:
@@ -1353,6 +1362,46 @@ def _initial_poc_auth_observation_scope(
         ),
         function_arg_names=function_arg_names,
         os_module_available="os" not in function_arg_names,
+    )
+
+
+def _poc_auth_statement_observation_scope_before_scan(
+    ordered_statement: _OrderedFunctionStatement,
+    *,
+    active_monkeypatch_fixture_names: Iterable[str],
+    shadowed_local_auth_helper_names: Iterable[str],
+    shadowed_http_constructor_names: Iterable[str],
+    local_auth_token_helpers: Mapping[str, frozenset[str]],
+    os_module_available: bool,
+) -> _PocAuthStatementObservationScope:
+    bound_names_before = ordered_statement.bound_names_before
+    next_active_monkeypatch_fixture_names = (
+        set(active_monkeypatch_fixture_names) - bound_names_before
+    )
+    next_shadowed_local_auth_helper_names = set(
+        shadowed_local_auth_helper_names
+    ) | (bound_names_before & frozenset(local_auth_token_helpers))
+    next_shadowed_http_constructor_names = set(shadowed_http_constructor_names) | (
+        bound_names_before & frozenset(("HTTPConnection", "http"))
+    )
+    next_os_module_available = (
+        False if "os" in bound_names_before else os_module_available
+    )
+    return _PocAuthStatementObservationScope(
+        active_monkeypatch_fixture_names=frozenset(
+            next_active_monkeypatch_fixture_names
+        ),
+        shadowed_local_auth_helper_names=frozenset(
+            next_shadowed_local_auth_helper_names
+        ),
+        shadowed_http_constructor_names=frozenset(
+            next_shadowed_http_constructor_names
+        ),
+        os_module_available=next_os_module_available,
+        visible_local_auth_token_helpers=_visible_local_auth_token_helpers(
+            local_auth_token_helpers,
+            next_shadowed_local_auth_helper_names,
+        ),
     )
 
 
@@ -1983,24 +2032,29 @@ def _authenticated_success_status_observations(
 
     for ordered_statement in _ordered_function_statements(node.body):
         statement = ordered_statement.statement
-        if "os" in ordered_statement.bound_names_before:
-            os_module_available = False
-        shadowed_http_constructor_names.update(
-            ordered_statement.bound_names_before
-            & frozenset(("HTTPConnection", "http"))
+        statement_scope = _poc_auth_statement_observation_scope_before_scan(
+            ordered_statement,
+            active_monkeypatch_fixture_names=active_monkeypatch_fixture_names,
+            shadowed_local_auth_helper_names=shadowed_local_auth_helper_names,
+            shadowed_http_constructor_names=shadowed_http_constructor_names,
+            local_auth_token_helpers=local_auth_token_helpers,
+            os_module_available=os_module_available,
         )
-        active_monkeypatch_fixture_names.difference_update(
-            ordered_statement.bound_names_before
+        os_module_available = statement_scope.os_module_available
+        shadowed_http_constructor_names = set(
+            statement_scope.shadowed_http_constructor_names
         )
-        shadowed_local_auth_helper_names.update(
-            ordered_statement.bound_names_before & frozenset(local_auth_token_helpers)
+        active_monkeypatch_fixture_names = set(
+            statement_scope.active_monkeypatch_fixture_names
+        )
+        shadowed_local_auth_helper_names = set(
+            statement_scope.shadowed_local_auth_helper_names
         )
         shadowed_trusted_status_helper_names.update(
             ordered_statement.bound_names_before & frozenset(trusted_status_helpers)
         )
-        visible_local_auth_token_helpers = _visible_local_auth_token_helpers(
-            local_auth_token_helpers,
-            shadowed_local_auth_helper_names,
+        visible_local_auth_token_helpers = (
+            statement_scope.visible_local_auth_token_helpers
         )
         response_connections_seen = _response_connections_seen(statement)
         response_connections_recorded: set[str] = set()
@@ -2607,21 +2661,26 @@ def _asserted_status_observations(
     os_module_available = initial_scope.os_module_available
     for ordered_statement in _ordered_function_statements(node.body):
         statement = ordered_statement.statement
-        if "os" in ordered_statement.bound_names_before:
-            os_module_available = False
-        shadowed_http_constructor_names.update(
-            ordered_statement.bound_names_before
-            & frozenset(("HTTPConnection", "http"))
+        statement_scope = _poc_auth_statement_observation_scope_before_scan(
+            ordered_statement,
+            active_monkeypatch_fixture_names=active_monkeypatch_fixture_names,
+            shadowed_local_auth_helper_names=shadowed_local_auth_helper_names,
+            shadowed_http_constructor_names=shadowed_http_constructor_names,
+            local_auth_token_helpers=local_auth_token_helpers,
+            os_module_available=os_module_available,
         )
-        active_monkeypatch_fixture_names.difference_update(
-            ordered_statement.bound_names_before
+        os_module_available = statement_scope.os_module_available
+        shadowed_http_constructor_names = set(
+            statement_scope.shadowed_http_constructor_names
         )
-        shadowed_local_auth_helper_names.update(
-            ordered_statement.bound_names_before & frozenset(local_auth_token_helpers)
+        active_monkeypatch_fixture_names = set(
+            statement_scope.active_monkeypatch_fixture_names
         )
-        visible_local_auth_token_helpers = _visible_local_auth_token_helpers(
-            local_auth_token_helpers,
-            shadowed_local_auth_helper_names,
+        shadowed_local_auth_helper_names = set(
+            statement_scope.shadowed_local_auth_helper_names
+        )
+        visible_local_auth_token_helpers = (
+            statement_scope.visible_local_auth_token_helpers
         )
         response_connections_seen = _response_connections_seen(statement)
         response_connections_recorded: set[str] = set()
