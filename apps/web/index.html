@@ -1001,7 +1001,7 @@
 
         <div
           data-poc-ui-region="conversion-settings"
-          data-api-fields="conversion_mode output_format template_id use_llm use_ocr gmp_notice unsupported_settings"
+          data-api-fields="conversion_mode output_format template_id use_llm use_ocr gmp_notice unsupported_settings conversion_settings conversion_settings.use_llm conversion_settings.use_llm.status conversion_settings.use_llm.support_status conversion_settings.use_llm.reason conversion_settings.use_ocr conversion_settings.use_ocr.status conversion_settings.use_ocr.support_status conversion_settings.use_ocr.reason llm llm.status llm.support_status llm.reason"
         >
           <h3 id="direct-title" style="margin-top: 16px">Conversion settings</h3>
           <div class="form-grid" style="margin-top: 14px">
@@ -1049,17 +1049,26 @@
             </div>
             <div class="setting-summary-item">
               <strong>GMP注意</strong>
-              <span id="gmp-setting-notice">Conversion output requires operator review before GMP use.</span>
+              <span id="gmp-setting-notice">GMP review is always required before operational use; local-only conversion does not certify GMP suitability.</span>
             </div>
             <div class="setting-summary-item">
               <strong>Unsupported settings</strong>
-              <span id="unsupported-settings-note">OCR and template enforcement are displayed for P10-04 follow-up; unsupported settings remain disabled server-side.</span>
+              <span id="unsupported-settings-note">OCR is not implemented in this local PoC; enabling it records an unsupported request.</span>
+            </div>
+            <div class="setting-summary-item">
+              <strong>LLM / endpoint status</strong>
+              <span>LLM unset, local LLM unavailable, and external endpoint rejection are shown separately after conversion.</span>
+            </div>
+            <div class="setting-summary-item">
+              <strong>Local-only boundary</strong>
+              <span>External AI endpoints are rejected; document content stays on the local API boundary.</span>
             </div>
             <div class="setting-summary-item">
               <strong>JSON role</strong>
               <span>JSON is retained for audit/debug output, not required for choosing conversion settings.</span>
             </div>
           </div>
+          <div id="conversion-setting-status" class="empty" hidden></div>
         </div>
       </section>
 
@@ -2113,6 +2122,7 @@
           ? result.available_review_actions.filter((action) => typeof action === "string")
           : [];
         clearDirectConvertError();
+        renderConversionSettingStatus(result.audit?.conversion_settings, result.audit?.llm);
         status.textContent = result.status;
         status.className = `status ${result.status}`;
         renderTopLevelWarnings(result.warnings || []);
@@ -2151,6 +2161,10 @@
         status.className = "status blocked";
         directConvertError.textContent = sanitizedUserMessage(errorPayload);
         directConvertError.hidden = false;
+        renderConversionSettingStatus(
+          errorPayload.audit?.conversion_settings,
+          errorPayload.audit?.llm
+        );
         renderTopLevelWarnings(warnings);
         reviewList.replaceChildren();
         reviewActionStatus.textContent = "";
@@ -2345,6 +2359,7 @@
       function clearReviewResult() {
         clearPreview();
         clearDirectConvertError();
+        clearConversionSettingStatus();
         clearTopLevelWarnings();
         reviewList.replaceChildren();
         state.reviewAuditEvents = [];
@@ -2361,6 +2376,55 @@
       function clearDirectConvertError() {
         directConvertError.textContent = "";
         directConvertError.hidden = true;
+      }
+
+      function clearConversionSettingStatus() {
+        const statusPanel = document.querySelector("#conversion-setting-status");
+        statusPanel.replaceChildren();
+        statusPanel.hidden = true;
+      }
+
+      function renderConversionSettingStatus(conversionSettings, llmAudit) {
+        const statusPanel = document.querySelector("#conversion-setting-status");
+        statusPanel.replaceChildren();
+        const useLlm = conversionSettings?.use_llm || {};
+        const useOcr = conversionSettings?.use_ocr || {};
+        const items = [
+          conversionSettingLine("OCR", useOcr),
+          conversionSettingLine("LLM", { ...useLlm, ...llmAudit }),
+        ].filter(Boolean);
+        if (!items.length) {
+          statusPanel.hidden = true;
+          return;
+        }
+        statusPanel.replaceChildren(...items);
+        statusPanel.hidden = false;
+      }
+
+      function conversionSettingLine(label, setting) {
+        const wrapper = document.createElement("div");
+        const statusText = setting.status || "unknown";
+        const supportStatus = setting.support_status || "unknown";
+        const reason = setting.reason || statusText;
+        wrapper.textContent = `${label}: ${conversionSupportLabel(supportStatus, reason)} (${statusText})`;
+        return wrapper;
+      }
+
+      function conversionSupportLabel(supportStatus, reason) {
+        if (supportStatus === "available") return "available locally";
+        if (supportStatus === "unsupported") return "unsupported in this PoC";
+        if (supportStatus === "not_configured") return "LLM not configured";
+        if (supportStatus === "runtime_unavailable" || reason === "runtime_unavailable") {
+          return "local LLM unavailable";
+        }
+        if (
+          supportStatus === "rejected" ||
+          reason === "non_local_endpoint" ||
+          reason === "placeholder_api_key"
+        ) {
+          return "external endpoint or untrusted credential rejected";
+        }
+        return reason || supportStatus || "unknown";
       }
 
       function clearTopLevelWarnings() {
