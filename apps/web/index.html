@@ -1020,6 +1020,7 @@
           <div class="field">
             <label for="direct-output-format">Output format</label>
             <select id="direct-output-format">
+              <option value="">Primary artifact from mode</option>
               <option value="json">Audit/debug JSON</option>
               <option value="docx">DOCX</option>
               <option value="xlsx">XLSX</option>
@@ -1405,7 +1406,7 @@
               filename: file.name,
               content_base64: contentBase64,
               conversion_mode: directConversionMode.value,
-              output_format: directOutputFormat.value,
+              output_format: directOutputFormat.value || undefined,
               template_id: directTemplate.value || undefined,
               use_llm: directUseLlm.checked,
               use_ocr: directUseOcr.checked,

@@ -11684,9 +11684,13 @@ def test_web_upload_settings_exposes_phase10_input_and_conversion_controls() -> 
         assert control in html
 
     assert 'accept=".pdf,.docx,.xlsx,.json,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/json"' in html
+    assert '<option value="">Primary artifact from mode</option>' in html
     assert '<option value="json">Audit/debug JSON</option>' in html
     assert '<option value="docx">DOCX</option>' in html
     assert '<option value="xlsx">XLSX</option>' in html
+    assert html.index('<option value="">Primary artifact from mode</option>') < html.index(
+        '<option value="json">Audit/debug JSON</option>'
+    )
     assert '<option value="">No template</option>' in html
     assert "PDF / DOCX / XLSX" in html
     assert "JSON is retained for audit/debug output, not required for choosing conversion settings." in html
@@ -11705,7 +11709,7 @@ def test_web_upload_settings_exposes_phase10_input_and_conversion_controls() -> 
 
     assert click_handler is not None
     click_body = click_handler.group("body")
-    assert "output_format: directOutputFormat.value" in click_body
+    assert "output_format: directOutputFormat.value || undefined" in click_body
     assert "template_id: directTemplate.value || undefined" in click_body
     assert "updateUploadFormatStatus(file)" in html
 
