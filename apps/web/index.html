@@ -1913,6 +1913,12 @@
         activateScreen(appScreenIds.has(hashScreen) ? hashScreen : "dashboard");
       }
 
+      function navigateToScreen(screenId) {
+        const targetScreen = appScreenIds.has(screenId) ? screenId : "dashboard";
+        location.hash = targetScreen;
+        activateScreen(targetScreen);
+      }
+
       function activateScreen(screenId) {
         appScreens.forEach((screen) => {
           screen.hidden = screen.dataset.appScreen !== screenId;
@@ -1955,8 +1961,8 @@
         reviewActionStatus.textContent = "";
         resultPanel.hidden = false;
         rawPanel.hidden = false;
+        navigateToScreen("review");
         renderSourcePreview(result);
-        location.hash = "review";
       }
 
       function renderDirectConvertError(errorPayload) {
@@ -1979,7 +1985,7 @@
         clearPreview();
         resultPanel.hidden = false;
         rawPanel.hidden = true;
-        location.hash = "review";
+        navigateToScreen("review");
       }
 
       function sanitizedUserMessage(errorPayload) {
