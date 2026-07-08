@@ -87,9 +87,15 @@ EXPECTED_GMP_ACCEPTANCE_SOD_SCOPE = (
     "review approval flows with authenticated actor identity"
 )
 EXPECTED_GMP_ACCEPTANCE_SOD_NO_AUTH_NOTE = "no-auth approval attempts are forbidden"
+POC_AUTH_SESSION_README_PATH = Path("README.md")
+POC_AUTH_SESSION_TEST_PATH = Path("tests/test_poc_web_api.py")
 POC_AUTH_SESSION_README_REF = "README.md Local PoC API authentication"
 POC_AUTH_SESSION_README_HEADING = "## Local PoC API authentication"
 POC_AUTH_SESSION_ENV_VAR = "VERIDOC_LOCAL_AUTH_TOKENS"
+POC_AUTH_SESSION_README_REQUIRED_SNIPPETS = (
+    POC_AUTH_SESSION_README_HEADING,
+    POC_AUTH_SESSION_ENV_VAR,
+)
 POC_AUTH_SESSION_ENV_SUCCESS_COVERAGE_REFS = (
     "tests/test_poc_web_api.py::test_poc_http_api_reads_local_auth_tokens_from_env_for_review_success",
 )
@@ -160,8 +166,8 @@ POC_AUTH_SESSION_FAIL_CLOSED_REF_EXPECTATIONS = {
     },
 }
 POC_AUTH_SESSION_COVERAGE_INPUT_PATHS = (
-    Path("README.md"),
-    Path("tests/test_poc_web_api.py"),
+    POC_AUTH_SESSION_README_PATH,
+    POC_AUTH_SESSION_TEST_PATH,
 )
 POC_AUTH_SESSION_SUCCESS_TOKEN_LITERALS = frozenset(
     ("env-reviewer-token", "reviewer-token", "approver-token", "admin-token")
@@ -2861,8 +2867,10 @@ def _poc_auth_session_evidence_sources(
 ) -> _PocAuthSessionEvidenceSources | None:
     try:
         return _PocAuthSessionEvidenceSources(
-            readme=(repo_root / "README.md").read_text(encoding="utf-8"),
-            test_source=(repo_root / "tests" / "test_poc_web_api.py").read_text(
+            readme=(repo_root / POC_AUTH_SESSION_README_PATH).read_text(
+                encoding="utf-8"
+            ),
+            test_source=(repo_root / POC_AUTH_SESSION_TEST_PATH).read_text(
                 encoding="utf-8"
             ),
         )
@@ -2871,9 +2879,8 @@ def _poc_auth_session_evidence_sources(
 
 
 def _poc_auth_session_readme_evidence_is_present(readme: str) -> bool:
-    return (
-        POC_AUTH_SESSION_README_HEADING in readme
-        and POC_AUTH_SESSION_ENV_VAR in readme
+    return all(
+        snippet in readme for snippet in POC_AUTH_SESSION_README_REQUIRED_SNIPPETS
     )
 
 
