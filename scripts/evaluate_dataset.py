@@ -348,13 +348,35 @@ def _module_is_skipped_or_xfailed(tree: ast.Module) -> bool:
     return False
 
 
+def _module_has_pytestmark(tree: ast.Module) -> bool:
+    for statement in tree.body:
+        if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
+            continue
+        targets = (
+            statement.targets
+            if isinstance(statement, ast.Assign)
+            else (statement.target,)
+        )
+        if any(
+            isinstance(target, ast.Name) and target.id == "pytestmark"
+            for target in targets
+        ):
+            return True
+    return False
+
+
 def _module_has_top_level_skip_call(tree: ast.Module) -> bool:
     for statement in tree.body:
-        if not isinstance(statement, ast.Expr) or not isinstance(
-            statement.value, ast.Call
-        ):
+        if _statement_has_pytest_module_skip_call(statement):
+            return True
+    return False
+
+
+def _statement_has_pytest_module_skip_call(statement: ast.stmt) -> bool:
+    for child in _walk_statement_without_nested_scopes(statement):
+        if not isinstance(child, ast.Call):
             continue
-        if _dotted_name(statement.value.func) in {
+        if _dotted_name(child.func) in {
             "pytest.skip",
             "pytest.importorskip",
             "skip",
@@ -373,6 +395,7 @@ def _test_function_nodes(
         return {}
     if (
         _module_is_skipped_or_xfailed(tree)
+        or _module_has_pytestmark(tree)
         or _module_has_top_level_skip_call(tree)
         or _module_disables_test_collection(tree)
     ):
@@ -387,6 +410,7 @@ def _test_function_nodes(
             node,
             empty_parametrize_names=empty_parametrize_names,
         )
+        and not _test_function_has_unresolved_fixture_args(node)
     }
 
 
@@ -534,12 +558,16 @@ def _decorator_parametrizes_names(
     node: ast.AST,
     names: frozenset[str],
 ) -> bool:
+    return bool(_decorator_parametrized_names(node) & names)
+
+
+def _decorator_parametrized_names(node: ast.AST) -> frozenset[str]:
     if not isinstance(node, ast.Call):
-        return False
+        return frozenset()
     if _dotted_name(node.func) not in {"pytest.mark.parametrize", "parametrize"}:
-        return False
+        return frozenset()
     if not node.args:
-        return False
+        return frozenset()
     arg_names: set[str] = set()
     first_arg = node.args[0]
     if isinstance(first_arg, ast.Constant) and isinstance(first_arg.value, str):
@@ -553,7 +581,7 @@ def _decorator_parametrizes_names(
             value = _constant_string_value(element)
             if value is not None:
                 arg_names.add(value)
-    return bool(arg_names & names)
+    return frozenset(arg_names)
 
 
 def _function_arg_names(node: ast.FunctionDef | ast.AsyncFunctionDef) -> frozenset[str]:
@@ -596,6 +624,22 @@ def _function_accepts_no_arguments(
         _function_required_positional_arg_count(node) == 0
         and not _function_required_keyword_only_arg_names(node)
     )
+
+
+def _function_parametrized_arg_names(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> frozenset[str]:
+    names: set[str] = set()
+    for decorator in node.decorator_list:
+        names.update(_decorator_parametrized_names(decorator))
+    return frozenset(names)
+
+
+def _test_function_has_unresolved_fixture_args(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> bool:
+    allowed_args = frozenset(("monkeypatch",)) | _function_parametrized_arg_names(node)
+    return bool(_function_arg_names(node) - allowed_args)
 
 
 def _call_satisfies_function_signature(
