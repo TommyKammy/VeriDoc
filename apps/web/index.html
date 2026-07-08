@@ -744,7 +744,7 @@
             class="app-screen"
             data-app-screen="jobs"
             data-poc-ui-region="jobs"
-            data-api-fields="job_id idempotency_key filename status mode updated_at attempts error template_id template template_name template_version available_actions open_detail download_result retry_conversion audit_event"
+            data-api-fields="job_id idempotency_key filename status mode updated_at attempts error template_id template template.name template_version available_actions open_detail download_result retry_conversion audit_event"
             aria-labelledby="jobs-screen-title"
             hidden
           >
@@ -1044,7 +1044,7 @@
             class="app-screen panel"
             data-app-screen="audit"
             data-poc-ui-region="audit"
-            data-api-fields="job_id document_id block_id action job_events review_events occurred_at actor audit_events audit_kind sequence event_hash prev_event_hash integrity_algorithm conversion_id source_page source_bbox original_text revised_text warnings"
+            data-api-fields="job_id document_id block_id action job_events event_type job_status source_sha256 output_sha256 download_filename size_bytes content_type review_events occurred_at actor audit_events audit_kind sequence event_hash prev_event_hash integrity_algorithm conversion_id source_page source_bbox original_text revised_text warnings"
             aria-labelledby="audit-title"
             hidden
           >
