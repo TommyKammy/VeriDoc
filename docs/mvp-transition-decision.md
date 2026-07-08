@@ -32,10 +32,14 @@ behavior, or failed representative conversion row blocks promotion.
 - Re-run `python3 scripts/evaluate_dataset.py --poc-acceptance-report` and
   require `overall_status: pass` before treating Phase 9 as implementation
   ready.
-- Resolve all representative conversion harness failures. The regenerated
-  harness records 12 of 16 representative conversion rows completing and 4
-  rows still failing or failing closed. Those rows remain explicit MVP-before
-  gate blockers, not successful artifact output.
+- Resolve all representative conversion harness failures. In the local
+  evaluation environment with PDF evaluation dependencies installed, the
+  regenerated harness records 12 of 16 representative conversion rows
+  completing and 4 rows still failing or failing closed. In a supported clean
+  checkout without those optional PDF evaluation dependencies, the same command
+  fail-closes the PDF dependency rows and records 8 of 16 rows completing.
+  Both outcomes remain explicit MVP-before gate blockers, not successful
+  artifact output.
 - Require primary artifact structure/source expectations to pass for the target
   MVP modes. Current Word/Excel representative artifact expectations pass;
   `pdf_to_word` and record-PDF rows now produce audited conversion evidence in
@@ -103,7 +107,7 @@ GMP production use.
 
 | P9-03 item | Current status | MVP classification | Required disposition |
 | --- | --- | --- | --- |
-| `functionality` | fail | MVP-before required | 12 of 16 representative rows complete, but `pdf_to_excel` and `scanned_pdf_ocr` are still not accepted representative modes. |
+| `functionality` | fail | MVP-before required | 12 of 16 representative rows complete in the local PDF-enabled evaluation environment; without optional PDF evaluation dependencies, the supported clean-checkout baseline is 8 of 16 complete. `pdf_to_excel`, dependency-gated PDF rows, and `scanned_pdf_ocr` are still not accepted representative modes. |
 | `structured_output` | fail | MVP-before required | Word/Excel, `pdf_to_word`, and record-PDF rows now produce primary artifacts, but `pdf_to_excel` still misses expected table cells and the scanned/OCR representative fixture remains unavailable. |
 | `logs` | fail | MVP-before required | Every harness outcome must carry audit evidence; the scanned/OCR fail-closed rows still lack conversion audit evidence. |
 | `llm_control` | fail | MVP-before required | The acceptance report requires plan agreement 1.0, confirmed-value agreement 1.0, schema failure rate 0.0, deterministic fallback rate 0.0, unstable examples 0, harness LLM scenario failures 0, and external AI API guard violations 0. Current synthetic runs miss the stability thresholds while external-AI guard evidence remains green. |
