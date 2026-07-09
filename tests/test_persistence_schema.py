@@ -230,6 +230,24 @@ def test_persistence_repository_rejects_missing_bindings_and_keeps_state_clean(
     assert repository.get_conversion_job("job-orphan") is None
 
 
+def test_persistence_repository_ignores_internal_columns_when_hydrating_rows(tmp_path) -> None:
+    repository = SQLitePersistenceRepository(tmp_path / "veridoc.sqlite3")
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+
+    loaded = repository._get_one(
+        Document,
+        """
+        SELECT source_documents.*, 'internal-only' AS schema_internal_marker
+        FROM source_documents
+        WHERE document_id = ?
+        """,
+        (document.document_id,),
+    )
+
+    assert loaded == document
+
+
 def test_persistence_repository_rejects_cross_scope_relationships(tmp_path) -> None:
     repository = SQLitePersistenceRepository(tmp_path / "veridoc.sqlite3")
     repository.initialize()

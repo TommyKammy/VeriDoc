@@ -7,7 +7,7 @@ import re
 import sqlite3
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TypeVar
@@ -753,7 +753,10 @@ def reset_database(db_path: str | os.PathLike[str] | None = None) -> None:
 
 
 def _row_to_dataclass(record_type: type[RecordT], row: sqlite3.Row) -> RecordT:
-    return record_type(**{key: row[key] for key in row.keys()})
+    row_keys = set(row.keys())
+    return record_type(
+        **{field.name: row[field.name] for field in fields(record_type) if field.name in row_keys}
+    )
 
 
 def _utc_now() -> str:
