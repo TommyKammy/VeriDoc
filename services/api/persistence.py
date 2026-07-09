@@ -257,8 +257,61 @@ class SQLitePersistenceRepository:
             (job_id,),
         )
 
+    def create_or_get_conversion_job(
+        self,
+        *,
+        job_id: str,
+        document_id: str,
+        idempotency_key: str,
+        mode: str,
+        status: str,
+        attempts: int = 0,
+    ) -> ConversionJob:
+        _require_non_empty(
+            job_id=job_id,
+            document_id=document_id,
+            idempotency_key=idempotency_key,
+            mode=mode,
+            status=status,
+        )
+        if attempts < 0:
+            raise ValueError("attempts must not be negative")
+        now = _utc_now()
+        with self._connection_scope(immediate=True) as connection:
+            existing = connection.execute(
+                "SELECT * FROM jobs WHERE idempotency_key = ?",
+                (idempotency_key,),
+            ).fetchone()
+            if existing is not None:
+                if existing["document_id"] != document_id or existing["mode"] != mode:
+                    raise ValueError(
+                        "idempotency_key already bound to different job parameters"
+                    )
+                return _row_to_dataclass(ConversionJob, existing)
+            return self._insert_and_get_from_connection(
+                connection,
+                ConversionJob,
+                """
+                INSERT INTO jobs(
+                    job_id, document_id, idempotency_key, mode, status, attempts,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (job_id, document_id, idempotency_key, mode, status, attempts, now, now),
+                "SELECT * FROM jobs WHERE job_id = ?",
+                (job_id,),
+            )
+
     def get_conversion_job(self, job_id: str) -> ConversionJob | None:
         return self._get_one(ConversionJob, "SELECT * FROM jobs WHERE job_id = ?", (job_id,))
+
+    def get_conversion_job_by_idempotency_key(self, idempotency_key: str) -> ConversionJob | None:
+        _require_non_empty(idempotency_key=idempotency_key)
+        return self._get_one(
+            ConversionJob,
+            "SELECT * FROM jobs WHERE idempotency_key = ?",
+            (idempotency_key,),
+        )
 
     def create_job_event(
         self,
@@ -949,7 +1002,14 @@ def _require_job_event_payload_matches(
         "actor": actor,
     }
     for field_name, expected_value in expected.items():
-        if field_name in payload and payload[field_name] != expected_value:
+        if field_name not in payload:
+            continue
+        payload_value = payload[field_name]
+        if field_name == "actor" and isinstance(payload_value, Mapping):
+            if "id" in payload_value and payload_value["id"] != expected_value:
+                raise ValueError("payload actor.id must match the job event row")
+            continue
+        if payload_value != expected_value:
             raise ValueError(f"payload {field_name} must match the job event row")
 
 
@@ -995,7 +1055,7 @@ def _require_audit_event_payload_matches(
 
 
 def _canonical_json(payload: Mapping[str, Any]) -> str:
-    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def _validate_database_path(db_path: Path) -> Path:

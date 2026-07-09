@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 
@@ -245,6 +246,52 @@ def test_persistence_repository_rejects_missing_bindings_and_keeps_state_clean(
     assert repository.get_conversion_job("job-orphan") is None
 
 
+def test_persistence_repository_preserves_idempotent_job_replays(tmp_path) -> None:
+    repository = SQLitePersistenceRepository(tmp_path / "veridoc.sqlite3")
+    repository.initialize()
+    document_a = _create_document(repository, "doc-a")
+    document_b = _create_document(repository, "doc-b")
+
+    created = repository.create_or_get_conversion_job(
+        job_id="job-original",
+        document_id=document_a.document_id,
+        idempotency_key="upload-replay",
+        mode="standard",
+        status="queued",
+    )
+    replayed = repository.create_or_get_conversion_job(
+        job_id="job-retry",
+        document_id=document_a.document_id,
+        idempotency_key="upload-replay",
+        mode="standard",
+        status="queued",
+    )
+
+    assert replayed == created
+    assert repository.get_conversion_job("job-retry") is None
+    assert repository.get_conversion_job_by_idempotency_key("upload-replay") == created
+
+    with pytest.raises(ValueError, match="idempotency_key already bound"):
+        repository.create_or_get_conversion_job(
+            job_id="job-wrong-document",
+            document_id=document_b.document_id,
+            idempotency_key="upload-replay",
+            mode="standard",
+            status="queued",
+        )
+    with pytest.raises(ValueError, match="idempotency_key already bound"):
+        repository.create_or_get_conversion_job(
+            job_id="job-wrong-mode",
+            document_id=document_a.document_id,
+            idempotency_key="upload-replay",
+            mode="high-quality",
+            status="queued",
+        )
+
+    assert repository.get_conversion_job("job-wrong-document") is None
+    assert repository.get_conversion_job("job-wrong-mode") is None
+
+
 def test_persistence_repository_ignores_internal_columns_when_hydrating_rows(tmp_path) -> None:
     repository = SQLitePersistenceRepository(tmp_path / "veridoc.sqlite3")
     repository.initialize()
@@ -369,6 +416,43 @@ def test_persistence_repository_rejects_conflicting_job_event_payload_fields(tmp
                 payload=payload,
             )
         assert repository.get_job_event(event_id) is None
+
+
+def test_persistence_repository_allows_nested_job_event_actor_payload(tmp_path) -> None:
+    repository = SQLitePersistenceRepository(tmp_path / "veridoc.sqlite3")
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+
+    event = repository.create_job_event(
+        event_id="event-authenticated",
+        job_id=job.job_id,
+        event_type="job.queued",
+        actor="operator-1",
+        payload={
+            "event_type": "job.queued",
+            "actor": {"id": "operator-1", "role": "reviewer"},
+        },
+    )
+
+    assert event.actor == "operator-1"
+    assert json.loads(event.payload_json) == {
+        "actor": {"id": "operator-1", "role": "reviewer"},
+        "event_type": "job.queued",
+    }
+
+    with pytest.raises(ValueError, match="payload actor.id"):
+        repository.create_job_event(
+            event_id="event-wrong-actor",
+            job_id=job.job_id,
+            event_type="job.queued",
+            actor="operator-1",
+            payload={
+                "event_type": "job.queued",
+                "actor": {"id": "operator-2", "role": "reviewer"},
+            },
+        )
+    assert repository.get_job_event("event-wrong-actor") is None
 
 
 def test_source_and_generated_artifacts_share_global_identity_keys(tmp_path) -> None:
@@ -509,6 +593,50 @@ def test_persistence_repository_uses_existing_audit_integrity_algorithm(tmp_path
             integrity_algorithm="sha256",
         )
     assert repository.get_audit_event("audit-old-algorithm") is None
+
+
+def test_persistence_repository_uses_utf8_canonical_json_for_audit_hashes(tmp_path) -> None:
+    repository = SQLitePersistenceRepository(tmp_path / "veridoc.sqlite3")
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+
+    audit_event = repository.create_audit_event(
+        event_id="audit-non-ascii",
+        job_id=job.job_id,
+        document_id=document.document_id,
+        actor="担当者-1",
+        action="document.uploaded",
+        scope_type="document",
+        scope_id=document.document_id,
+        payload={
+            "actor": {"id": "担当者-1", "role": "審査"},
+            "event_type": "document.uploaded",
+        },
+    )
+    hash_input = {
+        "action": audit_event.action,
+        "actor": audit_event.actor,
+        "created_at": audit_event.created_at,
+        "document_id": audit_event.document_id,
+        "event_id": audit_event.event_id,
+        "integrity_algorithm": audit_event.integrity_algorithm,
+        "job_id": audit_event.job_id,
+        "payload_json": audit_event.payload_json,
+        "prev_event_hash": audit_event.prev_event_hash,
+        "scope_id": audit_event.scope_id,
+        "scope_type": audit_event.scope_type,
+        "sequence": audit_event.sequence,
+    }
+    canonical = json.dumps(
+        hash_input,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+
+    assert "\\u" not in audit_event.payload_json
+    assert audit_event.event_hash == hashlib.sha256(canonical).hexdigest()
 
 
 def test_review_decision_scope_is_enforced_by_database_constraints(tmp_path) -> None:
