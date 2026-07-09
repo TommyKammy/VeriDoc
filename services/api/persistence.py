@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 
-SCHEMA_VERSION = "20260709_01_minimal_phase11_schema"
+SCHEMA_VERSION = "20260709_02_source_artifact_scope"
 AUDIT_INTEGRITY_ALGORITHM = "sha256-canonical-json-chain-v1"
 SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -33,6 +33,18 @@ class Document:
     uploaded_by: str
     created_at: str
     updated_at: str
+
+
+@dataclass(frozen=True)
+class SourceArtifact:
+    artifact_id: str
+    document_id: str
+    storage_key: str
+    content_hash: str
+    source_type: str
+    original_filename: str
+    uploaded_by: str
+    created_at: str
 
 
 @dataclass(frozen=True)
@@ -195,36 +207,63 @@ class SQLitePersistenceRepository:
         )
         _require_sha256(content_hash, field_name="content_hash")
         now = _utc_now()
-        return self._insert_and_get(
-            Document,
-            """
-            INSERT INTO source_documents(
-                document_id, source_type, original_filename, source_artifact_id,
-                source_storage_key, content_hash, status, uploaded_by, created_at,
-                updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                document_id,
-                source_type,
-                original_filename,
-                source_artifact_id,
-                source_storage_key,
-                content_hash,
-                status,
-                uploaded_by,
-                now,
-                now,
-            ),
-            "SELECT * FROM source_documents WHERE document_id = ?",
-            (document_id,),
-        )
+        with self._connection_scope(immediate=True) as connection:
+            connection.execute(
+                """
+                INSERT INTO source_artifacts(
+                    artifact_id, document_id, storage_key, content_hash, source_type,
+                    original_filename, uploaded_by, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    source_artifact_id,
+                    document_id,
+                    source_storage_key,
+                    content_hash,
+                    source_type,
+                    original_filename,
+                    uploaded_by,
+                    now,
+                ),
+            )
+            return self._insert_and_get_from_connection(
+                connection,
+                Document,
+                """
+                INSERT INTO source_documents(
+                    document_id, source_type, original_filename, source_artifact_id,
+                    source_storage_key, content_hash, status, uploaded_by, created_at,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    document_id,
+                    source_type,
+                    original_filename,
+                    source_artifact_id,
+                    source_storage_key,
+                    content_hash,
+                    status,
+                    uploaded_by,
+                    now,
+                    now,
+                ),
+                "SELECT * FROM source_documents WHERE document_id = ?",
+                (document_id,),
+            )
 
     def get_document(self, document_id: str) -> Document | None:
         return self._get_one(
             Document,
             "SELECT * FROM source_documents WHERE document_id = ?",
             (document_id,),
+        )
+
+    def get_source_artifact(self, artifact_id: str) -> SourceArtifact | None:
+        return self._get_one(
+            SourceArtifact,
+            "SELECT * FROM source_artifacts WHERE artifact_id = ?",
+            (artifact_id,),
         )
 
     def create_conversion_job(
@@ -901,6 +940,12 @@ class SQLitePersistenceRepository:
                 (scope_id,),
             ).fetchone()
             expected = {"document_id": document_id}
+        elif scope_type == "source_artifact":
+            row = connection.execute(
+                "SELECT document_id FROM source_artifacts WHERE artifact_id = ?",
+                (scope_id,),
+            ).fetchone()
+            expected = {"document_id": document_id}
         elif scope_type in {"job", "conversion_job"}:
             row = connection.execute(
                 "SELECT job_id, document_id FROM jobs WHERE job_id = ?",
@@ -1228,6 +1273,7 @@ _AUDIT_EVENT_TYPE_CATEGORIES = {
 _AUDIT_SCOPE_ID_ALIASES = {
     "document": frozenset({"document_id", "source_document_id"}),
     "source_document": frozenset({"document_id", "source_document_id"}),
+    "source_artifact": frozenset({"artifact_id", "source_artifact_id"}),
     "job": frozenset({"job_id", "conversion_job_id"}),
     "conversion_job": frozenset({"job_id", "conversion_job_id"}),
     "job_event": frozenset({"job_event_id"}),
@@ -1401,6 +1447,21 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
     applied_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS source_artifacts (
+    artifact_id TEXT NOT NULL PRIMARY KEY CHECK(length(trim(artifact_id)) > 0),
+    document_id TEXT NOT NULL UNIQUE CHECK(length(trim(document_id)) > 0),
+    storage_key TEXT NOT NULL UNIQUE CHECK(length(trim(storage_key)) > 0),
+    content_hash TEXT NOT NULL CHECK(
+        length(content_hash) = 64
+        AND content_hash NOT GLOB '*[^0-9a-f]*'
+    ),
+    source_type TEXT NOT NULL,
+    original_filename TEXT NOT NULL,
+    uploaded_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(artifact_id, document_id, storage_key, content_hash)
+);
+
 CREATE TABLE IF NOT EXISTS source_documents (
     document_id TEXT NOT NULL PRIMARY KEY CHECK(length(trim(document_id)) > 0),
     source_type TEXT NOT NULL,
@@ -1414,7 +1475,10 @@ CREATE TABLE IF NOT EXISTS source_documents (
     status TEXT NOT NULL,
     uploaded_by TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(source_artifact_id, document_id, source_storage_key, content_hash)
+        REFERENCES source_artifacts(artifact_id, document_id, storage_key, content_hash)
+        ON DELETE RESTRICT
 );
 
 CREATE TABLE IF NOT EXISTS jobs (
@@ -1563,6 +1627,33 @@ BEGIN
     SELECT RAISE(ABORT, 'record must reference matching parent rows');
 END;
 
+CREATE TRIGGER IF NOT EXISTS source_documents_source_artifact_reference_insert
+BEFORE INSERT ON source_documents
+WHEN NOT EXISTS (
+    SELECT 1 FROM source_artifacts
+    WHERE source_artifacts.artifact_id = NEW.source_artifact_id
+      AND source_artifacts.document_id = NEW.document_id
+      AND source_artifacts.storage_key = NEW.source_storage_key
+      AND source_artifacts.content_hash = NEW.content_hash
+)
+BEGIN
+    SELECT RAISE(ABORT, 'source document must reference matching source artifact');
+END;
+
+CREATE TRIGGER IF NOT EXISTS source_documents_source_artifact_reference_update
+BEFORE UPDATE OF source_artifact_id, document_id, source_storage_key, content_hash
+ON source_documents
+WHEN NOT EXISTS (
+    SELECT 1 FROM source_artifacts
+    WHERE source_artifacts.artifact_id = NEW.source_artifact_id
+      AND source_artifacts.document_id = NEW.document_id
+      AND source_artifacts.storage_key = NEW.source_storage_key
+      AND source_artifacts.content_hash = NEW.content_hash
+)
+BEGIN
+    SELECT RAISE(ABORT, 'source document must reference matching source artifact');
+END;
+
 CREATE TRIGGER IF NOT EXISTS job_events_parent_reference_insert
 BEFORE INSERT ON job_events
 WHEN NOT EXISTS (
@@ -1645,6 +1736,17 @@ WHEN NOT (
             SELECT 1 FROM source_documents
             WHERE source_documents.document_id = NEW.scope_id
               AND source_documents.document_id = NEW.document_id
+        )
+    )
+    OR (
+        NEW.scope_type = 'source_artifact'
+        AND EXISTS (
+            SELECT 1
+            FROM source_artifacts
+            JOIN jobs ON jobs.job_id = NEW.job_id
+            WHERE source_artifacts.artifact_id = NEW.scope_id
+              AND source_artifacts.document_id = NEW.document_id
+              AND jobs.document_id = source_artifacts.document_id
         )
     )
     OR (
@@ -1751,6 +1853,27 @@ CREATE TRIGGER IF NOT EXISTS audit_events_no_delete
 BEFORE DELETE ON audit_events
 BEGIN
     SELECT RAISE(ABORT, 'audit events are append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS source_artifacts_no_update
+BEFORE UPDATE ON source_artifacts
+BEGIN
+    SELECT RAISE(ABORT, 'source artifacts are immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS source_artifacts_no_delete
+BEFORE DELETE ON source_artifacts
+WHEN EXISTS (
+    SELECT 1 FROM source_documents
+    WHERE source_documents.source_artifact_id = OLD.artifact_id
+)
+OR EXISTS (
+    SELECT 1 FROM audit_events
+    WHERE audit_events.scope_type = 'source_artifact'
+      AND audit_events.scope_id = OLD.artifact_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'source artifacts referenced by provenance cannot be deleted');
 END;
 
 CREATE TRIGGER IF NOT EXISTS source_documents_audit_scope_no_delete
@@ -2016,6 +2139,26 @@ BEGIN
     SELECT RAISE(ABORT, 'source artifact id must be globally unique');
 END;
 
+CREATE TRIGGER IF NOT EXISTS source_artifacts_artifact_id_global_insert
+BEFORE INSERT ON source_artifacts
+WHEN EXISTS (
+    SELECT 1 FROM generated_artifacts
+    WHERE generated_artifacts.artifact_id = NEW.artifact_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'source artifact id must be globally unique');
+END;
+
+CREATE TRIGGER IF NOT EXISTS source_artifacts_artifact_id_global_update
+BEFORE UPDATE OF artifact_id ON source_artifacts
+WHEN EXISTS (
+    SELECT 1 FROM generated_artifacts
+    WHERE generated_artifacts.artifact_id = NEW.artifact_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'source artifact id must be globally unique');
+END;
+
 CREATE TRIGGER IF NOT EXISTS source_documents_artifact_id_global_update
 BEFORE UPDATE OF source_artifact_id ON source_documents
 WHEN EXISTS (
@@ -2036,6 +2179,26 @@ BEGIN
     SELECT RAISE(ABORT, 'source storage key must be globally unique');
 END;
 
+CREATE TRIGGER IF NOT EXISTS source_artifacts_storage_key_global_insert
+BEFORE INSERT ON source_artifacts
+WHEN EXISTS (
+    SELECT 1 FROM generated_artifacts
+    WHERE generated_artifacts.storage_key = NEW.storage_key
+)
+BEGIN
+    SELECT RAISE(ABORT, 'source storage key must be globally unique');
+END;
+
+CREATE TRIGGER IF NOT EXISTS source_artifacts_storage_key_global_update
+BEFORE UPDATE OF storage_key ON source_artifacts
+WHEN EXISTS (
+    SELECT 1 FROM generated_artifacts
+    WHERE generated_artifacts.storage_key = NEW.storage_key
+)
+BEGIN
+    SELECT RAISE(ABORT, 'source storage key must be globally unique');
+END;
+
 CREATE TRIGGER IF NOT EXISTS source_documents_storage_key_global_update
 BEFORE UPDATE OF source_storage_key ON source_documents
 WHEN EXISTS (
@@ -2049,8 +2212,8 @@ END;
 CREATE TRIGGER IF NOT EXISTS generated_artifacts_artifact_id_global_insert
 BEFORE INSERT ON generated_artifacts
 WHEN EXISTS (
-    SELECT 1 FROM source_documents
-    WHERE source_documents.source_artifact_id = NEW.artifact_id
+    SELECT 1 FROM source_artifacts
+    WHERE source_artifacts.artifact_id = NEW.artifact_id
 )
 BEGIN
     SELECT RAISE(ABORT, 'generated artifact id must be globally unique');
@@ -2059,8 +2222,8 @@ END;
 CREATE TRIGGER IF NOT EXISTS generated_artifacts_artifact_id_global_update
 BEFORE UPDATE OF artifact_id ON generated_artifacts
 WHEN EXISTS (
-    SELECT 1 FROM source_documents
-    WHERE source_documents.source_artifact_id = NEW.artifact_id
+    SELECT 1 FROM source_artifacts
+    WHERE source_artifacts.artifact_id = NEW.artifact_id
 )
 BEGIN
     SELECT RAISE(ABORT, 'generated artifact id must be globally unique');
@@ -2069,8 +2232,8 @@ END;
 CREATE TRIGGER IF NOT EXISTS generated_artifacts_storage_key_global_insert
 BEFORE INSERT ON generated_artifacts
 WHEN EXISTS (
-    SELECT 1 FROM source_documents
-    WHERE source_documents.source_storage_key = NEW.storage_key
+    SELECT 1 FROM source_artifacts
+    WHERE source_artifacts.storage_key = NEW.storage_key
 )
 BEGIN
     SELECT RAISE(ABORT, 'generated storage key must be globally unique');
@@ -2079,8 +2242,8 @@ END;
 CREATE TRIGGER IF NOT EXISTS generated_artifacts_storage_key_global_update
 BEFORE UPDATE OF storage_key ON generated_artifacts
 WHEN EXISTS (
-    SELECT 1 FROM source_documents
-    WHERE source_documents.source_storage_key = NEW.storage_key
+    SELECT 1 FROM source_artifacts
+    WHERE source_artifacts.storage_key = NEW.storage_key
 )
 BEGIN
     SELECT RAISE(ABORT, 'generated storage key must be globally unique');
@@ -2096,6 +2259,7 @@ DROP TABLE IF EXISTS conversion_results;
 DROP TABLE IF EXISTS job_events;
 DROP TABLE IF EXISTS jobs;
 DROP TABLE IF EXISTS source_documents;
+DROP TABLE IF EXISTS source_artifacts;
 DROP TABLE IF EXISTS schema_migrations;
 """
 
@@ -2110,6 +2274,7 @@ __all__ = [
     "ReviewDecision",
     "ReviewItem",
     "SQLitePersistenceRepository",
+    "SourceArtifact",
     "default_database_path",
     "initialize_database",
     "reset_database",

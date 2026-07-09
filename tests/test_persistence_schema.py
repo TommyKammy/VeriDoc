@@ -18,6 +18,7 @@ from services.api.persistence import (
     ReviewDecision,
     ReviewItem,
     SQLitePersistenceRepository,
+    SourceArtifact,
 )
 
 
@@ -105,6 +106,7 @@ def test_persistence_repository_initializes_and_reads_minimal_schema(tmp_path) -
         status="uploaded",
         uploaded_by="operator-1",
     )
+    source_artifact = repository.get_source_artifact(document.source_artifact_id)
     job = repository.create_conversion_job(
         job_id="job-1",
         document_id=document.document_id,
@@ -178,6 +180,16 @@ def test_persistence_repository_initializes_and_reads_minimal_schema(tmp_path) -
     )
 
     assert repository.get_document("doc-1") == document
+    assert source_artifact == SourceArtifact(
+        artifact_id=document.source_artifact_id,
+        document_id=document.document_id,
+        storage_key=document.source_storage_key,
+        content_hash=document.content_hash,
+        source_type=document.source_type,
+        original_filename=document.original_filename,
+        uploaded_by=document.uploaded_by,
+        created_at=document.created_at,
+    )
     assert repository.get_conversion_job("job-1") == job
     assert repository.get_job_event("job-event-1") == job_event
     assert repository.list_job_events(job.job_id) == [job_event]
@@ -428,6 +440,80 @@ def test_persistence_repository_ignores_internal_columns_when_hydrating_rows(tmp
     )
 
     assert loaded == document
+
+
+def test_source_documents_require_bound_source_artifacts_at_database_boundary(
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "veridoc.sqlite3"
+    repository = SQLitePersistenceRepository(db_path)
+    repository.initialize()
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        with pytest.raises(sqlite3.IntegrityError, match="source artifact"):
+            connection.execute(
+                """
+                INSERT INTO source_documents(
+                    document_id, source_type, original_filename, source_artifact_id,
+                    source_storage_key, content_hash, status, uploaded_by, created_at,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "doc-orphan-source-artifact",
+                    "pdf",
+                    "orphan.pdf",
+                    "source-artifact-orphan",
+                    "uploads/orphan.pdf",
+                    VALID_HASH,
+                    "uploaded",
+                    "operator-1",
+                    "2026-07-09T00:00:00+00:00",
+                    "2026-07-09T00:00:00+00:00",
+                ),
+            )
+
+    assert repository.get_document("doc-orphan-source-artifact") is None
+
+
+def test_source_artifacts_are_valid_audit_scopes_for_upload_provenance(
+    tmp_path,
+) -> None:
+    repository = SQLitePersistenceRepository(tmp_path / "veridoc.sqlite3")
+    repository.initialize()
+    document_a = _create_document(repository, "doc-a")
+    document_b = _create_document(repository, "doc-b")
+    job_a = _create_job(repository, document_a, "job-a")
+    job_b = _create_job(repository, document_b, "job-b")
+
+    audit_event = repository.create_audit_event(
+        event_id="audit-source-artifact",
+        job_id=job_a.job_id,
+        document_id=document_a.document_id,
+        actor="operator-1",
+        action="document.uploaded",
+        scope_type="source_artifact",
+        scope_id=document_a.source_artifact_id,
+        payload={
+            "event_type": "document.uploaded",
+            "source_artifact_id": document_a.source_artifact_id,
+        },
+    )
+
+    with pytest.raises(ValueError, match="audit scope must match"):
+        repository.create_audit_event(
+            event_id="audit-source-artifact-mixed",
+            job_id=job_b.job_id,
+            document_id=document_b.document_id,
+            actor="operator-1",
+            action="document.uploaded",
+            scope_type="source_artifact",
+            scope_id=document_a.source_artifact_id,
+            payload={"event_type": "document.uploaded"},
+        )
+
+    assert repository.get_audit_event(audit_event.event_id) == audit_event
 
 
 def test_persistence_repository_rejects_cross_scope_relationships(tmp_path) -> None:
