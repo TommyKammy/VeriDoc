@@ -516,6 +516,38 @@ def test_source_artifacts_are_valid_audit_scopes_for_upload_provenance(
     assert repository.get_audit_event(audit_event.event_id) == audit_event
 
 
+def test_source_artifacts_reject_orphan_documents_at_database_boundary(
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "veridoc.sqlite3"
+    repository = SQLitePersistenceRepository(db_path)
+    repository.initialize()
+
+    with pytest.raises(sqlite3.IntegrityError):
+        with sqlite3.connect(db_path) as connection:
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute(
+                """
+                INSERT INTO source_artifacts(
+                    artifact_id, document_id, storage_key, content_hash, source_type,
+                    original_filename, uploaded_by, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "source-artifact-orphan",
+                    "missing-document",
+                    "uploads/orphan.pdf",
+                    VALID_HASH,
+                    "pdf",
+                    "orphan.pdf",
+                    "operator-1",
+                    "2026-07-09T00:00:00+00:00",
+                ),
+            )
+
+    assert repository.get_source_artifact("source-artifact-orphan") is None
+
+
 def test_persistence_repository_rejects_cross_scope_relationships(tmp_path) -> None:
     repository = SQLitePersistenceRepository(tmp_path / "veridoc.sqlite3")
     repository.initialize()
@@ -2280,6 +2312,99 @@ def test_source_document_provenance_fields_are_non_empty_at_schema_boundary(
                 )
 
 
+def test_lifecycle_and_artifact_text_contracts_are_enforced_at_schema_boundary(
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "veridoc.sqlite3"
+    repository = SQLitePersistenceRepository(db_path)
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+    result = _create_result(repository, job, "result-1")
+    created_at = "2026-07-09T00:00:00+00:00"
+
+    cases = (
+        (
+            """
+            INSERT INTO jobs(
+                job_id, document_id, idempotency_key, mode, status, attempts,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "job-blank-mode",
+                document.document_id,
+                "upload-blank-mode",
+                "",
+                "queued",
+                0,
+                created_at,
+                created_at,
+            ),
+        ),
+        (
+            """
+            INSERT INTO generated_artifacts(
+                artifact_id, result_id, job_id, document_id, category, format,
+                storage_key, content_hash, retention_state, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "artifact-blank-storage",
+                result.result_id,
+                job.job_id,
+                document.document_id,
+                "generated",
+                "docx",
+                "",
+                "c" * 64,
+                "active",
+                created_at,
+                created_at,
+            ),
+        ),
+        (
+            """
+            INSERT INTO job_events(
+                event_id, job_id, sequence, event_type, actor, payload_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "job-event-blob-payload",
+                job.job_id,
+                1,
+                "job.queued",
+                "operator-1",
+                sqlite3.Binary(b"{}"),
+                created_at,
+            ),
+        ),
+        (
+            """
+            INSERT INTO conversion_results(
+                result_id, job_id, document_id, status, content_hash,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "result-blob-hash",
+                job.job_id,
+                document.document_id,
+                "succeeded",
+                sqlite3.Binary(b"b" * 64),
+                created_at,
+                created_at,
+            ),
+        ),
+    )
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        for sql, params in cases:
+            with pytest.raises(sqlite3.IntegrityError):
+                connection.execute(sql, params)
+
+
 def test_audit_event_sequences_must_be_stored_as_integers(tmp_path) -> None:
     db_path = tmp_path / "veridoc.sqlite3"
     repository = SQLitePersistenceRepository(db_path)
@@ -2707,6 +2832,106 @@ def test_review_decision_scope_is_enforced_by_database_constraints(tmp_path) -> 
 
     assert repository.get_conversion_result(result_a.result_id) == result_a
     assert repository.get_review_decision("decision-mixed-db") is None
+
+
+def test_review_decision_audit_scope_binds_actor_and_action(tmp_path) -> None:
+    repository = SQLitePersistenceRepository(tmp_path / "veridoc.sqlite3")
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+    result = _create_result(repository, job, "result-1")
+    artifact = _create_artifact(repository, result, "artifact-1")
+    review_item = repository.create_review_item(
+        review_item_id="review-item-1",
+        document_id=document.document_id,
+        job_id=job.job_id,
+        target_path="sections[0]",
+        status="open",
+        severity="medium",
+    )
+    review_decision = repository.create_review_decision(
+        decision_id="decision-1",
+        review_item_id=review_item.review_item_id,
+        artifact_id=artifact.artifact_id,
+        actor="qa-approver",
+        role="approver",
+        decision="approved",
+    )
+
+    for event_id, actor, action, message in (
+        ("audit-wrong-actor", "mallory", "review.approved", "actor"),
+        ("audit-wrong-action", "qa-approver", "review.rejected", "action"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            repository.create_audit_event(
+                event_id=event_id,
+                job_id=job.job_id,
+                document_id=document.document_id,
+                actor=actor,
+                action=action,
+                scope_type="review_decision",
+                scope_id=review_decision.decision_id,
+                payload={"event_type": action},
+            )
+
+
+def test_create_audit_event_rejects_existing_corrupt_chain_before_append(
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "veridoc.sqlite3"
+    repository = SQLitePersistenceRepository(db_path)
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+    created_at = "2026-07-09T00:00:00+00:00"
+    payload_json = persistence._canonical_json(
+        {
+            "action": "document.uploaded",
+            "actor": "operator-1",
+            "scope_id": document.document_id,
+            "scope_type": "document",
+        }
+    )
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute(
+            """
+            INSERT INTO audit_events(
+                event_id, job_id, document_id, sequence, integrity_algorithm, actor,
+                action, scope_type, scope_id, event_hash, prev_event_hash,
+                payload_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "audit-corrupt",
+                job.job_id,
+                document.document_id,
+                1,
+                AUDIT_INTEGRITY_ALGORITHM,
+                "operator-1",
+                "document.uploaded",
+                "document",
+                document.document_id,
+                "0" * 64,
+                None,
+                payload_json,
+                created_at,
+            ),
+        )
+
+    with pytest.raises(ValueError, match="audit event chain integrity"):
+        repository.create_audit_event(
+            event_id="audit-after-corrupt",
+            job_id=job.job_id,
+            document_id=document.document_id,
+            actor="operator-1",
+            action="document.uploaded",
+            scope_type="document",
+            scope_id=document.document_id,
+        )
+
+    assert repository.get_audit_event("audit-after-corrupt") is None
 
 
 def test_relative_database_path_must_stay_under_repo_root(tmp_path, monkeypatch) -> None:

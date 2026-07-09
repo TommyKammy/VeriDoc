@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 
-SCHEMA_VERSION = "20260709_02_source_artifact_scope"
+SCHEMA_VERSION = "20260709_03_persistence_contract_hardening"
 AUDIT_INTEGRITY_ALGORITHM = "sha256-canonical-json-chain-v1"
 SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -178,6 +178,7 @@ class SQLitePersistenceRepository:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         connection = self._connect()
         try:
+            connection.execute("PRAGMA foreign_keys = OFF")
             with connection:
                 connection.executescript(_RESET_SQL)
         finally:
@@ -260,11 +261,15 @@ class SQLitePersistenceRepository:
         )
 
     def get_source_artifact(self, artifact_id: str) -> SourceArtifact | None:
-        return self._get_one(
-            SourceArtifact,
-            "SELECT * FROM source_artifacts WHERE artifact_id = ?",
-            (artifact_id,),
-        )
+        with self._connection_scope() as connection:
+            row = connection.execute(
+                "SELECT * FROM source_artifacts WHERE artifact_id = ?",
+                (artifact_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            self._require_source_artifact_document(connection, row)
+        return _row_to_dataclass(SourceArtifact, row)
 
     def create_conversion_job(
         self,
@@ -675,7 +680,16 @@ class SQLitePersistenceRepository:
         with self._connection_scope(immediate=True) as connection:
             now = _utc_now()
             self._require_job_document(connection, job_id, document_id)
-            self._require_audit_scope(connection, scope_type, scope_id, job_id, document_id)
+            self._require_audit_scope(
+                connection,
+                scope_type,
+                scope_id,
+                job_id,
+                document_id,
+                actor,
+                action,
+            )
+            self._verify_audit_chain(connection)
             sequence, prev_event_hash = self._next_audit_chain_fields(connection)
             event_hash = _audit_event_hash(
                 event_id=event_id,
@@ -864,6 +878,28 @@ class SQLitePersistenceRepository:
         if row["job_id"] != job_id or row["document_id"] != document_id:
             raise ValueError("result_id, job_id, and document_id must refer to the same conversion")
 
+    def _require_source_artifact_document(
+        self,
+        connection: sqlite3.Connection,
+        row: sqlite3.Row,
+    ) -> None:
+        document = connection.execute(
+            """
+            SELECT source_artifact_id, source_storage_key, content_hash
+            FROM source_documents
+            WHERE document_id = ?
+            """,
+            (row["document_id"],),
+        ).fetchone()
+        if document is None:
+            raise ValueError("source_artifact document_id must reference an existing document")
+        if (
+            document["source_artifact_id"] != row["artifact_id"]
+            or document["source_storage_key"] != row["storage_key"]
+            or document["content_hash"] != row["content_hash"]
+        ):
+            raise ValueError("source_artifact must match the bound source document")
+
     def _next_job_event_sequence(
         self,
         connection: sqlite3.Connection,
@@ -933,6 +969,8 @@ class SQLitePersistenceRepository:
         scope_id: str,
         job_id: str,
         document_id: str,
+        actor: str,
+        action: str,
     ) -> None:
         if scope_type in {"document", "source_document"}:
             row = connection.execute(
@@ -983,7 +1021,11 @@ class SQLitePersistenceRepository:
             expected = {"job_id": job_id, "document_id": document_id}
         elif scope_type == "review_decision":
             row = connection.execute(
-                "SELECT job_id, document_id FROM review_decisions WHERE decision_id = ?",
+                """
+                SELECT job_id, document_id, actor, decision
+                FROM review_decisions
+                WHERE decision_id = ?
+                """,
                 (scope_id,),
             ).fetchone()
             expected = {"job_id": job_id, "document_id": document_id}
@@ -995,6 +1037,11 @@ class SQLitePersistenceRepository:
         for field_name, expected_value in expected.items():
             if row[field_name] != expected_value:
                 raise ValueError("audit scope must match the event job and document")
+        if scope_type == "review_decision":
+            if row["actor"] != actor:
+                raise ValueError("audit actor must match the review decision actor")
+            if not _review_decision_action_matches(row["decision"], action):
+                raise ValueError("audit action must match the review decision")
 
     def _verify_audit_chain(self, connection: sqlite3.Connection) -> None:
         rows = connection.execute(
@@ -1021,6 +1068,8 @@ class SQLitePersistenceRepository:
                 row["scope_id"],
                 row["job_id"],
                 row["document_id"],
+                row["actor"],
+                row["action"],
             )
             if row["integrity_algorithm"] != AUDIT_INTEGRITY_ALGORITHM:
                 raise ValueError("audit event chain integrity verification failed")
@@ -1301,6 +1350,16 @@ def _audit_event_type_matches_action(
     return action in category["actions"] and scope_type in category["scope_types"]
 
 
+def _review_decision_action_matches(decision: str, action: str) -> bool:
+    normalized = decision.strip().lower()
+    aliases = {
+        "approved": frozenset({"approved", "approve", "review.approved", "review.approve"}),
+        "rejected": frozenset({"rejected", "reject", "review.rejected", "review.reject"}),
+        "edited": frozenset({"edited", "edit", "review.edited", "review.edit"}),
+    }
+    return action in aliases.get(normalized, frozenset({normalized, f"review.{normalized}"}))
+
+
 def _canonical_json(payload: Mapping[str, Any]) -> str:
     return json.dumps(
         payload,
@@ -1448,132 +1507,174 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 );
 
 CREATE TABLE IF NOT EXISTS source_artifacts (
-    artifact_id TEXT NOT NULL PRIMARY KEY CHECK(length(trim(artifact_id)) > 0),
-    document_id TEXT NOT NULL UNIQUE CHECK(length(trim(document_id)) > 0),
-    storage_key TEXT NOT NULL UNIQUE CHECK(length(trim(storage_key)) > 0),
+    artifact_id TEXT NOT NULL PRIMARY KEY CHECK(
+        typeof(artifact_id) = 'text' AND length(trim(artifact_id)) > 0
+    ),
+    document_id TEXT NOT NULL UNIQUE CHECK(
+        typeof(document_id) = 'text' AND length(trim(document_id)) > 0
+    ) REFERENCES source_documents(document_id) ON DELETE RESTRICT
+        DEFERRABLE INITIALLY DEFERRED,
+    storage_key TEXT NOT NULL UNIQUE CHECK(
+        typeof(storage_key) = 'text' AND length(trim(storage_key)) > 0
+    ),
     content_hash TEXT NOT NULL CHECK(
+        typeof(content_hash) = 'text'
+        AND
         length(content_hash) = 64
         AND content_hash NOT GLOB '*[^0-9a-f]*'
     ),
-    source_type TEXT NOT NULL,
-    original_filename TEXT NOT NULL,
-    uploaded_by TEXT NOT NULL,
-    created_at TEXT NOT NULL,
+    source_type TEXT NOT NULL CHECK(typeof(source_type) = 'text' AND length(trim(source_type)) > 0),
+    original_filename TEXT NOT NULL CHECK(
+        typeof(original_filename) = 'text' AND length(trim(original_filename)) > 0
+    ),
+    uploaded_by TEXT NOT NULL CHECK(typeof(uploaded_by) = 'text' AND length(trim(uploaded_by)) > 0),
+    created_at TEXT NOT NULL CHECK(typeof(created_at) = 'text' AND length(trim(created_at)) > 0),
     UNIQUE(artifact_id, document_id, storage_key, content_hash)
 );
 
 CREATE TABLE IF NOT EXISTS source_documents (
-    document_id TEXT NOT NULL PRIMARY KEY CHECK(length(trim(document_id)) > 0),
-    source_type TEXT NOT NULL,
-    original_filename TEXT NOT NULL,
-    source_artifact_id TEXT NOT NULL UNIQUE CHECK(length(trim(source_artifact_id)) > 0),
-    source_storage_key TEXT NOT NULL UNIQUE CHECK(length(trim(source_storage_key)) > 0),
+    document_id TEXT NOT NULL PRIMARY KEY CHECK(
+        typeof(document_id) = 'text' AND length(trim(document_id)) > 0
+    ),
+    source_type TEXT NOT NULL CHECK(typeof(source_type) = 'text' AND length(trim(source_type)) > 0),
+    original_filename TEXT NOT NULL CHECK(
+        typeof(original_filename) = 'text' AND length(trim(original_filename)) > 0
+    ),
+    source_artifact_id TEXT NOT NULL UNIQUE CHECK(
+        typeof(source_artifact_id) = 'text' AND length(trim(source_artifact_id)) > 0
+    ),
+    source_storage_key TEXT NOT NULL UNIQUE CHECK(
+        typeof(source_storage_key) = 'text' AND length(trim(source_storage_key)) > 0
+    ),
     content_hash TEXT NOT NULL CHECK(
+        typeof(content_hash) = 'text'
+        AND
         length(content_hash) = 64
         AND content_hash NOT GLOB '*[^0-9a-f]*'
     ),
-    status TEXT NOT NULL,
-    uploaded_by TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(typeof(status) = 'text' AND length(trim(status)) > 0),
+    uploaded_by TEXT NOT NULL CHECK(typeof(uploaded_by) = 'text' AND length(trim(uploaded_by)) > 0),
+    created_at TEXT NOT NULL CHECK(typeof(created_at) = 'text' AND length(trim(created_at)) > 0),
+    updated_at TEXT NOT NULL CHECK(typeof(updated_at) = 'text' AND length(trim(updated_at)) > 0),
     FOREIGN KEY(source_artifact_id, document_id, source_storage_key, content_hash)
         REFERENCES source_artifacts(artifact_id, document_id, storage_key, content_hash)
         ON DELETE RESTRICT
 );
 
 CREATE TABLE IF NOT EXISTS jobs (
-    job_id TEXT NOT NULL PRIMARY KEY,
+    job_id TEXT NOT NULL PRIMARY KEY CHECK(typeof(job_id) = 'text' AND length(trim(job_id)) > 0),
     document_id TEXT NOT NULL REFERENCES source_documents(document_id) ON DELETE RESTRICT,
-    idempotency_key TEXT NOT NULL UNIQUE,
-    mode TEXT NOT NULL,
-    status TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE CHECK(
+        typeof(idempotency_key) = 'text' AND length(trim(idempotency_key)) > 0
+    ),
+    mode TEXT NOT NULL CHECK(typeof(mode) = 'text' AND length(trim(mode)) > 0),
+    status TEXT NOT NULL CHECK(typeof(status) = 'text' AND length(trim(status)) > 0),
     attempts INTEGER NOT NULL DEFAULT 0 CHECK(
         typeof(attempts) = 'integer'
         AND attempts >= 0
     ),
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
+    created_at TEXT NOT NULL CHECK(typeof(created_at) = 'text' AND length(trim(created_at)) > 0),
+    updated_at TEXT NOT NULL CHECK(typeof(updated_at) = 'text' AND length(trim(updated_at)) > 0),
     UNIQUE(job_id, document_id)
 );
 
 CREATE TABLE IF NOT EXISTS job_events (
-    event_id TEXT NOT NULL PRIMARY KEY,
+    event_id TEXT NOT NULL PRIMARY KEY CHECK(
+        typeof(event_id) = 'text' AND length(trim(event_id)) > 0
+    ),
     job_id TEXT NOT NULL REFERENCES jobs(job_id) ON DELETE RESTRICT,
     sequence INTEGER NOT NULL CHECK(
         typeof(sequence) = 'integer'
         AND sequence > 0
     ),
-    event_type TEXT NOT NULL,
-    actor TEXT NOT NULL,
+    event_type TEXT NOT NULL CHECK(typeof(event_type) = 'text' AND length(trim(event_type)) > 0),
+    actor TEXT NOT NULL CHECK(typeof(actor) = 'text' AND length(trim(actor)) > 0),
     payload_json TEXT NOT NULL CHECK(
-        CASE
+        typeof(payload_json) = 'text'
+        AND CASE
             WHEN json_valid(payload_json) THEN json_type(payload_json) = 'object'
             ELSE 0
         END
     ),
-    created_at TEXT NOT NULL,
+    created_at TEXT NOT NULL CHECK(typeof(created_at) = 'text' AND length(trim(created_at)) > 0),
     UNIQUE(job_id, sequence)
 );
 
 CREATE TABLE IF NOT EXISTS conversion_results (
-    result_id TEXT NOT NULL PRIMARY KEY,
+    result_id TEXT NOT NULL PRIMARY KEY CHECK(
+        typeof(result_id) = 'text' AND length(trim(result_id)) > 0
+    ),
     job_id TEXT NOT NULL REFERENCES jobs(job_id) ON DELETE RESTRICT,
     document_id TEXT NOT NULL REFERENCES source_documents(document_id) ON DELETE RESTRICT,
-    status TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(typeof(status) = 'text' AND length(trim(status)) > 0),
     content_hash TEXT NOT NULL CHECK(
+        typeof(content_hash) = 'text'
+        AND
         length(content_hash) = 64
         AND content_hash NOT GLOB '*[^0-9a-f]*'
     ),
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
+    created_at TEXT NOT NULL CHECK(typeof(created_at) = 'text' AND length(trim(created_at)) > 0),
+    updated_at TEXT NOT NULL CHECK(typeof(updated_at) = 'text' AND length(trim(updated_at)) > 0),
     UNIQUE(result_id, job_id, document_id),
     FOREIGN KEY(job_id, document_id) REFERENCES jobs(job_id, document_id) ON DELETE RESTRICT
 );
 
 CREATE TABLE IF NOT EXISTS generated_artifacts (
-    artifact_id TEXT NOT NULL PRIMARY KEY,
+    artifact_id TEXT NOT NULL PRIMARY KEY CHECK(
+        typeof(artifact_id) = 'text' AND length(trim(artifact_id)) > 0
+    ),
     result_id TEXT NOT NULL REFERENCES conversion_results(result_id) ON DELETE RESTRICT,
     job_id TEXT NOT NULL REFERENCES jobs(job_id) ON DELETE RESTRICT,
     document_id TEXT NOT NULL REFERENCES source_documents(document_id) ON DELETE RESTRICT,
-    category TEXT NOT NULL,
-    format TEXT NOT NULL,
-    storage_key TEXT NOT NULL UNIQUE,
+    category TEXT NOT NULL CHECK(typeof(category) = 'text' AND length(trim(category)) > 0),
+    format TEXT NOT NULL CHECK(typeof(format) = 'text' AND length(trim(format)) > 0),
+    storage_key TEXT NOT NULL UNIQUE CHECK(
+        typeof(storage_key) = 'text' AND length(trim(storage_key)) > 0
+    ),
     content_hash TEXT NOT NULL CHECK(
+        typeof(content_hash) = 'text'
+        AND
         length(content_hash) = 64
         AND content_hash NOT GLOB '*[^0-9a-f]*'
     ),
-    retention_state TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
+    retention_state TEXT NOT NULL CHECK(
+        typeof(retention_state) = 'text' AND length(trim(retention_state)) > 0
+    ),
+    created_at TEXT NOT NULL CHECK(typeof(created_at) = 'text' AND length(trim(created_at)) > 0),
+    updated_at TEXT NOT NULL CHECK(typeof(updated_at) = 'text' AND length(trim(updated_at)) > 0),
     UNIQUE(artifact_id, job_id, document_id),
     FOREIGN KEY(result_id, job_id, document_id)
         REFERENCES conversion_results(result_id, job_id, document_id) ON DELETE RESTRICT
 );
 
 CREATE TABLE IF NOT EXISTS review_items (
-    review_item_id TEXT NOT NULL PRIMARY KEY,
+    review_item_id TEXT NOT NULL PRIMARY KEY CHECK(
+        typeof(review_item_id) = 'text' AND length(trim(review_item_id)) > 0
+    ),
     document_id TEXT NOT NULL REFERENCES source_documents(document_id) ON DELETE RESTRICT,
     job_id TEXT NOT NULL REFERENCES jobs(job_id) ON DELETE RESTRICT,
-    target_path TEXT NOT NULL,
-    status TEXT NOT NULL,
-    severity TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
+    target_path TEXT NOT NULL CHECK(typeof(target_path) = 'text' AND length(trim(target_path)) > 0),
+    status TEXT NOT NULL CHECK(typeof(status) = 'text' AND length(trim(status)) > 0),
+    severity TEXT NOT NULL CHECK(typeof(severity) = 'text' AND length(trim(severity)) > 0),
+    created_at TEXT NOT NULL CHECK(typeof(created_at) = 'text' AND length(trim(created_at)) > 0),
+    updated_at TEXT NOT NULL CHECK(typeof(updated_at) = 'text' AND length(trim(updated_at)) > 0),
     UNIQUE(review_item_id, job_id, document_id),
     FOREIGN KEY(job_id, document_id) REFERENCES jobs(job_id, document_id) ON DELETE RESTRICT
 );
 
 CREATE TABLE IF NOT EXISTS review_decisions (
-    decision_id TEXT NOT NULL PRIMARY KEY,
+    decision_id TEXT NOT NULL PRIMARY KEY CHECK(
+        typeof(decision_id) = 'text' AND length(trim(decision_id)) > 0
+    ),
     review_item_id TEXT NOT NULL REFERENCES review_items(review_item_id) ON DELETE RESTRICT,
     artifact_id TEXT NOT NULL REFERENCES generated_artifacts(artifact_id) ON DELETE RESTRICT,
     job_id TEXT NOT NULL REFERENCES jobs(job_id) ON DELETE RESTRICT,
     document_id TEXT NOT NULL REFERENCES source_documents(document_id) ON DELETE RESTRICT,
-    actor TEXT NOT NULL,
-    role TEXT NOT NULL,
-    decision TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
+    actor TEXT NOT NULL CHECK(typeof(actor) = 'text' AND length(trim(actor)) > 0),
+    role TEXT NOT NULL CHECK(typeof(role) = 'text' AND length(trim(role)) > 0),
+    decision TEXT NOT NULL CHECK(typeof(decision) = 'text' AND length(trim(decision)) > 0),
+    created_at TEXT NOT NULL CHECK(typeof(created_at) = 'text' AND length(trim(created_at)) > 0),
+    updated_at TEXT NOT NULL CHECK(typeof(updated_at) = 'text' AND length(trim(updated_at)) > 0),
     FOREIGN KEY(review_item_id, job_id, document_id)
         REFERENCES review_items(review_item_id, job_id, document_id) ON DELETE RESTRICT,
     FOREIGN KEY(artifact_id, job_id, document_id)
@@ -1581,7 +1682,9 @@ CREATE TABLE IF NOT EXISTS review_decisions (
 );
 
 CREATE TABLE IF NOT EXISTS audit_events (
-    event_id TEXT NOT NULL PRIMARY KEY,
+    event_id TEXT NOT NULL PRIMARY KEY CHECK(
+        typeof(event_id) = 'text' AND length(trim(event_id)) > 0
+    ),
     job_id TEXT NOT NULL REFERENCES jobs(job_id) ON DELETE RESTRICT,
     document_id TEXT NOT NULL REFERENCES source_documents(document_id) ON DELETE RESTRICT,
     sequence INTEGER NOT NULL CHECK(
@@ -1589,30 +1692,36 @@ CREATE TABLE IF NOT EXISTS audit_events (
         AND sequence > 0
     ),
     integrity_algorithm TEXT NOT NULL CHECK(
-        integrity_algorithm = 'sha256-canonical-json-chain-v1'
+        typeof(integrity_algorithm) = 'text'
+        AND integrity_algorithm = 'sha256-canonical-json-chain-v1'
     ),
-    actor TEXT NOT NULL CHECK(length(trim(actor)) > 0),
-    action TEXT NOT NULL,
-    scope_type TEXT NOT NULL,
-    scope_id TEXT NOT NULL,
+    actor TEXT NOT NULL CHECK(typeof(actor) = 'text' AND length(trim(actor)) > 0),
+    action TEXT NOT NULL CHECK(typeof(action) = 'text' AND length(trim(action)) > 0),
+    scope_type TEXT NOT NULL CHECK(typeof(scope_type) = 'text' AND length(trim(scope_type)) > 0),
+    scope_id TEXT NOT NULL CHECK(typeof(scope_id) = 'text' AND length(trim(scope_id)) > 0),
     event_hash TEXT NOT NULL CHECK(
+        typeof(event_hash) = 'text'
+        AND
         length(event_hash) = 64
         AND event_hash NOT GLOB '*[^0-9a-f]*'
     ),
     prev_event_hash TEXT CHECK(
         prev_event_hash IS NULL
         OR (
+            typeof(prev_event_hash) = 'text'
+            AND
             length(prev_event_hash) = 64
             AND prev_event_hash NOT GLOB '*[^0-9a-f]*'
         )
     ),
     payload_json TEXT NOT NULL CHECK(
-        CASE
+        typeof(payload_json) = 'text'
+        AND CASE
             WHEN json_valid(payload_json) THEN json_type(payload_json) = 'object'
             ELSE 0
         END
     ),
-    created_at TEXT NOT NULL,
+    created_at TEXT NOT NULL CHECK(typeof(created_at) = 'text' AND length(trim(created_at)) > 0),
     UNIQUE(sequence),
     FOREIGN KEY(job_id, document_id) REFERENCES jobs(job_id, document_id) ON DELETE RESTRICT
 );
