@@ -1164,6 +1164,74 @@ def test_audit_event_scope_is_enforced_by_database_constraints(tmp_path) -> None
     assert repository.get_audit_event(audit_event.event_id) == audit_event
 
 
+def test_audit_events_reject_blank_actors_and_sequence_gaps_at_schema_boundary(
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "veridoc.sqlite3"
+    repository = SQLitePersistenceRepository(db_path)
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+    created_at = "2026-07-09T00:00:00+00:00"
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                """
+                INSERT INTO audit_events(
+                    event_id, job_id, document_id, sequence, integrity_algorithm, actor,
+                    action, scope_type, scope_id, event_hash, prev_event_hash,
+                    payload_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "audit-blank-actor",
+                    job.job_id,
+                    document.document_id,
+                    1,
+                    AUDIT_INTEGRITY_ALGORITHM,
+                    "   ",
+                    "document.uploaded",
+                    "document",
+                    document.document_id,
+                    "0" * 64,
+                    None,
+                    "{}",
+                    created_at,
+                ),
+            )
+
+        with pytest.raises(sqlite3.IntegrityError, match="contiguous"):
+            connection.execute(
+                """
+                INSERT INTO audit_events(
+                    event_id, job_id, document_id, sequence, integrity_algorithm, actor,
+                    action, scope_type, scope_id, event_hash, prev_event_hash,
+                    payload_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "audit-sequence-gap",
+                    job.job_id,
+                    document.document_id,
+                    2,
+                    AUDIT_INTEGRITY_ALGORITHM,
+                    "operator-1",
+                    "document.uploaded",
+                    "document",
+                    document.document_id,
+                    "0" * 64,
+                    None,
+                    "{}",
+                    created_at,
+                ),
+            )
+
+    assert repository.get_audit_event("audit-blank-actor") is None
+    assert repository.get_audit_event("audit-sequence-gap") is None
+
+
 def test_document_and_job_audit_scopes_cannot_be_deleted_with_foreign_keys_off(
     tmp_path,
 ) -> None:
@@ -1337,6 +1405,44 @@ def test_audited_conversion_result_contents_are_immutable_at_database_boundary(
                 connection.execute(sql, params)
 
     assert repository.get_conversion_result(result.result_id) == result
+    assert repository.get_audit_event(audit_event.event_id) == audit_event
+
+
+def test_results_backing_audited_artifacts_are_immutable_with_foreign_keys_off(
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "veridoc.sqlite3"
+    repository = SQLitePersistenceRepository(db_path)
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+    result = _create_result(repository, job, "result-1")
+    artifact = _create_artifact(repository, result, "artifact-1")
+    audit_event = repository.create_audit_event(
+        event_id="audit-artifact-scope",
+        job_id=job.job_id,
+        document_id=document.document_id,
+        actor="qa-approver",
+        action="artifact.generated",
+        scope_type="artifact",
+        scope_id=artifact.artifact_id,
+    )
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        with pytest.raises(sqlite3.IntegrityError, match="audit scope rows"):
+            connection.execute(
+                "DELETE FROM conversion_results WHERE result_id = ?",
+                (result.result_id,),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="audit scope rows"):
+            connection.execute(
+                "UPDATE conversion_results SET content_hash = ? WHERE result_id = ?",
+                ("d" * 64, result.result_id),
+            )
+
+    assert repository.get_conversion_result(result.result_id) == result
+    assert repository.get_artifact(artifact.artifact_id) == artifact
     assert repository.get_audit_event(audit_event.event_id) == audit_event
 
 
@@ -1523,6 +1629,46 @@ def test_audited_review_decision_freezes_approved_item_and_artifact(tmp_path) ->
     assert repository.get_review_item(review_item.review_item_id) == review_item
     assert repository.get_artifact(artifact.artifact_id) == artifact
     assert repository.get_review_decision(review_decision.decision_id) == review_decision
+    assert repository.get_audit_event(audit_event.event_id) == audit_event
+
+
+def test_document_and_job_rows_are_frozen_by_any_audit_event_reference(
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "veridoc.sqlite3"
+    repository = SQLitePersistenceRepository(db_path)
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+    result = _create_result(repository, job, "result-1")
+    artifact = _create_artifact(repository, result, "artifact-1")
+    audit_event = repository.create_audit_event(
+        event_id="audit-artifact-scope",
+        job_id=job.job_id,
+        document_id=document.document_id,
+        actor="qa-approver",
+        action="artifact.generated",
+        scope_type="artifact",
+        scope_id=artifact.artifact_id,
+    )
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        for sql, params in (
+            (
+                "UPDATE source_documents SET content_hash = ? WHERE document_id = ?",
+                ("d" * 64, document.document_id),
+            ),
+            (
+                "UPDATE jobs SET status = ? WHERE job_id = ?",
+                ("succeeded", job.job_id),
+            ),
+        ):
+            with pytest.raises(sqlite3.IntegrityError, match="audit scope rows"):
+                connection.execute(sql, params)
+
+    assert repository.get_document(document.document_id) == document
+    assert repository.get_conversion_job(job.job_id) == job
     assert repository.get_audit_event(audit_event.event_id) == audit_event
 
 
@@ -1787,9 +1933,10 @@ def test_audit_event_sequences_must_be_stored_as_integers(tmp_path) -> None:
                     payload_json,
                     created_at,
                 ),
-            )
+        )
 
         connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute("DROP TRIGGER audit_events_contiguous_sequence_insert")
         event_hash = persistence._audit_event_hash(
             event_id="audit-bypassed-real-sequence",
             job_id=job.job_id,
@@ -1853,7 +2000,7 @@ def test_audit_event_reads_verify_the_stored_hash_chain(tmp_path) -> None:
         connection.execute("DROP TRIGGER audit_events_no_update")
         connection.execute(
             "UPDATE audit_events SET payload_json = ? WHERE event_id = ?",
-            (json.dumps({"tampered": True}), audit_event.event_id),
+            (persistence._canonical_json({"tampered": True}), audit_event.event_id),
         )
 
     with pytest.raises(ValueError, match="audit event chain integrity"):
@@ -1917,6 +2064,69 @@ def test_audit_event_reads_reject_hash_consistent_payload_mismatches(tmp_path) -
 
     with pytest.raises(ValueError, match="payload"):
         repository.get_audit_event("audit-conflicting-payload")
+
+
+def test_audit_event_reads_reject_hash_consistent_noncanonical_payload_json(
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "veridoc.sqlite3"
+    repository = SQLitePersistenceRepository(db_path)
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+    created_at = "2026-07-09T00:00:00+00:00"
+    payload = {
+        "scope_type": "document",
+        "actor": "operator-1",
+        "scope_id": document.document_id,
+        "action": "document.uploaded",
+    }
+    payload_json = json.dumps(payload, indent=2)
+    assert payload_json != persistence._canonical_json(payload)
+    event_hash = persistence._audit_event_hash(
+        event_id="audit-noncanonical-payload",
+        job_id=job.job_id,
+        document_id=document.document_id,
+        sequence=1,
+        integrity_algorithm=AUDIT_INTEGRITY_ALGORITHM,
+        actor="operator-1",
+        action="document.uploaded",
+        scope_type="document",
+        scope_id=document.document_id,
+        prev_event_hash=None,
+        payload_json=payload_json,
+        created_at=created_at,
+    )
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute(
+            """
+            INSERT INTO audit_events(
+                event_id, job_id, document_id, sequence, integrity_algorithm, actor,
+                action, scope_type, scope_id, event_hash, prev_event_hash,
+                payload_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "audit-noncanonical-payload",
+                job.job_id,
+                document.document_id,
+                1,
+                AUDIT_INTEGRITY_ALGORITHM,
+                "operator-1",
+                "document.uploaded",
+                "document",
+                document.document_id,
+                event_hash,
+                None,
+                payload_json,
+                created_at,
+            ),
+        )
+
+    with pytest.raises(ValueError, match="canonical JSON"):
+        repository.get_audit_event("audit-noncanonical-payload")
 
 
 def test_audit_event_timestamps_are_sampled_after_the_write_lock(

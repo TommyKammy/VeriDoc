@@ -1123,6 +1123,8 @@ def _require_audit_event_row_payload_matches(row: sqlite3.Row) -> None:
         payload = json.loads(row["payload_json"])
     except (TypeError, json.JSONDecodeError) as exc:
         raise ValueError("audit event payload_json must be valid JSON") from exc
+    if isinstance(payload, Mapping) and row["payload_json"] != _canonical_json(payload):
+        raise ValueError("audit event payload_json must be canonical JSON")
     _require_audit_event_payload_matches(
         payload,
         event_id=row["event_id"],
@@ -1493,7 +1495,7 @@ CREATE TABLE IF NOT EXISTS audit_events (
     integrity_algorithm TEXT NOT NULL CHECK(
         integrity_algorithm = 'sha256-canonical-json-chain-v1'
     ),
-    actor TEXT NOT NULL,
+    actor TEXT NOT NULL CHECK(length(trim(actor)) > 0),
     action TEXT NOT NULL,
     scope_type TEXT NOT NULL,
     scope_id TEXT NOT NULL,
@@ -1586,6 +1588,16 @@ BEGIN
     SELECT RAISE(ABORT, 'audit scope must reference an existing matching row');
 END;
 
+CREATE TRIGGER IF NOT EXISTS audit_events_contiguous_sequence_insert
+BEFORE INSERT ON audit_events
+WHEN NEW.sequence != COALESCE((
+    SELECT MAX(audit_events.sequence) + 1
+    FROM audit_events
+), 1)
+BEGIN
+    SELECT RAISE(ABORT, 'audit events must be contiguous');
+END;
+
 CREATE TRIGGER IF NOT EXISTS job_events_contiguous_sequence_insert
 BEFORE INSERT ON job_events
 WHEN NEW.sequence != COALESCE((
@@ -1664,8 +1676,29 @@ CREATE TRIGGER IF NOT EXISTS conversion_results_audit_scope_no_delete
 BEFORE DELETE ON conversion_results
 WHEN EXISTS (
     SELECT 1 FROM audit_events
-    WHERE audit_events.scope_type = 'conversion_result'
-      AND audit_events.scope_id = OLD.result_id
+    WHERE (
+            audit_events.scope_type = 'conversion_result'
+            AND audit_events.scope_id = OLD.result_id
+          )
+       OR (
+            audit_events.scope_type IN ('artifact', 'generated_artifact')
+            AND EXISTS (
+                SELECT 1 FROM generated_artifacts
+                WHERE generated_artifacts.artifact_id = audit_events.scope_id
+                  AND generated_artifacts.result_id = OLD.result_id
+            )
+          )
+       OR (
+            audit_events.scope_type = 'review_decision'
+            AND EXISTS (
+                SELECT 1
+                FROM review_decisions
+                JOIN generated_artifacts
+                  ON generated_artifacts.artifact_id = review_decisions.artifact_id
+                WHERE review_decisions.decision_id = audit_events.scope_id
+                  AND generated_artifacts.result_id = OLD.result_id
+            )
+          )
 )
 BEGIN
     SELECT RAISE(ABORT, 'audit scope rows cannot be deleted');
@@ -1736,8 +1769,11 @@ CREATE TRIGGER IF NOT EXISTS source_documents_audit_scope_no_update
 BEFORE UPDATE ON source_documents
 WHEN EXISTS (
     SELECT 1 FROM audit_events
-    WHERE audit_events.scope_type IN ('document', 'source_document')
-      AND audit_events.scope_id = OLD.document_id
+    WHERE audit_events.document_id = OLD.document_id
+       OR (
+           audit_events.scope_type IN ('document', 'source_document')
+           AND audit_events.scope_id = OLD.document_id
+       )
 )
 BEGIN
     SELECT RAISE(ABORT, 'audit scope rows cannot be updated');
@@ -1747,8 +1783,11 @@ CREATE TRIGGER IF NOT EXISTS jobs_audit_scope_no_update
 BEFORE UPDATE ON jobs
 WHEN EXISTS (
     SELECT 1 FROM audit_events
-    WHERE audit_events.scope_type IN ('job', 'conversion_job')
-      AND audit_events.scope_id = OLD.job_id
+    WHERE audit_events.job_id = OLD.job_id
+       OR (
+           audit_events.scope_type IN ('job', 'conversion_job')
+           AND audit_events.scope_id = OLD.job_id
+       )
 )
 BEGIN
     SELECT RAISE(ABORT, 'audit scope rows cannot be updated');
@@ -1758,8 +1797,29 @@ CREATE TRIGGER IF NOT EXISTS conversion_results_audit_scope_no_update
 BEFORE UPDATE ON conversion_results
 WHEN EXISTS (
     SELECT 1 FROM audit_events
-    WHERE audit_events.scope_type = 'conversion_result'
-      AND audit_events.scope_id = OLD.result_id
+    WHERE (
+            audit_events.scope_type = 'conversion_result'
+            AND audit_events.scope_id = OLD.result_id
+          )
+       OR (
+            audit_events.scope_type IN ('artifact', 'generated_artifact')
+            AND EXISTS (
+                SELECT 1 FROM generated_artifacts
+                WHERE generated_artifacts.artifact_id = audit_events.scope_id
+                  AND generated_artifacts.result_id = OLD.result_id
+            )
+          )
+       OR (
+            audit_events.scope_type = 'review_decision'
+            AND EXISTS (
+                SELECT 1
+                FROM review_decisions
+                JOIN generated_artifacts
+                  ON generated_artifacts.artifact_id = review_decisions.artifact_id
+                WHERE review_decisions.decision_id = audit_events.scope_id
+                  AND generated_artifacts.result_id = OLD.result_id
+            )
+          )
 )
 BEGIN
     SELECT RAISE(ABORT, 'audit scope rows cannot be updated');
