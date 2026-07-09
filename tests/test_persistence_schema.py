@@ -514,6 +514,192 @@ def test_persistence_repository_rejects_cross_scope_relationships(tmp_path) -> N
     assert artifact_a.document_id == document_a.document_id
 
 
+def test_parent_bindings_are_enforced_without_foreign_key_pragma(tmp_path) -> None:
+    db_path = tmp_path / "veridoc.sqlite3"
+    repository = SQLitePersistenceRepository(db_path)
+    repository.initialize()
+    document_a = _create_document(repository, "doc-a")
+    document_b = _create_document(repository, "doc-b")
+    job_a = _create_job(repository, document_a, "job-a")
+    job_b = _create_job(repository, document_b, "job-b")
+    result_a = _create_result(repository, job_a, "result-a")
+    result_b = _create_result(repository, job_b, "result-b")
+    artifact_b = _create_artifact(repository, result_b, "artifact-b")
+    review_item_a = repository.create_review_item(
+        review_item_id="review-item-a",
+        document_id=document_a.document_id,
+        job_id=job_a.job_id,
+        target_path="sections[0]",
+        status="open",
+        severity="medium",
+    )
+    created_at = "2026-07-09T00:00:00+00:00"
+    audit_payload_json = persistence._canonical_json(
+        {
+            "action": "document.uploaded",
+            "actor": "operator-1",
+            "scope_id": document_a.document_id,
+            "scope_type": "document",
+        }
+    )
+    audit_event_hash = persistence._audit_event_hash(
+        event_id="audit-missing-job",
+        job_id="missing-job",
+        document_id=document_a.document_id,
+        sequence=1,
+        integrity_algorithm=AUDIT_INTEGRITY_ALGORITHM,
+        actor="operator-1",
+        action="document.uploaded",
+        scope_type="document",
+        scope_id=document_a.document_id,
+        prev_event_hash=None,
+        payload_json=audit_payload_json,
+        created_at=created_at,
+    )
+
+    cases = (
+        (
+            """
+            INSERT INTO jobs(
+                job_id, document_id, idempotency_key, mode, status, attempts,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "job-missing-document",
+                "missing-document",
+                "upload-missing-document",
+                "standard",
+                "queued",
+                0,
+                created_at,
+                created_at,
+            ),
+        ),
+        (
+            """
+            INSERT INTO job_events(
+                event_id, job_id, sequence, event_type, actor, payload_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "job-event-missing-job",
+                "missing-job",
+                1,
+                "job.queued",
+                "operator-1",
+                "{}",
+                created_at,
+            ),
+        ),
+        (
+            """
+            INSERT INTO conversion_results(
+                result_id, job_id, document_id, status, content_hash,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "result-mixed",
+                job_a.job_id,
+                document_b.document_id,
+                "succeeded",
+                "b" * 64,
+                created_at,
+                created_at,
+            ),
+        ),
+        (
+            """
+            INSERT INTO generated_artifacts(
+                artifact_id, result_id, job_id, document_id, category, format,
+                storage_key, content_hash, retention_state, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "artifact-mixed",
+                result_a.result_id,
+                job_b.job_id,
+                document_b.document_id,
+                "generated",
+                "docx",
+                "artifacts/mixed.docx",
+                "c" * 64,
+                "active",
+                created_at,
+                created_at,
+            ),
+        ),
+        (
+            """
+            INSERT INTO review_items(
+                review_item_id, document_id, job_id, target_path, status,
+                severity, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "review-item-mixed",
+                document_b.document_id,
+                job_a.job_id,
+                "sections[0]",
+                "open",
+                "medium",
+                created_at,
+                created_at,
+            ),
+        ),
+        (
+            """
+            INSERT INTO review_decisions(
+                decision_id, review_item_id, artifact_id, job_id, document_id,
+                actor, role, decision, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "decision-mixed",
+                review_item_a.review_item_id,
+                artifact_b.artifact_id,
+                job_a.job_id,
+                document_a.document_id,
+                "qa-approver",
+                "approver",
+                "approved",
+                created_at,
+                created_at,
+            ),
+        ),
+        (
+            """
+            INSERT INTO audit_events(
+                event_id, job_id, document_id, sequence, integrity_algorithm, actor,
+                action, scope_type, scope_id, event_hash, prev_event_hash,
+                payload_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "audit-missing-job",
+                "missing-job",
+                document_a.document_id,
+                1,
+                AUDIT_INTEGRITY_ALGORITHM,
+                "operator-1",
+                "document.uploaded",
+                "document",
+                document_a.document_id,
+                audit_event_hash,
+                None,
+                audit_payload_json,
+                created_at,
+            ),
+        ),
+    )
+
+    with sqlite3.connect(db_path) as connection:
+        for sql, params in cases:
+            with pytest.raises(sqlite3.IntegrityError, match="matching parent"):
+                connection.execute(sql, params)
+
+
 def test_persistence_repository_rejects_conflicting_job_event_payload_fields(tmp_path) -> None:
     repository = SQLitePersistenceRepository(tmp_path / "veridoc.sqlite3")
     repository.initialize()
@@ -1790,6 +1976,123 @@ def test_lifecycle_payload_json_is_validated_at_schema_and_read_boundary(
         repository.get_audit_event("audit-bypassed-payload")
 
 
+def test_lifecycle_payload_json_must_be_objects_at_schema_and_read_boundary(
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "veridoc.sqlite3"
+    repository = SQLitePersistenceRepository(db_path)
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+    created_at = "2026-07-09T00:00:00+00:00"
+    non_object_payload_json = "[]"
+
+    with sqlite3.connect(db_path) as connection:
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                """
+                INSERT INTO job_events(
+                    event_id, job_id, sequence, event_type, actor, payload_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "job-event-array-payload",
+                    job.job_id,
+                    1,
+                    "job.queued",
+                    "operator-1",
+                    non_object_payload_json,
+                    created_at,
+                ),
+            )
+        event_hash = persistence._audit_event_hash(
+            event_id="audit-array-payload",
+            job_id=job.job_id,
+            document_id=document.document_id,
+            sequence=1,
+            integrity_algorithm=AUDIT_INTEGRITY_ALGORITHM,
+            actor="operator-1",
+            action="document.uploaded",
+            scope_type="document",
+            scope_id=document.document_id,
+            prev_event_hash=None,
+            payload_json=non_object_payload_json,
+            created_at=created_at,
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                """
+                INSERT INTO audit_events(
+                    event_id, job_id, document_id, sequence, integrity_algorithm, actor,
+                    action, scope_type, scope_id, event_hash, prev_event_hash,
+                    payload_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "audit-array-payload",
+                    job.job_id,
+                    document.document_id,
+                    1,
+                    AUDIT_INTEGRITY_ALGORITHM,
+                    "operator-1",
+                    "document.uploaded",
+                    "document",
+                    document.document_id,
+                    event_hash,
+                    None,
+                    non_object_payload_json,
+                    created_at,
+                ),
+            )
+
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            """
+            INSERT INTO job_events(
+                event_id, job_id, sequence, event_type, actor, payload_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "job-event-bypassed-array-payload",
+                job.job_id,
+                1,
+                "job.queued",
+                "operator-1",
+                non_object_payload_json,
+                created_at,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO audit_events(
+                event_id, job_id, document_id, sequence, integrity_algorithm, actor,
+                action, scope_type, scope_id, event_hash, prev_event_hash,
+                payload_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "audit-bypassed-array-payload",
+                job.job_id,
+                document.document_id,
+                1,
+                AUDIT_INTEGRITY_ALGORITHM,
+                "operator-1",
+                "document.uploaded",
+                "document",
+                document.document_id,
+                event_hash,
+                None,
+                non_object_payload_json,
+                created_at,
+            ),
+        )
+
+    with pytest.raises(ValueError, match="job event payload_json must be a JSON object"):
+        repository.get_job_event("job-event-bypassed-array-payload")
+    with pytest.raises(ValueError, match="audit event payload_json must be a JSON object"):
+        repository.get_audit_event("audit-bypassed-array-payload")
+
+
 def test_job_event_payload_fields_are_validated_at_read_boundary(tmp_path) -> None:
     db_path = tmp_path / "veridoc.sqlite3"
     repository = SQLitePersistenceRepository(db_path)
@@ -2064,6 +2367,69 @@ def test_audit_event_reads_reject_hash_consistent_payload_mismatches(tmp_path) -
 
     with pytest.raises(ValueError, match="payload"):
         repository.get_audit_event("audit-conflicting-payload")
+
+
+def test_persistence_repository_rejects_scoped_audit_payload_alias_mismatches(
+    tmp_path,
+) -> None:
+    repository = SQLitePersistenceRepository(tmp_path / "veridoc.sqlite3")
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+    result = _create_result(repository, job, "result-1")
+    artifact = _create_artifact(repository, result, "artifact-1")
+    review_item = repository.create_review_item(
+        review_item_id="review-item-1",
+        document_id=document.document_id,
+        job_id=job.job_id,
+        target_path="sections[0]",
+        status="open",
+        severity="medium",
+    )
+    review_decision = repository.create_review_decision(
+        decision_id="decision-1",
+        review_item_id=review_item.review_item_id,
+        artifact_id=artifact.artifact_id,
+        actor="qa-approver",
+        role="approver",
+        decision="approved",
+    )
+
+    for event_id, scope_type, scope_id, alias_field, alias_value in (
+        (
+            "audit-review-decision-alias",
+            "review_decision",
+            review_decision.decision_id,
+            "review_decision_id",
+            "decision-2",
+        ),
+        (
+            "audit-artifact-alias",
+            "artifact",
+            artifact.artifact_id,
+            "artifact_id",
+            "artifact-2",
+        ),
+        (
+            "audit-job-event-alias",
+            "conversion_result",
+            result.result_id,
+            "conversion_result_id",
+            "result-2",
+        ),
+    ):
+        with pytest.raises(ValueError, match=f"payload {alias_field}"):
+            repository.create_audit_event(
+                event_id=event_id,
+                job_id=job.job_id,
+                document_id=document.document_id,
+                actor="qa-approver",
+                action="review.approved",
+                scope_type=scope_type,
+                scope_id=scope_id,
+                payload={"event_type": "review.approved", alias_field: alias_value},
+            )
+        assert repository.get_audit_event(event_id) is None
 
 
 def test_audit_event_reads_reject_hash_consistent_noncanonical_payload_json(

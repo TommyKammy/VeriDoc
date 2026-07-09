@@ -1105,10 +1105,10 @@ def _require_job_event_payload_matches(
 
 
 def _require_job_event_row_payload_matches(row: sqlite3.Row) -> None:
-    try:
-        payload = json.loads(row["payload_json"])
-    except (TypeError, json.JSONDecodeError) as exc:
-        raise ValueError("job event payload_json must be valid JSON") from exc
+    payload = _load_json_object(
+        row["payload_json"],
+        field_name="job event payload_json",
+    )
     _require_job_event_payload_matches(
         payload,
         event_id=row["event_id"],
@@ -1119,11 +1119,11 @@ def _require_job_event_row_payload_matches(row: sqlite3.Row) -> None:
 
 
 def _require_audit_event_row_payload_matches(row: sqlite3.Row) -> None:
-    try:
-        payload = json.loads(row["payload_json"])
-    except (TypeError, json.JSONDecodeError) as exc:
-        raise ValueError("audit event payload_json must be valid JSON") from exc
-    if isinstance(payload, Mapping) and row["payload_json"] != _canonical_json(payload):
+    payload = _load_json_object(
+        row["payload_json"],
+        field_name="audit event payload_json",
+    )
+    if row["payload_json"] != _canonical_json(payload):
         raise ValueError("audit event payload_json must be canonical JSON")
     _require_audit_event_payload_matches(
         payload,
@@ -1182,6 +1182,9 @@ def _require_audit_event_payload_matches(
         scope_type=scope_type,
     ):
         raise ValueError("payload event_type must match the audit event row")
+    for alias_field in _AUDIT_SCOPE_ID_ALIASES.get(scope_type, frozenset()):
+        if alias_field in payload and payload[alias_field] != scope_id:
+            raise ValueError(f"payload {alias_field} must match the audit event scope")
     for field_name in (
         "sequence",
         "event_hash",
@@ -1222,6 +1225,20 @@ _AUDIT_EVENT_TYPE_CATEGORIES = {
 }
 
 
+_AUDIT_SCOPE_ID_ALIASES = {
+    "document": frozenset({"document_id", "source_document_id"}),
+    "source_document": frozenset({"document_id", "source_document_id"}),
+    "job": frozenset({"job_id", "conversion_job_id"}),
+    "conversion_job": frozenset({"job_id", "conversion_job_id"}),
+    "job_event": frozenset({"job_event_id"}),
+    "conversion_result": frozenset({"result_id", "conversion_result_id"}),
+    "artifact": frozenset({"artifact_id", "generated_artifact_id"}),
+    "generated_artifact": frozenset({"artifact_id", "generated_artifact_id"}),
+    "review_item": frozenset({"review_item_id"}),
+    "review_decision": frozenset({"review_decision_id"}),
+}
+
+
 def _audit_event_type_matches_action(
     event_type: Any,
     *,
@@ -1246,6 +1263,16 @@ def _canonical_json(payload: Mapping[str, Any]) -> str:
         sort_keys=True,
         separators=(",", ":"),
     )
+
+
+def _load_json_object(payload_json: str, *, field_name: str) -> Mapping[str, Any]:
+    try:
+        payload = json.loads(payload_json)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{field_name} must be valid JSON") from exc
+    if not isinstance(payload, Mapping):
+        raise ValueError(f"{field_name} must be a JSON object")
+    return payload
 
 
 def _require_valid_json_text(payload_json: str, *, field_name: str) -> None:
@@ -1414,7 +1441,12 @@ CREATE TABLE IF NOT EXISTS job_events (
     ),
     event_type TEXT NOT NULL,
     actor TEXT NOT NULL,
-    payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
+    payload_json TEXT NOT NULL CHECK(
+        CASE
+            WHEN json_valid(payload_json) THEN json_type(payload_json) = 'object'
+            ELSE 0
+        END
+    ),
     created_at TEXT NOT NULL,
     UNIQUE(job_id, sequence)
 );
@@ -1510,11 +1542,99 @@ CREATE TABLE IF NOT EXISTS audit_events (
             AND prev_event_hash NOT GLOB '*[^0-9a-f]*'
         )
     ),
-    payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
+    payload_json TEXT NOT NULL CHECK(
+        CASE
+            WHEN json_valid(payload_json) THEN json_type(payload_json) = 'object'
+            ELSE 0
+        END
+    ),
     created_at TEXT NOT NULL,
     UNIQUE(sequence),
     FOREIGN KEY(job_id, document_id) REFERENCES jobs(job_id, document_id) ON DELETE RESTRICT
 );
+
+CREATE TRIGGER IF NOT EXISTS jobs_parent_reference_insert
+BEFORE INSERT ON jobs
+WHEN NOT EXISTS (
+    SELECT 1 FROM source_documents
+    WHERE source_documents.document_id = NEW.document_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'record must reference matching parent rows');
+END;
+
+CREATE TRIGGER IF NOT EXISTS job_events_parent_reference_insert
+BEFORE INSERT ON job_events
+WHEN NOT EXISTS (
+    SELECT 1 FROM jobs
+    WHERE jobs.job_id = NEW.job_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'record must reference matching parent rows');
+END;
+
+CREATE TRIGGER IF NOT EXISTS conversion_results_parent_reference_insert
+BEFORE INSERT ON conversion_results
+WHEN NOT EXISTS (
+    SELECT 1 FROM jobs
+    WHERE jobs.job_id = NEW.job_id
+      AND jobs.document_id = NEW.document_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'record must reference matching parent rows');
+END;
+
+CREATE TRIGGER IF NOT EXISTS generated_artifacts_parent_reference_insert
+BEFORE INSERT ON generated_artifacts
+WHEN NOT EXISTS (
+    SELECT 1 FROM conversion_results
+    WHERE conversion_results.result_id = NEW.result_id
+      AND conversion_results.job_id = NEW.job_id
+      AND conversion_results.document_id = NEW.document_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'record must reference matching parent rows');
+END;
+
+CREATE TRIGGER IF NOT EXISTS review_items_parent_reference_insert
+BEFORE INSERT ON review_items
+WHEN NOT EXISTS (
+    SELECT 1 FROM jobs
+    WHERE jobs.job_id = NEW.job_id
+      AND jobs.document_id = NEW.document_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'record must reference matching parent rows');
+END;
+
+CREATE TRIGGER IF NOT EXISTS review_decisions_parent_reference_insert
+BEFORE INSERT ON review_decisions
+WHEN NOT EXISTS (
+    SELECT 1 FROM review_items
+    WHERE review_items.review_item_id = NEW.review_item_id
+      AND review_items.job_id = NEW.job_id
+      AND review_items.document_id = NEW.document_id
+)
+OR NOT EXISTS (
+    SELECT 1 FROM generated_artifacts
+    WHERE generated_artifacts.artifact_id = NEW.artifact_id
+      AND generated_artifacts.job_id = NEW.job_id
+      AND generated_artifacts.document_id = NEW.document_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'record must reference matching parent rows');
+END;
+
+CREATE TRIGGER IF NOT EXISTS audit_events_parent_reference_insert
+BEFORE INSERT ON audit_events
+WHEN NOT EXISTS (
+    SELECT 1 FROM jobs
+    WHERE jobs.job_id = NEW.job_id
+      AND jobs.document_id = NEW.document_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'record must reference matching parent rows');
+END;
 
 CREATE TRIGGER IF NOT EXISTS audit_events_scope_reference_insert
 BEFORE INSERT ON audit_events
