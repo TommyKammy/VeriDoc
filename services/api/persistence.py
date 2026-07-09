@@ -147,7 +147,9 @@ class SQLitePersistenceRepository:
         connection = self._connect()
         try:
             with connection:
+                _validate_managed_schema(connection, allow_missing=True)
                 connection.executescript(_SCHEMA_SQL)
+                _validate_managed_schema(connection, allow_missing=False)
                 connection.execute(
                     """
                     INSERT OR IGNORE INTO schema_migrations(migration_id, applied_at)
@@ -615,8 +617,8 @@ class SQLitePersistenceRepository:
                 "scope_type": scope_type,
             }
         )
-        now = _utc_now()
         with self._connection_scope(immediate=True) as connection:
+            now = _utc_now()
             self._require_job_document(connection, job_id, document_id)
             self._require_audit_scope(connection, scope_type, scope_id, job_id, document_id)
             sequence, prev_event_hash = self._next_audit_chain_fields(connection, job_id)
@@ -664,11 +666,15 @@ class SQLitePersistenceRepository:
             )
 
     def get_audit_event(self, event_id: str) -> AuditEvent | None:
-        return self._get_one(
-            AuditEvent,
-            "SELECT * FROM audit_events WHERE event_id = ?",
-            (event_id,),
-        )
+        with self._connection_scope() as connection:
+            row = connection.execute(
+                "SELECT * FROM audit_events WHERE event_id = ?",
+                (event_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            self._verify_audit_chain(connection, row["job_id"])
+        return _row_to_dataclass(AuditEvent, row)
 
     @contextmanager
     def transaction(self) -> Iterator["SQLitePersistenceRepository"]:
@@ -913,6 +919,42 @@ class SQLitePersistenceRepository:
             if row[field_name] != expected_value:
                 raise ValueError("audit scope must match the event job and document")
 
+    def _verify_audit_chain(self, connection: sqlite3.Connection, job_id: str) -> None:
+        rows = connection.execute(
+            """
+            SELECT *
+            FROM audit_events
+            WHERE job_id = ?
+            ORDER BY sequence ASC
+            """,
+            (job_id,),
+        ).fetchall()
+        previous_hash: str | None = None
+        for expected_sequence, row in enumerate(rows, start=1):
+            if int(row["sequence"]) != expected_sequence:
+                raise ValueError("audit event chain integrity verification failed")
+            if row["integrity_algorithm"] != AUDIT_INTEGRITY_ALGORITHM:
+                raise ValueError("audit event chain integrity verification failed")
+            if row["prev_event_hash"] != previous_hash:
+                raise ValueError("audit event chain integrity verification failed")
+            expected_hash = _audit_event_hash(
+                event_id=row["event_id"],
+                job_id=row["job_id"],
+                document_id=row["document_id"],
+                sequence=int(row["sequence"]),
+                integrity_algorithm=row["integrity_algorithm"],
+                actor=row["actor"],
+                action=row["action"],
+                scope_type=row["scope_type"],
+                scope_id=row["scope_id"],
+                prev_event_hash=row["prev_event_hash"],
+                payload_json=row["payload_json"],
+                created_at=row["created_at"],
+            )
+            if row["event_hash"] != expected_hash:
+                raise ValueError("audit event chain integrity verification failed")
+            previous_hash = row["event_hash"]
+
 
 def default_database_path() -> Path:
     configured = os.environ.get("VERIDOC_DB_PATH")
@@ -1056,6 +1098,52 @@ def _require_audit_event_payload_matches(
 
 def _canonical_json(payload: Mapping[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _validate_managed_schema(
+    connection: sqlite3.Connection,
+    *,
+    allow_missing: bool,
+) -> None:
+    expected = _expected_schema_definitions()
+    existing = _schema_definitions(connection)
+    for name, expected_definition in expected.items():
+        existing_definition = existing.get(name)
+        if existing_definition is None:
+            if allow_missing:
+                continue
+            raise ValueError(f"managed database object is missing or incompatible: {name}")
+        if existing_definition != expected_definition:
+            raise ValueError(f"managed database object is missing or incompatible: {name}")
+
+
+def _schema_definitions(connection: sqlite3.Connection) -> dict[str, tuple[str, str]]:
+    rows = connection.execute(
+        """
+        SELECT type, name, sql
+        FROM sqlite_master
+        WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%'
+        """
+    ).fetchall()
+    return {
+        row["name"]: (row["type"], _normalize_schema_sql(row["sql"]))
+        for row in rows
+    }
+
+
+def _expected_schema_definitions() -> dict[str, tuple[str, str]]:
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    try:
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.executescript(_SCHEMA_SQL)
+        return _schema_definitions(connection)
+    finally:
+        connection.close()
+
+
+def _normalize_schema_sql(sql: str) -> str:
+    return " ".join(sql.split()).lower()
 
 
 def _validate_database_path(db_path: Path) -> Path:
@@ -1210,6 +1298,18 @@ CREATE TABLE IF NOT EXISTS audit_events (
     UNIQUE(job_id, sequence),
     FOREIGN KEY(job_id, document_id) REFERENCES jobs(job_id, document_id) ON DELETE RESTRICT
 );
+
+CREATE TRIGGER IF NOT EXISTS audit_events_no_update
+BEFORE UPDATE ON audit_events
+BEGIN
+    SELECT RAISE(ABORT, 'audit events are append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS audit_events_no_delete
+BEFORE DELETE ON audit_events
+BEGIN
+    SELECT RAISE(ABORT, 'audit events are append-only');
+END;
 
 CREATE TRIGGER IF NOT EXISTS source_documents_artifact_id_global_insert
 BEFORE INSERT ON source_documents

@@ -3,9 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from contextlib import contextmanager
 
 import pytest
 
+from services.api import persistence
 from services.api.persistence import (
     AuditEvent,
     Artifact,
@@ -213,6 +215,28 @@ def test_persistence_repository_initializes_and_reads_minimal_schema(tmp_path) -
         chained_audit_event,
     ):
         assert row.created_at.endswith("+00:00")
+
+
+def test_initialize_rejects_incompatible_existing_managed_table(tmp_path) -> None:
+    db_path = tmp_path / "veridoc.sqlite3"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("CREATE TABLE source_documents (document_id TEXT PRIMARY KEY)")
+
+    repository = SQLitePersistenceRepository(db_path)
+
+    with pytest.raises(ValueError, match="source_documents"):
+        repository.initialize()
+
+    with sqlite3.connect(db_path) as connection:
+        migration_table = connection.execute(
+            """
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'table' AND name = 'schema_migrations'
+            """
+        ).fetchone()
+
+    assert migration_table is None
 
 
 def test_persistence_repository_rejects_missing_bindings_and_keeps_state_clean(
@@ -637,6 +661,112 @@ def test_persistence_repository_uses_utf8_canonical_json_for_audit_hashes(tmp_pa
 
     assert "\\u" not in audit_event.payload_json
     assert audit_event.event_hash == hashlib.sha256(canonical).hexdigest()
+
+
+def test_audit_events_are_append_only_at_the_database_boundary(tmp_path) -> None:
+    db_path = tmp_path / "veridoc.sqlite3"
+    repository = SQLitePersistenceRepository(db_path)
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+    audit_event = repository.create_audit_event(
+        event_id="audit-append-only",
+        job_id=job.job_id,
+        document_id=document.document_id,
+        actor="qa-approver",
+        action="document.uploaded",
+        scope_type="document",
+        scope_id=document.document_id,
+    )
+
+    with sqlite3.connect(db_path) as connection:
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            connection.execute(
+                "UPDATE audit_events SET action = ? WHERE event_id = ?",
+                ("document.changed", audit_event.event_id),
+            )
+
+    with sqlite3.connect(db_path) as connection:
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            connection.execute(
+                "DELETE FROM audit_events WHERE event_id = ?",
+                (audit_event.event_id,),
+            )
+
+    assert repository.get_audit_event(audit_event.event_id) == audit_event
+
+
+def test_audit_event_reads_verify_the_stored_hash_chain(tmp_path) -> None:
+    db_path = tmp_path / "veridoc.sqlite3"
+    repository = SQLitePersistenceRepository(db_path)
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+    audit_event = repository.create_audit_event(
+        event_id="audit-readable",
+        job_id=job.job_id,
+        document_id=document.document_id,
+        actor="qa-approver",
+        action="document.uploaded",
+        scope_type="document",
+        scope_id=document.document_id,
+    )
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("DROP TRIGGER audit_events_no_update")
+        connection.execute(
+            "UPDATE audit_events SET payload_json = ? WHERE event_id = ?",
+            (json.dumps({"tampered": True}), audit_event.event_id),
+        )
+
+    with pytest.raises(ValueError, match="audit event chain integrity"):
+        repository.get_audit_event(audit_event.event_id)
+
+
+def test_audit_event_timestamps_are_sampled_after_the_write_lock(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    repository = SQLitePersistenceRepository(tmp_path / "veridoc.sqlite3")
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+    lock_state = {"immediate_scope_open": False}
+    original_connection_scope = SQLitePersistenceRepository._connection_scope
+
+    @contextmanager
+    def tracked_connection_scope(
+        self: SQLitePersistenceRepository,
+        *,
+        immediate: bool = False,
+    ):
+        with original_connection_scope(self, immediate=immediate) as connection:
+            previous = lock_state["immediate_scope_open"]
+            if immediate:
+                lock_state["immediate_scope_open"] = True
+            try:
+                yield connection
+            finally:
+                lock_state["immediate_scope_open"] = previous
+
+    def locked_timestamp() -> str:
+        assert lock_state["immediate_scope_open"]
+        return "2026-07-09T00:00:00+00:00"
+
+    monkeypatch.setattr(SQLitePersistenceRepository, "_connection_scope", tracked_connection_scope)
+    monkeypatch.setattr(persistence, "_utc_now", locked_timestamp)
+
+    audit_event = repository.create_audit_event(
+        event_id="audit-after-lock",
+        job_id=job.job_id,
+        document_id=document.document_id,
+        actor="qa-approver",
+        action="document.uploaded",
+        scope_type="document",
+        scope_id=document.document_id,
+    )
+
+    assert audit_event.created_at == "2026-07-09T00:00:00+00:00"
 
 
 def test_review_decision_scope_is_enforced_by_database_constraints(tmp_path) -> None:
