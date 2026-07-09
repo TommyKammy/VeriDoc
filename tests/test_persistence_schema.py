@@ -172,7 +172,7 @@ def test_persistence_repository_initializes_and_reads_minimal_schema(tmp_path) -
         event_id="audit-2",
         job_id=job.job_id,
         document_id=document.document_id,
-        actor="system",
+        actor="operator-1",
         action="job.queued",
         scope_type="job_event",
         scope_id=job_event.event_id,
@@ -1051,6 +1051,51 @@ def test_job_event_sequences_are_contiguous_at_the_database_boundary(tmp_path) -
             )
 
     assert repository.list_job_events(job.job_id) == [first]
+
+
+def test_repository_rejects_corrupt_job_event_history_before_append(tmp_path) -> None:
+    db_path = tmp_path / "veridoc.sqlite3"
+    repository = SQLitePersistenceRepository(db_path)
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("DROP TRIGGER job_events_contiguous_sequence_insert")
+        connection.execute(
+            """
+            INSERT INTO job_events(
+                event_id, job_id, sequence, event_type, actor, payload_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "job-event-corrupt",
+                job.job_id,
+                99,
+                "job.queued",
+                "operator-1",
+                '{"event_type":"job.queued"}',
+                "2026-07-10T00:00:00+00:00",
+            ),
+        )
+
+    with pytest.raises(ValueError, match="contiguous sequences"):
+        repository.create_job_event(
+            event_id="job-event-after-corrupt",
+            job_id=job.job_id,
+            event_type="job.running",
+            actor="operator-1",
+        )
+    with pytest.raises(ValueError, match="contiguous sequences"):
+        repository.get_job_event("job-event-corrupt")
+    with pytest.raises(ValueError, match="contiguous sequences"):
+        repository.list_job_events(job.job_id)
+
+    with sqlite3.connect(db_path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM job_events WHERE event_id = ?",
+            ("job-event-after-corrupt",),
+        ).fetchone()[0] == 0
 
 
 def test_source_and_generated_artifacts_share_global_identity_keys(tmp_path) -> None:
@@ -2935,6 +2980,19 @@ def test_review_decision_audit_scope_binds_actor_and_action(tmp_path) -> None:
             },
         )
 
+    for alias in ("decision", "review_decision", "outcome"):
+        with pytest.raises(ValueError, match=alias):
+            repository.create_audit_event(
+                event_id=f"audit-wrong-{alias}",
+                job_id=job.job_id,
+                document_id=document.document_id,
+                actor="qa-approver",
+                action="review.approved",
+                scope_type="review_decision",
+                scope_id=review_decision.decision_id,
+                payload={"event_type": "review.approved", alias: "rejected"},
+            )
+
 
 def test_audit_scopes_bind_authoritative_lifecycle_semantics(tmp_path) -> None:
     repository = SQLitePersistenceRepository(tmp_path / "veridoc.sqlite3")
@@ -2949,6 +3007,7 @@ def test_audit_scopes_bind_authoritative_lifecycle_semantics(tmp_path) -> None:
         payload={"event_type": "job.queued"},
     )
     result = _create_result(repository, job, "result-1")
+    artifact = _create_artifact(repository, result, "artifact-1")
 
     cases = (
         (
@@ -2959,6 +3018,15 @@ def test_audit_scopes_bind_authoritative_lifecycle_semantics(tmp_path) -> None:
             document.source_artifact_id,
             None,
             "uploader",
+        ),
+        (
+            "audit-wrong-job-event-actor",
+            "mallory",
+            "job.queued",
+            "job_event",
+            job_event.event_id,
+            {"event_type": "job.queued"},
+            "job event actor",
         ),
         (
             "audit-wrong-job-event-type",
@@ -3004,6 +3072,27 @@ def test_audit_scopes_bind_authoritative_lifecycle_semantics(tmp_path) -> None:
             result.result_id,
             {"event_type": "conversion.completed", "result_status": "failed"},
             "result_status",
+        ),
+        (
+            "audit-wrong-artifact-storage",
+            "operator-1",
+            "artifact.generated",
+            "artifact",
+            artifact.artifact_id,
+            {
+                "event_type": "artifact.generated",
+                "storage_key": "artifacts/wrong.docx",
+            },
+            "storage_key",
+        ),
+        (
+            "audit-wrong-artifact-hash",
+            "operator-1",
+            "artifact.generated",
+            "generated_artifact",
+            artifact.artifact_id,
+            {"event_type": "artifact.generated", "content_hash": "0" * 64},
+            "content_hash",
         ),
     )
     for event_id, actor, action, scope_type, scope_id, payload, message in cases:

@@ -376,6 +376,7 @@ class SQLitePersistenceRepository:
             actor=actor,
         )
         with self._connection_scope(immediate=True) as connection:
+            self._verify_job_event_history(connection, job_id)
             sequence = self._next_job_event_sequence(connection, job_id)
             now = _utc_now()
             _require_job_event_payload_matches(
@@ -405,24 +406,16 @@ class SQLitePersistenceRepository:
                 "SELECT * FROM job_events WHERE event_id = ?",
                 (event_id,),
             ).fetchone()
+            if row is not None:
+                self._verify_job_event_history(connection, row["job_id"])
         if row is None:
             return None
-        _require_job_event_row_payload_matches(row)
         return _row_to_dataclass(JobEvent, row)
 
     def list_job_events(self, job_id: str) -> list[JobEvent]:
         _require_non_empty(job_id=job_id)
         with self._connection_scope() as connection:
-            rows = connection.execute(
-                """
-                SELECT * FROM job_events
-                WHERE job_id = ?
-                ORDER BY sequence ASC
-                """,
-                (job_id,),
-            ).fetchall()
-        for row in rows:
-            _require_job_event_row_payload_matches(row)
+            rows = self._verify_job_event_history(connection, job_id)
         return [_row_to_dataclass(JobEvent, row) for row in rows]
 
     def create_conversion_result(
@@ -924,6 +917,26 @@ class SQLitePersistenceRepository:
             return 1
         return int(row["sequence"]) + 1
 
+    def _verify_job_event_history(
+        self,
+        connection: sqlite3.Connection,
+        job_id: str,
+    ) -> list[sqlite3.Row]:
+        rows = connection.execute(
+            """
+            SELECT * FROM job_events
+            WHERE job_id = ?
+            ORDER BY sequence ASC
+            """,
+            (job_id,),
+        ).fetchall()
+        for expected_sequence, row in enumerate(rows, start=1):
+            sequence = row["sequence"]
+            if not isinstance(sequence, int) or sequence != expected_sequence:
+                raise ValueError("job event history must have contiguous sequences")
+            _require_job_event_row_payload_matches(row)
+        return rows
+
     def _require_review_item_matches_artifact(
         self,
         connection: sqlite3.Connection,
@@ -980,13 +993,23 @@ class SQLitePersistenceRepository:
     ) -> None:
         if scope_type in {"document", "source_document"}:
             row = connection.execute(
-                "SELECT document_id, uploaded_by FROM source_documents WHERE document_id = ?",
+                """
+                SELECT document_id, uploaded_by, source_storage_key, content_hash,
+                       source_type, original_filename, status
+                FROM source_documents
+                WHERE document_id = ?
+                """,
                 (scope_id,),
             ).fetchone()
             expected = {"document_id": document_id}
         elif scope_type == "source_artifact":
             row = connection.execute(
-                "SELECT document_id, uploaded_by FROM source_artifacts WHERE artifact_id = ?",
+                """
+                SELECT document_id, uploaded_by, storage_key, content_hash,
+                       source_type, original_filename
+                FROM source_artifacts
+                WHERE artifact_id = ?
+                """,
                 (scope_id,),
             ).fetchone()
             expected = {"document_id": document_id}
@@ -999,7 +1022,8 @@ class SQLitePersistenceRepository:
         elif scope_type == "job_event":
             row = connection.execute(
                 """
-                SELECT job_events.job_id, jobs.document_id, job_events.event_type
+                SELECT job_events.job_id, jobs.document_id, job_events.event_type,
+                       job_events.actor
                 FROM job_events
                 JOIN jobs ON jobs.job_id = job_events.job_id
                 WHERE job_events.event_id = ?
@@ -1015,7 +1039,12 @@ class SQLitePersistenceRepository:
             expected = {"job_id": job_id, "document_id": document_id}
         elif scope_type in {"artifact", "generated_artifact"}:
             row = connection.execute(
-                "SELECT job_id, document_id FROM generated_artifacts WHERE artifact_id = ?",
+                """
+                SELECT job_id, document_id, storage_key, content_hash, category,
+                       format, retention_state
+                FROM generated_artifacts
+                WHERE artifact_id = ?
+                """,
                 (scope_id,),
             ).fetchone()
             expected = {"job_id": job_id, "document_id": document_id}
@@ -1043,6 +1072,8 @@ class SQLitePersistenceRepository:
         for field_name, expected_value in expected.items():
             if row[field_name] != expected_value:
                 raise ValueError("audit scope must match the event job and document")
+        if scope_type == "job_event":
+            self._verify_job_event_history(connection, row["job_id"])
         _require_audit_scope_semantics(
             scope_type=scope_type,
             row=row,
@@ -1383,9 +1414,68 @@ def _require_audit_scope_semantics(
     action: str,
     payload: Mapping[str, Any],
 ) -> None:
-    if scope_type in {"document", "source_document", "source_artifact"}:
+    if scope_type in {"document", "source_document"}:
         if _is_upload_action(action) and row["uploaded_by"] != actor:
             raise ValueError("audit actor must match the recorded uploader")
+        _require_payload_aliases_match(
+            payload,
+            ("storage_key", "source_storage_key"),
+            row["source_storage_key"],
+            field_name="source document storage key",
+        )
+        _require_payload_aliases_match(
+            payload,
+            ("content_hash", "source_content_hash"),
+            row["content_hash"],
+            field_name="source document content hash",
+        )
+        _require_payload_aliases_match(
+            payload,
+            ("source_type",),
+            row["source_type"],
+            field_name="source document type",
+        )
+        _require_payload_aliases_match(
+            payload,
+            ("original_filename", "filename"),
+            row["original_filename"],
+            field_name="source document filename",
+        )
+        _require_payload_aliases_match(
+            payload,
+            ("document_status",),
+            row["status"],
+            field_name="source document status",
+        )
+        return
+
+    if scope_type == "source_artifact":
+        if _is_upload_action(action) and row["uploaded_by"] != actor:
+            raise ValueError("audit actor must match the recorded uploader")
+        _require_payload_aliases_match(
+            payload,
+            ("storage_key", "source_storage_key"),
+            row["storage_key"],
+            field_name="source artifact storage key",
+        )
+        _require_payload_aliases_match(
+            payload,
+            ("content_hash", "source_content_hash"),
+            row["content_hash"],
+            field_name="source artifact content hash",
+        )
+        _require_payload_aliases_match(
+            payload,
+            ("source_type",),
+            row["source_type"],
+            field_name="source artifact type",
+        )
+        _require_payload_aliases_match(
+            payload,
+            ("original_filename", "filename"),
+            row["original_filename"],
+            field_name="source artifact filename",
+        )
         return
 
     if scope_type in {"job", "conversion_job"}:
@@ -1402,6 +1492,8 @@ def _require_audit_scope_semantics(
         return
 
     if scope_type == "job_event":
+        if row["actor"] != actor:
+            raise ValueError("audit actor must match the scoped job event actor")
         if not _job_event_action_matches(row["event_type"], action):
             raise ValueError("audit action must match the scoped job event type")
         return
@@ -1419,8 +1511,25 @@ def _require_audit_scope_semantics(
             raise ValueError("audit action must match the conversion result status")
         return
 
+    if scope_type in {"artifact", "generated_artifact"}:
+        for aliases, column, field_name in (
+            (("storage_key", "artifact_storage_key"), "storage_key", "artifact storage key"),
+            (("content_hash", "artifact_content_hash"), "content_hash", "artifact content hash"),
+            (("category", "artifact_category"), "category", "artifact category"),
+            (("format", "artifact_format"), "format", "artifact format"),
+            (("retention_state",), "retention_state", "artifact retention state"),
+        ):
+            _require_payload_aliases_match(
+                payload,
+                aliases,
+                row[column],
+                field_name=field_name,
+            )
+        return
+
     if scope_type == "review_decision":
         _require_payload_actor_role(payload, row["role"])
+        _require_payload_review_outcome(payload, row["decision"])
 
 
 def _require_payload_aliases_match(
@@ -1446,6 +1555,23 @@ def _require_payload_actor_role(payload: Mapping[str, Any], expected_role: str) 
         expected_role,
         field_name="review decision role",
     )
+
+
+def _require_payload_review_outcome(
+    payload: Mapping[str, Any],
+    expected_decision: str,
+) -> None:
+    for alias in ("decision", "review_decision", "outcome"):
+        if alias not in payload:
+            continue
+        value = payload[alias]
+        if not isinstance(value, str) or not _review_decision_action_matches(
+            expected_decision,
+            value,
+        ):
+            raise ValueError(
+                f"payload {alias} must match the scoped review decision outcome"
+            )
 
 
 def _is_upload_action(action: str) -> bool:
