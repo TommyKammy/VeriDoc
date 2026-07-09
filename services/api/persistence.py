@@ -1072,6 +1072,9 @@ def _require_job_event_payload_matches(
             continue
         if payload_value != expected_value:
             raise ValueError(f"payload {field_name} must match the job event row")
+    for field_name in ("sequence", "created_at"):
+        if field_name in payload:
+            raise ValueError(f"payload {field_name} is derived from the job event row")
 
 
 def _require_audit_event_payload_matches(
@@ -1110,13 +1113,21 @@ def _require_audit_event_payload_matches(
             continue
         if payload_value != expected_value:
             raise ValueError(f"payload {field_name} must match the audit event row")
+    if "actor_id" in payload and payload["actor_id"] != actor:
+        raise ValueError("payload actor_id must match the audit event row")
     for field_name in ("sequence", "event_hash", "prev_event_hash"):
         if field_name in payload:
             raise ValueError(f"payload {field_name} is derived from the audit chain")
 
 
 def _canonical_json(payload: Mapping[str, Any]) -> str:
-    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return json.dumps(
+        payload,
+        allow_nan=False,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def _validate_managed_schema(
@@ -1203,17 +1214,20 @@ def main(argv: list[str] | None = None) -> int:
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
-    migration_id TEXT PRIMARY KEY,
+    migration_id TEXT NOT NULL PRIMARY KEY,
     applied_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS source_documents (
-    document_id TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL PRIMARY KEY,
     source_type TEXT NOT NULL,
     original_filename TEXT NOT NULL,
     source_artifact_id TEXT NOT NULL UNIQUE,
     source_storage_key TEXT NOT NULL UNIQUE,
-    content_hash TEXT NOT NULL,
+    content_hash TEXT NOT NULL CHECK(
+        length(content_hash) = 64
+        AND content_hash NOT GLOB '*[^0-9a-f]*'
+    ),
     status TEXT NOT NULL,
     uploaded_by TEXT NOT NULL,
     created_at TEXT NOT NULL,
@@ -1221,7 +1235,7 @@ CREATE TABLE IF NOT EXISTS source_documents (
 );
 
 CREATE TABLE IF NOT EXISTS jobs (
-    job_id TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL PRIMARY KEY,
     document_id TEXT NOT NULL REFERENCES source_documents(document_id) ON DELETE RESTRICT,
     idempotency_key TEXT NOT NULL UNIQUE,
     mode TEXT NOT NULL,
@@ -1233,7 +1247,7 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 
 CREATE TABLE IF NOT EXISTS job_events (
-    event_id TEXT PRIMARY KEY,
+    event_id TEXT NOT NULL PRIMARY KEY,
     job_id TEXT NOT NULL REFERENCES jobs(job_id) ON DELETE RESTRICT,
     sequence INTEGER NOT NULL,
     event_type TEXT NOT NULL,
@@ -1244,11 +1258,14 @@ CREATE TABLE IF NOT EXISTS job_events (
 );
 
 CREATE TABLE IF NOT EXISTS conversion_results (
-    result_id TEXT PRIMARY KEY,
+    result_id TEXT NOT NULL PRIMARY KEY,
     job_id TEXT NOT NULL REFERENCES jobs(job_id) ON DELETE RESTRICT,
     document_id TEXT NOT NULL REFERENCES source_documents(document_id) ON DELETE RESTRICT,
     status TEXT NOT NULL,
-    content_hash TEXT NOT NULL,
+    content_hash TEXT NOT NULL CHECK(
+        length(content_hash) = 64
+        AND content_hash NOT GLOB '*[^0-9a-f]*'
+    ),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE(result_id, job_id, document_id),
@@ -1256,14 +1273,17 @@ CREATE TABLE IF NOT EXISTS conversion_results (
 );
 
 CREATE TABLE IF NOT EXISTS generated_artifacts (
-    artifact_id TEXT PRIMARY KEY,
+    artifact_id TEXT NOT NULL PRIMARY KEY,
     result_id TEXT NOT NULL REFERENCES conversion_results(result_id) ON DELETE RESTRICT,
     job_id TEXT NOT NULL REFERENCES jobs(job_id) ON DELETE RESTRICT,
     document_id TEXT NOT NULL REFERENCES source_documents(document_id) ON DELETE RESTRICT,
     category TEXT NOT NULL,
     format TEXT NOT NULL,
     storage_key TEXT NOT NULL UNIQUE,
-    content_hash TEXT NOT NULL,
+    content_hash TEXT NOT NULL CHECK(
+        length(content_hash) = 64
+        AND content_hash NOT GLOB '*[^0-9a-f]*'
+    ),
     retention_state TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -1273,7 +1293,7 @@ CREATE TABLE IF NOT EXISTS generated_artifacts (
 );
 
 CREATE TABLE IF NOT EXISTS review_items (
-    review_item_id TEXT PRIMARY KEY,
+    review_item_id TEXT NOT NULL PRIMARY KEY,
     document_id TEXT NOT NULL REFERENCES source_documents(document_id) ON DELETE RESTRICT,
     job_id TEXT NOT NULL REFERENCES jobs(job_id) ON DELETE RESTRICT,
     target_path TEXT NOT NULL,
@@ -1286,7 +1306,7 @@ CREATE TABLE IF NOT EXISTS review_items (
 );
 
 CREATE TABLE IF NOT EXISTS review_decisions (
-    decision_id TEXT PRIMARY KEY,
+    decision_id TEXT NOT NULL PRIMARY KEY,
     review_item_id TEXT NOT NULL REFERENCES review_items(review_item_id) ON DELETE RESTRICT,
     artifact_id TEXT NOT NULL REFERENCES generated_artifacts(artifact_id) ON DELETE RESTRICT,
     job_id TEXT NOT NULL REFERENCES jobs(job_id) ON DELETE RESTRICT,
@@ -1303,22 +1323,105 @@ CREATE TABLE IF NOT EXISTS review_decisions (
 );
 
 CREATE TABLE IF NOT EXISTS audit_events (
-    event_id TEXT PRIMARY KEY,
+    event_id TEXT NOT NULL PRIMARY KEY,
     job_id TEXT NOT NULL REFERENCES jobs(job_id) ON DELETE RESTRICT,
     document_id TEXT NOT NULL REFERENCES source_documents(document_id) ON DELETE RESTRICT,
     sequence INTEGER NOT NULL,
-    integrity_algorithm TEXT NOT NULL,
+    integrity_algorithm TEXT NOT NULL CHECK(
+        integrity_algorithm = 'sha256-canonical-json-chain-v1'
+    ),
     actor TEXT NOT NULL,
     action TEXT NOT NULL,
     scope_type TEXT NOT NULL,
     scope_id TEXT NOT NULL,
-    event_hash TEXT NOT NULL,
-    prev_event_hash TEXT,
+    event_hash TEXT NOT NULL CHECK(
+        length(event_hash) = 64
+        AND event_hash NOT GLOB '*[^0-9a-f]*'
+    ),
+    prev_event_hash TEXT CHECK(
+        prev_event_hash IS NULL
+        OR (
+            length(prev_event_hash) = 64
+            AND prev_event_hash NOT GLOB '*[^0-9a-f]*'
+        )
+    ),
     payload_json TEXT NOT NULL,
     created_at TEXT NOT NULL,
     UNIQUE(sequence),
     FOREIGN KEY(job_id, document_id) REFERENCES jobs(job_id, document_id) ON DELETE RESTRICT
 );
+
+CREATE TRIGGER IF NOT EXISTS audit_events_scope_reference_insert
+BEFORE INSERT ON audit_events
+WHEN NOT (
+    (
+        NEW.scope_type IN ('document', 'source_document')
+        AND EXISTS (
+            SELECT 1 FROM source_documents
+            WHERE source_documents.document_id = NEW.scope_id
+              AND source_documents.document_id = NEW.document_id
+        )
+    )
+    OR (
+        NEW.scope_type IN ('job', 'conversion_job')
+        AND EXISTS (
+            SELECT 1 FROM jobs
+            WHERE jobs.job_id = NEW.scope_id
+              AND jobs.job_id = NEW.job_id
+              AND jobs.document_id = NEW.document_id
+        )
+    )
+    OR (
+        NEW.scope_type = 'job_event'
+        AND EXISTS (
+            SELECT 1
+            FROM job_events
+            JOIN jobs ON jobs.job_id = job_events.job_id
+            WHERE job_events.event_id = NEW.scope_id
+              AND job_events.job_id = NEW.job_id
+              AND jobs.document_id = NEW.document_id
+        )
+    )
+    OR (
+        NEW.scope_type = 'conversion_result'
+        AND EXISTS (
+            SELECT 1 FROM conversion_results
+            WHERE conversion_results.result_id = NEW.scope_id
+              AND conversion_results.job_id = NEW.job_id
+              AND conversion_results.document_id = NEW.document_id
+        )
+    )
+    OR (
+        NEW.scope_type IN ('artifact', 'generated_artifact')
+        AND EXISTS (
+            SELECT 1 FROM generated_artifacts
+            WHERE generated_artifacts.artifact_id = NEW.scope_id
+              AND generated_artifacts.job_id = NEW.job_id
+              AND generated_artifacts.document_id = NEW.document_id
+        )
+    )
+    OR (
+        NEW.scope_type = 'review_item'
+        AND EXISTS (
+            SELECT 1 FROM review_items
+            WHERE review_items.review_item_id = NEW.scope_id
+              AND review_items.job_id = NEW.job_id
+              AND review_items.document_id = NEW.document_id
+        )
+    )
+    OR (
+        NEW.scope_type = 'review_decision'
+        AND EXISTS (
+            SELECT 1 FROM review_decisions
+            WHERE review_decisions.decision_id = NEW.scope_id
+              AND review_decisions.job_id = NEW.job_id
+              AND review_decisions.document_id = NEW.document_id
+        )
+    )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'audit scope must reference an existing matching row');
+END;
 
 CREATE TRIGGER IF NOT EXISTS job_events_no_update
 BEFORE UPDATE ON job_events
@@ -1342,6 +1445,61 @@ CREATE TRIGGER IF NOT EXISTS audit_events_no_delete
 BEFORE DELETE ON audit_events
 BEGIN
     SELECT RAISE(ABORT, 'audit events are append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS job_events_audit_scope_no_delete
+BEFORE DELETE ON job_events
+WHEN EXISTS (
+    SELECT 1 FROM audit_events
+    WHERE audit_events.scope_type = 'job_event'
+      AND audit_events.scope_id = OLD.event_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'audit scope rows cannot be deleted');
+END;
+
+CREATE TRIGGER IF NOT EXISTS conversion_results_audit_scope_no_delete
+BEFORE DELETE ON conversion_results
+WHEN EXISTS (
+    SELECT 1 FROM audit_events
+    WHERE audit_events.scope_type = 'conversion_result'
+      AND audit_events.scope_id = OLD.result_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'audit scope rows cannot be deleted');
+END;
+
+CREATE TRIGGER IF NOT EXISTS generated_artifacts_audit_scope_no_delete
+BEFORE DELETE ON generated_artifacts
+WHEN EXISTS (
+    SELECT 1 FROM audit_events
+    WHERE audit_events.scope_type IN ('artifact', 'generated_artifact')
+      AND audit_events.scope_id = OLD.artifact_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'audit scope rows cannot be deleted');
+END;
+
+CREATE TRIGGER IF NOT EXISTS review_items_audit_scope_no_delete
+BEFORE DELETE ON review_items
+WHEN EXISTS (
+    SELECT 1 FROM audit_events
+    WHERE audit_events.scope_type = 'review_item'
+      AND audit_events.scope_id = OLD.review_item_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'audit scope rows cannot be deleted');
+END;
+
+CREATE TRIGGER IF NOT EXISTS review_decisions_audit_scope_no_delete
+BEFORE DELETE ON review_decisions
+WHEN EXISTS (
+    SELECT 1 FROM audit_events
+    WHERE audit_events.scope_type = 'review_decision'
+      AND audit_events.scope_id = OLD.decision_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'audit scope rows cannot be deleted');
 END;
 
 CREATE TRIGGER IF NOT EXISTS source_documents_artifact_id_global_insert
