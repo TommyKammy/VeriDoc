@@ -343,7 +343,7 @@
 
       table {
         width: 100%;
-        min-width: 700px;
+        min-width: 1040px;
         border-collapse: collapse;
       }
 
@@ -395,6 +395,12 @@
       .status.running {
         background: #fff4d9;
         color: #78550b;
+      }
+
+      .status.blocked,
+      .status.review_required {
+        background: #f4ecff;
+        color: #5b2f8f;
       }
 
       .detail-grid {
@@ -849,6 +855,12 @@
                 <tr>
                   <th>Job</th>
                   <th>Status</th>
+                  <th>Progress</th>
+                  <th>Attempt</th>
+                  <th>Warnings</th>
+                  <th>Artifacts</th>
+                  <th>Failure</th>
+                  <th>Retry</th>
                   <th>Mode</th>
                   <th>Updated</th>
                   <th>Actions</th>
@@ -867,10 +879,14 @@
             <div class="detail-grid">
               <div class="detail-row"><strong>Job ID</strong><span id="detail-id"></span></div>
               <div class="detail-row"><strong>Status</strong><span id="detail-status"></span></div>
+              <div class="detail-row"><strong>Progress</strong><span id="detail-progress"></span></div>
               <div class="detail-row"><strong>Filename</strong><span id="detail-filename"></span></div>
               <div class="detail-row"><strong>Mode</strong><span id="detail-mode"></span></div>
               <div class="detail-row"><strong>Template</strong><span id="detail-template"></span></div>
               <div class="detail-row"><strong>Attempts</strong><span id="detail-attempts"></span></div>
+              <div class="detail-row"><strong>Warnings</strong><span id="detail-warnings"></span></div>
+              <div class="detail-row"><strong>Artifacts</strong><span id="detail-artifacts"></span></div>
+              <div class="detail-row"><strong>Retry</strong><span id="detail-retry-availability"></span></div>
               <div class="detail-row"><strong>Error</strong><span id="detail-error"></span></div>
             </div>
             <div class="action-row" style="margin-top: 14px">
@@ -1280,10 +1296,14 @@
       const detailFields = {
         id: document.querySelector("#detail-id"),
         status: document.querySelector("#detail-status"),
+        progress: document.querySelector("#detail-progress"),
         filename: document.querySelector("#detail-filename"),
         mode: document.querySelector("#detail-mode"),
         template: document.querySelector("#detail-template"),
         attempts: document.querySelector("#detail-attempts"),
+        warnings: document.querySelector("#detail-warnings"),
+        artifacts: document.querySelector("#detail-artifacts"),
+        retryAvailability: document.querySelector("#detail-retry-availability"),
         error: document.querySelector("#detail-error"),
         raw: document.querySelector("#detail-raw"),
       };
@@ -1964,7 +1984,13 @@
         row.dataset.selected = String(state.selectedJob?.job_id === job.job_id);
         row.append(
           cell(job.job_id),
-          cell(statusBadge(job.status)),
+          cell(statusBadge(job.display_status || job.status)),
+          cell(formatProgress(job.progress_percent)),
+          cell(String(job.attempts)),
+          cell(warningSummary(job.warning_count)),
+          cell(artifactAvailability(job.has_result)),
+          cell(job.error || "none"),
+          cell(retryAvailability(job.available_actions, job.status)),
           cell(job.mode),
           cell(formatDate(job.updated_at)),
           cell(rowActions(job))
@@ -1993,13 +2019,17 @@
         detailEmpty.hidden = true;
         detailContent.hidden = false;
         detailFields.id.textContent = job.job_id;
-        detailFields.status.replaceChildren(statusBadge(job.status));
+        detailFields.status.replaceChildren(statusBadge(job.display_status || job.status));
+        detailFields.progress.textContent = formatProgress(job.progress_percent);
         detailFields.filename.textContent = job.filename;
         detailFields.mode.textContent = job.mode;
         detailFields.template.textContent = job.template
           ? `${job.template.name} v${job.template.template_version}`
           : "none";
         detailFields.attempts.textContent = String(job.attempts);
+        detailFields.warnings.textContent = warningSummary(job.warning_count);
+        detailFields.artifacts.textContent = artifactAvailability(job.has_result);
+        detailFields.retryAvailability.textContent = retryAvailability(job.available_actions, job.status);
         detailFields.error.textContent = job.error || "none";
         detailFields.raw.textContent = JSON.stringify(job, null, 2);
         detailOpen.disabled = !findAction(job, "open_detail");
@@ -2088,6 +2118,30 @@
 
       function formatDate(value) {
         return new Date(value).toLocaleString();
+      }
+
+      function formatProgress(value) {
+        const percent = Number.isFinite(value) ? value : Number(value);
+        if (!Number.isFinite(percent)) return "unknown";
+        return `${Math.max(0, Math.min(100, Math.round(percent)))}%`;
+      }
+
+      function warningSummary(value) {
+        const count = Number.isFinite(value) ? value : Number(value);
+        if (!Number.isFinite(count) || count <= 0) return "none";
+        return `${count} warning${count === 1 ? "" : "s"}`;
+      }
+
+      function artifactAvailability(hasResult) {
+        return hasResult ? "available" : "none";
+      }
+
+      function retryAvailability(availableActions, status) {
+        const canRetry = Array.isArray(availableActions)
+          ? availableActions.some((action) => action.action === "retry_conversion")
+          : false;
+        if (canRetry) return "available";
+        return status === "failed" ? "blocked" : "not applicable";
       }
 
       function setPageStatus(message, isError = false) {
