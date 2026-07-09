@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -98,6 +99,8 @@ class ReviewDecision:
     decision_id: str
     review_item_id: str
     artifact_id: str
+    job_id: str
+    document_id: str
     actor: str
     role: str
     decision: str
@@ -136,7 +139,7 @@ class SQLitePersistenceRepository:
         self._connection = _connection
 
     def initialize(self) -> None:
-        _validate_database_path(self.db_path)
+        self.db_path = _validate_database_path(self.db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
             connection.executescript(_SCHEMA_SQL)
@@ -149,7 +152,7 @@ class SQLitePersistenceRepository:
             )
 
     def reset(self) -> None:
-        _validate_database_path(self.db_path)
+        self.db_path = _validate_database_path(self.db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
             connection.executescript(_RESET_SQL)
@@ -276,6 +279,18 @@ class SQLitePersistenceRepository:
 
     def get_job_event(self, event_id: str) -> JobEvent | None:
         return self._get_one(JobEvent, "SELECT * FROM job_events WHERE event_id = ?", (event_id,))
+
+    def list_job_events(self, job_id: str) -> list[JobEvent]:
+        _require_non_empty(job_id=job_id)
+        return self._get_many(
+            JobEvent,
+            """
+            SELECT * FROM job_events
+            WHERE job_id = ?
+            ORDER BY created_at, event_id
+            """,
+            (job_id,),
+        )
 
     def create_conversion_result(
         self,
@@ -438,17 +453,32 @@ class SQLitePersistenceRepository:
         )
         now = _utc_now()
         with self._connection_scope() as connection:
-            self._require_review_item_matches_artifact(connection, review_item_id, artifact_id)
+            job_id, document_id = self._require_review_item_matches_artifact(
+                connection,
+                review_item_id,
+                artifact_id,
+            )
             return self._insert_and_get_from_connection(
                 connection,
                 ReviewDecision,
                 """
                 INSERT INTO review_decisions(
-                    decision_id, review_item_id, artifact_id, actor, role, decision,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    decision_id, review_item_id, artifact_id, job_id, document_id,
+                    actor, role, decision, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (decision_id, review_item_id, artifact_id, actor, role, decision, now, now),
+                (
+                    decision_id,
+                    review_item_id,
+                    artifact_id,
+                    job_id,
+                    document_id,
+                    actor,
+                    role,
+                    decision,
+                    now,
+                    now,
+                ),
                 "SELECT * FROM review_decisions WHERE decision_id = ?",
                 (decision_id,),
             )
@@ -466,13 +496,13 @@ class SQLitePersistenceRepository:
         event_id: str,
         job_id: str,
         document_id: str,
-        sequence: int,
-        integrity_algorithm: str,
         actor: str,
         action: str,
         scope_type: str,
         scope_id: str,
-        event_hash: str,
+        integrity_algorithm: str = "sha256",
+        sequence: int | None = None,
+        event_hash: str | None = None,
         prev_event_hash: str | None = None,
         payload: Mapping[str, Any] | None = None,
     ) -> AuditEvent:
@@ -486,11 +516,14 @@ class SQLitePersistenceRepository:
             scope_type=scope_type,
             scope_id=scope_id,
         )
-        _require_sha256(event_hash, field_name="event_hash")
+        if integrity_algorithm != "sha256":
+            raise ValueError("integrity_algorithm must be sha256")
+        if sequence is not None:
+            raise ValueError("sequence is derived from the audit chain")
+        if event_hash is not None:
+            raise ValueError("event_hash is derived from the audit chain")
         if prev_event_hash is not None:
-            _require_sha256(prev_event_hash, field_name="prev_event_hash")
-        if sequence < 0:
-            raise ValueError("sequence must not be negative")
+            raise ValueError("prev_event_hash is derived from the audit chain")
         payload_json = _canonical_json(
             payload
             or {
@@ -504,6 +537,21 @@ class SQLitePersistenceRepository:
         with self._connection_scope() as connection:
             self._require_job_document(connection, job_id, document_id)
             self._require_audit_scope(connection, scope_type, scope_id, job_id, document_id)
+            sequence, prev_event_hash = self._next_audit_chain_fields(connection, job_id)
+            event_hash = _audit_event_hash(
+                event_id=event_id,
+                job_id=job_id,
+                document_id=document_id,
+                sequence=sequence,
+                integrity_algorithm=integrity_algorithm,
+                actor=actor,
+                action=action,
+                scope_type=scope_type,
+                scope_id=scope_id,
+                prev_event_hash=prev_event_hash,
+                payload_json=payload_json,
+                created_at=now,
+            )
             return self._insert_and_get_from_connection(
                 connection,
                 AuditEvent,
@@ -595,6 +643,16 @@ class SQLitePersistenceRepository:
             return None
         return _row_to_dataclass(record_type, row)
 
+    def _get_many(
+        self,
+        record_type: type[RecordT],
+        sql: str,
+        params: Iterable[Any],
+    ) -> list[RecordT]:
+        with self._connection_scope() as connection:
+            rows = connection.execute(sql, tuple(params)).fetchall()
+        return [_row_to_dataclass(record_type, row) for row in rows]
+
     @contextmanager
     def _connection_scope(self) -> Iterator[sqlite3.Connection]:
         if self._connection is not None:
@@ -646,7 +704,7 @@ class SQLitePersistenceRepository:
         connection: sqlite3.Connection,
         review_item_id: str,
         artifact_id: str,
-    ) -> None:
+    ) -> tuple[str, str]:
         review_item = connection.execute(
             "SELECT job_id, document_id FROM review_items WHERE review_item_id = ?",
             (review_item_id,),
@@ -666,6 +724,26 @@ class SQLitePersistenceRepository:
             or review_item["document_id"] != artifact["document_id"]
         ):
             raise ValueError("review_item_id and artifact_id must refer to the same conversion")
+        return review_item["job_id"], review_item["document_id"]
+
+    def _next_audit_chain_fields(
+        self,
+        connection: sqlite3.Connection,
+        job_id: str,
+    ) -> tuple[int, str | None]:
+        row = connection.execute(
+            """
+            SELECT sequence, event_hash
+            FROM audit_events
+            WHERE job_id = ?
+            ORDER BY sequence DESC
+            LIMIT 1
+            """,
+            (job_id,),
+        ).fetchone()
+        if row is None:
+            return 1, None
+        return int(row["sequence"]) + 1, row["event_hash"]
 
     def _require_audit_scope(
         self,
@@ -718,12 +796,7 @@ class SQLitePersistenceRepository:
             expected = {"job_id": job_id, "document_id": document_id}
         elif scope_type == "review_decision":
             row = connection.execute(
-                """
-                SELECT review_items.job_id, review_items.document_id
-                FROM review_decisions
-                JOIN review_items ON review_items.review_item_id = review_decisions.review_item_id
-                WHERE review_decisions.decision_id = ?
-                """,
+                "SELECT job_id, document_id FROM review_decisions WHERE decision_id = ?",
                 (scope_id,),
             ).fetchone()
             expected = {"job_id": job_id, "document_id": document_id}
@@ -759,6 +832,38 @@ def _row_to_dataclass(record_type: type[RecordT], row: sqlite3.Row) -> RecordT:
     )
 
 
+def _audit_event_hash(
+    *,
+    event_id: str,
+    job_id: str,
+    document_id: str,
+    sequence: int,
+    integrity_algorithm: str,
+    actor: str,
+    action: str,
+    scope_type: str,
+    scope_id: str,
+    prev_event_hash: str | None,
+    payload_json: str,
+    created_at: str,
+) -> str:
+    payload = {
+        "action": action,
+        "actor": actor,
+        "created_at": created_at,
+        "document_id": document_id,
+        "event_id": event_id,
+        "integrity_algorithm": integrity_algorithm,
+        "job_id": job_id,
+        "payload_json": payload_json,
+        "prev_event_hash": prev_event_hash,
+        "scope_id": scope_id,
+        "scope_type": scope_type,
+        "sequence": sequence,
+    }
+    return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -778,11 +883,18 @@ def _canonical_json(payload: Mapping[str, Any]) -> str:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
-def _validate_database_path(db_path: Path) -> None:
+def _validate_database_path(db_path: Path) -> Path:
     if str(db_path).strip() == "":
         raise ValueError("database path is required")
+    if not db_path.is_absolute():
+        repo_root = REPO_ROOT.resolve()
+        resolved_path = (repo_root / db_path).resolve()
+        if resolved_path != repo_root and repo_root not in resolved_path.parents:
+            raise ValueError("relative database path must stay within the repository root")
+        db_path = resolved_path
     if db_path.exists() and db_path.is_dir():
         raise ValueError("database path must be a file")
+    return db_path
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -893,11 +1005,17 @@ CREATE TABLE IF NOT EXISTS review_decisions (
     decision_id TEXT PRIMARY KEY,
     review_item_id TEXT NOT NULL REFERENCES review_items(review_item_id) ON DELETE RESTRICT,
     artifact_id TEXT NOT NULL REFERENCES generated_artifacts(artifact_id) ON DELETE RESTRICT,
+    job_id TEXT NOT NULL REFERENCES jobs(job_id) ON DELETE RESTRICT,
+    document_id TEXT NOT NULL REFERENCES source_documents(document_id) ON DELETE RESTRICT,
     actor TEXT NOT NULL,
     role TEXT NOT NULL,
     decision TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(review_item_id, job_id, document_id)
+        REFERENCES review_items(review_item_id, job_id, document_id) ON DELETE RESTRICT,
+    FOREIGN KEY(artifact_id, job_id, document_id)
+        REFERENCES generated_artifacts(artifact_id, job_id, document_id) ON DELETE RESTRICT
 );
 
 CREATE TABLE IF NOT EXISTS audit_events (

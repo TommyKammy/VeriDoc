@@ -152,23 +152,31 @@ def test_persistence_repository_initializes_and_reads_minimal_schema(tmp_path) -
         event_id="audit-1",
         job_id=job.job_id,
         document_id=document.document_id,
-        sequence=1,
-        integrity_algorithm="sha256",
         actor="qa-approver",
         action="review.approved",
         scope_type="review_decision",
         scope_id=decision.decision_id,
-        event_hash="d" * 64,
         payload={
             "event_type": "review.approved",
             "review_decision_id": decision.decision_id,
             "actor": {"id": "qa-approver", "role": "approver"},
         },
     )
+    chained_audit_event = repository.create_audit_event(
+        event_id="audit-2",
+        job_id=job.job_id,
+        document_id=document.document_id,
+        actor="system",
+        action="job.queued",
+        scope_type="job_event",
+        scope_id=job_event.event_id,
+        payload={"event_type": "job.queued"},
+    )
 
     assert repository.get_document("doc-1") == document
     assert repository.get_conversion_job("job-1") == job
     assert repository.get_job_event("job-event-1") == job_event
+    assert repository.list_job_events(job.job_id) == [job_event]
     assert repository.get_conversion_result("result-1") == result
     assert repository.get_artifact("artifact-1") == artifact
     assert repository.get_review_item("review-item-1") == review_item
@@ -180,6 +188,11 @@ def test_persistence_repository_initializes_and_reads_minimal_schema(tmp_path) -
     }
     assert audit_event.sequence == 1
     assert audit_event.integrity_algorithm == "sha256"
+    assert audit_event.prev_event_hash is None
+    assert len(audit_event.event_hash) == 64
+    assert chained_audit_event.sequence == 2
+    assert chained_audit_event.prev_event_hash == audit_event.event_hash
+    assert chained_audit_event.event_hash != audit_event.event_hash
     assert json.loads(audit_event.payload_json) == {
         "actor": {"id": "qa-approver", "role": "approver"},
         "event_type": "review.approved",
@@ -195,6 +208,7 @@ def test_persistence_repository_initializes_and_reads_minimal_schema(tmp_path) -
         review_item,
         decision,
         audit_event,
+        chained_audit_event,
     ):
         assert row.created_at.endswith("+00:00")
 
@@ -305,13 +319,10 @@ def test_persistence_repository_rejects_cross_scope_relationships(tmp_path) -> N
             event_id="audit-missing-scope",
             job_id=job_a.job_id,
             document_id=document_a.document_id,
-            sequence=1,
-            integrity_algorithm="sha256",
             actor="qa-approver",
             action="review.approved",
             scope_type="review_decision",
             scope_id="missing-decision",
-            event_hash="d" * 64,
             payload={"event_type": "review.approved"},
         )
 
@@ -320,13 +331,10 @@ def test_persistence_repository_rejects_cross_scope_relationships(tmp_path) -> N
             event_id="audit-wrong-scope",
             job_id=job_a.job_id,
             document_id=document_a.document_id,
-            sequence=2,
-            integrity_algorithm="sha256",
             actor="qa-approver",
             action="artifact.generated",
             scope_type="artifact",
             scope_id=artifact_b.artifact_id,
-            event_hash="e" * 64,
             payload={"event_type": "artifact.generated"},
         )
 
@@ -336,6 +344,91 @@ def test_persistence_repository_rejects_cross_scope_relationships(tmp_path) -> N
     assert repository.get_audit_event("audit-missing-scope") is None
     assert repository.get_audit_event("audit-wrong-scope") is None
     assert artifact_a.document_id == document_a.document_id
+
+
+def test_persistence_repository_rejects_caller_supplied_audit_chain_fields(tmp_path) -> None:
+    repository = SQLitePersistenceRepository(tmp_path / "veridoc.sqlite3")
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+
+    for field_name, value in (
+        ("sequence", 10),
+        ("event_hash", "d" * 64),
+        ("prev_event_hash", "e" * 64),
+    ):
+        kwargs = {
+            "event_id": f"audit-forged-{field_name}",
+            "job_id": job.job_id,
+            "document_id": document.document_id,
+            "actor": "qa-approver",
+            "action": "document.uploaded",
+            "scope_type": "document",
+            "scope_id": document.document_id,
+            field_name: value,
+        }
+        with pytest.raises(ValueError, match=f"{field_name} is derived"):
+            repository.create_audit_event(**kwargs)
+        assert repository.get_audit_event(f"audit-forged-{field_name}") is None
+
+
+def test_review_decision_scope_is_enforced_by_database_constraints(tmp_path) -> None:
+    db_path = tmp_path / "veridoc.sqlite3"
+    repository = SQLitePersistenceRepository(db_path)
+    repository.initialize()
+
+    document_a = _create_document(repository, "doc-a")
+    document_b = _create_document(repository, "doc-b")
+    job_a = _create_job(repository, document_a, "job-a")
+    job_b = _create_job(repository, document_b, "job-b")
+    result_a = _create_result(repository, job_a, "result-a")
+    result_b = _create_result(repository, job_b, "result-b")
+    artifact_b = _create_artifact(repository, result_b, "artifact-b")
+    review_item_a = repository.create_review_item(
+        review_item_id="review-item-a",
+        document_id=document_a.document_id,
+        job_id=job_a.job_id,
+        target_path="sections[0]",
+        status="open",
+        severity="medium",
+    )
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                """
+                INSERT INTO review_decisions(
+                    decision_id, review_item_id, artifact_id, job_id, document_id,
+                    actor, role, decision, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "decision-mixed-db",
+                    review_item_a.review_item_id,
+                    artifact_b.artifact_id,
+                    job_a.job_id,
+                    document_a.document_id,
+                    "qa-approver",
+                    "approver",
+                    "approved",
+                    "2026-07-09T00:00:00+00:00",
+                    "2026-07-09T00:00:00+00:00",
+                ),
+            )
+
+    assert repository.get_conversion_result(result_a.result_id) == result_a
+    assert repository.get_review_decision("decision-mixed-db") is None
+
+
+def test_relative_database_path_must_stay_under_repo_root(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    repository = SQLitePersistenceRepository("../../outside.sqlite3")
+
+    with pytest.raises(ValueError, match="repository root"):
+        repository.initialize()
+
+    assert not (tmp_path.parent.parent / "outside.sqlite3").exists()
 
 
 def test_persistence_repository_transaction_rolls_back_partial_writes(tmp_path) -> None:
