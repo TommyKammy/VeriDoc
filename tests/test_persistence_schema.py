@@ -346,6 +346,87 @@ def test_persistence_repository_rejects_cross_scope_relationships(tmp_path) -> N
     assert artifact_a.document_id == document_a.document_id
 
 
+def test_persistence_repository_rejects_conflicting_job_event_payload_fields(tmp_path) -> None:
+    repository = SQLitePersistenceRepository(tmp_path / "veridoc.sqlite3")
+    repository.initialize()
+    document_a = _create_document(repository, "doc-a")
+    document_b = _create_document(repository, "doc-b")
+    job_a = _create_job(repository, document_a, "job-a")
+    job_b = _create_job(repository, document_b, "job-b")
+
+    for event_id, payload in (
+        ("event-type-mismatch", {"event_type": "job.failed"}),
+        ("event-job-mismatch", {"event_type": "job.queued", "job_id": job_b.job_id}),
+        ("event-actor-mismatch", {"event_type": "job.queued", "actor": "other-actor"}),
+    ):
+        with pytest.raises(ValueError, match="payload"):
+            repository.create_job_event(
+                event_id=event_id,
+                job_id=job_a.job_id,
+                event_type="job.queued",
+                actor="operator-1",
+                payload=payload,
+            )
+        assert repository.get_job_event(event_id) is None
+
+
+def test_source_and_generated_artifacts_share_global_identity_keys(tmp_path) -> None:
+    repository = SQLitePersistenceRepository(tmp_path / "veridoc.sqlite3")
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+    result = _create_result(repository, job, "result-1")
+
+    with pytest.raises(sqlite3.IntegrityError):
+        repository.create_artifact(
+            artifact_id=document.source_artifact_id,
+            result_id=result.result_id,
+            job_id=job.job_id,
+            document_id=document.document_id,
+            category="generated",
+            format="docx",
+            storage_key="artifacts/generated.docx",
+            content_hash="c" * 64,
+        )
+
+    with pytest.raises(sqlite3.IntegrityError):
+        repository.create_artifact(
+            artifact_id="artifact-unique",
+            result_id=result.result_id,
+            job_id=job.job_id,
+            document_id=document.document_id,
+            category="generated",
+            format="docx",
+            storage_key=document.source_storage_key,
+            content_hash="c" * 64,
+        )
+
+    artifact = _create_artifact(repository, result, "artifact-existing")
+    with pytest.raises(sqlite3.IntegrityError):
+        repository.create_document(
+            document_id="doc-collides-with-generated-artifact-id",
+            source_type="pdf",
+            original_filename="artifact-id-collision.pdf",
+            source_artifact_id=artifact.artifact_id,
+            source_storage_key="uploads/artifact-id-collision.pdf",
+            content_hash=VALID_HASH,
+            status="uploaded",
+            uploaded_by="operator-1",
+        )
+
+    with pytest.raises(sqlite3.IntegrityError):
+        _create_document(
+            repository,
+            "doc-collides-with-generated-artifact",
+            storage_key=artifact.storage_key,
+        )
+
+    assert repository.get_artifact(document.source_artifact_id) is None
+    assert repository.get_artifact("artifact-unique") is None
+    assert repository.get_document("doc-collides-with-generated-artifact-id") is None
+    assert repository.get_document("doc-collides-with-generated-artifact") is None
+
+
 def test_persistence_repository_rejects_caller_supplied_audit_chain_fields(tmp_path) -> None:
     repository = SQLitePersistenceRepository(tmp_path / "veridoc.sqlite3")
     repository.initialize()
@@ -455,6 +536,20 @@ def test_persistence_repository_transaction_rolls_back_partial_writes(tmp_path) 
 
     assert repository.get_document("doc-rollback") is None
     assert repository.get_conversion_job("job-rollback") is None
+
+
+def test_persistence_repository_transaction_handle_is_invalid_after_exit(tmp_path) -> None:
+    repository = SQLitePersistenceRepository(tmp_path / "veridoc.sqlite3")
+    repository.initialize()
+
+    with repository.transaction() as transaction:
+        _create_document(transaction, "doc-in-transaction")
+
+    with pytest.raises(RuntimeError, match="transaction is closed"):
+        _create_document(transaction, "doc-after-exit")
+
+    assert repository.get_document("doc-in-transaction") is not None
+    assert repository.get_document("doc-after-exit") is None
 
 
 def test_persistence_repository_reset_reinitializes_schema(tmp_path) -> None:

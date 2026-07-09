@@ -134,28 +134,38 @@ class SQLitePersistenceRepository:
         db_path: str | os.PathLike[str] | None = None,
         *,
         _connection: sqlite3.Connection | None = None,
+        _closed: bool = False,
     ) -> None:
         self.db_path = Path(db_path) if db_path is not None else default_database_path()
         self._connection = _connection
+        self._closed = _closed
 
     def initialize(self) -> None:
         self.db_path = _validate_database_path(self.db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as connection:
-            connection.executescript(_SCHEMA_SQL)
-            connection.execute(
-                """
-                INSERT OR IGNORE INTO schema_migrations(migration_id, applied_at)
-                VALUES (?, ?)
-                """,
-                (SCHEMA_VERSION, _utc_now()),
-            )
+        connection = self._connect()
+        try:
+            with connection:
+                connection.executescript(_SCHEMA_SQL)
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO schema_migrations(migration_id, applied_at)
+                    VALUES (?, ?)
+                    """,
+                    (SCHEMA_VERSION, _utc_now()),
+                )
+        finally:
+            connection.close()
 
     def reset(self) -> None:
         self.db_path = _validate_database_path(self.db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as connection:
-            connection.executescript(_RESET_SQL)
+        connection = self._connect()
+        try:
+            with connection:
+                connection.executescript(_RESET_SQL)
+        finally:
+            connection.close()
         self.initialize()
 
     def create_document(
@@ -259,6 +269,13 @@ class SQLitePersistenceRepository:
         payload: Mapping[str, Any] | None = None,
     ) -> JobEvent:
         _require_non_empty(
+            event_id=event_id,
+            job_id=job_id,
+            event_type=event_type,
+            actor=actor,
+        )
+        _require_job_event_payload_matches(
+            payload,
             event_id=event_id,
             job_id=job_id,
             event_type=event_type,
@@ -591,12 +608,24 @@ class SQLitePersistenceRepository:
     @contextmanager
     def transaction(self) -> Iterator["SQLitePersistenceRepository"]:
         if self._connection is not None:
+            if self._closed:
+                raise RuntimeError("transaction is closed")
             yield self
             return
 
-        with self._connect() as connection:
-            connection.execute("BEGIN")
-            yield SQLitePersistenceRepository(self.db_path, _connection=connection)
+        connection = self._connect()
+        transaction_repository = SQLitePersistenceRepository(self.db_path, _connection=connection)
+        try:
+            with connection:
+                connection.execute("BEGIN")
+                yield transaction_repository
+        finally:
+            transaction_repository._closed = True
+            connection.close()
+
+    def _ensure_transaction_open(self) -> None:
+        if self._closed:
+            raise RuntimeError("transaction is closed")
 
     def _insert_and_get(
         self,
@@ -655,12 +684,21 @@ class SQLitePersistenceRepository:
 
     @contextmanager
     def _connection_scope(self) -> Iterator[sqlite3.Connection]:
+        self._ensure_transaction_open()
         if self._connection is not None:
             yield self._connection
             return
 
-        with self._connect() as connection:
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN")
             yield connection
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.db_path)
@@ -879,6 +917,29 @@ def _require_sha256(value: str, *, field_name: str) -> None:
         raise ValueError(f"{field_name} must be a sha256 hex digest")
 
 
+def _require_job_event_payload_matches(
+    payload: Mapping[str, Any] | None,
+    *,
+    event_id: str,
+    job_id: str,
+    event_type: str,
+    actor: str,
+) -> None:
+    if payload is None:
+        return
+    if not isinstance(payload, Mapping):
+        raise ValueError("payload must be a mapping")
+    expected = {
+        "event_id": event_id,
+        "job_id": job_id,
+        "event_type": event_type,
+        "actor": actor,
+    }
+    for field_name, expected_value in expected.items():
+        if field_name in payload and payload[field_name] != expected_value:
+            raise ValueError(f"payload {field_name} must match the job event row")
+
+
 def _canonical_json(payload: Mapping[str, Any]) -> str:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
@@ -1035,6 +1096,46 @@ CREATE TABLE IF NOT EXISTS audit_events (
     UNIQUE(job_id, sequence),
     FOREIGN KEY(job_id, document_id) REFERENCES jobs(job_id, document_id) ON DELETE RESTRICT
 );
+
+CREATE TRIGGER IF NOT EXISTS source_documents_artifact_id_global_insert
+BEFORE INSERT ON source_documents
+WHEN EXISTS (
+    SELECT 1 FROM generated_artifacts
+    WHERE generated_artifacts.artifact_id = NEW.source_artifact_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'source artifact id must be globally unique');
+END;
+
+CREATE TRIGGER IF NOT EXISTS source_documents_storage_key_global_insert
+BEFORE INSERT ON source_documents
+WHEN EXISTS (
+    SELECT 1 FROM generated_artifacts
+    WHERE generated_artifacts.storage_key = NEW.source_storage_key
+)
+BEGIN
+    SELECT RAISE(ABORT, 'source storage key must be globally unique');
+END;
+
+CREATE TRIGGER IF NOT EXISTS generated_artifacts_artifact_id_global_insert
+BEFORE INSERT ON generated_artifacts
+WHEN EXISTS (
+    SELECT 1 FROM source_documents
+    WHERE source_documents.source_artifact_id = NEW.artifact_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'generated artifact id must be globally unique');
+END;
+
+CREATE TRIGGER IF NOT EXISTS generated_artifacts_storage_key_global_insert
+BEFORE INSERT ON generated_artifacts
+WHEN EXISTS (
+    SELECT 1 FROM source_documents
+    WHERE source_documents.source_storage_key = NEW.storage_key
+)
+BEGIN
+    SELECT RAISE(ABORT, 'generated storage key must be globally unique');
+END;
 """
 
 _RESET_SQL = """
