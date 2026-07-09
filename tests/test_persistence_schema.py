@@ -1423,6 +1423,269 @@ def test_audited_scope_row_contents_are_immutable_at_database_boundary(
         assert repository.get_audit_event(audit_event.event_id) == audit_event
 
 
+def test_audited_review_decision_freezes_approved_item_and_artifact(tmp_path) -> None:
+    db_path = tmp_path / "veridoc.sqlite3"
+    repository = SQLitePersistenceRepository(db_path)
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+    result = _create_result(repository, job, "result-1")
+    artifact = _create_artifact(repository, result, "artifact-1")
+    review_item = repository.create_review_item(
+        review_item_id="review-item-1",
+        document_id=document.document_id,
+        job_id=job.job_id,
+        target_path="sections[0]",
+        status="open",
+        severity="medium",
+    )
+    review_decision = repository.create_review_decision(
+        decision_id="decision-1",
+        review_item_id=review_item.review_item_id,
+        artifact_id=artifact.artifact_id,
+        actor="qa-approver",
+        role="approver",
+        decision="approved",
+    )
+    audit_event = repository.create_audit_event(
+        event_id="audit-review-decision-scope",
+        job_id=job.job_id,
+        document_id=document.document_id,
+        actor="qa-approver",
+        action="review.approved",
+        scope_type="review_decision",
+        scope_id=review_decision.decision_id,
+    )
+
+    update_statements = (
+        (
+            "UPDATE review_items SET target_path = ? WHERE review_item_id = ?",
+            ("sections[1]", review_item.review_item_id),
+        ),
+        (
+            "UPDATE generated_artifacts SET content_hash = ? WHERE artifact_id = ?",
+            ("d" * 64, artifact.artifact_id),
+        ),
+    )
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        for sql, params in update_statements:
+            with pytest.raises(sqlite3.IntegrityError, match="audit scope rows"):
+                connection.execute(sql, params)
+
+    assert repository.get_review_item(review_item.review_item_id) == review_item
+    assert repository.get_artifact(artifact.artifact_id) == artifact
+    assert repository.get_review_decision(review_decision.decision_id) == review_decision
+    assert repository.get_audit_event(audit_event.event_id) == audit_event
+
+
+def test_lifecycle_payload_json_is_validated_at_schema_and_read_boundary(
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "veridoc.sqlite3"
+    repository = SQLitePersistenceRepository(db_path)
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+    created_at = "2026-07-09T00:00:00+00:00"
+    invalid_payload_json = "{not json}"
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                """
+                INSERT INTO job_events(
+                    event_id, job_id, sequence, event_type, actor, payload_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "job-event-invalid-payload",
+                    job.job_id,
+                    1,
+                    "job.queued",
+                    "operator-1",
+                    invalid_payload_json,
+                    created_at,
+                ),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                """
+                INSERT INTO audit_events(
+                    event_id, job_id, document_id, sequence, integrity_algorithm, actor,
+                    action, scope_type, scope_id, event_hash, prev_event_hash,
+                    payload_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "audit-invalid-payload",
+                    job.job_id,
+                    document.document_id,
+                    1,
+                    AUDIT_INTEGRITY_ALGORITHM,
+                    "operator-1",
+                    "document.uploaded",
+                    "document",
+                    document.document_id,
+                    "0" * 64,
+                    None,
+                    invalid_payload_json,
+                    created_at,
+                ),
+            )
+
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            """
+            INSERT INTO job_events(
+                event_id, job_id, sequence, event_type, actor, payload_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "job-event-bypassed-payload",
+                job.job_id,
+                1,
+                "job.queued",
+                "operator-1",
+                invalid_payload_json,
+                created_at,
+            ),
+        )
+        event_hash = persistence._audit_event_hash(
+            event_id="audit-bypassed-payload",
+            job_id=job.job_id,
+            document_id=document.document_id,
+            sequence=1,
+            integrity_algorithm=AUDIT_INTEGRITY_ALGORITHM,
+            actor="operator-1",
+            action="document.uploaded",
+            scope_type="document",
+            scope_id=document.document_id,
+            prev_event_hash=None,
+            payload_json=invalid_payload_json,
+            created_at=created_at,
+        )
+        connection.execute(
+            """
+            INSERT INTO audit_events(
+                event_id, job_id, document_id, sequence, integrity_algorithm, actor,
+                action, scope_type, scope_id, event_hash, prev_event_hash, payload_json,
+                created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "audit-bypassed-payload",
+                job.job_id,
+                document.document_id,
+                1,
+                AUDIT_INTEGRITY_ALGORITHM,
+                "operator-1",
+                "document.uploaded",
+                "document",
+                document.document_id,
+                event_hash,
+                None,
+                invalid_payload_json,
+                created_at,
+            ),
+        )
+
+    with pytest.raises(ValueError, match="job event payload_json must be valid JSON"):
+        repository.get_job_event("job-event-bypassed-payload")
+    with pytest.raises(ValueError, match="audit event payload_json must be valid JSON"):
+        repository.get_audit_event("audit-bypassed-payload")
+
+
+def test_audit_event_sequences_must_be_stored_as_integers(tmp_path) -> None:
+    db_path = tmp_path / "veridoc.sqlite3"
+    repository = SQLitePersistenceRepository(db_path)
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+    created_at = "2026-07-09T00:00:00+00:00"
+    payload_json = persistence._canonical_json(
+        {
+            "action": "document.uploaded",
+            "actor": "operator-1",
+            "scope_id": document.document_id,
+            "scope_type": "document",
+        }
+    )
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                """
+                INSERT INTO audit_events(
+                    event_id, job_id, document_id, sequence, integrity_algorithm, actor,
+                    action, scope_type, scope_id, event_hash, prev_event_hash,
+                    payload_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "audit-real-sequence",
+                    job.job_id,
+                    document.document_id,
+                    1.5,
+                    AUDIT_INTEGRITY_ALGORITHM,
+                    "operator-1",
+                    "document.uploaded",
+                    "document",
+                    document.document_id,
+                    "0" * 64,
+                    None,
+                    payload_json,
+                    created_at,
+                ),
+            )
+
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        event_hash = persistence._audit_event_hash(
+            event_id="audit-bypassed-real-sequence",
+            job_id=job.job_id,
+            document_id=document.document_id,
+            sequence=1,
+            integrity_algorithm=AUDIT_INTEGRITY_ALGORITHM,
+            actor="operator-1",
+            action="document.uploaded",
+            scope_type="document",
+            scope_id=document.document_id,
+            prev_event_hash=None,
+            payload_json=payload_json,
+            created_at=created_at,
+        )
+        connection.execute(
+            """
+            INSERT INTO audit_events(
+                event_id, job_id, document_id, sequence, integrity_algorithm, actor,
+                action, scope_type, scope_id, event_hash, prev_event_hash, payload_json,
+                created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "audit-bypassed-real-sequence",
+                job.job_id,
+                document.document_id,
+                1.5,
+                AUDIT_INTEGRITY_ALGORITHM,
+                "operator-1",
+                "document.uploaded",
+                "document",
+                document.document_id,
+                event_hash,
+                None,
+                payload_json,
+                created_at,
+            ),
+        )
+
+    with pytest.raises(ValueError, match="audit event chain integrity"):
+        repository.get_audit_event("audit-bypassed-real-sequence")
+
+
 def test_audit_event_reads_verify_the_stored_hash_chain(tmp_path) -> None:
     db_path = tmp_path / "veridoc.sqlite3"
     repository = SQLitePersistenceRepository(db_path)

@@ -356,19 +356,36 @@ class SQLitePersistenceRepository:
             )
 
     def get_job_event(self, event_id: str) -> JobEvent | None:
-        return self._get_one(JobEvent, "SELECT * FROM job_events WHERE event_id = ?", (event_id,))
+        with self._connection_scope() as connection:
+            row = connection.execute(
+                "SELECT * FROM job_events WHERE event_id = ?",
+                (event_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        _require_valid_json_text(
+            row["payload_json"],
+            field_name="job event payload_json",
+        )
+        return _row_to_dataclass(JobEvent, row)
 
     def list_job_events(self, job_id: str) -> list[JobEvent]:
         _require_non_empty(job_id=job_id)
-        return self._get_many(
-            JobEvent,
-            """
-            SELECT * FROM job_events
-            WHERE job_id = ?
-            ORDER BY sequence ASC
-            """,
-            (job_id,),
-        )
+        with self._connection_scope() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM job_events
+                WHERE job_id = ?
+                ORDER BY sequence ASC
+                """,
+                (job_id,),
+            ).fetchall()
+        for row in rows:
+            _require_valid_json_text(
+                row["payload_json"],
+                field_name="job event payload_json",
+            )
+        return [_row_to_dataclass(JobEvent, row) for row in rows]
 
     def create_conversion_result(
         self,
@@ -950,8 +967,13 @@ class SQLitePersistenceRepository:
         ).fetchall()
         previous_hash: str | None = None
         for expected_sequence, row in enumerate(rows, start=1):
-            if int(row["sequence"]) != expected_sequence:
+            sequence = row["sequence"]
+            if not isinstance(sequence, int) or sequence != expected_sequence:
                 raise ValueError("audit event chain integrity verification failed")
+            _require_valid_json_text(
+                row["payload_json"],
+                field_name="audit event payload_json",
+            )
             if row["integrity_algorithm"] != AUDIT_INTEGRITY_ALGORITHM:
                 raise ValueError("audit event chain integrity verification failed")
             if row["prev_event_hash"] != previous_hash:
@@ -960,7 +982,7 @@ class SQLitePersistenceRepository:
                 event_id=row["event_id"],
                 job_id=row["job_id"],
                 document_id=row["document_id"],
-                sequence=int(row["sequence"]),
+                sequence=sequence,
                 integrity_algorithm=row["integrity_algorithm"],
                 actor=row["actor"],
                 action=row["action"],
@@ -1189,6 +1211,13 @@ def _canonical_json(payload: Mapping[str, Any]) -> str:
     )
 
 
+def _require_valid_json_text(payload_json: str, *, field_name: str) -> None:
+    try:
+        json.loads(payload_json)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{field_name} must be valid JSON") from exc
+
+
 def _validate_managed_schema(
     connection: sqlite3.Connection,
     *,
@@ -1342,10 +1371,13 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE TABLE IF NOT EXISTS job_events (
     event_id TEXT NOT NULL PRIMARY KEY,
     job_id TEXT NOT NULL REFERENCES jobs(job_id) ON DELETE RESTRICT,
-    sequence INTEGER NOT NULL,
+    sequence INTEGER NOT NULL CHECK(
+        typeof(sequence) = 'integer'
+        AND sequence > 0
+    ),
     event_type TEXT NOT NULL,
     actor TEXT NOT NULL,
-    payload_json TEXT NOT NULL,
+    payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
     created_at TEXT NOT NULL,
     UNIQUE(job_id, sequence)
 );
@@ -1419,7 +1451,10 @@ CREATE TABLE IF NOT EXISTS audit_events (
     event_id TEXT NOT NULL PRIMARY KEY,
     job_id TEXT NOT NULL REFERENCES jobs(job_id) ON DELETE RESTRICT,
     document_id TEXT NOT NULL REFERENCES source_documents(document_id) ON DELETE RESTRICT,
-    sequence INTEGER NOT NULL,
+    sequence INTEGER NOT NULL CHECK(
+        typeof(sequence) = 'integer'
+        AND sequence > 0
+    ),
     integrity_algorithm TEXT NOT NULL CHECK(
         integrity_algorithm = 'sha256-canonical-json-chain-v1'
     ),
@@ -1438,7 +1473,7 @@ CREATE TABLE IF NOT EXISTS audit_events (
             AND prev_event_hash NOT GLOB '*[^0-9a-f]*'
         )
     ),
-    payload_json TEXT NOT NULL,
+    payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
     created_at TEXT NOT NULL,
     UNIQUE(sequence),
     FOREIGN KEY(job_id, document_id) REFERENCES jobs(job_id, document_id) ON DELETE RESTRICT
@@ -1584,12 +1619,40 @@ BEGIN
     SELECT RAISE(ABORT, 'audit scope rows cannot be deleted');
 END;
 
+CREATE TRIGGER IF NOT EXISTS generated_artifacts_audited_decision_no_delete
+BEFORE DELETE ON generated_artifacts
+WHEN EXISTS (
+    SELECT 1
+    FROM audit_events
+    JOIN review_decisions
+      ON review_decisions.decision_id = audit_events.scope_id
+    WHERE audit_events.scope_type = 'review_decision'
+      AND review_decisions.artifact_id = OLD.artifact_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'audit scope rows cannot be deleted');
+END;
+
 CREATE TRIGGER IF NOT EXISTS review_items_audit_scope_no_delete
 BEFORE DELETE ON review_items
 WHEN EXISTS (
     SELECT 1 FROM audit_events
     WHERE audit_events.scope_type = 'review_item'
       AND audit_events.scope_id = OLD.review_item_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'audit scope rows cannot be deleted');
+END;
+
+CREATE TRIGGER IF NOT EXISTS review_items_audited_decision_no_delete
+BEFORE DELETE ON review_items
+WHEN EXISTS (
+    SELECT 1
+    FROM audit_events
+    JOIN review_decisions
+      ON review_decisions.decision_id = audit_events.scope_id
+    WHERE audit_events.scope_type = 'review_decision'
+      AND review_decisions.review_item_id = OLD.review_item_id
 )
 BEGIN
     SELECT RAISE(ABORT, 'audit scope rows cannot be deleted');
@@ -1650,12 +1713,40 @@ BEGIN
     SELECT RAISE(ABORT, 'audit scope rows cannot be updated');
 END;
 
+CREATE TRIGGER IF NOT EXISTS generated_artifacts_audited_decision_no_update
+BEFORE UPDATE ON generated_artifacts
+WHEN EXISTS (
+    SELECT 1
+    FROM audit_events
+    JOIN review_decisions
+      ON review_decisions.decision_id = audit_events.scope_id
+    WHERE audit_events.scope_type = 'review_decision'
+      AND review_decisions.artifact_id = OLD.artifact_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'audit scope rows cannot be updated');
+END;
+
 CREATE TRIGGER IF NOT EXISTS review_items_audit_scope_no_update
 BEFORE UPDATE ON review_items
 WHEN EXISTS (
     SELECT 1 FROM audit_events
     WHERE audit_events.scope_type = 'review_item'
       AND audit_events.scope_id = OLD.review_item_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'audit scope rows cannot be updated');
+END;
+
+CREATE TRIGGER IF NOT EXISTS review_items_audited_decision_no_update
+BEFORE UPDATE ON review_items
+WHEN EXISTS (
+    SELECT 1
+    FROM audit_events
+    JOIN review_decisions
+      ON review_decisions.decision_id = audit_events.scope_id
+    WHERE audit_events.scope_type = 'review_decision'
+      AND review_decisions.review_item_id = OLD.review_item_id
 )
 BEGIN
     SELECT RAISE(ABORT, 'audit scope rows cannot be updated');
