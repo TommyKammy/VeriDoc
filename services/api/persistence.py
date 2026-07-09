@@ -363,10 +363,7 @@ class SQLitePersistenceRepository:
             ).fetchone()
         if row is None:
             return None
-        _require_valid_json_text(
-            row["payload_json"],
-            field_name="job event payload_json",
-        )
+        _require_job_event_row_payload_matches(row)
         return _row_to_dataclass(JobEvent, row)
 
     def list_job_events(self, job_id: str) -> list[JobEvent]:
@@ -381,10 +378,7 @@ class SQLitePersistenceRepository:
                 (job_id,),
             ).fetchall()
         for row in rows:
-            _require_valid_json_text(
-                row["payload_json"],
-                field_name="job event payload_json",
-            )
+            _require_job_event_row_payload_matches(row)
         return [_row_to_dataclass(JobEvent, row) for row in rows]
 
     def create_conversion_result(
@@ -974,6 +968,14 @@ class SQLitePersistenceRepository:
                 row["payload_json"],
                 field_name="audit event payload_json",
             )
+            self._require_job_document(connection, row["job_id"], row["document_id"])
+            self._require_audit_scope(
+                connection,
+                row["scope_type"],
+                row["scope_id"],
+                row["job_id"],
+                row["document_id"],
+            )
             if row["integrity_algorithm"] != AUDIT_INTEGRITY_ALGORITHM:
                 raise ValueError("audit event chain integrity verification failed")
             if row["prev_event_hash"] != previous_hash:
@@ -1099,6 +1101,20 @@ def _require_job_event_payload_matches(
     for field_name in ("sequence", "created_at", "occurred_at"):
         if field_name in payload:
             raise ValueError(f"payload {field_name} is derived from the job event row")
+
+
+def _require_job_event_row_payload_matches(row: sqlite3.Row) -> None:
+    try:
+        payload = json.loads(row["payload_json"])
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError("job event payload_json must be valid JSON") from exc
+    _require_job_event_payload_matches(
+        payload,
+        event_id=row["event_id"],
+        job_id=row["job_id"],
+        event_type=row["event_type"],
+        actor=row["actor"],
+    )
 
 
 def _require_audit_event_payload_matches(
@@ -1338,11 +1354,11 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 );
 
 CREATE TABLE IF NOT EXISTS source_documents (
-    document_id TEXT NOT NULL PRIMARY KEY,
+    document_id TEXT NOT NULL PRIMARY KEY CHECK(length(trim(document_id)) > 0),
     source_type TEXT NOT NULL,
     original_filename TEXT NOT NULL,
-    source_artifact_id TEXT NOT NULL UNIQUE,
-    source_storage_key TEXT NOT NULL UNIQUE,
+    source_artifact_id TEXT NOT NULL UNIQUE CHECK(length(trim(source_artifact_id)) > 0),
+    source_storage_key TEXT NOT NULL UNIQUE CHECK(length(trim(source_storage_key)) > 0),
     content_hash TEXT NOT NULL CHECK(
         length(content_hash) = 64
         AND content_hash NOT GLOB '*[^0-9a-f]*'

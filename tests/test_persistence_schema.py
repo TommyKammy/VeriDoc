@@ -1598,6 +1598,106 @@ def test_lifecycle_payload_json_is_validated_at_schema_and_read_boundary(
         repository.get_audit_event("audit-bypassed-payload")
 
 
+def test_job_event_payload_fields_are_validated_at_read_boundary(tmp_path) -> None:
+    db_path = tmp_path / "veridoc.sqlite3"
+    repository = SQLitePersistenceRepository(db_path)
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute(
+            """
+            INSERT INTO job_events(
+                event_id, job_id, sequence, event_type, actor, payload_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "job-event-conflicting-payload",
+                job.job_id,
+                1,
+                "job.queued",
+                "operator-1",
+                json.dumps({"event_type": "job.failed"}, sort_keys=True),
+                "2026-07-09T00:00:00+00:00",
+            ),
+        )
+
+    with pytest.raises(ValueError, match="payload event_type"):
+        repository.get_job_event("job-event-conflicting-payload")
+    with pytest.raises(ValueError, match="payload event_type"):
+        repository.list_job_events(job.job_id)
+
+
+def test_audit_chain_verification_rejects_missing_scope_rows(tmp_path) -> None:
+    db_path = tmp_path / "veridoc.sqlite3"
+    repository = SQLitePersistenceRepository(db_path)
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+    audit_event = repository.create_audit_event(
+        event_id="audit-document",
+        job_id=job.job_id,
+        document_id=document.document_id,
+        actor="operator-1",
+        action="document.uploaded",
+        scope_type="document",
+        scope_id=document.document_id,
+    )
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.execute(
+            "DELETE FROM source_documents WHERE document_id = ?",
+            (document.document_id,),
+        )
+
+    with pytest.raises(ValueError, match="audit scope_id"):
+        repository.get_audit_event(audit_event.event_id)
+
+
+def test_source_document_provenance_fields_are_non_empty_at_schema_boundary(
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "veridoc.sqlite3"
+    repository = SQLitePersistenceRepository(db_path)
+    repository.initialize()
+    created_at = "2026-07-09T00:00:00+00:00"
+
+    for field_name in ("document_id", "source_artifact_id", "source_storage_key"):
+        values = {
+            "document_id": f"doc-{field_name}",
+            "source_type": "pdf",
+            "original_filename": "source.pdf",
+            "source_artifact_id": f"source-artifact-{field_name}",
+            "source_storage_key": f"uploads/{field_name}.pdf",
+            "content_hash": VALID_HASH,
+            "status": "uploaded",
+            "uploaded_by": "operator-1",
+            "created_at": created_at,
+            "updated_at": created_at,
+        }
+        values[field_name] = ""
+        with sqlite3.connect(db_path) as connection:
+            connection.execute("PRAGMA foreign_keys = ON")
+            with pytest.raises(sqlite3.IntegrityError):
+                connection.execute(
+                    """
+                    INSERT INTO source_documents(
+                        document_id, source_type, original_filename, source_artifact_id,
+                        source_storage_key, content_hash, status, uploaded_by,
+                        created_at, updated_at
+                    ) VALUES (
+                        :document_id, :source_type, :original_filename,
+                        :source_artifact_id, :source_storage_key, :content_hash,
+                        :status, :uploaded_by, :created_at, :updated_at
+                    )
+                    """,
+                    values,
+                )
+
+
 def test_audit_event_sequences_must_be_stored_as_integers(tmp_path) -> None:
     db_path = tmp_path / "veridoc.sqlite3"
     repository = SQLitePersistenceRepository(db_path)
