@@ -1294,6 +1294,135 @@ def test_audited_conversion_result_contents_are_immutable_at_database_boundary(
     assert repository.get_audit_event(audit_event.event_id) == audit_event
 
 
+def test_audited_scope_row_contents_are_immutable_at_database_boundary(
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "veridoc.sqlite3"
+    repository = SQLitePersistenceRepository(db_path)
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+    result = _create_result(repository, job, "result-1")
+    artifact = _create_artifact(repository, result, "artifact-1")
+    review_item = repository.create_review_item(
+        review_item_id="review-item-1",
+        document_id=document.document_id,
+        job_id=job.job_id,
+        target_path="sections[0]",
+        status="open",
+        severity="medium",
+    )
+    review_decision = repository.create_review_decision(
+        decision_id="decision-1",
+        review_item_id=review_item.review_item_id,
+        artifact_id=artifact.artifact_id,
+        actor="qa-approver",
+        role="approver",
+        decision="approved",
+    )
+    audit_events = [
+        repository.create_audit_event(
+            event_id="audit-document-scope",
+            job_id=job.job_id,
+            document_id=document.document_id,
+            actor="operator-1",
+            action="document.uploaded",
+            scope_type="document",
+            scope_id=document.document_id,
+        ),
+        repository.create_audit_event(
+            event_id="audit-job-scope",
+            job_id=job.job_id,
+            document_id=document.document_id,
+            actor="operator-1",
+            action="job.queued",
+            scope_type="job",
+            scope_id=job.job_id,
+        ),
+        repository.create_audit_event(
+            event_id="audit-artifact-scope",
+            job_id=job.job_id,
+            document_id=document.document_id,
+            actor="qa-approver",
+            action="artifact.generated",
+            scope_type="artifact",
+            scope_id=artifact.artifact_id,
+        ),
+        repository.create_audit_event(
+            event_id="audit-review-item-scope",
+            job_id=job.job_id,
+            document_id=document.document_id,
+            actor="qa-approver",
+            action="review.opened",
+            scope_type="review_item",
+            scope_id=review_item.review_item_id,
+        ),
+        repository.create_audit_event(
+            event_id="audit-review-decision-scope",
+            job_id=job.job_id,
+            document_id=document.document_id,
+            actor="qa-approver",
+            action="review.approved",
+            scope_type="review_decision",
+            scope_id=review_decision.decision_id,
+        ),
+    ]
+
+    update_statements = (
+        (
+            "UPDATE source_documents SET content_hash = ? WHERE document_id = ?",
+            ("d" * 64, document.document_id),
+        ),
+        (
+            "UPDATE source_documents SET source_storage_key = ? WHERE document_id = ?",
+            ("uploads/rewritten.pdf", document.document_id),
+        ),
+        (
+            "UPDATE jobs SET status = ?, attempts = ?, mode = ? WHERE job_id = ?",
+            ("succeeded", 99, "other", job.job_id),
+        ),
+        (
+            "UPDATE generated_artifacts SET storage_key = ? WHERE artifact_id = ?",
+            ("artifacts/rewritten.docx", artifact.artifact_id),
+        ),
+        (
+            "UPDATE generated_artifacts SET content_hash = ? WHERE artifact_id = ?",
+            ("e" * 64, artifact.artifact_id),
+        ),
+        (
+            "UPDATE review_items SET target_path = ? WHERE review_item_id = ?",
+            ("sections[1]", review_item.review_item_id),
+        ),
+        (
+            "UPDATE review_items SET severity = ? WHERE review_item_id = ?",
+            ("critical", review_item.review_item_id),
+        ),
+        (
+            "UPDATE review_decisions SET actor = ?, role = ?, decision = ? "
+            "WHERE decision_id = ?",
+            ("other-approver", "reviewer", "rejected", review_decision.decision_id),
+        ),
+        (
+            "UPDATE review_decisions SET artifact_id = ? WHERE decision_id = ?",
+            ("artifact-other", review_decision.decision_id),
+        ),
+    )
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        for sql, params in update_statements:
+            with pytest.raises(sqlite3.IntegrityError, match="audit scope rows"):
+                connection.execute(sql, params)
+
+    assert repository.get_document(document.document_id) == document
+    assert repository.get_conversion_job(job.job_id) == job
+    assert repository.get_artifact(artifact.artifact_id) == artifact
+    assert repository.get_review_item(review_item.review_item_id) == review_item
+    assert repository.get_review_decision(review_decision.decision_id) == review_decision
+    for audit_event in audit_events:
+        assert repository.get_audit_event(audit_event.event_id) == audit_event
+
+
 def test_audit_event_reads_verify_the_stored_hash_chain(tmp_path) -> None:
     db_path = tmp_path / "veridoc.sqlite3"
     repository = SQLitePersistenceRepository(db_path)

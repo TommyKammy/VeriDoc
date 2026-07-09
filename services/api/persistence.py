@@ -1607,7 +1607,7 @@ BEGIN
 END;
 
 CREATE TRIGGER IF NOT EXISTS source_documents_audit_scope_no_update
-BEFORE UPDATE OF document_id ON source_documents
+BEFORE UPDATE ON source_documents
 WHEN EXISTS (
     SELECT 1 FROM audit_events
     WHERE audit_events.scope_type IN ('document', 'source_document')
@@ -1618,7 +1618,7 @@ BEGIN
 END;
 
 CREATE TRIGGER IF NOT EXISTS jobs_audit_scope_no_update
-BEFORE UPDATE OF job_id, document_id ON jobs
+BEFORE UPDATE ON jobs
 WHEN EXISTS (
     SELECT 1 FROM audit_events
     WHERE audit_events.scope_type IN ('job', 'conversion_job')
@@ -1640,7 +1640,7 @@ BEGIN
 END;
 
 CREATE TRIGGER IF NOT EXISTS generated_artifacts_audit_scope_no_update
-BEFORE UPDATE OF artifact_id, job_id, document_id ON generated_artifacts
+BEFORE UPDATE ON generated_artifacts
 WHEN EXISTS (
     SELECT 1 FROM audit_events
     WHERE audit_events.scope_type IN ('artifact', 'generated_artifact')
@@ -1651,7 +1651,7 @@ BEGIN
 END;
 
 CREATE TRIGGER IF NOT EXISTS review_items_audit_scope_no_update
-BEFORE UPDATE OF review_item_id, job_id, document_id ON review_items
+BEFORE UPDATE ON review_items
 WHEN EXISTS (
     SELECT 1 FROM audit_events
     WHERE audit_events.scope_type = 'review_item'
@@ -1662,7 +1662,7 @@ BEGIN
 END;
 
 CREATE TRIGGER IF NOT EXISTS review_decisions_audit_scope_no_update
-BEFORE UPDATE OF decision_id, job_id, document_id ON review_decisions
+BEFORE UPDATE ON review_decisions
 WHEN EXISTS (
     SELECT 1 FROM audit_events
     WHERE audit_events.scope_type = 'review_decision'
