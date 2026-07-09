@@ -239,6 +239,18 @@ def test_initialize_rejects_incompatible_existing_managed_table(tmp_path) -> Non
     assert migration_table is None
 
 
+def test_schema_normalization_preserves_case_inside_string_literals() -> None:
+    lowercase_literal = "CHECK(integrity_algorithm = 'sha256-canonical-json-chain-v1')"
+    uppercase_literal = "CHECK(integrity_algorithm = 'SHA256-CANONICAL-JSON-CHAIN-V1')"
+
+    assert persistence._normalize_schema_sql(lowercase_literal) != (
+        persistence._normalize_schema_sql(uppercase_literal)
+    )
+    assert persistence._normalize_schema_sql("CREATE  TABLE T (A TEXT)") == (
+        "create table t (a text)"
+    )
+
+
 def test_persistence_repository_rejects_missing_bindings_and_keeps_state_clean(
     tmp_path,
 ) -> None:
@@ -486,10 +498,15 @@ def test_persistence_repository_rejects_conflicting_job_event_payload_fields(tmp
         ("event-type-mismatch", {"event_type": "job.failed"}),
         ("event-job-mismatch", {"event_type": "job.queued", "job_id": job_b.job_id}),
         ("event-actor-mismatch", {"event_type": "job.queued", "actor": "other-actor"}),
+        ("event-actor-id-mismatch", {"event_type": "job.queued", "actor_id": "other-actor"}),
         ("event-sequence-smuggled", {"event_type": "job.queued", "sequence": 10}),
         (
             "event-created-at-smuggled",
             {"event_type": "job.queued", "created_at": "2026-07-09T00:00:00+00:00"},
+        ),
+        (
+            "event-occurred-at-smuggled",
+            {"event_type": "job.queued", "occurred_at": "2026-07-09T00:00:00+00:00"},
         ),
     ):
         with pytest.raises(ValueError, match="payload"):
@@ -601,6 +618,62 @@ def test_job_events_are_append_only_at_the_database_boundary(tmp_path) -> None:
             )
 
     assert repository.get_job_event(job_event.event_id) == job_event
+
+
+def test_job_event_sequences_are_contiguous_at_the_database_boundary(tmp_path) -> None:
+    db_path = tmp_path / "veridoc.sqlite3"
+    repository = SQLitePersistenceRepository(db_path)
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        with pytest.raises(sqlite3.IntegrityError, match="contiguous"):
+            connection.execute(
+                """
+                INSERT INTO job_events(
+                    event_id, job_id, sequence, event_type, actor, payload_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "job-event-gap",
+                    job.job_id,
+                    99,
+                    "job.queued",
+                    "operator-1",
+                    "{}",
+                    "2026-07-09T00:00:00+00:00",
+                ),
+            )
+
+    first = repository.create_job_event(
+        event_id="job-event-1",
+        job_id=job.job_id,
+        event_type="job.queued",
+        actor="operator-1",
+    )
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        with pytest.raises(sqlite3.IntegrityError, match="contiguous"):
+            connection.execute(
+                """
+                INSERT INTO job_events(
+                    event_id, job_id, sequence, event_type, actor, payload_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "job-event-gap-2",
+                    job.job_id,
+                    3,
+                    "job.running",
+                    "operator-1",
+                    "{}",
+                    "2026-07-09T00:00:01+00:00",
+                ),
+            )
+
+    assert repository.list_job_events(job.job_id) == [first]
 
 
 def test_source_and_generated_artifacts_share_global_identity_keys(tmp_path) -> None:
@@ -753,6 +826,7 @@ def test_persistence_repository_rejects_conflicting_audit_payload_fields(tmp_pat
     for event_id, payload in (
         ("audit-job-mismatch", {"job_id": "job-other"}),
         ("audit-action-mismatch", {"action": "job.failed"}),
+        ("audit-event-type-mismatch", {"event_type": "job.failed"}),
         ("audit-scope-mismatch", {"scope_type": "job", "scope_id": job.job_id}),
         ("audit-chain-smuggled", {"sequence": 10}),
         ("audit-actor-id-mismatch", {"actor_id": "other-actor"}),
@@ -966,6 +1040,98 @@ def test_audit_event_scope_is_enforced_by_database_constraints(tmp_path) -> None
 
     assert repository.get_conversion_result(result.result_id) == result
     assert repository.get_audit_event(audit_event.event_id) == audit_event
+
+
+def test_audit_scope_rows_cannot_be_rekeyed_after_events_reference_them(tmp_path) -> None:
+    db_path = tmp_path / "veridoc.sqlite3"
+    repository = SQLitePersistenceRepository(db_path)
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+    result = _create_result(repository, job, "result-1")
+    artifact = _create_artifact(repository, result, "artifact-1")
+    review_item = repository.create_review_item(
+        review_item_id="review-item-1",
+        document_id=document.document_id,
+        job_id=job.job_id,
+        target_path="sections[0]",
+        status="open",
+        severity="medium",
+    )
+    review_decision = repository.create_review_decision(
+        decision_id="decision-1",
+        review_item_id=review_item.review_item_id,
+        artifact_id=artifact.artifact_id,
+        actor="qa-approver",
+        role="approver",
+        decision="approved",
+    )
+
+    audit_events = [
+        repository.create_audit_event(
+            event_id="audit-result-scope",
+            job_id=job.job_id,
+            document_id=document.document_id,
+            actor="qa-approver",
+            action="conversion.completed",
+            scope_type="conversion_result",
+            scope_id=result.result_id,
+        ),
+        repository.create_audit_event(
+            event_id="audit-artifact-scope",
+            job_id=job.job_id,
+            document_id=document.document_id,
+            actor="qa-approver",
+            action="artifact.generated",
+            scope_type="artifact",
+            scope_id=artifact.artifact_id,
+        ),
+        repository.create_audit_event(
+            event_id="audit-review-item-scope",
+            job_id=job.job_id,
+            document_id=document.document_id,
+            actor="qa-approver",
+            action="review.opened",
+            scope_type="review_item",
+            scope_id=review_item.review_item_id,
+        ),
+        repository.create_audit_event(
+            event_id="audit-review-decision-scope",
+            job_id=job.job_id,
+            document_id=document.document_id,
+            actor="qa-approver",
+            action="review.approved",
+            scope_type="review_decision",
+            scope_id=review_decision.decision_id,
+        ),
+    ]
+
+    update_statements = (
+        (
+            "UPDATE conversion_results SET result_id = ? WHERE result_id = ?",
+            ("result-2", result.result_id),
+        ),
+        (
+            "UPDATE generated_artifacts SET job_id = ? WHERE artifact_id = ?",
+            ("job-other", artifact.artifact_id),
+        ),
+        (
+            "UPDATE review_items SET document_id = ? WHERE review_item_id = ?",
+            ("doc-other", review_item.review_item_id),
+        ),
+        (
+            "UPDATE review_decisions SET decision_id = ? WHERE decision_id = ?",
+            ("decision-2", review_decision.decision_id),
+        ),
+    )
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        for sql, params in update_statements:
+            with pytest.raises(sqlite3.IntegrityError, match="audit scope rows"):
+                connection.execute(sql, params)
+
+    for audit_event in audit_events:
+        assert repository.get_audit_event(audit_event.event_id) == audit_event
 
 
 def test_audit_event_reads_verify_the_stored_hash_chain(tmp_path) -> None:

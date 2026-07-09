@@ -331,17 +331,17 @@ class SQLitePersistenceRepository:
             event_type=event_type,
             actor=actor,
         )
-        _require_job_event_payload_matches(
-            payload,
-            event_id=event_id,
-            job_id=job_id,
-            event_type=event_type,
-            actor=actor,
-        )
-        payload_json = _canonical_json(payload or {"event_type": event_type})
         with self._connection_scope(immediate=True) as connection:
             sequence = self._next_job_event_sequence(connection, job_id)
             now = _utc_now()
+            _require_job_event_payload_matches(
+                payload,
+                event_id=event_id,
+                job_id=job_id,
+                event_type=event_type,
+                actor=actor,
+            )
+            payload_json = _canonical_json(payload or {"event_type": event_type})
             return self._insert_and_get_from_connection(
                 connection,
                 JobEvent,
@@ -1072,7 +1072,9 @@ def _require_job_event_payload_matches(
             continue
         if payload_value != expected_value:
             raise ValueError(f"payload {field_name} must match the job event row")
-    for field_name in ("sequence", "created_at"):
+    if "actor_id" in payload and payload["actor_id"] != actor:
+        raise ValueError("payload actor_id must match the job event row")
+    for field_name in ("sequence", "created_at", "occurred_at"):
         if field_name in payload:
             raise ValueError(f"payload {field_name} is derived from the job event row")
 
@@ -1115,6 +1117,8 @@ def _require_audit_event_payload_matches(
             raise ValueError(f"payload {field_name} must match the audit event row")
     if "actor_id" in payload and payload["actor_id"] != actor:
         raise ValueError("payload actor_id must match the audit event row")
+    if "event_type" in payload and payload["event_type"] != action:
+        raise ValueError("payload event_type must match the audit event row")
     for field_name in ("sequence", "event_hash", "prev_event_hash"):
         if field_name in payload:
             raise ValueError(f"payload {field_name} is derived from the audit chain")
@@ -1173,7 +1177,38 @@ def _expected_schema_definitions() -> dict[str, tuple[str, str]]:
 
 
 def _normalize_schema_sql(sql: str) -> str:
-    return " ".join(sql.split()).lower()
+    normalized: list[str] = []
+    pending_space = False
+    in_string = False
+    index = 0
+    while index < len(sql):
+        char = sql[index]
+        if in_string:
+            normalized.append(char)
+            if char == "'":
+                next_index = index + 1
+                if next_index < len(sql) and sql[next_index] == "'":
+                    normalized.append(sql[next_index])
+                    index = next_index
+                else:
+                    in_string = False
+            index += 1
+            continue
+
+        if char.isspace():
+            pending_space = True
+            index += 1
+            continue
+        if pending_space and normalized:
+            normalized.append(" ")
+            pending_space = False
+        if char == "'":
+            in_string = True
+            normalized.append(char)
+        else:
+            normalized.append(char.lower())
+        index += 1
+    return "".join(normalized).strip()
 
 
 def _validate_database_path(db_path: Path) -> Path:
@@ -1423,6 +1458,17 @@ BEGIN
     SELECT RAISE(ABORT, 'audit scope must reference an existing matching row');
 END;
 
+CREATE TRIGGER IF NOT EXISTS job_events_contiguous_sequence_insert
+BEFORE INSERT ON job_events
+WHEN NEW.sequence != COALESCE((
+    SELECT MAX(job_events.sequence) + 1
+    FROM job_events
+    WHERE job_events.job_id = NEW.job_id
+), 1)
+BEGIN
+    SELECT RAISE(ABORT, 'job events must be contiguous');
+END;
+
 CREATE TRIGGER IF NOT EXISTS job_events_no_update
 BEFORE UPDATE ON job_events
 BEGIN
@@ -1500,6 +1546,72 @@ WHEN EXISTS (
 )
 BEGIN
     SELECT RAISE(ABORT, 'audit scope rows cannot be deleted');
+END;
+
+CREATE TRIGGER IF NOT EXISTS source_documents_audit_scope_no_update
+BEFORE UPDATE OF document_id ON source_documents
+WHEN EXISTS (
+    SELECT 1 FROM audit_events
+    WHERE audit_events.scope_type IN ('document', 'source_document')
+      AND audit_events.scope_id = OLD.document_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'audit scope rows cannot be updated');
+END;
+
+CREATE TRIGGER IF NOT EXISTS jobs_audit_scope_no_update
+BEFORE UPDATE OF job_id, document_id ON jobs
+WHEN EXISTS (
+    SELECT 1 FROM audit_events
+    WHERE audit_events.scope_type IN ('job', 'conversion_job')
+      AND audit_events.scope_id = OLD.job_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'audit scope rows cannot be updated');
+END;
+
+CREATE TRIGGER IF NOT EXISTS conversion_results_audit_scope_no_update
+BEFORE UPDATE OF result_id, job_id, document_id ON conversion_results
+WHEN EXISTS (
+    SELECT 1 FROM audit_events
+    WHERE audit_events.scope_type = 'conversion_result'
+      AND audit_events.scope_id = OLD.result_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'audit scope rows cannot be updated');
+END;
+
+CREATE TRIGGER IF NOT EXISTS generated_artifacts_audit_scope_no_update
+BEFORE UPDATE OF artifact_id, job_id, document_id ON generated_artifacts
+WHEN EXISTS (
+    SELECT 1 FROM audit_events
+    WHERE audit_events.scope_type IN ('artifact', 'generated_artifact')
+      AND audit_events.scope_id = OLD.artifact_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'audit scope rows cannot be updated');
+END;
+
+CREATE TRIGGER IF NOT EXISTS review_items_audit_scope_no_update
+BEFORE UPDATE OF review_item_id, job_id, document_id ON review_items
+WHEN EXISTS (
+    SELECT 1 FROM audit_events
+    WHERE audit_events.scope_type = 'review_item'
+      AND audit_events.scope_id = OLD.review_item_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'audit scope rows cannot be updated');
+END;
+
+CREATE TRIGGER IF NOT EXISTS review_decisions_audit_scope_no_update
+BEFORE UPDATE OF decision_id, job_id, document_id ON review_decisions
+WHEN EXISTS (
+    SELECT 1 FROM audit_events
+    WHERE audit_events.scope_type = 'review_decision'
+      AND audit_events.scope_id = OLD.decision_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'audit scope rows cannot be updated');
 END;
 
 CREATE TRIGGER IF NOT EXISTS source_documents_artifact_id_global_insert
