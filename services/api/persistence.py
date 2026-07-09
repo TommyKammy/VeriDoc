@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 
-SCHEMA_VERSION = "20260709_03_persistence_contract_hardening"
+SCHEMA_VERSION = "20260710_04_audit_semantics_and_parent_hardening"
 AUDIT_INTEGRITY_ALGORITHM = "sha256-canonical-json-chain-v1"
 SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -677,6 +677,10 @@ class SQLitePersistenceRepository:
                 "scope_type": scope_type,
             }
         )
+        audit_payload = _load_json_object(
+            payload_json,
+            field_name="audit event payload_json",
+        )
         with self._connection_scope(immediate=True) as connection:
             now = _utc_now()
             self._require_job_document(connection, job_id, document_id)
@@ -688,6 +692,7 @@ class SQLitePersistenceRepository:
                 document_id,
                 actor,
                 action,
+                audit_payload,
             )
             self._verify_audit_chain(connection)
             sequence, prev_event_hash = self._next_audit_chain_fields(connection)
@@ -971,29 +976,30 @@ class SQLitePersistenceRepository:
         document_id: str,
         actor: str,
         action: str,
+        payload: Mapping[str, Any],
     ) -> None:
         if scope_type in {"document", "source_document"}:
             row = connection.execute(
-                "SELECT document_id FROM source_documents WHERE document_id = ?",
+                "SELECT document_id, uploaded_by FROM source_documents WHERE document_id = ?",
                 (scope_id,),
             ).fetchone()
             expected = {"document_id": document_id}
         elif scope_type == "source_artifact":
             row = connection.execute(
-                "SELECT document_id FROM source_artifacts WHERE artifact_id = ?",
+                "SELECT document_id, uploaded_by FROM source_artifacts WHERE artifact_id = ?",
                 (scope_id,),
             ).fetchone()
             expected = {"document_id": document_id}
         elif scope_type in {"job", "conversion_job"}:
             row = connection.execute(
-                "SELECT job_id, document_id FROM jobs WHERE job_id = ?",
+                "SELECT job_id, document_id, status FROM jobs WHERE job_id = ?",
                 (scope_id,),
             ).fetchone()
             expected = {"job_id": job_id, "document_id": document_id}
         elif scope_type == "job_event":
             row = connection.execute(
                 """
-                SELECT job_events.job_id, jobs.document_id
+                SELECT job_events.job_id, jobs.document_id, job_events.event_type
                 FROM job_events
                 JOIN jobs ON jobs.job_id = job_events.job_id
                 WHERE job_events.event_id = ?
@@ -1003,7 +1009,7 @@ class SQLitePersistenceRepository:
             expected = {"job_id": job_id, "document_id": document_id}
         elif scope_type == "conversion_result":
             row = connection.execute(
-                "SELECT job_id, document_id FROM conversion_results WHERE result_id = ?",
+                "SELECT job_id, document_id, status FROM conversion_results WHERE result_id = ?",
                 (scope_id,),
             ).fetchone()
             expected = {"job_id": job_id, "document_id": document_id}
@@ -1022,7 +1028,7 @@ class SQLitePersistenceRepository:
         elif scope_type == "review_decision":
             row = connection.execute(
                 """
-                SELECT job_id, document_id, actor, decision
+                SELECT job_id, document_id, actor, role, decision
                 FROM review_decisions
                 WHERE decision_id = ?
                 """,
@@ -1037,6 +1043,13 @@ class SQLitePersistenceRepository:
         for field_name, expected_value in expected.items():
             if row[field_name] != expected_value:
                 raise ValueError("audit scope must match the event job and document")
+        _require_audit_scope_semantics(
+            scope_type=scope_type,
+            row=row,
+            actor=actor,
+            action=action,
+            payload=payload,
+        )
         if scope_type == "review_decision":
             if row["actor"] != actor:
                 raise ValueError("audit actor must match the review decision actor")
@@ -1060,7 +1073,7 @@ class SQLitePersistenceRepository:
                 row["payload_json"],
                 field_name="audit event payload_json",
             )
-            _require_audit_event_row_payload_matches(row)
+            payload = _require_audit_event_row_payload_matches(row)
             self._require_job_document(connection, row["job_id"], row["document_id"])
             self._require_audit_scope(
                 connection,
@@ -1070,6 +1083,7 @@ class SQLitePersistenceRepository:
                 row["document_id"],
                 row["actor"],
                 row["action"],
+                payload,
             )
             if row["integrity_algorithm"] != AUDIT_INTEGRITY_ALGORITHM:
                 raise ValueError("audit event chain integrity verification failed")
@@ -1212,7 +1226,7 @@ def _require_job_event_row_payload_matches(row: sqlite3.Row) -> None:
     )
 
 
-def _require_audit_event_row_payload_matches(row: sqlite3.Row) -> None:
+def _require_audit_event_row_payload_matches(row: sqlite3.Row) -> Mapping[str, Any]:
     payload = _load_json_object(
         row["payload_json"],
         field_name="audit event payload_json",
@@ -1230,6 +1244,7 @@ def _require_audit_event_row_payload_matches(row: sqlite3.Row) -> None:
         scope_type=row["scope_type"],
         scope_id=row["scope_id"],
     )
+    return payload
 
 
 def _require_audit_event_payload_matches(
@@ -1358,6 +1373,140 @@ def _review_decision_action_matches(decision: str, action: str) -> bool:
         "edited": frozenset({"edited", "edit", "review.edited", "review.edit"}),
     }
     return action in aliases.get(normalized, frozenset({normalized, f"review.{normalized}"}))
+
+
+def _require_audit_scope_semantics(
+    *,
+    scope_type: str,
+    row: sqlite3.Row,
+    actor: str,
+    action: str,
+    payload: Mapping[str, Any],
+) -> None:
+    if scope_type in {"document", "source_document", "source_artifact"}:
+        if _is_upload_action(action) and row["uploaded_by"] != actor:
+            raise ValueError("audit actor must match the recorded uploader")
+        return
+
+    if scope_type in {"job", "conversion_job"}:
+        status = row["status"]
+        _require_payload_aliases_match(
+            payload,
+            ("job_status",),
+            status,
+            field_name="job status",
+        )
+        expected_statuses = _JOB_ACTION_STATUSES.get(action)
+        if expected_statuses is not None and status not in expected_statuses:
+            raise ValueError("audit action is not valid for the current job status")
+        return
+
+    if scope_type == "job_event":
+        if not _job_event_action_matches(row["event_type"], action):
+            raise ValueError("audit action must match the scoped job event type")
+        return
+
+    if scope_type == "conversion_result":
+        status = row["status"]
+        _require_payload_aliases_match(
+            payload,
+            ("result_status", "conversion_status", "status"),
+            status,
+            field_name="conversion result status",
+        )
+        expected_statuses = _RESULT_ACTION_STATUSES.get(action)
+        if expected_statuses is not None and status not in expected_statuses:
+            raise ValueError("audit action must match the conversion result status")
+        return
+
+    if scope_type == "review_decision":
+        _require_payload_actor_role(payload, row["role"])
+
+
+def _require_payload_aliases_match(
+    payload: Mapping[str, Any],
+    aliases: Iterable[str],
+    expected: Any,
+    *,
+    field_name: str,
+) -> None:
+    for alias in aliases:
+        if alias in payload and payload[alias] != expected:
+            raise ValueError(f"payload {alias} must match the scoped {field_name}")
+
+
+def _require_payload_actor_role(payload: Mapping[str, Any], expected_role: str) -> None:
+    actor_payload = payload.get("actor")
+    if isinstance(actor_payload, Mapping) and "role" in actor_payload:
+        if actor_payload["role"] != expected_role:
+            raise ValueError("payload actor.role must match the review decision role")
+    _require_payload_aliases_match(
+        payload,
+        ("actor_role", "role"),
+        expected_role,
+        field_name="review decision role",
+    )
+
+
+def _is_upload_action(action: str) -> bool:
+    return action in {"document.uploaded", "desktop_upload", "upload", "uploaded"}
+
+
+def _job_event_action_matches(event_type: str, action: str) -> bool:
+    if event_type == action:
+        return True
+    event_state = _job_lifecycle_state(event_type)
+    action_state = _job_lifecycle_state(action)
+    return event_state is not None and event_state == action_state
+
+
+def _job_lifecycle_state(value: str) -> str | None:
+    normalized = value.strip().lower().replace("-", "_")
+    aliases = {
+        "queued": "queued",
+        "started": "running",
+        "running": "running",
+        "processing": "running",
+        "failed": "failed",
+        "completed": "succeeded",
+        "succeeded": "succeeded",
+        "success": "succeeded",
+        "retry_requested": "retry",
+        "retry": "retry",
+    }
+    for prefix in ("job.", "conversion.", "job_", "conversion_"):
+        if normalized.startswith(prefix):
+            return aliases.get(normalized[len(prefix) :])
+    if normalized == "retry_conversion":
+        return "retry"
+    return None
+
+
+_JOB_ACTION_STATUSES = {
+    "job.queued": frozenset({"queued"}),
+    "conversion.queued": frozenset({"queued"}),
+    "conversion_queued": frozenset({"queued"}),
+    "job.started": frozenset({"running", "processing", "started"}),
+    "job.running": frozenset({"running", "processing", "started"}),
+    "conversion.started": frozenset({"running", "processing", "started"}),
+    "conversion_started": frozenset({"running", "processing", "started"}),
+    "job.failed": frozenset({"failed"}),
+    "conversion.failed": frozenset({"failed"}),
+    "conversion_failed": frozenset({"failed"}),
+    "job.completed": frozenset({"succeeded", "completed", "success"}),
+    "job.succeeded": frozenset({"succeeded", "completed", "success"}),
+    "conversion.completed": frozenset({"succeeded", "completed", "success"}),
+    "conversion_completed": frozenset({"succeeded", "completed", "success"}),
+    "retry_conversion": frozenset({"failed"}),
+}
+
+
+_RESULT_ACTION_STATUSES = {
+    "conversion.completed": frozenset({"succeeded", "completed", "success"}),
+    "conversion_completed": frozenset({"succeeded", "completed", "success"}),
+    "conversion.failed": frozenset({"failed"}),
+    "conversion_failed": frozenset({"failed"}),
+}
 
 
 def _canonical_json(payload: Mapping[str, Any]) -> str:
@@ -1736,6 +1885,16 @@ BEGIN
     SELECT RAISE(ABORT, 'record must reference matching parent rows');
 END;
 
+CREATE TRIGGER IF NOT EXISTS jobs_parent_reference_update
+BEFORE UPDATE OF document_id ON jobs
+WHEN NOT EXISTS (
+    SELECT 1 FROM source_documents
+    WHERE source_documents.document_id = NEW.document_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'record must reference matching parent rows');
+END;
+
 CREATE TRIGGER IF NOT EXISTS source_documents_source_artifact_reference_insert
 BEFORE INSERT ON source_documents
 WHEN NOT EXISTS (
@@ -1784,8 +1943,31 @@ BEGIN
     SELECT RAISE(ABORT, 'record must reference matching parent rows');
 END;
 
+CREATE TRIGGER IF NOT EXISTS conversion_results_parent_reference_update
+BEFORE UPDATE OF job_id, document_id ON conversion_results
+WHEN NOT EXISTS (
+    SELECT 1 FROM jobs
+    WHERE jobs.job_id = NEW.job_id
+      AND jobs.document_id = NEW.document_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'record must reference matching parent rows');
+END;
+
 CREATE TRIGGER IF NOT EXISTS generated_artifacts_parent_reference_insert
 BEFORE INSERT ON generated_artifacts
+WHEN NOT EXISTS (
+    SELECT 1 FROM conversion_results
+    WHERE conversion_results.result_id = NEW.result_id
+      AND conversion_results.job_id = NEW.job_id
+      AND conversion_results.document_id = NEW.document_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'record must reference matching parent rows');
+END;
+
+CREATE TRIGGER IF NOT EXISTS generated_artifacts_parent_reference_update
+BEFORE UPDATE OF result_id, job_id, document_id ON generated_artifacts
 WHEN NOT EXISTS (
     SELECT 1 FROM conversion_results
     WHERE conversion_results.result_id = NEW.result_id
@@ -1807,8 +1989,37 @@ BEGIN
     SELECT RAISE(ABORT, 'record must reference matching parent rows');
 END;
 
+CREATE TRIGGER IF NOT EXISTS review_items_parent_reference_update
+BEFORE UPDATE OF job_id, document_id ON review_items
+WHEN NOT EXISTS (
+    SELECT 1 FROM jobs
+    WHERE jobs.job_id = NEW.job_id
+      AND jobs.document_id = NEW.document_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'record must reference matching parent rows');
+END;
+
 CREATE TRIGGER IF NOT EXISTS review_decisions_parent_reference_insert
 BEFORE INSERT ON review_decisions
+WHEN NOT EXISTS (
+    SELECT 1 FROM review_items
+    WHERE review_items.review_item_id = NEW.review_item_id
+      AND review_items.job_id = NEW.job_id
+      AND review_items.document_id = NEW.document_id
+)
+OR NOT EXISTS (
+    SELECT 1 FROM generated_artifacts
+    WHERE generated_artifacts.artifact_id = NEW.artifact_id
+      AND generated_artifacts.job_id = NEW.job_id
+      AND generated_artifacts.document_id = NEW.document_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'record must reference matching parent rows');
+END;
+
+CREATE TRIGGER IF NOT EXISTS review_decisions_parent_reference_update
+BEFORE UPDATE OF review_item_id, artifact_id, job_id, document_id ON review_decisions
 WHEN NOT EXISTS (
     SELECT 1 FROM review_items
     WHERE review_items.review_item_id = NEW.review_item_id
@@ -1929,6 +2140,18 @@ BEGIN
     SELECT RAISE(ABORT, 'audit events must be contiguous');
 END;
 
+CREATE TRIGGER IF NOT EXISTS audit_events_prev_hash_insert
+BEFORE INSERT ON audit_events
+WHEN NEW.prev_event_hash IS NOT (
+    SELECT audit_events.event_hash
+    FROM audit_events
+    ORDER BY audit_events.sequence DESC
+    LIMIT 1
+)
+BEGIN
+    SELECT RAISE(ABORT, 'audit event prev hash must match the current chain tail');
+END;
+
 CREATE TRIGGER IF NOT EXISTS job_events_contiguous_sequence_insert
 BEFORE INSERT ON job_events
 WHEN NEW.sequence != COALESCE((
@@ -1983,6 +2206,133 @@ OR EXISTS (
 )
 BEGIN
     SELECT RAISE(ABORT, 'source artifacts referenced by provenance cannot be deleted');
+END;
+
+CREATE TRIGGER IF NOT EXISTS source_documents_parent_key_no_update
+BEFORE UPDATE OF document_id ON source_documents
+WHEN EXISTS (
+    SELECT 1 FROM source_artifacts
+    WHERE source_artifacts.document_id = OLD.document_id
+)
+OR EXISTS (
+    SELECT 1 FROM jobs
+    WHERE jobs.document_id = OLD.document_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'parent keys referenced by lifecycle rows cannot be updated');
+END;
+
+CREATE TRIGGER IF NOT EXISTS source_documents_parent_no_delete
+BEFORE DELETE ON source_documents
+WHEN EXISTS (
+    SELECT 1 FROM source_artifacts
+    WHERE source_artifacts.document_id = OLD.document_id
+)
+OR EXISTS (
+    SELECT 1 FROM jobs
+    WHERE jobs.document_id = OLD.document_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'parent rows referenced by lifecycle rows cannot be deleted');
+END;
+
+CREATE TRIGGER IF NOT EXISTS jobs_parent_key_no_update
+BEFORE UPDATE OF job_id, document_id ON jobs
+WHEN (NEW.job_id != OLD.job_id OR NEW.document_id != OLD.document_id)
+AND (
+    EXISTS (SELECT 1 FROM job_events WHERE job_events.job_id = OLD.job_id)
+    OR EXISTS (SELECT 1 FROM conversion_results WHERE conversion_results.job_id = OLD.job_id)
+    OR EXISTS (SELECT 1 FROM review_items WHERE review_items.job_id = OLD.job_id)
+    OR EXISTS (SELECT 1 FROM audit_events WHERE audit_events.job_id = OLD.job_id)
+)
+BEGIN
+    SELECT RAISE(ABORT, 'parent keys referenced by lifecycle rows cannot be updated');
+END;
+
+CREATE TRIGGER IF NOT EXISTS jobs_parent_no_delete
+BEFORE DELETE ON jobs
+WHEN EXISTS (SELECT 1 FROM job_events WHERE job_events.job_id = OLD.job_id)
+OR EXISTS (SELECT 1 FROM conversion_results WHERE conversion_results.job_id = OLD.job_id)
+OR EXISTS (SELECT 1 FROM review_items WHERE review_items.job_id = OLD.job_id)
+OR EXISTS (SELECT 1 FROM audit_events WHERE audit_events.job_id = OLD.job_id)
+BEGIN
+    SELECT RAISE(ABORT, 'parent rows referenced by lifecycle rows cannot be deleted');
+END;
+
+CREATE TRIGGER IF NOT EXISTS conversion_results_parent_key_no_update
+BEFORE UPDATE OF result_id, job_id, document_id ON conversion_results
+WHEN (
+    NEW.result_id != OLD.result_id
+    OR NEW.job_id != OLD.job_id
+    OR NEW.document_id != OLD.document_id
+)
+AND EXISTS (
+    SELECT 1 FROM generated_artifacts
+    WHERE generated_artifacts.result_id = OLD.result_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'parent keys referenced by lifecycle rows cannot be updated');
+END;
+
+CREATE TRIGGER IF NOT EXISTS conversion_results_parent_no_delete
+BEFORE DELETE ON conversion_results
+WHEN EXISTS (
+    SELECT 1 FROM generated_artifacts
+    WHERE generated_artifacts.result_id = OLD.result_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'parent rows referenced by lifecycle rows cannot be deleted');
+END;
+
+CREATE TRIGGER IF NOT EXISTS generated_artifacts_parent_key_no_update
+BEFORE UPDATE OF artifact_id, result_id, job_id, document_id ON generated_artifacts
+WHEN (
+    NEW.artifact_id != OLD.artifact_id
+    OR NEW.result_id != OLD.result_id
+    OR NEW.job_id != OLD.job_id
+    OR NEW.document_id != OLD.document_id
+)
+AND EXISTS (
+    SELECT 1 FROM review_decisions
+    WHERE review_decisions.artifact_id = OLD.artifact_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'parent keys referenced by lifecycle rows cannot be updated');
+END;
+
+CREATE TRIGGER IF NOT EXISTS generated_artifacts_parent_no_delete
+BEFORE DELETE ON generated_artifacts
+WHEN EXISTS (
+    SELECT 1 FROM review_decisions
+    WHERE review_decisions.artifact_id = OLD.artifact_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'parent rows referenced by lifecycle rows cannot be deleted');
+END;
+
+CREATE TRIGGER IF NOT EXISTS review_items_parent_key_no_update
+BEFORE UPDATE OF review_item_id, job_id, document_id ON review_items
+WHEN (
+    NEW.review_item_id != OLD.review_item_id
+    OR NEW.job_id != OLD.job_id
+    OR NEW.document_id != OLD.document_id
+)
+AND EXISTS (
+    SELECT 1 FROM review_decisions
+    WHERE review_decisions.review_item_id = OLD.review_item_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'parent keys referenced by lifecycle rows cannot be updated');
+END;
+
+CREATE TRIGGER IF NOT EXISTS review_items_parent_no_delete
+BEFORE DELETE ON review_items
+WHEN EXISTS (
+    SELECT 1 FROM review_decisions
+    WHERE review_decisions.review_item_id = OLD.review_item_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'parent rows referenced by lifecycle rows cannot be deleted');
 END;
 
 CREATE TRIGGER IF NOT EXISTS source_documents_audit_scope_no_delete
