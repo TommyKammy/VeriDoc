@@ -968,6 +968,7 @@ class SQLitePersistenceRepository:
                 row["payload_json"],
                 field_name="audit event payload_json",
             )
+            _require_audit_event_row_payload_matches(row)
             self._require_job_document(connection, row["job_id"], row["document_id"])
             self._require_audit_scope(
                 connection,
@@ -1114,6 +1115,24 @@ def _require_job_event_row_payload_matches(row: sqlite3.Row) -> None:
         job_id=row["job_id"],
         event_type=row["event_type"],
         actor=row["actor"],
+    )
+
+
+def _require_audit_event_row_payload_matches(row: sqlite3.Row) -> None:
+    try:
+        payload = json.loads(row["payload_json"])
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError("audit event payload_json must be valid JSON") from exc
+    _require_audit_event_payload_matches(
+        payload,
+        event_id=row["event_id"],
+        job_id=row["job_id"],
+        document_id=row["document_id"],
+        integrity_algorithm=row["integrity_algorithm"],
+        actor=row["actor"],
+        action=row["action"],
+        scope_type=row["scope_type"],
+        scope_id=row["scope_id"],
     )
 
 
@@ -1600,6 +1619,34 @@ CREATE TRIGGER IF NOT EXISTS audit_events_no_delete
 BEFORE DELETE ON audit_events
 BEGIN
     SELECT RAISE(ABORT, 'audit events are append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS source_documents_audit_scope_no_delete
+BEFORE DELETE ON source_documents
+WHEN EXISTS (
+    SELECT 1 FROM audit_events
+    WHERE audit_events.document_id = OLD.document_id
+       OR (
+           audit_events.scope_type IN ('document', 'source_document')
+           AND audit_events.scope_id = OLD.document_id
+       )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'audit scope rows cannot be deleted');
+END;
+
+CREATE TRIGGER IF NOT EXISTS jobs_audit_scope_no_delete
+BEFORE DELETE ON jobs
+WHEN EXISTS (
+    SELECT 1 FROM audit_events
+    WHERE audit_events.job_id = OLD.job_id
+       OR (
+           audit_events.scope_type IN ('job', 'conversion_job')
+           AND audit_events.scope_id = OLD.job_id
+       )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'audit scope rows cannot be deleted');
 END;
 
 CREATE TRIGGER IF NOT EXISTS job_events_audit_scope_no_delete
