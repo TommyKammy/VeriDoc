@@ -1117,11 +1117,66 @@ def _require_audit_event_payload_matches(
             raise ValueError(f"payload {field_name} must match the audit event row")
     if "actor_id" in payload and payload["actor_id"] != actor:
         raise ValueError("payload actor_id must match the audit event row")
-    if "event_type" in payload and payload["event_type"] != action:
+    if "event_type" in payload and not _audit_event_type_matches_action(
+        payload["event_type"],
+        action=action,
+        scope_type=scope_type,
+    ):
         raise ValueError("payload event_type must match the audit event row")
-    for field_name in ("sequence", "event_hash", "prev_event_hash"):
+    for field_name in (
+        "sequence",
+        "event_hash",
+        "prev_event_hash",
+        "created_at",
+        "occurred_at",
+        "event_timestamp",
+    ):
         if field_name in payload:
             raise ValueError(f"payload {field_name} is derived from the audit chain")
+
+
+_AUDIT_EVENT_TYPE_CATEGORIES = {
+    "conversion_job.action_requested": {
+        "actions": frozenset({"download_result", "open_detail", "retry_conversion"}),
+        "scope_types": frozenset({"conversion_job", "job", "job_event"}),
+    },
+    "conversion_review.action_requested": {
+        "actions": frozenset({"approve", "edit"}),
+        "scope_types": frozenset({"document", "review_decision", "review_item"}),
+    },
+    "desktop.job_operation": {
+        "actions": frozenset({"desktop_result_download", "desktop_upload"}),
+        "scope_types": frozenset({"conversion_job", "document", "job", "job_event"}),
+    },
+    "job.lifecycle": {
+        "actions": frozenset(
+            {
+                "conversion_completed",
+                "conversion_failed",
+                "conversion_queued",
+                "conversion_started",
+                "retry_conversion",
+            }
+        ),
+        "scope_types": frozenset({"conversion_job", "job", "job_event"}),
+    },
+}
+
+
+def _audit_event_type_matches_action(
+    event_type: Any,
+    *,
+    action: str,
+    scope_type: str,
+) -> bool:
+    if event_type == action:
+        return True
+    if not isinstance(event_type, str):
+        return False
+    category = _AUDIT_EVENT_TYPE_CATEGORIES.get(event_type)
+    if category is None:
+        return False
+    return action in category["actions"] and scope_type in category["scope_types"]
 
 
 def _canonical_json(payload: Mapping[str, Any]) -> str:
@@ -1275,7 +1330,10 @@ CREATE TABLE IF NOT EXISTS jobs (
     idempotency_key TEXT NOT NULL UNIQUE,
     mode TEXT NOT NULL,
     status TEXT NOT NULL,
-    attempts INTEGER NOT NULL DEFAULT 0,
+    attempts INTEGER NOT NULL DEFAULT 0 CHECK(
+        typeof(attempts) = 'integer'
+        AND attempts >= 0
+    ),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE(job_id, document_id)
@@ -1571,7 +1629,7 @@ BEGIN
 END;
 
 CREATE TRIGGER IF NOT EXISTS conversion_results_audit_scope_no_update
-BEFORE UPDATE OF result_id, job_id, document_id ON conversion_results
+BEFORE UPDATE ON conversion_results
 WHEN EXISTS (
     SELECT 1 FROM audit_events
     WHERE audit_events.scope_type = 'conversion_result'

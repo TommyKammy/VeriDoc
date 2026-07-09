@@ -335,7 +335,35 @@ def test_schema_rejects_null_keys_and_malformed_hashes_from_direct_writes(tmp_pa
                 ),
             )
 
+    document = _create_document(repository, "doc-for-job-attempts")
+    for job_id, attempts in (
+        ("job-negative-attempts", -1),
+        ("job-non-integer-attempts", "not-an-integer"),
+    ):
+        with sqlite3.connect(db_path) as connection:
+            with pytest.raises(sqlite3.IntegrityError):
+                connection.execute(
+                    """
+                    INSERT INTO jobs(
+                        job_id, document_id, idempotency_key, mode, status, attempts,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        job_id,
+                        document.document_id,
+                        f"upload-{job_id}",
+                        "standard",
+                        "queued",
+                        attempts,
+                        "2026-07-09T00:00:00+00:00",
+                        "2026-07-09T00:00:00+00:00",
+                    ),
+                )
+
     assert repository.get_document("doc-bad-hash") is None
+    assert repository.get_conversion_job("job-negative-attempts") is None
+    assert repository.get_conversion_job("job-non-integer-attempts") is None
 
 
 def test_persistence_repository_preserves_idempotent_job_replays(tmp_path) -> None:
@@ -829,6 +857,12 @@ def test_persistence_repository_rejects_conflicting_audit_payload_fields(tmp_pat
         ("audit-event-type-mismatch", {"event_type": "job.failed"}),
         ("audit-scope-mismatch", {"scope_type": "job", "scope_id": job.job_id}),
         ("audit-chain-smuggled", {"sequence": 10}),
+        ("audit-created-at-smuggled", {"created_at": "2026-07-08T00:00:00+00:00"}),
+        ("audit-occurred-at-smuggled", {"occurred_at": "2026-07-08T00:00:00+00:00"}),
+        (
+            "audit-event-timestamp-smuggled",
+            {"event_timestamp": "2026-07-08T00:00:00+00:00"},
+        ),
         ("audit-actor-id-mismatch", {"actor_id": "other-actor"}),
     ):
         with pytest.raises(ValueError, match="payload"):
@@ -841,6 +875,94 @@ def test_persistence_repository_rejects_conflicting_audit_payload_fields(tmp_pat
                 scope_type="document",
                 scope_id=document.document_id,
                 payload=payload,
+            )
+        assert repository.get_audit_event(event_id) is None
+
+
+def test_persistence_repository_accepts_canonical_audit_event_type_categories(
+    tmp_path,
+) -> None:
+    repository = SQLitePersistenceRepository(tmp_path / "veridoc.sqlite3")
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+    review_item = repository.create_review_item(
+        review_item_id="review-item-1",
+        document_id=document.document_id,
+        job_id=job.job_id,
+        target_path="sections[0]",
+        status="open",
+        severity="medium",
+    )
+
+    for event_id, action, scope_type, scope_id, event_type in (
+        (
+            "audit-job-action",
+            "retry_conversion",
+            "conversion_job",
+            job.job_id,
+            "conversion_job.action_requested",
+        ),
+        (
+            "audit-desktop-action",
+            "desktop_result_download",
+            "conversion_job",
+            job.job_id,
+            "desktop.job_operation",
+        ),
+        (
+            "audit-review-action",
+            "approve",
+            "review_item",
+            review_item.review_item_id,
+            "conversion_review.action_requested",
+        ),
+        (
+            "audit-job-lifecycle",
+            "conversion_completed",
+            "job",
+            job.job_id,
+            "job.lifecycle",
+        ),
+    ):
+        audit_event = repository.create_audit_event(
+            event_id=event_id,
+            job_id=job.job_id,
+            document_id=document.document_id,
+            actor="operator-1",
+            action=action,
+            scope_type=scope_type,
+            scope_id=scope_id,
+            payload={"event_type": event_type, "action": action},
+        )
+        assert json.loads(audit_event.payload_json)["event_type"] == event_type
+
+    for event_id, action, scope_type, scope_id, event_type in (
+        (
+            "audit-job-category-wrong-action",
+            "document.uploaded",
+            "conversion_job",
+            job.job_id,
+            "conversion_job.action_requested",
+        ),
+        (
+            "audit-review-category-wrong-scope",
+            "approve",
+            "conversion_job",
+            job.job_id,
+            "conversion_review.action_requested",
+        ),
+    ):
+        with pytest.raises(ValueError, match="payload event_type"):
+            repository.create_audit_event(
+                event_id=event_id,
+                job_id=job.job_id,
+                document_id=document.document_id,
+                actor="operator-1",
+                action=action,
+                scope_type=scope_type,
+                scope_id=scope_id,
+                payload={"event_type": event_type, "action": action},
             )
         assert repository.get_audit_event(event_id) is None
 
@@ -1132,6 +1254,44 @@ def test_audit_scope_rows_cannot_be_rekeyed_after_events_reference_them(tmp_path
 
     for audit_event in audit_events:
         assert repository.get_audit_event(audit_event.event_id) == audit_event
+
+
+def test_audited_conversion_result_contents_are_immutable_at_database_boundary(
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "veridoc.sqlite3"
+    repository = SQLitePersistenceRepository(db_path)
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+    result = _create_result(repository, job, "result-1")
+    audit_event = repository.create_audit_event(
+        event_id="audit-result-scope",
+        job_id=job.job_id,
+        document_id=document.document_id,
+        actor="qa-approver",
+        action="conversion.completed",
+        scope_type="conversion_result",
+        scope_id=result.result_id,
+    )
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        for sql, params in (
+            (
+                "UPDATE conversion_results SET status = ? WHERE result_id = ?",
+                ("failed", result.result_id),
+            ),
+            (
+                "UPDATE conversion_results SET content_hash = ? WHERE result_id = ?",
+                ("d" * 64, result.result_id),
+            ),
+        ):
+            with pytest.raises(sqlite3.IntegrityError, match="audit scope rows"):
+                connection.execute(sql, params)
+
+    assert repository.get_conversion_result(result.result_id) == result
+    assert repository.get_audit_event(audit_event.event_id) == audit_event
 
 
 def test_audit_event_reads_verify_the_stored_hash_chain(tmp_path) -> None:
