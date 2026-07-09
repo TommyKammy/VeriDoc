@@ -479,6 +479,69 @@ def test_persistence_repository_allows_nested_job_event_actor_payload(tmp_path) 
     assert repository.get_job_event("event-wrong-actor") is None
 
 
+def test_job_events_preserve_append_order_when_timestamps_match(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    repository = SQLitePersistenceRepository(tmp_path / "veridoc.sqlite3")
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+    monkeypatch.setattr(
+        persistence,
+        "_utc_now",
+        lambda: "2026-07-09T00:00:00+00:00",
+    )
+
+    first = repository.create_job_event(
+        event_id="event-z",
+        job_id=job.job_id,
+        event_type="job.queued",
+        actor="operator-1",
+    )
+    second = repository.create_job_event(
+        event_id="event-a",
+        job_id=job.job_id,
+        event_type="job.running",
+        actor="operator-1",
+    )
+
+    assert [event.event_id for event in repository.list_job_events(job.job_id)] == [
+        first.event_id,
+        second.event_id,
+    ]
+
+
+def test_job_events_are_append_only_at_the_database_boundary(tmp_path) -> None:
+    db_path = tmp_path / "veridoc.sqlite3"
+    repository = SQLitePersistenceRepository(db_path)
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+    job_event = repository.create_job_event(
+        event_id="job-event-append-only",
+        job_id=job.job_id,
+        event_type="job.queued",
+        actor="operator-1",
+    )
+
+    with sqlite3.connect(db_path) as connection:
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            connection.execute(
+                "UPDATE job_events SET event_type = ? WHERE event_id = ?",
+                ("job.failed", job_event.event_id),
+            )
+
+    with sqlite3.connect(db_path) as connection:
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            connection.execute(
+                "DELETE FROM job_events WHERE event_id = ?",
+                (job_event.event_id,),
+            )
+
+    assert repository.get_job_event(job_event.event_id) == job_event
+
+
 def test_source_and_generated_artifacts_share_global_identity_keys(tmp_path) -> None:
     repository = SQLitePersistenceRepository(tmp_path / "veridoc.sqlite3")
     repository.initialize()
@@ -534,6 +597,64 @@ def test_source_and_generated_artifacts_share_global_identity_keys(tmp_path) -> 
     assert repository.get_artifact("artifact-unique") is None
     assert repository.get_document("doc-collides-with-generated-artifact-id") is None
     assert repository.get_document("doc-collides-with-generated-artifact") is None
+
+
+def test_artifact_identity_global_keys_cannot_collide_on_update(tmp_path) -> None:
+    db_path = tmp_path / "veridoc.sqlite3"
+    repository = SQLitePersistenceRepository(db_path)
+    repository.initialize()
+    document_a = _create_document(repository, "doc-a")
+    document_b = _create_document(repository, "doc-b")
+    job_a = _create_job(repository, document_a, "job-a")
+    result_a = _create_result(repository, job_a, "result-a")
+    artifact_a = _create_artifact(repository, result_a, "artifact-a")
+
+    with sqlite3.connect(db_path) as connection:
+        with pytest.raises(sqlite3.IntegrityError, match="globally unique"):
+            connection.execute(
+                """
+                UPDATE source_documents
+                SET source_artifact_id = ?
+                WHERE document_id = ?
+                """,
+                (artifact_a.artifact_id, document_b.document_id),
+            )
+
+    with sqlite3.connect(db_path) as connection:
+        with pytest.raises(sqlite3.IntegrityError, match="globally unique"):
+            connection.execute(
+                """
+                UPDATE source_documents
+                SET source_storage_key = ?
+                WHERE document_id = ?
+                """,
+                (artifact_a.storage_key, document_b.document_id),
+            )
+
+    with sqlite3.connect(db_path) as connection:
+        with pytest.raises(sqlite3.IntegrityError, match="globally unique"):
+            connection.execute(
+                """
+                UPDATE generated_artifacts
+                SET artifact_id = ?
+                WHERE artifact_id = ?
+                """,
+                (document_a.source_artifact_id, artifact_a.artifact_id),
+            )
+
+    with sqlite3.connect(db_path) as connection:
+        with pytest.raises(sqlite3.IntegrityError, match="globally unique"):
+            connection.execute(
+                """
+                UPDATE generated_artifacts
+                SET storage_key = ?
+                WHERE artifact_id = ?
+                """,
+                (document_a.source_storage_key, artifact_a.artifact_id),
+            )
+
+    assert repository.get_document(document_b.document_id) == document_b
+    assert repository.get_artifact(artifact_a.artifact_id) == artifact_a
 
 
 def test_persistence_repository_rejects_caller_supplied_audit_chain_fields(tmp_path) -> None:
@@ -767,6 +888,39 @@ def test_audit_event_timestamps_are_sampled_after_the_write_lock(
     )
 
     assert audit_event.created_at == "2026-07-09T00:00:00+00:00"
+
+
+def test_audit_hash_chain_is_global_across_jobs(tmp_path) -> None:
+    repository = SQLitePersistenceRepository(tmp_path / "veridoc.sqlite3")
+    repository.initialize()
+    document_a = _create_document(repository, "doc-a")
+    document_b = _create_document(repository, "doc-b")
+    job_a = _create_job(repository, document_a, "job-a")
+    job_b = _create_job(repository, document_b, "job-b")
+
+    first = repository.create_audit_event(
+        event_id="audit-job-a",
+        job_id=job_a.job_id,
+        document_id=document_a.document_id,
+        actor="operator-1",
+        action="document.uploaded",
+        scope_type="document",
+        scope_id=document_a.document_id,
+    )
+    second = repository.create_audit_event(
+        event_id="audit-job-b",
+        job_id=job_b.job_id,
+        document_id=document_b.document_id,
+        actor="operator-2",
+        action="document.uploaded",
+        scope_type="document",
+        scope_id=document_b.document_id,
+    )
+
+    assert second.sequence == first.sequence + 1
+    assert second.prev_event_hash == first.event_hash
+    assert repository.get_audit_event(first.event_id) == first
+    assert repository.get_audit_event(second.event_id) == second
 
 
 def test_review_decision_scope_is_enforced_by_database_constraints(tmp_path) -> None:

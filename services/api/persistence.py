@@ -51,6 +51,7 @@ class ConversionJob:
 class JobEvent:
     event_id: str
     job_id: str
+    sequence: int
     event_type: str
     actor: str
     payload_json: str
@@ -338,17 +339,21 @@ class SQLitePersistenceRepository:
             actor=actor,
         )
         payload_json = _canonical_json(payload or {"event_type": event_type})
-        now = _utc_now()
-        return self._insert_and_get(
-            JobEvent,
-            """
-            INSERT INTO job_events(event_id, job_id, event_type, actor, payload_json, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (event_id, job_id, event_type, actor, payload_json, now),
-            "SELECT * FROM job_events WHERE event_id = ?",
-            (event_id,),
-        )
+        with self._connection_scope(immediate=True) as connection:
+            sequence = self._next_job_event_sequence(connection, job_id)
+            now = _utc_now()
+            return self._insert_and_get_from_connection(
+                connection,
+                JobEvent,
+                """
+                INSERT INTO job_events(
+                    event_id, job_id, sequence, event_type, actor, payload_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (event_id, job_id, sequence, event_type, actor, payload_json, now),
+                "SELECT * FROM job_events WHERE event_id = ?",
+                (event_id,),
+            )
 
     def get_job_event(self, event_id: str) -> JobEvent | None:
         return self._get_one(JobEvent, "SELECT * FROM job_events WHERE event_id = ?", (event_id,))
@@ -360,7 +365,7 @@ class SQLitePersistenceRepository:
             """
             SELECT * FROM job_events
             WHERE job_id = ?
-            ORDER BY created_at, event_id
+            ORDER BY sequence ASC
             """,
             (job_id,),
         )
@@ -621,7 +626,7 @@ class SQLitePersistenceRepository:
             now = _utc_now()
             self._require_job_document(connection, job_id, document_id)
             self._require_audit_scope(connection, scope_type, scope_id, job_id, document_id)
-            sequence, prev_event_hash = self._next_audit_chain_fields(connection, job_id)
+            sequence, prev_event_hash = self._next_audit_chain_fields(connection)
             event_hash = _audit_event_hash(
                 event_id=event_id,
                 job_id=job_id,
@@ -673,7 +678,7 @@ class SQLitePersistenceRepository:
             ).fetchone()
             if row is None:
                 return None
-            self._verify_audit_chain(connection, row["job_id"])
+            self._verify_audit_chain(connection)
         return _row_to_dataclass(AuditEvent, row)
 
     @contextmanager
@@ -809,6 +814,25 @@ class SQLitePersistenceRepository:
         if row["job_id"] != job_id or row["document_id"] != document_id:
             raise ValueError("result_id, job_id, and document_id must refer to the same conversion")
 
+    def _next_job_event_sequence(
+        self,
+        connection: sqlite3.Connection,
+        job_id: str,
+    ) -> int:
+        row = connection.execute(
+            """
+            SELECT sequence
+            FROM job_events
+            WHERE job_id = ?
+            ORDER BY sequence DESC
+            LIMIT 1
+            """,
+            (job_id,),
+        ).fetchone()
+        if row is None:
+            return 1
+        return int(row["sequence"]) + 1
+
     def _require_review_item_matches_artifact(
         self,
         connection: sqlite3.Connection,
@@ -839,17 +863,14 @@ class SQLitePersistenceRepository:
     def _next_audit_chain_fields(
         self,
         connection: sqlite3.Connection,
-        job_id: str,
     ) -> tuple[int, str | None]:
         row = connection.execute(
             """
             SELECT sequence, event_hash
             FROM audit_events
-            WHERE job_id = ?
             ORDER BY sequence DESC
             LIMIT 1
-            """,
-            (job_id,),
+            """
         ).fetchone()
         if row is None:
             return 1, None
@@ -919,15 +940,13 @@ class SQLitePersistenceRepository:
             if row[field_name] != expected_value:
                 raise ValueError("audit scope must match the event job and document")
 
-    def _verify_audit_chain(self, connection: sqlite3.Connection, job_id: str) -> None:
+    def _verify_audit_chain(self, connection: sqlite3.Connection) -> None:
         rows = connection.execute(
             """
             SELECT *
             FROM audit_events
-            WHERE job_id = ?
             ORDER BY sequence ASC
-            """,
-            (job_id,),
+            """
         ).fetchall()
         previous_hash: str | None = None
         for expected_sequence, row in enumerate(rows, start=1):
@@ -1216,10 +1235,12 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE TABLE IF NOT EXISTS job_events (
     event_id TEXT PRIMARY KEY,
     job_id TEXT NOT NULL REFERENCES jobs(job_id) ON DELETE RESTRICT,
+    sequence INTEGER NOT NULL,
     event_type TEXT NOT NULL,
     actor TEXT NOT NULL,
     payload_json TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    UNIQUE(job_id, sequence)
 );
 
 CREATE TABLE IF NOT EXISTS conversion_results (
@@ -1295,9 +1316,21 @@ CREATE TABLE IF NOT EXISTS audit_events (
     prev_event_hash TEXT,
     payload_json TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    UNIQUE(job_id, sequence),
+    UNIQUE(sequence),
     FOREIGN KEY(job_id, document_id) REFERENCES jobs(job_id, document_id) ON DELETE RESTRICT
 );
+
+CREATE TRIGGER IF NOT EXISTS job_events_no_update
+BEFORE UPDATE ON job_events
+BEGIN
+    SELECT RAISE(ABORT, 'job events are append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS job_events_no_delete
+BEFORE DELETE ON job_events
+BEGIN
+    SELECT RAISE(ABORT, 'job events are append-only');
+END;
 
 CREATE TRIGGER IF NOT EXISTS audit_events_no_update
 BEFORE UPDATE ON audit_events
@@ -1321,8 +1354,28 @@ BEGIN
     SELECT RAISE(ABORT, 'source artifact id must be globally unique');
 END;
 
+CREATE TRIGGER IF NOT EXISTS source_documents_artifact_id_global_update
+BEFORE UPDATE OF source_artifact_id ON source_documents
+WHEN EXISTS (
+    SELECT 1 FROM generated_artifacts
+    WHERE generated_artifacts.artifact_id = NEW.source_artifact_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'source artifact id must be globally unique');
+END;
+
 CREATE TRIGGER IF NOT EXISTS source_documents_storage_key_global_insert
 BEFORE INSERT ON source_documents
+WHEN EXISTS (
+    SELECT 1 FROM generated_artifacts
+    WHERE generated_artifacts.storage_key = NEW.source_storage_key
+)
+BEGIN
+    SELECT RAISE(ABORT, 'source storage key must be globally unique');
+END;
+
+CREATE TRIGGER IF NOT EXISTS source_documents_storage_key_global_update
+BEFORE UPDATE OF source_storage_key ON source_documents
 WHEN EXISTS (
     SELECT 1 FROM generated_artifacts
     WHERE generated_artifacts.storage_key = NEW.source_storage_key
@@ -1341,8 +1394,28 @@ BEGIN
     SELECT RAISE(ABORT, 'generated artifact id must be globally unique');
 END;
 
+CREATE TRIGGER IF NOT EXISTS generated_artifacts_artifact_id_global_update
+BEFORE UPDATE OF artifact_id ON generated_artifacts
+WHEN EXISTS (
+    SELECT 1 FROM source_documents
+    WHERE source_documents.source_artifact_id = NEW.artifact_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'generated artifact id must be globally unique');
+END;
+
 CREATE TRIGGER IF NOT EXISTS generated_artifacts_storage_key_global_insert
 BEFORE INSERT ON generated_artifacts
+WHEN EXISTS (
+    SELECT 1 FROM source_documents
+    WHERE source_documents.source_storage_key = NEW.storage_key
+)
+BEGIN
+    SELECT RAISE(ABORT, 'generated storage key must be globally unique');
+END;
+
+CREATE TRIGGER IF NOT EXISTS generated_artifacts_storage_key_global_update
+BEFORE UPDATE OF storage_key ON generated_artifacts
 WHEN EXISTS (
     SELECT 1 FROM source_documents
     WHERE source_documents.source_storage_key = NEW.storage_key
