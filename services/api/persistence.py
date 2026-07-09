@@ -15,6 +15,7 @@ from typing import Any, TypeVar
 
 
 SCHEMA_VERSION = "20260709_01_minimal_phase11_schema"
+AUDIT_INTEGRITY_ALGORITHM = "sha256-canonical-json-chain-v1"
 SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DB_PATH = REPO_ROOT / "var" / "veridoc" / "dev.sqlite3"
@@ -517,7 +518,7 @@ class SQLitePersistenceRepository:
         action: str,
         scope_type: str,
         scope_id: str,
-        integrity_algorithm: str = "sha256",
+        integrity_algorithm: str = AUDIT_INTEGRITY_ALGORITHM,
         sequence: int | None = None,
         event_hash: str | None = None,
         prev_event_hash: str | None = None,
@@ -533,14 +534,25 @@ class SQLitePersistenceRepository:
             scope_type=scope_type,
             scope_id=scope_id,
         )
-        if integrity_algorithm != "sha256":
-            raise ValueError("integrity_algorithm must be sha256")
+        if integrity_algorithm != AUDIT_INTEGRITY_ALGORITHM:
+            raise ValueError(f"integrity_algorithm must be {AUDIT_INTEGRITY_ALGORITHM}")
         if sequence is not None:
             raise ValueError("sequence is derived from the audit chain")
         if event_hash is not None:
             raise ValueError("event_hash is derived from the audit chain")
         if prev_event_hash is not None:
             raise ValueError("prev_event_hash is derived from the audit chain")
+        _require_audit_event_payload_matches(
+            payload,
+            event_id=event_id,
+            job_id=job_id,
+            document_id=document_id,
+            integrity_algorithm=integrity_algorithm,
+            actor=actor,
+            action=action,
+            scope_type=scope_type,
+            scope_id=scope_id,
+        )
         payload_json = _canonical_json(
             payload
             or {
@@ -551,7 +563,7 @@ class SQLitePersistenceRepository:
             }
         )
         now = _utc_now()
-        with self._connection_scope() as connection:
+        with self._connection_scope(immediate=True) as connection:
             self._require_job_document(connection, job_id, document_id)
             self._require_audit_scope(connection, scope_type, scope_id, job_id, document_id)
             sequence, prev_event_hash = self._next_audit_chain_fields(connection, job_id)
@@ -617,7 +629,7 @@ class SQLitePersistenceRepository:
         transaction_repository = SQLitePersistenceRepository(self.db_path, _connection=connection)
         try:
             with connection:
-                connection.execute("BEGIN")
+                connection.execute("BEGIN IMMEDIATE")
                 yield transaction_repository
         finally:
             transaction_repository._closed = True
@@ -683,7 +695,7 @@ class SQLitePersistenceRepository:
         return [_row_to_dataclass(record_type, row) for row in rows]
 
     @contextmanager
-    def _connection_scope(self) -> Iterator[sqlite3.Connection]:
+    def _connection_scope(self, *, immediate: bool = False) -> Iterator[sqlite3.Connection]:
         self._ensure_transaction_open()
         if self._connection is not None:
             yield self._connection
@@ -691,7 +703,7 @@ class SQLitePersistenceRepository:
 
         connection = self._connect()
         try:
-            connection.execute("BEGIN")
+            connection.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
             yield connection
             connection.commit()
         except Exception:
@@ -701,6 +713,7 @@ class SQLitePersistenceRepository:
             connection.close()
 
     def _connect(self) -> sqlite3.Connection:
+        self.db_path = _validate_database_path(self.db_path)
         connection = sqlite3.connect(self.db_path)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
@@ -938,6 +951,47 @@ def _require_job_event_payload_matches(
     for field_name, expected_value in expected.items():
         if field_name in payload and payload[field_name] != expected_value:
             raise ValueError(f"payload {field_name} must match the job event row")
+
+
+def _require_audit_event_payload_matches(
+    payload: Mapping[str, Any] | None,
+    *,
+    event_id: str,
+    job_id: str,
+    document_id: str,
+    integrity_algorithm: str,
+    actor: str,
+    action: str,
+    scope_type: str,
+    scope_id: str,
+) -> None:
+    if payload is None:
+        return
+    if not isinstance(payload, Mapping):
+        raise ValueError("payload must be a mapping")
+    expected = {
+        "event_id": event_id,
+        "job_id": job_id,
+        "document_id": document_id,
+        "integrity_algorithm": integrity_algorithm,
+        "actor": actor,
+        "action": action,
+        "scope_type": scope_type,
+        "scope_id": scope_id,
+    }
+    for field_name, expected_value in expected.items():
+        if field_name not in payload:
+            continue
+        payload_value = payload[field_name]
+        if field_name == "actor" and isinstance(payload_value, Mapping):
+            if "id" in payload_value and payload_value["id"] != expected_value:
+                raise ValueError("payload actor.id must match the audit event row")
+            continue
+        if payload_value != expected_value:
+            raise ValueError(f"payload {field_name} must match the audit event row")
+    for field_name in ("sequence", "event_hash", "prev_event_hash"):
+        if field_name in payload:
+            raise ValueError(f"payload {field_name} is derived from the audit chain")
 
 
 def _canonical_json(payload: Mapping[str, Any]) -> str:

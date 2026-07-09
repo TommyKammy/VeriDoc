@@ -19,6 +19,7 @@ from services.api.persistence import (
 
 
 VALID_HASH = "a" * 64
+AUDIT_INTEGRITY_ALGORITHM = "sha256-canonical-json-chain-v1"
 
 
 def _create_document(
@@ -187,7 +188,7 @@ def test_persistence_repository_initializes_and_reads_minimal_schema(tmp_path) -
         "job_status": "queued",
     }
     assert audit_event.sequence == 1
-    assert audit_event.integrity_algorithm == "sha256"
+    assert audit_event.integrity_algorithm == AUDIT_INTEGRITY_ALGORITHM
     assert audit_event.prev_event_hash is None
     assert len(audit_event.event_hash) == 64
     assert chained_audit_event.sequence == 2
@@ -453,6 +454,63 @@ def test_persistence_repository_rejects_caller_supplied_audit_chain_fields(tmp_p
         assert repository.get_audit_event(f"audit-forged-{field_name}") is None
 
 
+def test_persistence_repository_rejects_conflicting_audit_payload_fields(tmp_path) -> None:
+    repository = SQLitePersistenceRepository(tmp_path / "veridoc.sqlite3")
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+
+    for event_id, payload in (
+        ("audit-job-mismatch", {"job_id": "job-other"}),
+        ("audit-action-mismatch", {"action": "job.failed"}),
+        ("audit-scope-mismatch", {"scope_type": "job", "scope_id": job.job_id}),
+        ("audit-chain-smuggled", {"sequence": 10}),
+    ):
+        with pytest.raises(ValueError, match="payload"):
+            repository.create_audit_event(
+                event_id=event_id,
+                job_id=job.job_id,
+                document_id=document.document_id,
+                actor="qa-approver",
+                action="document.uploaded",
+                scope_type="document",
+                scope_id=document.document_id,
+                payload=payload,
+            )
+        assert repository.get_audit_event(event_id) is None
+
+
+def test_persistence_repository_uses_existing_audit_integrity_algorithm(tmp_path) -> None:
+    repository = SQLitePersistenceRepository(tmp_path / "veridoc.sqlite3")
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+
+    audit_event = repository.create_audit_event(
+        event_id="audit-1",
+        job_id=job.job_id,
+        document_id=document.document_id,
+        actor="qa-approver",
+        action="document.uploaded",
+        scope_type="document",
+        scope_id=document.document_id,
+    )
+
+    assert audit_event.integrity_algorithm == AUDIT_INTEGRITY_ALGORITHM
+    with pytest.raises(ValueError, match="integrity_algorithm"):
+        repository.create_audit_event(
+            event_id="audit-old-algorithm",
+            job_id=job.job_id,
+            document_id=document.document_id,
+            actor="qa-approver",
+            action="document.uploaded",
+            scope_type="document",
+            scope_id=document.document_id,
+            integrity_algorithm="sha256",
+        )
+    assert repository.get_audit_event("audit-old-algorithm") is None
+
+
 def test_review_decision_scope_is_enforced_by_database_constraints(tmp_path) -> None:
     db_path = tmp_path / "veridoc.sqlite3"
     repository = SQLitePersistenceRepository(db_path)
@@ -504,12 +562,24 @@ def test_review_decision_scope_is_enforced_by_database_constraints(tmp_path) -> 
 
 def test_relative_database_path_must_stay_under_repo_root(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
-    repository = SQLitePersistenceRepository("../../outside.sqlite3")
+    escaped_name = f"outside-{tmp_path.name}.sqlite3"
+    repository = SQLitePersistenceRepository(f"../../{escaped_name}")
 
     with pytest.raises(ValueError, match="repository root"):
         repository.initialize()
 
-    assert not (tmp_path.parent.parent / "outside.sqlite3").exists()
+    assert not (tmp_path.parent.parent / escaped_name).exists()
+
+
+def test_database_path_is_validated_for_reads_after_construction(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    escaped_name = f"outside-read-{tmp_path.name}.sqlite3"
+    repository = SQLitePersistenceRepository(f"../../{escaped_name}")
+
+    with pytest.raises(ValueError, match="repository root"):
+        repository.get_document("doc-1")
+
+    assert not (tmp_path.parent.parent / escaped_name).exists()
 
 
 def test_persistence_repository_transaction_rolls_back_partial_writes(tmp_path) -> None:
