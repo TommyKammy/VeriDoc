@@ -930,6 +930,36 @@ def test_parent_bindings_remain_guarded_after_insert_with_foreign_keys_off(
                 connection.execute(sql, (identifier,))
 
 
+def test_job_identity_and_source_binding_are_immutable_before_child_rows(
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "veridoc.sqlite3"
+    repository = SQLitePersistenceRepository(db_path)
+    repository.initialize()
+    document_a = _create_document(repository, "doc-a")
+    document_b = _create_document(repository, "doc-b")
+    job = _create_job(repository, document_a, "job-1")
+
+    statements = (
+        ("UPDATE jobs SET job_id = ? WHERE job_id = ?", ("job-rebound", job.job_id)),
+        (
+            "UPDATE jobs SET document_id = ? WHERE job_id = ?",
+            (document_b.document_id, job.job_id),
+        ),
+        (
+            "UPDATE jobs SET idempotency_key = ? WHERE job_id = ?",
+            ("replacement-key", job.job_id),
+        ),
+    )
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        for sql, params in statements:
+            with pytest.raises(sqlite3.IntegrityError, match="job identity"):
+                connection.execute(sql, params)
+
+    assert repository.get_conversion_job(job.job_id) == job
+
+
 def test_review_decision_evidence_is_immutable_before_audit(tmp_path) -> None:
     db_path = tmp_path / "veridoc.sqlite3"
     repository = SQLitePersistenceRepository(db_path)
@@ -1434,7 +1464,7 @@ def test_persistence_repository_accepts_canonical_audit_event_type_categories(
         ),
         (
             "audit-desktop-action",
-            "desktop_result_download",
+            "desktop_upload",
             "conversion_job",
             job.job_id,
             "desktop.job_operation",
@@ -1482,7 +1512,7 @@ def test_persistence_repository_accepts_canonical_audit_event_type_categories(
             "conversion_review.action_requested",
         ),
     ):
-        with pytest.raises(ValueError, match="payload event_type"):
+        with pytest.raises(ValueError, match="payload event_type|selected scope type"):
             repository.create_audit_event(
                 event_id=event_id,
                 job_id=job.job_id,
@@ -2885,11 +2915,13 @@ def test_persistence_repository_rejects_scoped_audit_payload_alias_mismatches(
         decision="approved",
     )
 
-    for event_id, scope_type, scope_id, alias_field, alias_value in (
+    for event_id, scope_type, scope_id, actor, action, alias_field, alias_value in (
         (
             "audit-review-decision-alias",
             "review_decision",
             review_decision.decision_id,
+            "qa-approver",
+            "review.approved",
             "review_decision_id",
             "decision-2",
         ),
@@ -2897,6 +2929,8 @@ def test_persistence_repository_rejects_scoped_audit_payload_alias_mismatches(
             "audit-artifact-alias",
             "artifact",
             artifact.artifact_id,
+            "operator-1",
+            "artifact.generated",
             "artifact_id",
             "artifact-2",
         ),
@@ -2904,6 +2938,8 @@ def test_persistence_repository_rejects_scoped_audit_payload_alias_mismatches(
             "audit-job-event-alias",
             "conversion_result",
             result.result_id,
+            "operator-1",
+            "conversion.completed",
             "conversion_result_id",
             "result-2",
         ),
@@ -2913,11 +2949,11 @@ def test_persistence_repository_rejects_scoped_audit_payload_alias_mismatches(
                 event_id=event_id,
                 job_id=job.job_id,
                 document_id=document.document_id,
-                actor="qa-approver",
-                action="review.approved",
+                actor=actor,
+                action=action,
                 scope_type=scope_type,
                 scope_id=scope_id,
-                payload={"event_type": "review.approved", alias_field: alias_value},
+                payload={"event_type": action, alias_field: alias_value},
             )
         assert repository.get_audit_event(event_id) is None
 
@@ -3203,6 +3239,20 @@ def test_audit_scopes_bind_authoritative_lifecycle_semantics(tmp_path) -> None:
     )
     result = _create_result(repository, job, "result-1")
     artifact = _create_artifact(repository, result, "artifact-1")
+    download_document = _create_document(repository, "doc-download")
+    download_job = repository.create_conversion_job(
+        job_id="job-download",
+        document_id=download_document.document_id,
+        idempotency_key="upload-job-download",
+        mode="standard",
+        status="succeeded",
+    )
+    download_result = _create_result(repository, download_job, "result-download")
+    download_artifact = _create_artifact(
+        repository,
+        download_result,
+        "artifact-download",
+    )
     review_item = repository.create_review_item(
         review_item_id="review-item-1",
         document_id=document.document_id,
@@ -3439,27 +3489,120 @@ def test_audit_scopes_bind_authoritative_lifecycle_semantics(tmp_path) -> None:
 
     valid_desktop_download = repository.create_audit_event(
         event_id="audit-valid-desktop-download-contract",
-        job_id=job.job_id,
-        document_id=document.document_id,
+        job_id=download_job.job_id,
+        document_id=download_document.document_id,
         actor="operator-1",
         action="desktop_result_download",
         scope_type="job",
-        scope_id=job.job_id,
+        scope_id=download_job.job_id,
         payload={
             "event_type": "desktop.job_operation",
-            "job_id": job.job_id,
-            "job_status": job.status,
+            "job_id": download_job.job_id,
+            "job_status": download_job.status,
             "action": "desktop_result_download",
-            "filename": document.original_filename,
-            "download_filename": "artifact-1.docx",
-            "source_sha256": document.content_hash,
-            "output_sha256": artifact.content_hash,
+            "filename": download_document.original_filename,
+            "download_filename": "artifact-download.docx",
+            "source_sha256": download_document.content_hash,
+            "output_sha256": download_artifact.content_hash,
         },
     )
     assert (
         repository.get_audit_event(valid_desktop_download.event_id)
         == valid_desktop_download
     )
+
+
+def test_download_audits_require_matching_durable_result_evidence(tmp_path) -> None:
+    repository = SQLitePersistenceRepository(tmp_path / "veridoc.sqlite3")
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = repository.create_conversion_job(
+        job_id="job-1",
+        document_id=document.document_id,
+        idempotency_key="upload-job-1",
+        mode="standard",
+        status="succeeded",
+    )
+
+    with pytest.raises(ValueError, match="stored successful result artifact"):
+        repository.create_audit_event(
+            event_id="audit-download-without-result",
+            job_id=job.job_id,
+            document_id=document.document_id,
+            actor="operator-1",
+            action="download_result",
+            scope_type="job",
+            scope_id=job.job_id,
+            payload={"event_type": "conversion_job.action_requested"},
+        )
+
+    result = _create_result(repository, job, "result-1")
+    artifact = _create_artifact(repository, result, "artifact-1")
+    for event_id, payload, message in (
+        (
+            "audit-download-wrong-hash",
+            {
+                "event_type": "desktop.job_operation",
+                "download_filename": "artifact-1.docx",
+                "output_sha256": "0" * 64,
+            },
+            "evidence",
+        ),
+        (
+            "audit-download-wrong-filename",
+            {
+                "event_type": "desktop.job_operation",
+                "download_filename": "different.docx",
+                "output_sha256": artifact.content_hash,
+            },
+            "evidence",
+        ),
+    ):
+        with pytest.raises(ValueError, match=message):
+            repository.create_audit_event(
+                event_id=event_id,
+                job_id=job.job_id,
+                document_id=document.document_id,
+                actor="operator-1",
+                action="desktop_result_download",
+                scope_type="job",
+                scope_id=job.job_id,
+                payload=payload,
+            )
+
+    event = repository.create_audit_event(
+        event_id="audit-download-with-result",
+        job_id=job.job_id,
+        document_id=document.document_id,
+        actor="operator-1",
+        action="download_result",
+        scope_type="job",
+        scope_id=job.job_id,
+        payload={"event_type": "conversion_job.action_requested"},
+    )
+    assert repository.get_audit_event(event.event_id) == event
+
+
+@pytest.mark.parametrize("action", ("approve", "review.approved"))
+def test_known_review_actions_reject_unrelated_scope_without_event_type(
+    tmp_path,
+    action,
+) -> None:
+    repository = SQLitePersistenceRepository(tmp_path / "veridoc.sqlite3")
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+
+    with pytest.raises(ValueError, match="selected scope type"):
+        repository.create_audit_event(
+            event_id=f"audit-wrong-scope-{action}",
+            job_id=job.job_id,
+            document_id=document.document_id,
+            actor="operator-1",
+            action=action,
+            scope_type="job",
+            scope_id=job.job_id,
+        )
 
 
 def test_all_declared_audit_scope_payload_aliases_are_enforced(tmp_path) -> None:

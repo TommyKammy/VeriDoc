@@ -10,11 +10,11 @@ from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, fields
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, TypeVar
 
 
-SCHEMA_VERSION = "20260710_05_declarative_evidence_contract"
+SCHEMA_VERSION = "20260710_06_immutable_job_download_evidence_contract"
 AUDIT_INTEGRITY_ALGORITHM = "sha256-canonical-json-chain-v1"
 SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -1135,6 +1135,14 @@ class SQLitePersistenceRepository:
                 raise ValueError("audit scope must match the event job and document")
         if scope_type == "job_event":
             self._verify_job_event_history(connection, row["job_id"])
+        if action in _DOWNLOAD_ACTIONS:
+            self._require_download_evidence(
+                connection,
+                job_id=job_id,
+                document_id=document_id,
+                action=action,
+                payload=payload,
+            )
         _require_audit_scope_semantics(
             scope_type=scope_type,
             row=row,
@@ -1147,6 +1155,51 @@ class SQLitePersistenceRepository:
                 raise ValueError("audit actor must match the review decision actor")
             if not _review_decision_action_matches(row["decision"], action):
                 raise ValueError("audit action must match the review decision")
+
+    def _require_download_evidence(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        job_id: str,
+        document_id: str,
+        action: str,
+        payload: Mapping[str, Any],
+    ) -> None:
+        rows = connection.execute(
+            """
+            SELECT generated_artifacts.storage_key, generated_artifacts.content_hash
+            FROM generated_artifacts
+            JOIN conversion_results
+              ON conversion_results.result_id = generated_artifacts.result_id
+             AND conversion_results.job_id = generated_artifacts.job_id
+             AND conversion_results.document_id = generated_artifacts.document_id
+            JOIN jobs
+              ON jobs.job_id = generated_artifacts.job_id
+             AND jobs.document_id = generated_artifacts.document_id
+            WHERE generated_artifacts.job_id = ?
+              AND generated_artifacts.document_id = ?
+              AND conversion_results.status IN ('succeeded', 'completed', 'success')
+              AND jobs.status IN ('succeeded', 'completed', 'success')
+            """,
+            (job_id, document_id),
+        ).fetchall()
+        if not rows:
+            raise ValueError("download audit requires a stored successful result artifact")
+        if action != "desktop_result_download":
+            return
+
+        output_sha256 = payload.get("output_sha256")
+        download_filename = payload.get("download_filename")
+        if not isinstance(output_sha256, str) or SHA256_HEX.fullmatch(output_sha256) is None:
+            raise ValueError("payload output_sha256 must identify a stored result artifact")
+        if not isinstance(download_filename, str) or not download_filename.strip():
+            raise ValueError("payload download_filename must identify a stored result artifact")
+        if not any(
+            row["content_hash"] == output_sha256
+            and PurePosixPath(row["storage_key"]).name == download_filename
+            for row in rows
+        ):
+            raise ValueError("download audit evidence must match a stored result artifact")
 
     def _verify_audit_chain(self, connection: sqlite3.Connection) -> None:
         rows = connection.execute(
@@ -1367,6 +1420,7 @@ def _require_audit_event_payload_matches(
     scope_type: str,
     scope_id: str,
 ) -> None:
+    _require_audit_action_scope(action, scope_type)
     if payload is None:
         return
     if not isinstance(payload, Mapping):
@@ -1440,6 +1494,37 @@ _AUDIT_EVENT_TYPE_CATEGORIES = {
         "scope_types": frozenset({"conversion_job", "job", "job_event"}),
     },
 }
+
+
+_AUDIT_ACTION_SCOPE_TYPES: dict[str, frozenset[str]] = {}
+for _category in _AUDIT_EVENT_TYPE_CATEGORIES.values():
+    for _category_action in _category["actions"]:
+        _AUDIT_ACTION_SCOPE_TYPES[_category_action] = frozenset(
+            set(_AUDIT_ACTION_SCOPE_TYPES.get(_category_action, ()))
+            | set(_category["scope_types"])
+        )
+_AUDIT_ACTION_SCOPE_TYPES.update(
+    {
+        action: frozenset({"review_decision"})
+        for action in {
+            "approved",
+            "edited",
+            "rejected",
+            "review.approve",
+            "review.approved",
+            "review.edit",
+            "review.edited",
+            "review.reject",
+            "review.rejected",
+        }
+    }
+)
+
+
+def _require_audit_action_scope(action: str, scope_type: str) -> None:
+    allowed_scope_types = _AUDIT_ACTION_SCOPE_TYPES.get(action)
+    if allowed_scope_types is not None and scope_type not in allowed_scope_types:
+        raise ValueError("audit action is not valid for the selected scope type")
 
 
 _AUDIT_SCOPE_ID_ALIASES = {
@@ -1774,8 +1859,13 @@ _JOB_ACTION_STATUSES = {
     "job.succeeded": frozenset({"succeeded", "completed", "success"}),
     "conversion.completed": frozenset({"succeeded", "completed", "success"}),
     "conversion_completed": frozenset({"succeeded", "completed", "success"}),
+    "download_result": frozenset({"succeeded", "completed", "success"}),
+    "desktop_result_download": frozenset({"succeeded", "completed", "success"}),
     "retry_conversion": frozenset({"failed"}),
 }
+
+
+_DOWNLOAD_ACTIONS = frozenset({"desktop_result_download", "download_result"})
 
 
 _RESULT_ACTION_STATUSES = {
@@ -2529,16 +2619,12 @@ BEGIN
 END;
 
 CREATE TRIGGER IF NOT EXISTS jobs_parent_key_no_update
-BEFORE UPDATE OF job_id, document_id ON jobs
-WHEN (NEW.job_id != OLD.job_id OR NEW.document_id != OLD.document_id)
-AND (
-    EXISTS (SELECT 1 FROM job_events WHERE job_events.job_id = OLD.job_id)
-    OR EXISTS (SELECT 1 FROM conversion_results WHERE conversion_results.job_id = OLD.job_id)
-    OR EXISTS (SELECT 1 FROM review_items WHERE review_items.job_id = OLD.job_id)
-    OR EXISTS (SELECT 1 FROM audit_events WHERE audit_events.job_id = OLD.job_id)
-)
+BEFORE UPDATE OF job_id, document_id, idempotency_key ON jobs
+WHEN NEW.job_id != OLD.job_id
+  OR NEW.document_id != OLD.document_id
+  OR NEW.idempotency_key != OLD.idempotency_key
 BEGIN
-    SELECT RAISE(ABORT, 'parent keys referenced by lifecycle rows cannot be updated');
+    SELECT RAISE(ABORT, 'job identity and source binding cannot be updated');
 END;
 
 CREATE TRIGGER IF NOT EXISTS jobs_parent_no_delete
