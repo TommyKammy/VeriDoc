@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 
-SCHEMA_VERSION = "20260710_14_fail_closed_action_contract"
+SCHEMA_VERSION = "20260710_15_lifecycle_input_consistency"
 AUDIT_INTEGRITY_ALGORITHM = "sha256-canonical-json-chain-v1"
 SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -307,8 +307,7 @@ class SQLitePersistenceRepository:
             mode=mode,
             status=status,
         )
-        if attempts < 0:
-            raise ValueError("attempts must not be negative")
+        _require_attempt_count(attempts)
         now = _utc_now()
         return self._insert_and_get(
             ConversionJob,
@@ -340,8 +339,7 @@ class SQLitePersistenceRepository:
             mode=mode,
             status=status,
         )
-        if attempts < 0:
-            raise ValueError("attempts must not be negative")
+        _require_attempt_count(attempts)
         now = _utc_now()
         with self._connection_scope(immediate=True) as connection:
             existing = connection.execute(
@@ -414,7 +412,9 @@ class SQLitePersistenceRepository:
                 raise ValueError("job_id must reference an existing job")
             sequence = self._next_job_event_sequence(connection, job_id)
             now = _utc_now()
-            event_payload = payload or {"event_type": event_type}
+            event_payload = (
+                {"event_type": event_type} if payload is None else payload
+            )
             effective_action = _require_job_event_payload_matches(
                 event_payload,
                 event_id=event_id,
@@ -1386,6 +1386,7 @@ class SQLitePersistenceRepository:
             SELECT generated_artifacts.artifact_id,
                    generated_artifacts.display_filename,
                    generated_artifacts.content_hash,
+                   conversion_results.status AS result_status,
                    jobs.status AS job_status
             FROM generated_artifacts
             JOIN conversion_results
@@ -1406,6 +1407,7 @@ class SQLitePersistenceRepository:
             row
             for row in rows
             if allowed_statuses is not None
+            and row["result_status"] in _SUCCEEDED_RESULT_STATUSES
             and (
                 historical_job_event or row["job_status"] in allowed_statuses
             )
@@ -1606,6 +1608,11 @@ def _require_non_empty(**values: str) -> None:
     for field_name, value in values.items():
         if not isinstance(value, str) or not value.strip():
             raise ValueError(f"{field_name} is required")
+
+
+def _require_attempt_count(attempts: Any) -> None:
+    if not isinstance(attempts, int) or isinstance(attempts, bool) or attempts < 0:
+        raise ValueError("attempts must be a non-negative integer")
 
 
 def _require_sha256(value: str, *, field_name: str) -> None:
@@ -2119,6 +2126,12 @@ _SOURCE_DOCUMENT_PAYLOAD_BINDINGS = (
     (("document_status", "status"), "status", "source document status"),
     (("uploaded_by", "uploader_id"), "uploaded_by", "recorded uploader"),
 )
+_SOURCE_DOCUMENT_STATUS_ALIASES = frozenset({"document_status", "status"})
+_SOURCE_DOCUMENT_IMMUTABLE_PAYLOAD_BINDINGS = tuple(
+    binding
+    for binding in _SOURCE_DOCUMENT_PAYLOAD_BINDINGS
+    if not set(binding[0]).intersection(_SOURCE_DOCUMENT_STATUS_ALIASES)
+)
 
 _SOURCE_ARTIFACT_PAYLOAD_BINDINGS = (
     (("storage_key", "source_storage_key"), "storage_key", "source artifact storage key"),
@@ -2276,6 +2289,24 @@ def _require_audit_scope_semantics(
         _require_job_event_snapshot_aliases_match(payload, event_payload)
     elif scope_type in {"job", "conversion_job"} and historical:
         _require_historical_job_event_payload(row, payload, contract)
+    elif scope_type in {"document", "source_document"} and historical:
+        allowed_aliases = (
+            _SOURCE_DOCUMENT_STATUS_ALIASES
+            | _evidence_aliases_for_contract(contract)
+        )
+        if (
+            scope_type == "document"
+            and contract.name in {"desktop_upload", "desktop_result_download"}
+        ):
+            allowed_aliases |= _DESKTOP_DOCUMENT_JOB_PAYLOAD_ALIASES
+        _require_declared_audit_scope_payload(
+            scope_type,
+            row,
+            payload,
+            bindings=_SOURCE_DOCUMENT_IMMUTABLE_PAYLOAD_BINDINGS,
+            allowed_aliases=allowed_aliases,
+        )
+        _require_source_document_status_aliases(payload)
     else:
         allowed_aliases = _evidence_aliases_for_contract(contract)
         if (
@@ -2450,6 +2481,19 @@ def _require_job_status_aliases(
             )
     if len(set(status_values)) > 1:
         raise ValueError("payload job status aliases must match")
+
+
+def _require_source_document_status_aliases(payload: Mapping[str, Any]) -> None:
+    status_values = []
+    for alias in _SOURCE_DOCUMENT_STATUS_ALIASES:
+        if alias not in payload:
+            continue
+        value = payload[alias]
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"payload {alias} must be a non-empty document status")
+        status_values.append(value)
+    if len(set(status_values)) > 1:
+        raise ValueError("payload document status aliases must match")
 
 
 def _require_job_attempt_aliases(
@@ -3346,6 +3390,16 @@ OR NOT EXISTS (
           WHERE evidence_artifact.type = 'text'
             AND evidence_artifact.value = NEW.artifact_id
       )
+      AND (
+          json_extract(audit_events.payload_json, '$.download_filename') IS NULL
+          OR json_extract(audit_events.payload_json, '$.download_filename')
+             = generated_artifacts.display_filename
+      )
+      AND (
+          json_extract(audit_events.payload_json, '$.output_sha256') IS NULL
+          OR json_extract(audit_events.payload_json, '$.output_sha256')
+             = generated_artifacts.content_hash
+      )
 )
 BEGIN
     SELECT RAISE(ABORT, 'audit evidence must match its event and artifact');
@@ -3741,7 +3795,16 @@ BEGIN
 END;
 
 CREATE TRIGGER IF NOT EXISTS source_documents_audit_scope_no_update
-BEFORE UPDATE ON source_documents
+BEFORE UPDATE OF
+    document_id,
+    source_type,
+    original_filename,
+    source_artifact_id,
+    source_storage_key,
+    content_hash,
+    uploaded_by,
+    created_at
+ON source_documents
 WHEN EXISTS (
     SELECT 1 FROM audit_events
     WHERE audit_events.document_id = OLD.document_id
