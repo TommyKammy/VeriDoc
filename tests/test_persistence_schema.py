@@ -478,6 +478,44 @@ def test_source_documents_require_bound_source_artifacts_at_database_boundary(
     assert repository.get_document("doc-orphan-source-artifact") is None
 
 
+def test_source_artifacts_require_document_or_insert_intent_with_foreign_keys_off(
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "veridoc.sqlite3"
+    repository = SQLitePersistenceRepository(db_path)
+    repository.initialize()
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        with pytest.raises(sqlite3.IntegrityError, match="document intent"):
+            connection.execute(
+                """
+                INSERT INTO source_artifacts(
+                    artifact_id, document_id, storage_key, content_hash, source_type,
+                    original_filename, uploaded_by, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "source-artifact-orphan",
+                    "doc-orphan",
+                    "uploads/orphan.pdf",
+                    VALID_HASH,
+                    "pdf",
+                    "orphan.pdf",
+                    "operator-1",
+                    "2026-07-09T00:00:00+00:00",
+                ),
+            )
+
+    assert repository.get_source_artifact("source-artifact-orphan") is None
+    document = _create_document(repository, "doc-1")
+    with sqlite3.connect(db_path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM source_artifact_insert_intents"
+        ).fetchone()[0] == 0
+    assert repository.get_source_artifact(document.source_artifact_id) is not None
+
+
 def test_source_artifacts_are_valid_audit_scopes_for_upload_provenance(
     tmp_path,
 ) -> None:
@@ -1127,7 +1165,7 @@ def test_job_events_preserve_append_order_when_timestamps_match(
     second = repository.create_job_event(
         event_id="event-a",
         job_id=job.job_id,
-        event_type="job.running",
+        event_type="conversion_queued",
         actor="operator-1",
     )
 
@@ -2935,6 +2973,15 @@ def test_persistence_repository_rejects_scoped_audit_payload_alias_mismatches(
             "decision-2",
         ),
         (
+            "audit-review-decision-natural-alias",
+            "review_decision",
+            review_decision.decision_id,
+            "qa-approver",
+            "review.approved",
+            "decision_id",
+            "decision-2",
+        ),
+        (
             "audit-artifact-alias",
             "artifact",
             artifact.artifact_id,
@@ -3239,13 +3286,6 @@ def test_audit_scopes_bind_authoritative_lifecycle_semantics(tmp_path) -> None:
         actor="operator-1",
         payload={"event_type": "job.queued"},
     )
-    retry_job_event = repository.create_job_event(
-        event_id="job-event-retry",
-        job_id=job.job_id,
-        event_type="retry_conversion",
-        actor="operator-1",
-        payload={"event_type": "retry_conversion"},
-    )
     result = _create_result(repository, job, "result-1")
     artifact = _create_artifact(repository, result, "artifact-1")
     download_document = _create_document(repository, "doc-download")
@@ -3306,15 +3346,6 @@ def test_audit_scopes_bind_authoritative_lifecycle_semantics(tmp_path) -> None:
             "job",
             job.job_id,
             None,
-            "job status",
-        ),
-        (
-            "audit-retry-queued-job-event",
-            "operator-1",
-            "retry_conversion",
-            "job_event",
-            retry_job_event.event_id,
-            {"event_type": "conversion_job.action_requested"},
             "job status",
         ),
         (
@@ -3716,6 +3747,56 @@ def test_retry_event_status_contract_is_enforced_on_write_and_read(tmp_path) -> 
 
     with pytest.raises(ValueError, match="job_status"):
         repository.list_job_events(job.job_id)
+
+
+@pytest.mark.parametrize(
+    ("event_type", "payload", "message"),
+    (
+        ("conversion_job.action_requested", None, "payload action"),
+        (
+            "conversion_job.action_requested",
+            {
+                "event_type": "conversion_job.action_requested",
+                "action": "retry_conversion",
+            },
+            "current job status",
+        ),
+        (
+            "review.approved",
+            {"event_type": "review.approved"},
+            "job-event history",
+        ),
+        (
+            "artifact.generated",
+            {"event_type": "artifact.generated"},
+            "job-event history",
+        ),
+        (
+            "document.inspected",
+            {"event_type": "document.inspected"},
+            "job-event history",
+        ),
+    ),
+)
+def test_job_event_write_contract_rejects_incomplete_or_non_job_actions(
+    tmp_path,
+    event_type,
+    payload,
+    message,
+) -> None:
+    repository = SQLitePersistenceRepository(tmp_path / "veridoc.sqlite3")
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+
+    with pytest.raises(ValueError, match=message):
+        repository.create_job_event(
+            event_id=f"job-event-invalid-{event_type}",
+            job_id=job.job_id,
+            event_type=event_type,
+            actor="operator-1",
+            payload=payload,
+        )
 
 
 def test_job_event_payload_action_must_match_the_event_contract(tmp_path) -> None:

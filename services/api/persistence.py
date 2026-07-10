@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 
-SCHEMA_VERSION = "20260710_08_hashed_evidence_contract"
+SCHEMA_VERSION = "20260710_09_job_event_write_contract"
 AUDIT_INTEGRITY_ALGORITHM = "sha256-canonical-json-chain-v1"
 SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -210,49 +210,65 @@ class SQLitePersistenceRepository:
         _require_sha256(content_hash, field_name="content_hash")
         now = _utc_now()
         with self._connection_scope(immediate=True) as connection:
+            source_binding = (
+                source_artifact_id,
+                document_id,
+                source_storage_key,
+                content_hash,
+                source_type,
+                original_filename,
+                uploaded_by,
+            )
             connection.execute(
                 """
-                INSERT INTO source_artifacts(
+                INSERT INTO source_artifact_insert_intents(
                     artifact_id, document_id, storage_key, content_hash, source_type,
-                    original_filename, uploaded_by, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    original_filename, uploaded_by
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (
-                    source_artifact_id,
-                    document_id,
-                    source_storage_key,
-                    content_hash,
-                    source_type,
-                    original_filename,
-                    uploaded_by,
-                    now,
-                ),
+                source_binding,
             )
-            return self._insert_and_get_from_connection(
-                connection,
-                Document,
-                """
-                INSERT INTO source_documents(
-                    document_id, source_type, original_filename, source_artifact_id,
-                    source_storage_key, content_hash, status, uploaded_by, created_at,
-                    updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    document_id,
-                    source_type,
-                    original_filename,
-                    source_artifact_id,
-                    source_storage_key,
-                    content_hash,
-                    status,
-                    uploaded_by,
-                    now,
-                    now,
-                ),
-                "SELECT * FROM source_documents WHERE document_id = ?",
-                (document_id,),
-            )
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO source_artifacts(
+                        artifact_id, document_id, storage_key, content_hash, source_type,
+                        original_filename, uploaded_by, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (*source_binding, now),
+                )
+                document = self._insert_and_get_from_connection(
+                    connection,
+                    Document,
+                    """
+                    INSERT INTO source_documents(
+                        document_id, source_type, original_filename, source_artifact_id,
+                        source_storage_key, content_hash, status, uploaded_by, created_at,
+                        updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        document_id,
+                        source_type,
+                        original_filename,
+                        source_artifact_id,
+                        source_storage_key,
+                        content_hash,
+                        status,
+                        uploaded_by,
+                        now,
+                        now,
+                    ),
+                    "SELECT * FROM source_documents WHERE document_id = ?",
+                    (document_id,),
+                )
+            finally:
+                connection.execute(
+                    "DELETE FROM source_artifact_insert_intents WHERE artifact_id = ?",
+                    (source_artifact_id,),
+                )
+            return document
 
     def get_document(self, document_id: str) -> Document | None:
         with self._connection_scope() as connection:
@@ -382,16 +398,31 @@ class SQLitePersistenceRepository:
         )
         with self._connection_scope(immediate=True) as connection:
             self._verify_job_event_history(connection, job_id)
+            job = connection.execute(
+                "SELECT status FROM jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            if job is None:
+                raise ValueError("job_id must reference an existing job")
             sequence = self._next_job_event_sequence(connection, job_id)
             now = _utc_now()
-            _require_job_event_payload_matches(
-                payload,
+            event_payload = payload or {"event_type": event_type}
+            effective_action = _require_job_event_payload_matches(
+                event_payload,
                 event_id=event_id,
                 job_id=job_id,
                 event_type=event_type,
                 actor=actor,
             )
-            payload_json = _canonical_json(payload or {"event_type": event_type})
+            contract = _audit_action_contract(effective_action)
+            if contract is None or "job_event" not in contract.scope_types:
+                raise ValueError("job event action is not valid for job-event history")
+            if (
+                contract.job_statuses is not None
+                and job["status"] not in contract.job_statuses
+            ):
+                raise ValueError("job event action is not valid for the current job status")
+            payload_json = _canonical_json(event_payload)
             return self._insert_and_get_from_connection(
                 connection,
                 JobEvent,
@@ -1412,9 +1443,9 @@ def _require_job_event_payload_matches(
     job_id: str,
     event_type: str,
     actor: str,
-) -> None:
+) -> str:
     if payload is None:
-        return
+        payload = {"event_type": event_type}
     if not isinstance(payload, Mapping):
         raise ValueError("payload must be a mapping")
     expected = {
@@ -1440,6 +1471,7 @@ def _require_job_event_payload_matches(
     for field_name in ("sequence", "created_at", "occurred_at"):
         if field_name in payload:
             raise ValueError(f"payload {field_name} is derived from the job event row")
+    return effective_action
 
 
 def _require_job_event_payload_status(
@@ -1795,7 +1827,7 @@ _AUDIT_SCOPE_ID_ALIASES = {
     "artifact": frozenset({"artifact_id", "generated_artifact_id"}),
     "generated_artifact": frozenset({"artifact_id", "generated_artifact_id"}),
     "review_item": frozenset({"review_item_id"}),
-    "review_decision": frozenset({"review_decision_id"}),
+    "review_decision": frozenset({"decision_id", "review_decision_id"}),
 }
 
 
@@ -2235,6 +2267,32 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
     applied_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS source_artifact_insert_intents (
+    artifact_id TEXT NOT NULL PRIMARY KEY CHECK(
+        typeof(artifact_id) = 'text' AND length(trim(artifact_id)) > 0
+    ),
+    document_id TEXT NOT NULL UNIQUE CHECK(
+        typeof(document_id) = 'text' AND length(trim(document_id)) > 0
+    ),
+    storage_key TEXT NOT NULL UNIQUE CHECK(
+        typeof(storage_key) = 'text' AND length(trim(storage_key)) > 0
+    ),
+    content_hash TEXT NOT NULL CHECK(
+        typeof(content_hash) = 'text'
+        AND length(content_hash) = 64
+        AND content_hash NOT GLOB '*[^0-9a-f]*'
+    ),
+    source_type TEXT NOT NULL CHECK(
+        typeof(source_type) = 'text' AND length(trim(source_type)) > 0
+    ),
+    original_filename TEXT NOT NULL CHECK(
+        typeof(original_filename) = 'text' AND length(trim(original_filename)) > 0
+    ),
+    uploaded_by TEXT NOT NULL CHECK(
+        typeof(uploaded_by) = 'text' AND length(trim(uploaded_by)) > 0
+    )
+);
+
 CREATE TABLE IF NOT EXISTS source_artifacts (
     artifact_id TEXT NOT NULL PRIMARY KEY CHECK(
         typeof(artifact_id) = 'text' AND length(trim(artifact_id)) > 0
@@ -2474,6 +2532,32 @@ CREATE TABLE IF NOT EXISTS audit_event_evidence (
     ),
     PRIMARY KEY(event_id, artifact_id)
 );
+
+CREATE TRIGGER IF NOT EXISTS source_artifacts_parent_reference_insert
+BEFORE INSERT ON source_artifacts
+WHEN NOT EXISTS (
+    SELECT 1 FROM source_documents
+    WHERE source_documents.document_id = NEW.document_id
+      AND source_documents.source_artifact_id = NEW.artifact_id
+      AND source_documents.source_storage_key = NEW.storage_key
+      AND source_documents.content_hash = NEW.content_hash
+      AND source_documents.source_type = NEW.source_type
+      AND source_documents.original_filename = NEW.original_filename
+      AND source_documents.uploaded_by = NEW.uploaded_by
+)
+AND NOT EXISTS (
+    SELECT 1 FROM source_artifact_insert_intents
+    WHERE source_artifact_insert_intents.artifact_id = NEW.artifact_id
+      AND source_artifact_insert_intents.document_id = NEW.document_id
+      AND source_artifact_insert_intents.storage_key = NEW.storage_key
+      AND source_artifact_insert_intents.content_hash = NEW.content_hash
+      AND source_artifact_insert_intents.source_type = NEW.source_type
+      AND source_artifact_insert_intents.original_filename = NEW.original_filename
+      AND source_artifact_insert_intents.uploaded_by = NEW.uploaded_by
+)
+BEGIN
+    SELECT RAISE(ABORT, 'source artifact must reference a matching document intent');
+END;
 
 CREATE TRIGGER IF NOT EXISTS jobs_parent_reference_insert
 BEFORE INSERT ON jobs
@@ -3331,6 +3415,7 @@ DROP TABLE IF EXISTS job_events;
 DROP TABLE IF EXISTS jobs;
 DROP TABLE IF EXISTS source_documents;
 DROP TABLE IF EXISTS source_artifacts;
+DROP TABLE IF EXISTS source_artifact_insert_intents;
 DROP TABLE IF EXISTS schema_migrations;
 """
 
