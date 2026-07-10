@@ -1,6 +1,22 @@
 from dataclasses import fields
 
-from services.api import persistence, persistence_contracts, persistence_models
+from services.api import (
+    persistence,
+    persistence_contracts,
+    persistence_models,
+    persistence_repository,
+)
+
+
+def test_sqlite_repository_is_compatibly_reexported_from_dedicated_module() -> None:
+    assert (
+        persistence.SQLitePersistenceRepository
+        is persistence_repository.SQLitePersistenceRepository
+    )
+    assert (
+        persistence_repository.SQLitePersistenceRepository.__module__
+        == "services.api.persistence_repository"
+    )
 
 
 def test_persistence_models_are_compatibly_reexported_from_dedicated_module() -> None:
