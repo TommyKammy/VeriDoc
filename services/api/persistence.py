@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 
-SCHEMA_VERSION = "20260710_12_historical_lifecycle_contract"
+SCHEMA_VERSION = "20260710_13_desktop_composite_scope_contract"
 AUDIT_INTEGRITY_ALGORITHM = "sha256-canonical-json-chain-v1"
 SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -1293,6 +1293,28 @@ class SQLitePersistenceRepository:
             self._verify_job_event_history(connection, row["job_id"])
         evidence_artifact_ids: tuple[str, ...] = ()
         contract = _audit_action_contract(action)
+        desktop_job_row = None
+        if (
+            scope_type == "document"
+            and contract is not None
+            and contract.name in {"desktop_upload", "desktop_result_download"}
+        ):
+            desktop_job_row = connection.execute(
+                """
+                SELECT jobs.job_id, jobs.document_id, jobs.idempotency_key,
+                       jobs.mode, jobs.status, jobs.attempts,
+                       source_documents.original_filename,
+                       source_documents.content_hash AS source_content_hash,
+                       source_documents.uploaded_by
+                FROM jobs
+                JOIN source_documents
+                  ON source_documents.document_id = jobs.document_id
+                WHERE jobs.job_id = ? AND jobs.document_id = ?
+                """,
+                (job_id, document_id),
+            ).fetchone()
+            if desktop_job_row is None:
+                raise ValueError("desktop audit must reference an existing document job")
         if contract is not None and contract.evidence_type == "download_artifact":
             required_artifact_ids = None
             if scope_type == "job_event":
@@ -1321,6 +1343,13 @@ class SQLitePersistenceRepository:
             payload=payload,
             historical=evidence_event_id is not None,
         )
+        if desktop_job_row is not None:
+            _require_desktop_document_job_payload(
+                desktop_job_row,
+                payload,
+                contract,
+                historical=evidence_event_id is not None,
+            )
         if scope_type != "job_event" and evidence_event_id is None:
             job_state = connection.execute(
                 "SELECT status, attempts FROM jobs WHERE job_id = ?",
@@ -1645,14 +1674,7 @@ def _require_job_event_payload_status(
     effective_action: str,
 ) -> None:
     contract = _audit_action_contract(effective_action)
-    allowed_statuses = contract.job_statuses if contract is not None else None
-    if allowed_statuses is None:
-        return
-    for alias in ("job_status", "status"):
-        if alias in payload and payload[alias] not in allowed_statuses:
-            raise ValueError(
-                f"payload {alias} must match the job event lifecycle state"
-            )
+    _require_job_status_aliases(payload, contract)
 
 
 def _job_event_effective_action(
@@ -2092,6 +2114,17 @@ _JOB_PAYLOAD_BINDINGS = (
     (("filename", "source_filename"), "original_filename", "job source filename"),
     (("source_sha256",), "source_content_hash", "job source hash"),
 )
+_DESKTOP_DOCUMENT_JOB_PAYLOAD_BINDINGS = (
+    (("idempotency_key",), "idempotency_key", "job idempotency key"),
+    (("mode", "job_mode"), "mode", "job mode"),
+    (("job_status",), "status", "job status"),
+    (("attempts", "job_attempts"), "attempts", "job attempts"),
+)
+_DESKTOP_DOCUMENT_JOB_PAYLOAD_ALIASES = frozenset(
+    alias
+    for aliases, _, _ in _DESKTOP_DOCUMENT_JOB_PAYLOAD_BINDINGS
+    for alias in aliases
+)
 
 _JOB_HISTORY_MUTABLE_ALIASES = frozenset(
     {"job_status", "status", "attempts", "job_attempts"}
@@ -2218,11 +2251,18 @@ def _require_audit_scope_semantics(
     elif scope_type in {"job", "conversion_job"} and historical:
         _require_historical_job_event_payload(row, payload, contract)
     else:
+        allowed_aliases = _evidence_aliases_for_contract(contract)
+        if (
+            scope_type == "document"
+            and contract is not None
+            and contract.name in {"desktop_upload", "desktop_result_download"}
+        ):
+            allowed_aliases |= _DESKTOP_DOCUMENT_JOB_PAYLOAD_ALIASES
         _require_declared_audit_scope_payload(
             scope_type,
             row,
             payload,
-            allowed_aliases=_evidence_aliases_for_contract(contract),
+            allowed_aliases=allowed_aliases,
         )
         if scope_type in {"job", "conversion_job"}:
             _require_job_attempt_aliases(payload, contract)
@@ -2279,7 +2319,7 @@ def _require_declared_audit_scope_payload(
     bindings: Iterable[tuple[Iterable[str], str, str]] | None = None,
     allowed_aliases: Iterable[str] = (),
 ) -> None:
-    declared_bindings = (
+    declared_bindings = tuple(
         _AUDIT_SCOPE_PAYLOAD_BINDINGS.get(scope_type, ())
         if bindings is None
         else bindings
@@ -2288,14 +2328,9 @@ def _require_declared_audit_scope_payload(
     allowed_fields.update(_AUDIT_SCOPE_ID_ALIASES.get(scope_type, ()))
     allowed_fields.update(_AUDIT_SCOPE_SPECIAL_PAYLOAD_FIELDS.get(scope_type, ()))
     allowed_fields.update(allowed_aliases)
-    for aliases, column, field_name in declared_bindings:
+    for aliases, _, _ in declared_bindings:
         allowed_fields.update(aliases)
-        _require_payload_aliases_match(
-            payload,
-            aliases,
-            row[column],
-            field_name=field_name,
-        )
+    _require_payload_bindings_match(row, payload, declared_bindings)
     for field_name in payload:
         if (
             field_name in _AUDIT_RESERVED_EVIDENCE_FIELDS
@@ -2304,6 +2339,20 @@ def _require_declared_audit_scope_payload(
             raise ValueError(
                 f"payload {field_name} is not valid for audit scope {scope_type}"
             )
+
+
+def _require_payload_bindings_match(
+    row: sqlite3.Row,
+    payload: Mapping[str, Any],
+    bindings: Iterable[tuple[Iterable[str], str, str]],
+) -> None:
+    for aliases, column, field_name in bindings:
+        _require_payload_aliases_match(
+            payload,
+            aliases,
+            row[column],
+            field_name=field_name,
+        )
 
 
 def _require_historical_job_event_payload(
@@ -2328,15 +2377,50 @@ def _require_historical_job_event_payload(
             | _evidence_aliases_for_contract(contract)
         ),
     )
-    expected_statuses = contract.job_statuses if contract is not None else None
-    for alias in ("job_status", "status"):
-        if alias in payload and (
-            expected_statuses is None or payload[alias] not in expected_statuses
-        ):
-            raise ValueError(
-                f"payload {alias} must match the historical job event action"
-            )
+    _require_job_status_aliases(payload, contract)
     _require_job_attempt_aliases(payload, contract)
+
+
+def _require_desktop_document_job_payload(
+    job_row: sqlite3.Row,
+    payload: Mapping[str, Any],
+    contract: _AuditActionContract,
+    *,
+    historical: bool,
+) -> None:
+    bindings = (
+        tuple(
+            binding
+            for binding in _DESKTOP_DOCUMENT_JOB_PAYLOAD_BINDINGS
+            if "job_status" not in binding[0]
+            and not set(binding[0]).intersection({"attempts", "job_attempts"})
+        )
+        if historical
+        else _DESKTOP_DOCUMENT_JOB_PAYLOAD_BINDINGS
+    )
+    _require_payload_bindings_match(job_row, payload, bindings)
+    if historical:
+        _require_job_status_aliases(payload, contract, aliases=("job_status",))
+    _require_job_attempt_aliases(payload, contract)
+
+
+def _require_job_status_aliases(
+    payload: Mapping[str, Any],
+    contract: _AuditActionContract | None,
+    *,
+    aliases: Iterable[str] = ("job_status", "status"),
+) -> None:
+    allowed_statuses = contract.job_statuses if contract is not None else None
+    for alias in aliases:
+        if alias not in payload:
+            continue
+        value = payload[alias]
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"payload {alias} must be a non-empty job status string")
+        if allowed_statuses is not None and value not in allowed_statuses:
+            raise ValueError(
+                f"payload {alias} must match the job event lifecycle state"
+            )
 
 
 def _require_job_attempt_aliases(
