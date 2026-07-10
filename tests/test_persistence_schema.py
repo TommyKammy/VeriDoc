@@ -1190,6 +1190,47 @@ def test_job_events_preserve_append_order_when_timestamps_match(
     ]
 
 
+def test_job_event_history_validates_status_at_the_recorded_lifecycle_point(
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "veridoc.sqlite3"
+    repository = SQLitePersistenceRepository(db_path)
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+    queued = repository.create_job_event(
+        event_id="job-event-queued",
+        job_id=job.job_id,
+        event_type="job.queued",
+        actor="operator-1",
+        payload={
+            "event_type": "job.queued",
+            "job_status": "queued",
+            "attempts": 0,
+        },
+    )
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "UPDATE jobs SET status = 'running', attempts = 1 WHERE job_id = ?",
+            (job.job_id,),
+        )
+
+    running = repository.create_job_event(
+        event_id="job-event-running",
+        job_id=job.job_id,
+        event_type="job.running",
+        actor="operator-1",
+        payload={
+            "event_type": "job.running",
+            "job_status": "running",
+            "attempts": 1,
+        },
+    )
+
+    assert repository.list_job_events(job.job_id) == [queued, running]
+
+
 def test_job_events_are_append_only_at_the_database_boundary(tmp_path) -> None:
     db_path = tmp_path / "veridoc.sqlite3"
     repository = SQLitePersistenceRepository(db_path)
@@ -1762,6 +1803,11 @@ def test_audit_event_scope_is_enforced_by_database_constraints(tmp_path) -> None
             )
 
     result = _create_result(repository, job, "result-1")
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "UPDATE jobs SET status = 'succeeded' WHERE job_id = ?",
+            (job.job_id,),
+        )
     audit_event = repository.create_audit_event(
         event_id="audit-result-scope",
         job_id=job.job_id,
@@ -1906,6 +1952,11 @@ def test_audit_scope_rows_cannot_be_rekeyed_after_events_reference_them(tmp_path
     job = _create_job(repository, document, "job-1")
     result = _create_result(repository, job, "result-1")
     artifact = _create_artifact(repository, result, "artifact-1")
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "UPDATE jobs SET status = 'succeeded' WHERE job_id = ?",
+            (job.job_id,),
+        )
     review_item = repository.create_review_item(
         review_item_id="review-item-1",
         document_id=document.document_id,
@@ -2002,6 +2053,11 @@ def test_audited_conversion_result_contents_are_immutable_at_database_boundary(
     document = _create_document(repository, "doc-1")
     job = _create_job(repository, document, "job-1")
     result = _create_result(repository, job, "result-1")
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "UPDATE jobs SET status = 'succeeded' WHERE job_id = ?",
+            (job.job_id,),
+        )
     audit_event = repository.create_audit_event(
         event_id="audit-result-scope",
         job_id=job.job_id,
@@ -3460,6 +3516,15 @@ def test_audit_scopes_bind_authoritative_lifecycle_semantics(tmp_path) -> None:
             "content_hash",
         ),
         (
+            "audit-wrong-artifact-sha256",
+            "operator-1",
+            "artifact.generated",
+            "artifact",
+            artifact.artifact_id,
+            {"event_type": "artifact.generated", "sha256": "0" * 64},
+            "sha256",
+        ),
+        (
             "audit-wrong-review-target",
             "operator-1",
             "review.opened",
@@ -3513,7 +3578,7 @@ def test_audit_scopes_bind_authoritative_lifecycle_semantics(tmp_path) -> None:
             "event_type": "artifact.generated",
             "result_id": artifact.result_id,
             "storage_key": artifact.storage_key,
-            "content_hash": artifact.content_hash,
+            "sha256": artifact.content_hash,
             "category": artifact.category,
             "format": artifact.format,
             "retention_state": artifact.retention_state,
@@ -3566,6 +3631,26 @@ def test_audit_scopes_bind_authoritative_lifecycle_semantics(tmp_path) -> None:
         repository.get_audit_event(valid_desktop_download.event_id)
         == valid_desktop_download
     )
+
+
+def test_result_scoped_lifecycle_audit_requires_matching_job_status(tmp_path) -> None:
+    repository = SQLitePersistenceRepository(tmp_path / "veridoc.sqlite3")
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+    result = _create_result(repository, job, "result-1")
+
+    with pytest.raises(ValueError, match="current job status"):
+        repository.create_audit_event(
+            event_id="audit-result-before-job-completed",
+            job_id=job.job_id,
+            document_id=document.document_id,
+            actor="operator-1",
+            action="conversion.completed",
+            scope_type="conversion_result",
+            scope_id=result.result_id,
+            payload={"event_type": "conversion.completed"},
+        )
 
 
 def test_download_audits_require_matching_durable_result_evidence(tmp_path) -> None:
@@ -4075,6 +4160,180 @@ def test_generic_job_event_action_contract_drives_scoped_audit(tmp_path) -> None
     assert repository.get_audit_event(audit_event.event_id) == audit_event
 
 
+def test_download_job_events_freeze_their_selected_artifact_evidence(tmp_path) -> None:
+    db_path = tmp_path / "veridoc.sqlite3"
+    repository = SQLitePersistenceRepository(db_path)
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = repository.create_conversion_job(
+        job_id="job-1",
+        document_id=document.document_id,
+        idempotency_key="upload-job-1",
+        mode="standard",
+        status="succeeded",
+    )
+    result = _create_result(repository, job, "result-1")
+    artifact = _create_artifact(repository, result, "artifact-1")
+    job_event = repository.create_job_event(
+        event_id="job-event-download",
+        job_id=job.job_id,
+        event_type="desktop.job_operation",
+        actor="operator-1",
+        payload={
+            "event_type": "desktop.job_operation",
+            "action": "desktop_result_download",
+            "job_status": "succeeded",
+            "download_filename": artifact.display_filename,
+            "output_sha256": artifact.content_hash,
+        },
+    )
+    later_artifact = _create_artifact(repository, result, "artifact-later")
+
+    with sqlite3.connect(db_path) as connection:
+        evidence_row = connection.execute(
+            """
+            SELECT event_id, artifact_id, evidence_type
+            FROM job_event_evidence
+            WHERE event_id = ?
+            """,
+            (job_event.event_id,),
+        ).fetchone()
+        assert evidence_row == (
+            job_event.event_id,
+            artifact.artifact_id,
+            "download_artifact",
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="job event evidence"):
+            connection.execute(
+                """
+                INSERT INTO job_event_evidence(event_id, artifact_id, evidence_type)
+                VALUES (?, ?, ?)
+                """,
+                (
+                    job_event.event_id,
+                    later_artifact.artifact_id,
+                    "download_artifact",
+                ),
+            )
+        for sql, params in (
+            (
+                "UPDATE generated_artifacts SET content_hash = ? WHERE artifact_id = ?",
+                ("d" * 64, artifact.artifact_id),
+            ),
+            (
+                "UPDATE conversion_results SET status = ? WHERE result_id = ?",
+                ("failed", result.result_id),
+            ),
+        ):
+            with pytest.raises(sqlite3.IntegrityError, match="job event evidence rows"):
+                connection.execute(sql, params)
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            connection.execute(
+                "DELETE FROM job_event_evidence WHERE event_id = ?",
+                (job_event.event_id,),
+            )
+
+    assert repository.list_job_events(job.job_id) == [job_event]
+
+
+def test_download_job_event_read_requires_its_frozen_evidence_link(tmp_path) -> None:
+    db_path = tmp_path / "veridoc.sqlite3"
+    repository = SQLitePersistenceRepository(db_path)
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = repository.create_conversion_job(
+        job_id="job-1",
+        document_id=document.document_id,
+        idempotency_key="upload-job-1",
+        mode="standard",
+        status="succeeded",
+    )
+    result = _create_result(repository, job, "result-1")
+    artifact = _create_artifact(repository, result, "artifact-1")
+    payload = {
+        "event_type": "desktop.job_operation",
+        "action": "desktop_result_download",
+        "job_status": "succeeded",
+        "download_filename": artifact.display_filename,
+        "output_sha256": artifact.content_hash,
+    }
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO job_events(
+                event_id, job_id, sequence, event_type, actor, payload_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "job-event-without-evidence",
+                job.job_id,
+                1,
+                "desktop.job_operation",
+                "operator-1",
+                persistence._canonical_json(payload),
+                job.created_at,
+            ),
+        )
+
+    with pytest.raises(ValueError, match="job event evidence link"):
+        repository.list_job_events(job.job_id)
+
+
+def test_job_event_scoped_download_audit_uses_the_event_evidence(tmp_path) -> None:
+    repository = SQLitePersistenceRepository(tmp_path / "veridoc.sqlite3")
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = repository.create_conversion_job(
+        job_id="job-1",
+        document_id=document.document_id,
+        idempotency_key="upload-job-1",
+        mode="standard",
+        status="succeeded",
+    )
+    result = _create_result(repository, job, "result-1")
+    artifact_a = _create_artifact(repository, result, "artifact-a")
+    artifact_b = repository.create_artifact(
+        artifact_id="artifact-b",
+        result_id=result.result_id,
+        job_id=job.job_id,
+        document_id=document.document_id,
+        category="generated",
+        format="docx",
+        display_filename="artifact-b.docx",
+        storage_key="artifacts/artifact-b.docx",
+        content_hash="d" * 64,
+    )
+    job_event = repository.create_job_event(
+        event_id="job-event-download-a",
+        job_id=job.job_id,
+        event_type="desktop.job_operation",
+        actor="operator-1",
+        payload={
+            "event_type": "desktop.job_operation",
+            "action": "desktop_result_download",
+            "download_filename": artifact_a.display_filename,
+            "output_sha256": artifact_a.content_hash,
+        },
+    )
+
+    with pytest.raises(ValueError, match="scoped job event evidence"):
+        repository.create_audit_event(
+            event_id="audit-download-b-for-event-a",
+            job_id=job.job_id,
+            document_id=document.document_id,
+            actor="operator-1",
+            action="desktop_result_download",
+            scope_type="job_event",
+            scope_id=job_event.event_id,
+            payload={
+                "event_type": "desktop.job_operation",
+                "download_filename": artifact_b.display_filename,
+                "output_sha256": artifact_b.content_hash,
+            },
+        )
+
+
 def test_download_evidence_uses_display_filename_and_freezes_linked_rows(
     tmp_path,
 ) -> None:
@@ -4184,7 +4443,10 @@ def test_download_evidence_uses_display_filename_and_freezes_linked_rows(
                 ("failed", result.result_id),
             ),
         ):
-            with pytest.raises(sqlite3.IntegrityError, match="audit evidence rows"):
+            with pytest.raises(
+                sqlite3.IntegrityError,
+                match="(?:audit|job event) evidence rows",
+            ):
                 connection.execute(sql, params)
         with pytest.raises(sqlite3.IntegrityError, match="append-only"):
             connection.execute(

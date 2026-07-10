@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 
-SCHEMA_VERSION = "20260710_10_connection_bound_source_guard"
+SCHEMA_VERSION = "20260710_11_job_event_evidence_contract"
 AUDIT_INTEGRITY_ALGORITHM = "sha256-canonical-json-chain-v1"
 SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -433,8 +433,9 @@ class SQLitePersistenceRepository:
             _require_declared_audit_scope_payload("job", job, event_payload)
             if contract.requires_uploader and job["uploaded_by"] != actor:
                 raise ValueError("job event actor must match the recorded uploader")
+            evidence_artifact_ids: tuple[str, ...] = ()
             if contract.evidence_type == "download_artifact":
-                self._require_download_evidence(
+                evidence_artifact_ids = self._require_download_evidence(
                     connection,
                     job_id=job_id,
                     document_id=job["document_id"],
@@ -442,8 +443,15 @@ class SQLitePersistenceRepository:
                     payload=event_payload,
                     evidence_event_id=None,
                 )
+                event_payload = {
+                    **event_payload,
+                    "evidence": {
+                        "artifact_ids": sorted(evidence_artifact_ids),
+                        "type": contract.evidence_type,
+                    },
+                }
             payload_json = _canonical_json(event_payload)
-            return self._insert_and_get_from_connection(
+            job_event = self._insert_and_get_from_connection(
                 connection,
                 JobEvent,
                 """
@@ -455,6 +463,18 @@ class SQLitePersistenceRepository:
                 "SELECT * FROM job_events WHERE event_id = ?",
                 (event_id,),
             )
+            if contract.evidence_type is not None:
+                connection.executemany(
+                    """
+                    INSERT INTO job_event_evidence(event_id, artifact_id, evidence_type)
+                    VALUES (?, ?, ?)
+                    """,
+                    (
+                        (event_id, artifact_id, contract.evidence_type)
+                        for artifact_id in evidence_artifact_ids
+                    ),
+                )
+            return job_event
 
     def get_job_event(self, event_id: str) -> JobEvent | None:
         with self._connection_scope() as connection:
@@ -1081,8 +1101,8 @@ class SQLitePersistenceRepository:
         ).fetchone()
         if job is None:
             raise ValueError("job event must reference an existing job and source document")
-        _require_declared_audit_scope_payload("job", job, payload)
         contract = _audit_action_contract(effective_action)
+        _require_historical_job_event_payload(job, payload, contract)
         if contract is not None and contract.requires_uploader:
             if job["uploaded_by"] != row["actor"]:
                 raise ValueError("job event actor must match the recorded uploader")
@@ -1093,7 +1113,9 @@ class SQLitePersistenceRepository:
                 document_id=job["document_id"],
                 action=effective_action,
                 payload=payload,
-                evidence_event_id=None,
+                evidence_event_id=row["event_id"],
+                evidence_table="job_event_evidence",
+                historical_job_event=True,
             )
 
     def _require_review_item_matches_artifact(
@@ -1267,6 +1289,13 @@ class SQLitePersistenceRepository:
         evidence_artifact_ids: tuple[str, ...] = ()
         contract = _audit_action_contract(action)
         if contract is not None and contract.evidence_type == "download_artifact":
+            required_artifact_ids = None
+            if scope_type == "job_event":
+                required_artifact_ids = _event_evidence_artifact_ids(
+                    connection,
+                    evidence_table="job_event_evidence",
+                    event_id=row["event_id"],
+                )
             evidence_artifact_ids = self._require_download_evidence(
                 connection,
                 job_id=job_id,
@@ -1274,6 +1303,8 @@ class SQLitePersistenceRepository:
                 action=action,
                 payload=payload,
                 evidence_event_id=evidence_event_id,
+                required_artifact_ids=required_artifact_ids,
+                historical_job_event=scope_type == "job_event",
             )
         _require_audit_scope_semantics(
             scope_type=scope_type,
@@ -1282,7 +1313,7 @@ class SQLitePersistenceRepository:
             action=action,
             payload=payload,
         )
-        if scope_type != "conversion_result":
+        if scope_type != "job_event":
             job_state = connection.execute(
                 "SELECT status, attempts FROM jobs WHERE job_id = ?",
                 (job_id,),
@@ -1310,6 +1341,9 @@ class SQLitePersistenceRepository:
         action: str,
         payload: Mapping[str, Any],
         evidence_event_id: str | None,
+        evidence_table: str = "audit_event_evidence",
+        required_artifact_ids: tuple[str, ...] | None = None,
+        historical_job_event: bool = False,
     ) -> tuple[str, ...]:
         rows = connection.execute(
             """
@@ -1338,7 +1372,9 @@ class SQLitePersistenceRepository:
             for row in rows
             if allowed_statuses is not None
             and row["result_status"] in allowed_statuses
-            and row["job_status"] in allowed_statuses
+            and (
+                historical_job_event or row["job_status"] in allowed_statuses
+            )
         ]
         if not rows:
             raise ValueError("download audit requires a stored successful result artifact")
@@ -1373,25 +1409,46 @@ class SQLitePersistenceRepository:
                 )
 
         matching_artifact_ids = tuple(row["artifact_id"] for row in matching_rows)
+        selected_artifact_ids = matching_artifact_ids
+        if required_artifact_ids is not None:
+            if not required_artifact_ids or not set(required_artifact_ids).issubset(
+                matching_artifact_ids
+            ):
+                raise ValueError(
+                    "download audit evidence must match the scoped job event evidence"
+                )
+            selected_artifact_ids = required_artifact_ids
         if evidence_event_id is None:
-            return matching_artifact_ids
+            return selected_artifact_ids
 
-        recorded_artifact_ids = tuple(
-            row["artifact_id"]
-            for row in connection.execute(
-                """
-                SELECT artifact_id
-                FROM audit_event_evidence
-                WHERE event_id = ? AND evidence_type = 'download_artifact'
-                ORDER BY artifact_id
-                """,
-                (evidence_event_id,),
-            ).fetchall()
+        if evidence_table not in {"audit_event_evidence", "job_event_evidence"}:
+            raise ValueError("unsupported download evidence table")
+        recorded_artifact_ids = _event_evidence_artifact_ids(
+            connection,
+            evidence_table=evidence_table,
+            event_id=evidence_event_id,
         )
         if not recorded_artifact_ids or not set(recorded_artifact_ids).issubset(
-            matching_artifact_ids
+            selected_artifact_ids
         ):
-            raise ValueError("download audit evidence link is missing or inconsistent")
+            owner = "job event" if evidence_table == "job_event_evidence" else "audit"
+            raise ValueError(f"download {owner} evidence link is missing or inconsistent")
+        if required_artifact_ids is not None and set(recorded_artifact_ids) != set(
+            required_artifact_ids
+        ):
+            raise ValueError(
+                "download audit evidence must match the scoped job event evidence"
+            )
+        if evidence_table == "job_event_evidence":
+            expected_evidence = {
+                "artifact_ids": sorted(recorded_artifact_ids),
+                "type": "download_artifact",
+            }
+            if payload.get("evidence") != expected_evidence:
+                raise ValueError(
+                    "download job event evidence is not bound to the event payload"
+                )
+            return recorded_artifact_ids
         expected_evidence = {
             "artifact_ids": sorted(recorded_artifact_ids),
             "type": "download_artifact",
@@ -1529,6 +1586,7 @@ def _require_job_event_payload_matches(
     job_id: str,
     event_type: str,
     actor: str,
+    allow_derived_evidence: bool = False,
 ) -> str:
     if payload is None:
         payload = {"event_type": event_type}
@@ -1559,6 +1617,13 @@ def _require_job_event_payload_matches(
     contract = _audit_action_contract(effective_action)
     if contract is None or "job_event" not in contract.scope_types:
         raise ValueError("job event action is not valid for job-event history")
+    if "evidence" in payload:
+        if not allow_derived_evidence:
+            raise ValueError("payload evidence is derived from the job event evidence set")
+        if contract.evidence_type is None:
+            raise ValueError("payload evidence is not valid for the job event action")
+        if not isinstance(payload["evidence"], Mapping):
+            raise ValueError("payload evidence must be a mapping")
     _require_job_event_payload_status(payload, effective_action)
     for field_name in ("sequence", "created_at", "occurred_at"):
         if field_name in payload:
@@ -1610,6 +1675,7 @@ def _require_job_event_row_payload_matches(
         job_id=row["job_id"],
         event_type=row["event_type"],
         actor=row["actor"],
+        allow_derived_evidence=True,
     )
     return payload, effective_action
 
@@ -2007,7 +2073,19 @@ _JOB_PAYLOAD_BINDINGS = (
     (("source_sha256",), "source_content_hash", "job source hash"),
 )
 
+_JOB_HISTORY_MUTABLE_ALIASES = frozenset(
+    {"job_status", "status", "attempts", "job_attempts"}
+)
+_JOB_IMMUTABLE_PAYLOAD_BINDINGS = tuple(
+    binding
+    for binding in _JOB_PAYLOAD_BINDINGS
+    if not set(binding[0]).intersection(_JOB_HISTORY_MUTABLE_ALIASES)
+)
 _JOB_EVENT_PAYLOAD_BINDINGS = _JOB_PAYLOAD_BINDINGS + (
+    (("job_event_sequence",), "sequence", "job event sequence"),
+    (("event_actor",), "actor", "job event actor"),
+)
+_JOB_EVENT_IMMUTABLE_PAYLOAD_BINDINGS = _JOB_IMMUTABLE_PAYLOAD_BINDINGS + (
     (("job_event_sequence",), "sequence", "job event sequence"),
     (("event_actor",), "actor", "job event actor"),
 )
@@ -2021,7 +2099,11 @@ _ARTIFACT_PAYLOAD_BINDINGS = (
     (("result_id", "conversion_result_id"), "result_id", "artifact result id"),
     (("display_filename", "artifact_filename"), "display_filename", "artifact display filename"),
     (("storage_key", "artifact_storage_key"), "storage_key", "artifact storage key"),
-    (("content_hash", "artifact_content_hash"), "content_hash", "artifact content hash"),
+    (
+        ("content_hash", "artifact_content_hash", "sha256"),
+        "content_hash",
+        "artifact content hash",
+    ),
     (("category", "artifact_category"), "category", "artifact category"),
     (("format", "artifact_format"), "format", "artifact format"),
     (("retention_state",), "retention_state", "artifact retention state"),
@@ -2097,7 +2179,22 @@ def _require_audit_scope_semantics(
     action: str,
     payload: Mapping[str, Any],
 ) -> None:
-    _require_declared_audit_scope_payload(scope_type, row, payload)
+    if scope_type == "job_event":
+        event_payload = _load_json_object(
+            row["payload_json"],
+            field_name="job event payload_json",
+        )
+        event_action = _job_event_effective_action(row["event_type"], event_payload)
+        contract = _audit_action_contract(event_action)
+        _require_historical_job_event_payload(
+            row,
+            payload,
+            contract,
+            scope_type="job_event",
+        )
+        _require_job_event_snapshot_aliases_match(payload, event_payload)
+    else:
+        _require_declared_audit_scope_payload(scope_type, row, payload)
 
     if scope_type in {"document", "source_document", "source_artifact"}:
         if _is_upload_action(action) and row["uploaded_by"] != actor:
@@ -2112,11 +2209,6 @@ def _require_audit_scope_semantics(
     if scope_type == "job_event":
         if row["actor"] != actor:
             raise ValueError("audit actor must match the scoped job event actor")
-        event_payload = _load_json_object(
-            row["payload_json"],
-            field_name="job event payload_json",
-        )
-        event_action = _job_event_effective_action(row["event_type"], event_payload)
         if not _job_event_action_matches(event_action, action):
             raise ValueError("audit action must match the scoped job event type")
         if _is_upload_action(action) and row["uploaded_by"] != actor:
@@ -2153,12 +2245,20 @@ def _require_declared_audit_scope_payload(
     scope_type: str,
     row: sqlite3.Row,
     payload: Mapping[str, Any],
+    *,
+    bindings: Iterable[tuple[Iterable[str], str, str]] | None = None,
+    allowed_aliases: Iterable[str] = (),
 ) -> None:
-    bindings = _AUDIT_SCOPE_PAYLOAD_BINDINGS.get(scope_type, ())
+    declared_bindings = (
+        _AUDIT_SCOPE_PAYLOAD_BINDINGS.get(scope_type, ())
+        if bindings is None
+        else bindings
+    )
     allowed_fields = set(_AUDIT_GLOBAL_PAYLOAD_FIELDS)
     allowed_fields.update(_AUDIT_SCOPE_ID_ALIASES.get(scope_type, ()))
     allowed_fields.update(_AUDIT_SCOPE_SPECIAL_PAYLOAD_FIELDS.get(scope_type, ()))
-    for aliases, column, field_name in bindings:
+    allowed_fields.update(allowed_aliases)
+    for aliases, column, field_name in declared_bindings:
         allowed_fields.update(aliases)
         _require_payload_aliases_match(
             payload,
@@ -2176,6 +2276,63 @@ def _require_declared_audit_scope_payload(
             )
 
 
+def _require_historical_job_event_payload(
+    row: sqlite3.Row,
+    payload: Mapping[str, Any],
+    contract: _AuditActionContract | None,
+    *,
+    scope_type: str = "job",
+) -> None:
+    bindings = (
+        _JOB_EVENT_IMMUTABLE_PAYLOAD_BINDINGS
+        if scope_type == "job_event"
+        else _JOB_IMMUTABLE_PAYLOAD_BINDINGS
+    )
+    _require_declared_audit_scope_payload(
+        scope_type,
+        row,
+        payload,
+        bindings=bindings,
+        allowed_aliases=_JOB_HISTORY_MUTABLE_ALIASES,
+    )
+    expected_statuses = contract.job_statuses if contract is not None else None
+    for alias in ("job_status", "status"):
+        if alias in payload and (
+            expected_statuses is None or payload[alias] not in expected_statuses
+        ):
+            raise ValueError(
+                f"payload {alias} must match the historical job event action"
+            )
+    attempt_values = []
+    for alias in ("attempts", "job_attempts"):
+        if alias not in payload:
+            continue
+        value = payload[alias]
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise ValueError(f"payload {alias} must be a non-negative integer")
+        attempt_values.append(value)
+    if len(set(attempt_values)) > 1:
+        raise ValueError("payload job attempt aliases must match")
+
+
+def _require_job_event_snapshot_aliases_match(
+    payload: Mapping[str, Any],
+    event_payload: Mapping[str, Any],
+) -> None:
+    for aliases, field_name in (
+        (("job_status", "status"), "job status"),
+        (("attempts", "job_attempts"), "job attempts"),
+    ):
+        event_values = {event_payload[alias] for alias in aliases if alias in event_payload}
+        for alias in aliases:
+            if alias not in payload:
+                continue
+            if not event_values or payload[alias] not in event_values:
+                raise ValueError(
+                    f"payload {alias} must match the scoped job event {field_name}"
+                )
+
+
 def _require_payload_aliases_match(
     payload: Mapping[str, Any],
     aliases: Iterable[str],
@@ -2186,6 +2343,37 @@ def _require_payload_aliases_match(
     for alias in aliases:
         if alias in payload and payload[alias] != expected:
             raise ValueError(f"payload {alias} must match the scoped {field_name}")
+
+
+def _event_evidence_artifact_ids(
+    connection: sqlite3.Connection,
+    *,
+    evidence_table: str,
+    event_id: str,
+) -> tuple[str, ...]:
+    if evidence_table == "audit_event_evidence":
+        rows = connection.execute(
+            """
+            SELECT artifact_id
+            FROM audit_event_evidence
+            WHERE event_id = ? AND evidence_type = 'download_artifact'
+            ORDER BY artifact_id
+            """,
+            (event_id,),
+        ).fetchall()
+    elif evidence_table == "job_event_evidence":
+        rows = connection.execute(
+            """
+            SELECT artifact_id
+            FROM job_event_evidence
+            WHERE event_id = ? AND evidence_type = 'download_artifact'
+            ORDER BY artifact_id
+            """,
+            (event_id,),
+        ).fetchall()
+    else:
+        raise ValueError("unsupported download evidence table")
+    return tuple(row["artifact_id"] for row in rows)
 
 
 def _require_payload_actor_role(payload: Mapping[str, Any], expected_role: str) -> None:
@@ -2625,6 +2813,15 @@ CREATE TABLE IF NOT EXISTS audit_event_evidence (
     PRIMARY KEY(event_id, artifact_id)
 );
 
+CREATE TABLE IF NOT EXISTS job_event_evidence (
+    event_id TEXT NOT NULL REFERENCES job_events(event_id) ON DELETE RESTRICT,
+    artifact_id TEXT NOT NULL REFERENCES generated_artifacts(artifact_id) ON DELETE RESTRICT,
+    evidence_type TEXT NOT NULL CHECK(
+        typeof(evidence_type) = 'text' AND length(trim(evidence_type)) > 0
+    ),
+    PRIMARY KEY(event_id, artifact_id)
+);
+
 CREATE TRIGGER IF NOT EXISTS source_artifacts_parent_reference_insert
 BEFORE INSERT ON source_artifacts
 WHEN NOT EXISTS (
@@ -3008,6 +3205,58 @@ BEGIN
     SELECT RAISE(ABORT, 'audit evidence links are append-only');
 END;
 
+CREATE TRIGGER IF NOT EXISTS job_event_evidence_reference_insert
+BEFORE INSERT ON job_event_evidence
+WHEN NEW.evidence_type != 'download_artifact'
+OR NOT EXISTS (
+    SELECT 1
+    FROM job_events
+    JOIN generated_artifacts
+      ON generated_artifacts.artifact_id = NEW.artifact_id
+    WHERE job_events.event_id = NEW.event_id
+      AND job_events.job_id = generated_artifacts.job_id
+      AND json_extract(job_events.payload_json, '$.evidence.type') = NEW.evidence_type
+      AND EXISTS (
+          SELECT 1
+          FROM json_each(
+              job_events.payload_json,
+              '$.evidence.artifact_ids'
+          ) AS evidence_artifact
+          WHERE evidence_artifact.type = 'text'
+            AND evidence_artifact.value = NEW.artifact_id
+      )
+      AND (
+          job_events.event_type IN ('desktop_result_download', 'download_result')
+          OR json_extract(job_events.payload_json, '$.action')
+             IN ('desktop_result_download', 'download_result')
+      )
+      AND (
+          json_extract(job_events.payload_json, '$.download_filename') IS NULL
+          OR json_extract(job_events.payload_json, '$.download_filename')
+             = generated_artifacts.display_filename
+      )
+      AND (
+          json_extract(job_events.payload_json, '$.output_sha256') IS NULL
+          OR json_extract(job_events.payload_json, '$.output_sha256')
+             = generated_artifacts.content_hash
+      )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'job event evidence must match its event and artifact');
+END;
+
+CREATE TRIGGER IF NOT EXISTS job_event_evidence_no_update
+BEFORE UPDATE ON job_event_evidence
+BEGIN
+    SELECT RAISE(ABORT, 'job event evidence links are append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS job_event_evidence_no_delete
+BEFORE DELETE ON job_event_evidence
+BEGIN
+    SELECT RAISE(ABORT, 'job event evidence links are append-only');
+END;
+
 CREATE TRIGGER IF NOT EXISTS source_artifacts_no_update
 BEFORE UPDATE ON source_artifacts
 BEGIN
@@ -3127,6 +3376,32 @@ BEGIN
     SELECT RAISE(ABORT, 'audit evidence rows cannot be deleted');
 END;
 
+CREATE TRIGGER IF NOT EXISTS conversion_results_job_event_evidence_no_update
+BEFORE UPDATE ON conversion_results
+WHEN EXISTS (
+    SELECT 1
+    FROM job_event_evidence
+    JOIN generated_artifacts
+      ON generated_artifacts.artifact_id = job_event_evidence.artifact_id
+    WHERE generated_artifacts.result_id = OLD.result_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'job event evidence rows cannot be updated');
+END;
+
+CREATE TRIGGER IF NOT EXISTS conversion_results_job_event_evidence_no_delete
+BEFORE DELETE ON conversion_results
+WHEN EXISTS (
+    SELECT 1
+    FROM job_event_evidence
+    JOIN generated_artifacts
+      ON generated_artifacts.artifact_id = job_event_evidence.artifact_id
+    WHERE generated_artifacts.result_id = OLD.result_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'job event evidence rows cannot be deleted');
+END;
+
 CREATE TRIGGER IF NOT EXISTS generated_artifacts_review_decision_no_update
 BEFORE UPDATE ON generated_artifacts
 WHEN EXISTS (
@@ -3155,6 +3430,26 @@ WHEN EXISTS (
 )
 BEGIN
     SELECT RAISE(ABORT, 'audit evidence rows cannot be deleted');
+END;
+
+CREATE TRIGGER IF NOT EXISTS generated_artifacts_job_event_evidence_no_update
+BEFORE UPDATE ON generated_artifacts
+WHEN EXISTS (
+    SELECT 1 FROM job_event_evidence
+    WHERE job_event_evidence.artifact_id = OLD.artifact_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'job event evidence rows cannot be updated');
+END;
+
+CREATE TRIGGER IF NOT EXISTS generated_artifacts_job_event_evidence_no_delete
+BEFORE DELETE ON generated_artifacts
+WHEN EXISTS (
+    SELECT 1 FROM job_event_evidence
+    WHERE job_event_evidence.artifact_id = OLD.artifact_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'job event evidence rows cannot be deleted');
 END;
 
 CREATE TRIGGER IF NOT EXISTS generated_artifacts_review_decision_no_delete
@@ -3497,6 +3792,7 @@ END;
 
 _RESET_SQL = """
 DROP TABLE IF EXISTS audit_event_evidence;
+DROP TABLE IF EXISTS job_event_evidence;
 DROP TABLE IF EXISTS audit_events;
 DROP TABLE IF EXISTS review_decisions;
 DROP TABLE IF EXISTS review_items;
