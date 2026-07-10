@@ -3,7 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import subprocess
+import sys
 from contextlib import contextmanager
+from pathlib import Path
 
 import pytest
 
@@ -24,6 +27,28 @@ from services.api.persistence import (
 
 VALID_HASH = "a" * 64
 AUDIT_INTEGRITY_ALGORITHM = "sha256-canonical-json-chain-v1"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_persistence_cli_supports_direct_script_execution(tmp_path) -> None:
+    db_path = tmp_path / "direct-script.sqlite3"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(REPO_ROOT / "services" / "api" / "persistence.py"),
+            "init-db",
+            "--db-path",
+            str(db_path),
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert db_path.is_file()
 
 
 def _create_document(

@@ -6,6 +6,7 @@ import json
 import os
 import re
 import sqlite3
+import sys
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -13,6 +14,10 @@ from dataclasses import dataclass, fields
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TypeVar
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from services.api.persistence_schema import (
     _expected_schema_definitions,
@@ -27,7 +32,6 @@ from services.api.persistence_schema import (
 SCHEMA_VERSION = "20260710_16_successful_evidence_triggers"
 AUDIT_INTEGRITY_ALGORITHM = "sha256-canonical-json-chain-v1"
 SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
-REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DB_PATH = REPO_ROOT / "var" / "veridoc" / "dev.sqlite3"
 _SOURCE_ARTIFACT_INSERT_BINDING: ContextVar[tuple[str, ...] | None] = ContextVar(
     "veridoc_source_artifact_insert_binding",
