@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 
-SCHEMA_VERSION = "20260710_15_lifecycle_input_consistency"
+SCHEMA_VERSION = "20260710_16_successful_evidence_triggers"
 AUDIT_INTEGRITY_ALGORITHM = "sha256-canonical-json-chain-v1"
 SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -3376,10 +3376,17 @@ OR NOT EXISTS (
     FROM audit_events
     JOIN generated_artifacts
       ON generated_artifacts.artifact_id = NEW.artifact_id
+    JOIN conversion_results
+      ON conversion_results.result_id = generated_artifacts.result_id
+     AND conversion_results.job_id = generated_artifacts.job_id
+     AND conversion_results.document_id = generated_artifacts.document_id
     WHERE audit_events.event_id = NEW.event_id
       AND audit_events.action IN ('desktop_result_download', 'download_result')
       AND audit_events.job_id = generated_artifacts.job_id
       AND audit_events.document_id = generated_artifacts.document_id
+      AND conversion_results.status IN (
+          'blocked', 'completed', 'converted', 'requires_review', 'succeeded', 'success'
+      )
       AND json_extract(audit_events.payload_json, '$.evidence.type') = NEW.evidence_type
       AND EXISTS (
           SELECT 1
@@ -3425,8 +3432,15 @@ OR NOT EXISTS (
     FROM job_events
     JOIN generated_artifacts
       ON generated_artifacts.artifact_id = NEW.artifact_id
+    JOIN conversion_results
+      ON conversion_results.result_id = generated_artifacts.result_id
+     AND conversion_results.job_id = generated_artifacts.job_id
+     AND conversion_results.document_id = generated_artifacts.document_id
     WHERE job_events.event_id = NEW.event_id
       AND job_events.job_id = generated_artifacts.job_id
+      AND conversion_results.status IN (
+          'blocked', 'completed', 'converted', 'requires_review', 'succeeded', 'success'
+      )
       AND json_extract(job_events.payload_json, '$.evidence.type') = NEW.evidence_type
       AND EXISTS (
           SELECT 1

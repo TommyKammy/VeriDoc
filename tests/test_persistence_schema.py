@@ -4987,6 +4987,135 @@ def test_job_event_scoped_download_audit_uses_the_event_evidence(tmp_path) -> No
         )
 
 
+def test_evidence_triggers_reject_failed_result_artifacts(tmp_path) -> None:
+    db_path = tmp_path / "veridoc.sqlite3"
+    repository = SQLitePersistenceRepository(db_path)
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = repository.create_conversion_job(
+        job_id="job-1",
+        document_id=document.document_id,
+        idempotency_key="upload-job-1",
+        mode="standard",
+        status="succeeded",
+    )
+    result = _create_result(repository, job, "result-1")
+    artifact = _create_artifact(repository, result, "artifact-1")
+    created_at = "2026-07-10T00:00:00+00:00"
+    audit_payload_json = persistence._canonical_json(
+        {
+            "action": "desktop_result_download",
+            "actor": "operator-1",
+            "download_filename": artifact.display_filename,
+            "evidence": {
+                "artifact_ids": [artifact.artifact_id],
+                "type": "download_artifact",
+            },
+            "event_type": "desktop.job_operation",
+            "output_sha256": artifact.content_hash,
+            "scope_id": job.job_id,
+            "scope_type": "job",
+        }
+    )
+    job_payload_json = persistence._canonical_json(
+        {
+            "action": "desktop_result_download",
+            "actor": "operator-1",
+            "download_filename": artifact.display_filename,
+            "evidence": {
+                "artifact_ids": [artifact.artifact_id],
+                "type": "download_artifact",
+            },
+            "event_type": "desktop.job_operation",
+            "job_status": "succeeded",
+            "output_sha256": artifact.content_hash,
+        }
+    )
+    audit_hash = persistence._audit_event_hash(
+        event_id="audit-failed-result",
+        job_id=job.job_id,
+        document_id=document.document_id,
+        sequence=1,
+        integrity_algorithm=AUDIT_INTEGRITY_ALGORITHM,
+        actor="operator-1",
+        action="desktop_result_download",
+        scope_type="job",
+        scope_id=job.job_id,
+        prev_event_hash=None,
+        payload_json=audit_payload_json,
+        created_at=created_at,
+    )
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "UPDATE conversion_results SET status = 'failed' WHERE result_id = ?",
+            (result.result_id,),
+        )
+        connection.execute(
+            """
+            INSERT INTO job_events(
+                event_id, job_id, sequence, event_type, actor, payload_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "job-event-failed-result",
+                job.job_id,
+                1,
+                "desktop.job_operation",
+                "operator-1",
+                job_payload_json,
+                created_at,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO audit_events(
+                event_id, job_id, document_id, sequence, integrity_algorithm, actor,
+                action, scope_type, scope_id, event_hash, prev_event_hash,
+                payload_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "audit-failed-result",
+                job.job_id,
+                document.document_id,
+                1,
+                AUDIT_INTEGRITY_ALGORITHM,
+                "operator-1",
+                "desktop_result_download",
+                "job",
+                job.job_id,
+                audit_hash,
+                None,
+                audit_payload_json,
+                created_at,
+            ),
+        )
+        for sql, event_id, error_match in (
+            (
+                """
+                INSERT INTO job_event_evidence(event_id, artifact_id, evidence_type)
+                VALUES (?, ?, ?)
+                """,
+                "job-event-failed-result",
+                "job event evidence",
+            ),
+            (
+                """
+                INSERT INTO audit_event_evidence(event_id, artifact_id, evidence_type)
+                VALUES (?, ?, ?)
+                """,
+                "audit-failed-result",
+                "audit evidence",
+            ),
+        ):
+            with pytest.raises(sqlite3.IntegrityError, match=error_match):
+                connection.execute(
+                    sql,
+                    (event_id, artifact.artifact_id, "download_artifact"),
+                )
+
+
 def test_download_evidence_uses_display_filename_and_freezes_linked_rows(
     tmp_path,
 ) -> None:
