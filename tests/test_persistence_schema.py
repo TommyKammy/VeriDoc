@@ -7,7 +7,7 @@ from contextlib import contextmanager
 
 import pytest
 
-from services.api import persistence
+from services.api import persistence, persistence_schema
 from services.api.persistence import (
     AuditEvent,
     Artifact,
@@ -262,6 +262,30 @@ def test_schema_normalization_preserves_case_inside_string_literals() -> None:
     assert persistence._normalize_schema_sql("CREATE  TABLE T (A TEXT)") == (
         "create table t (a text)"
     )
+
+
+def test_persistence_schema_module_owns_schema_contract() -> None:
+    assert persistence._SCHEMA_SQL is persistence_schema._SCHEMA_SQL
+    assert persistence._RESET_SQL is persistence_schema._RESET_SQL
+    assert persistence._normalize_schema_sql is persistence_schema._normalize_schema_sql
+    assert persistence._schema_definitions is persistence_schema._schema_definitions
+    assert persistence._expected_schema_definitions is (
+        persistence_schema._expected_schema_definitions
+    )
+    assert persistence._validate_managed_schema is (
+        persistence_schema._validate_managed_schema
+    )
+
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    try:
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.executescript(persistence._SCHEMA_SQL)
+        assert persistence._schema_definitions(connection) == (
+            persistence_schema._expected_schema_definitions()
+        )
+    finally:
+        connection.close()
 
 
 def test_persistence_repository_rejects_missing_bindings_and_keeps_state_clean(
