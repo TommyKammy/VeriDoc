@@ -478,7 +478,7 @@ def test_source_documents_require_bound_source_artifacts_at_database_boundary(
     assert repository.get_document("doc-orphan-source-artifact") is None
 
 
-def test_source_artifacts_require_document_or_insert_intent_with_foreign_keys_off(
+def test_source_artifacts_require_repository_guard_with_foreign_keys_off(
     tmp_path,
 ) -> None:
     db_path = tmp_path / "veridoc.sqlite3"
@@ -487,7 +487,7 @@ def test_source_artifacts_require_document_or_insert_intent_with_foreign_keys_of
 
     with sqlite3.connect(db_path) as connection:
         connection.execute("PRAGMA foreign_keys = OFF")
-        with pytest.raises(sqlite3.IntegrityError, match="document intent"):
+        with pytest.raises(sqlite3.DatabaseError, match="veridoc_source"):
             connection.execute(
                 """
                 INSERT INTO source_artifacts(
@@ -511,8 +511,11 @@ def test_source_artifacts_require_document_or_insert_intent_with_foreign_keys_of
     document = _create_document(repository, "doc-1")
     with sqlite3.connect(db_path) as connection:
         assert connection.execute(
-            "SELECT COUNT(*) FROM source_artifact_insert_intents"
-        ).fetchone()[0] == 0
+            """
+            SELECT name FROM sqlite_master
+            WHERE name = 'source_artifact_insert_intents'
+            """
+        ).fetchone() is None
     assert repository.get_source_artifact(document.source_artifact_id) is not None
 
 
@@ -562,7 +565,7 @@ def test_source_artifacts_reject_orphan_documents_at_database_boundary(
     repository = SQLitePersistenceRepository(db_path)
     repository.initialize()
 
-    with pytest.raises(sqlite3.IntegrityError):
+    with pytest.raises(sqlite3.DatabaseError):
         with sqlite3.connect(db_path) as connection:
             connection.execute("PRAGMA foreign_keys = ON")
             connection.execute(
@@ -595,7 +598,7 @@ def test_source_document_and_artifact_provenance_must_match_everywhere(
     repository.initialize()
     created_at = "2026-07-10T00:00:00+00:00"
 
-    with pytest.raises(sqlite3.IntegrityError, match="source artifact"):
+    with pytest.raises(sqlite3.DatabaseError):
         with sqlite3.connect(db_path) as connection:
             connection.execute("PRAGMA foreign_keys = ON")
             connection.execute(
@@ -1141,6 +1144,18 @@ def test_persistence_repository_allows_nested_job_event_actor_payload(tmp_path) 
         )
     assert repository.get_job_event("event-wrong-actor") is None
 
+    with pytest.raises(ValueError, match="payload actor.id is required"):
+        repository.create_job_event(
+            event_id="event-actor-without-id",
+            job_id=job.job_id,
+            event_type="job.queued",
+            actor="operator-1",
+            payload={
+                "event_type": "job.queued",
+                "actor": {"name": "mallory", "role": "reviewer"},
+            },
+        )
+
 
 def test_job_events_preserve_append_order_when_timestamps_match(
     tmp_path,
@@ -1468,6 +1483,7 @@ def test_persistence_repository_rejects_conflicting_audit_payload_fields(tmp_pat
             {"event_timestamp": "2026-07-08T00:00:00+00:00"},
         ),
         ("audit-actor-id-mismatch", {"actor_id": "other-actor"}),
+        ("audit-nested-actor-without-id", {"actor": {"name": "mallory"}}),
     ):
         with pytest.raises(ValueError, match="payload"):
             repository.create_audit_event(
@@ -3575,6 +3591,17 @@ def test_download_audits_require_matching_durable_result_evidence(tmp_path) -> N
             scope_id=job.job_id,
             payload={"event_type": "conversion_job.action_requested"},
         )
+    with pytest.raises(ValueError, match="stored successful result artifact"):
+        repository.create_job_event(
+            event_id="job-event-download-without-result",
+            job_id=job.job_id,
+            event_type="conversion_job.action_requested",
+            actor="operator-1",
+            payload={
+                "event_type": "conversion_job.action_requested",
+                "action": "download_result",
+            },
+        )
 
     result = _create_result(repository, job, "result-1")
     artifact = _create_artifact(repository, result, "artifact-1")
@@ -3605,6 +3632,36 @@ def test_download_audits_require_matching_durable_result_evidence(tmp_path) -> N
                 document_id=document.document_id,
                 actor="operator-1",
                 action="desktop_result_download",
+                scope_type="job",
+                scope_id=job.job_id,
+                payload=payload,
+            )
+
+    for event_id, payload in (
+        (
+            "audit-generic-download-wrong-hash",
+            {
+                "event_type": "conversion_job.action_requested",
+                "download_filename": artifact.display_filename,
+                "output_sha256": "0" * 64,
+            },
+        ),
+        (
+            "audit-generic-download-wrong-filename",
+            {
+                "event_type": "conversion_job.action_requested",
+                "download_filename": "different.docx",
+                "output_sha256": artifact.content_hash,
+            },
+        ),
+    ):
+        with pytest.raises(ValueError, match="evidence"):
+            repository.create_audit_event(
+                event_id=event_id,
+                job_id=job.job_id,
+                document_id=document.document_id,
+                actor="operator-1",
+                action="download_result",
                 scope_type="job",
                 scope_id=job.job_id,
                 payload=payload,
@@ -3799,6 +3856,169 @@ def test_job_event_write_contract_rejects_incomplete_or_non_job_actions(
         )
 
 
+@pytest.mark.parametrize(
+    ("event_type", "actor", "payload", "message"),
+    (
+        (
+            "conversion_job.action_requested",
+            "operator-1",
+            {"event_type": "conversion_job.action_requested"},
+            "payload action",
+        ),
+        (
+            "review.approved",
+            "operator-1",
+            {"event_type": "review.approved"},
+            "job-event history",
+        ),
+        (
+            "desktop.job_operation",
+            "mallory",
+            {
+                "event_type": "desktop.job_operation",
+                "action": "desktop_upload",
+            },
+            "uploader",
+        ),
+        (
+            "conversion_job.action_requested",
+            "operator-1",
+            {
+                "event_type": "conversion_job.action_requested",
+                "action": "download_result",
+            },
+            "stored successful result artifact",
+        ),
+    ),
+)
+def test_job_event_reads_revalidate_action_and_durable_evidence(
+    tmp_path,
+    event_type,
+    actor,
+    payload,
+    message,
+) -> None:
+    db_path = tmp_path / "veridoc.sqlite3"
+    repository = SQLitePersistenceRepository(db_path)
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO job_events(
+                event_id, job_id, sequence, event_type, actor, payload_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "job-event-direct-invalid",
+                job.job_id,
+                1,
+                event_type,
+                actor,
+                persistence._canonical_json(payload),
+                job.created_at,
+            ),
+        )
+
+    with pytest.raises(ValueError, match=message):
+        repository.list_job_events(job.job_id)
+
+
+def test_upload_job_events_bind_actor_and_source_provenance(tmp_path) -> None:
+    repository = SQLitePersistenceRepository(tmp_path / "veridoc.sqlite3")
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+
+    cases = (
+        (
+            "job-event-upload-wrong-actor",
+            "mallory",
+            {
+                "event_type": "desktop.job_operation",
+                "action": "desktop_upload",
+                "filename": document.original_filename,
+                "source_sha256": document.content_hash,
+            },
+            "uploader",
+        ),
+        (
+            "job-event-upload-wrong-source",
+            "operator-1",
+            {
+                "event_type": "desktop.job_operation",
+                "action": "desktop_upload",
+                "filename": document.original_filename,
+                "source_sha256": "0" * 64,
+            },
+            "source_sha256",
+        ),
+    )
+    for event_id, actor, payload, message in cases:
+        with pytest.raises(ValueError, match=message):
+            repository.create_job_event(
+                event_id=event_id,
+                job_id=job.job_id,
+                event_type="desktop.job_operation",
+                actor=actor,
+                payload=payload,
+            )
+
+
+@pytest.mark.parametrize(
+    ("status", "attempts", "message"),
+    (
+        ("succeeded", 0, "current job status"),
+        ("queued", 1, "job attempt"),
+    ),
+)
+def test_desktop_upload_contract_requires_an_unattempted_queued_job(
+    tmp_path,
+    status,
+    attempts,
+    message,
+) -> None:
+    repository = SQLitePersistenceRepository(tmp_path / "veridoc.sqlite3")
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = repository.create_conversion_job(
+        job_id="job-1",
+        document_id=document.document_id,
+        idempotency_key="upload-job-1",
+        mode="standard",
+        status=status,
+        attempts=attempts,
+    )
+    payload = {
+        "event_type": "desktop.job_operation",
+        "action": "desktop_upload",
+        "filename": document.original_filename,
+        "source_sha256": document.content_hash,
+    }
+
+    with pytest.raises(ValueError, match=message):
+        repository.create_job_event(
+            event_id="job-event-late-upload",
+            job_id=job.job_id,
+            event_type="desktop.job_operation",
+            actor="operator-1",
+            payload=payload,
+        )
+    with pytest.raises(ValueError, match=message):
+        repository.create_audit_event(
+            event_id="audit-late-upload",
+            job_id=job.job_id,
+            document_id=document.document_id,
+            actor="operator-1",
+            action="desktop_upload",
+            scope_type="job",
+            scope_id=job.job_id,
+            payload=payload,
+        )
+
+
 def test_job_event_payload_action_must_match_the_event_contract(tmp_path) -> None:
     repository = SQLitePersistenceRepository(tmp_path / "veridoc.sqlite3")
     repository.initialize()
@@ -3890,6 +4110,8 @@ def test_download_evidence_uses_display_filename_and_freezes_linked_rows(
             "event_type": "desktop.job_operation",
             "action": "desktop_result_download",
             "job_status": "succeeded",
+            "download_filename": artifact.display_filename,
+            "output_sha256": artifact.content_hash,
         },
     )
     audit_event = repository.create_audit_event(

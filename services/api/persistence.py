@@ -8,17 +8,26 @@ import re
 import sqlite3
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, fields
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TypeVar
 
 
-SCHEMA_VERSION = "20260710_09_job_event_write_contract"
+SCHEMA_VERSION = "20260710_10_connection_bound_source_guard"
 AUDIT_INTEGRITY_ALGORITHM = "sha256-canonical-json-chain-v1"
 SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DB_PATH = REPO_ROOT / "var" / "veridoc" / "dev.sqlite3"
+_SOURCE_ARTIFACT_INSERT_BINDING: ContextVar[tuple[str, ...] | None] = ContextVar(
+    "veridoc_source_artifact_insert_binding",
+    default=None,
+)
+
+
+def _source_artifact_insert_allowed(*binding: str) -> int:
+    return int(_SOURCE_ARTIFACT_INSERT_BINDING.get() == binding)
 
 
 @dataclass(frozen=True)
@@ -219,15 +228,7 @@ class SQLitePersistenceRepository:
                 original_filename,
                 uploaded_by,
             )
-            connection.execute(
-                """
-                INSERT INTO source_artifact_insert_intents(
-                    artifact_id, document_id, storage_key, content_hash, source_type,
-                    original_filename, uploaded_by
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                source_binding,
-            )
+            guard_token = _SOURCE_ARTIFACT_INSERT_BINDING.set(source_binding)
             try:
                 connection.execute(
                     """
@@ -264,10 +265,7 @@ class SQLitePersistenceRepository:
                     (document_id,),
                 )
             finally:
-                connection.execute(
-                    "DELETE FROM source_artifact_insert_intents WHERE artifact_id = ?",
-                    (source_artifact_id,),
-                )
+                _SOURCE_ARTIFACT_INSERT_BINDING.reset(guard_token)
             return document
 
     def get_document(self, document_id: str) -> Document | None:
@@ -399,7 +397,17 @@ class SQLitePersistenceRepository:
         with self._connection_scope(immediate=True) as connection:
             self._verify_job_event_history(connection, job_id)
             job = connection.execute(
-                "SELECT status FROM jobs WHERE job_id = ?",
+                """
+                SELECT jobs.job_id, jobs.document_id, jobs.idempotency_key,
+                       jobs.mode, jobs.status, jobs.attempts,
+                       source_documents.original_filename,
+                       source_documents.content_hash AS source_content_hash,
+                       source_documents.uploaded_by
+                FROM jobs
+                JOIN source_documents
+                  ON source_documents.document_id = jobs.document_id
+                WHERE jobs.job_id = ?
+                """,
                 (job_id,),
             ).fetchone()
             if job is None:
@@ -417,11 +425,23 @@ class SQLitePersistenceRepository:
             contract = _audit_action_contract(effective_action)
             if contract is None or "job_event" not in contract.scope_types:
                 raise ValueError("job event action is not valid for job-event history")
-            if (
-                contract.job_statuses is not None
-                and job["status"] not in contract.job_statuses
-            ):
-                raise ValueError("job event action is not valid for the current job status")
+            _require_job_action_available(
+                job["status"],
+                effective_action,
+                attempts=job["attempts"],
+            )
+            _require_declared_audit_scope_payload("job", job, event_payload)
+            if contract.requires_uploader and job["uploaded_by"] != actor:
+                raise ValueError("job event actor must match the recorded uploader")
+            if contract.evidence_type == "download_artifact":
+                self._require_download_evidence(
+                    connection,
+                    job_id=job_id,
+                    document_id=job["document_id"],
+                    action=effective_action,
+                    payload=event_payload,
+                    evidence_event_id=None,
+                )
             payload_json = _canonical_json(event_payload)
             return self._insert_and_get_from_connection(
                 connection,
@@ -900,6 +920,12 @@ class SQLitePersistenceRepository:
     def _connect(self) -> sqlite3.Connection:
         self.db_path = _validate_database_path(self.db_path)
         connection = sqlite3.connect(self.db_path)
+        connection.create_function(
+            "veridoc_source_artifact_insert_allowed",
+            7,
+            _source_artifact_insert_allowed,
+            deterministic=False,
+        )
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         return connection
@@ -1023,8 +1049,52 @@ class SQLitePersistenceRepository:
             sequence = row["sequence"]
             if not isinstance(sequence, int) or sequence != expected_sequence:
                 raise ValueError("job event history must have contiguous sequences")
-            _require_job_event_row_payload_matches(row)
+            payload, effective_action = _require_job_event_row_payload_matches(row)
+            self._require_job_event_durable_evidence(
+                connection,
+                row,
+                payload,
+                effective_action,
+            )
         return rows
+
+    def _require_job_event_durable_evidence(
+        self,
+        connection: sqlite3.Connection,
+        row: sqlite3.Row,
+        payload: Mapping[str, Any],
+        effective_action: str,
+    ) -> None:
+        job = connection.execute(
+            """
+            SELECT jobs.job_id, jobs.document_id, jobs.idempotency_key,
+                   jobs.mode, jobs.status, jobs.attempts,
+                   source_documents.original_filename,
+                   source_documents.content_hash AS source_content_hash,
+                   source_documents.uploaded_by
+            FROM jobs
+            JOIN source_documents
+              ON source_documents.document_id = jobs.document_id
+            WHERE jobs.job_id = ?
+            """,
+            (row["job_id"],),
+        ).fetchone()
+        if job is None:
+            raise ValueError("job event must reference an existing job and source document")
+        _require_declared_audit_scope_payload("job", job, payload)
+        contract = _audit_action_contract(effective_action)
+        if contract is not None and contract.requires_uploader:
+            if job["uploaded_by"] != row["actor"]:
+                raise ValueError("job event actor must match the recorded uploader")
+        if contract is not None and contract.evidence_type == "download_artifact":
+            self._require_download_evidence(
+                connection,
+                job_id=job["job_id"],
+                document_id=job["document_id"],
+                action=effective_action,
+                payload=payload,
+                evidence_event_id=None,
+            )
 
     def _require_review_item_matches_artifact(
         self,
@@ -1212,6 +1282,18 @@ class SQLitePersistenceRepository:
             action=action,
             payload=payload,
         )
+        if scope_type != "conversion_result":
+            job_state = connection.execute(
+                "SELECT status, attempts FROM jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            if job_state is None:
+                raise ValueError("job_id must reference an existing job")
+            _require_job_action_available(
+                job_state["status"],
+                action,
+                attempts=job_state["attempts"],
+            )
         if scope_type == "review_decision":
             if row["actor"] != actor:
                 raise ValueError("audit actor must match the review decision actor")
@@ -1261,7 +1343,11 @@ class SQLitePersistenceRepository:
         if not rows:
             raise ValueError("download audit requires a stored successful result artifact")
         matching_rows = rows
-        if action == "desktop_result_download":
+        has_download_filename = "download_filename" in payload
+        has_output_sha256 = "output_sha256" in payload
+        if action == "desktop_result_download" or (
+            has_download_filename or has_output_sha256
+        ):
             output_sha256 = payload.get("output_sha256")
             download_filename = payload.get("download_filename")
             if (
@@ -1459,14 +1545,20 @@ def _require_job_event_payload_matches(
             continue
         payload_value = payload[field_name]
         if field_name == "actor" and isinstance(payload_value, Mapping):
-            if "id" in payload_value and payload_value["id"] != expected_value:
-                raise ValueError("payload actor.id must match the job event row")
+            _require_nested_actor_id(
+                payload_value,
+                expected_value,
+                row_name="job event",
+            )
             continue
         if payload_value != expected_value:
             raise ValueError(f"payload {field_name} must match the job event row")
     if "actor_id" in payload and payload["actor_id"] != actor:
         raise ValueError("payload actor_id must match the job event row")
     effective_action = _job_event_effective_action(event_type, payload)
+    contract = _audit_action_contract(effective_action)
+    if contract is None or "job_event" not in contract.scope_types:
+        raise ValueError("job event action is not valid for job-event history")
     _require_job_event_payload_status(payload, effective_action)
     for field_name in ("sequence", "created_at", "occurred_at"):
         if field_name in payload:
@@ -1505,18 +1597,21 @@ def _job_event_effective_action(
     return payload_action
 
 
-def _require_job_event_row_payload_matches(row: sqlite3.Row) -> None:
+def _require_job_event_row_payload_matches(
+    row: sqlite3.Row,
+) -> tuple[Mapping[str, Any], str]:
     payload = _load_json_object(
         row["payload_json"],
         field_name="job event payload_json",
     )
-    _require_job_event_payload_matches(
+    effective_action = _require_job_event_payload_matches(
         payload,
         event_id=row["event_id"],
         job_id=row["job_id"],
         event_type=row["event_type"],
         actor=row["actor"],
     )
+    return payload, effective_action
 
 
 def _require_audit_event_row_payload_matches(row: sqlite3.Row) -> Mapping[str, Any]:
@@ -1582,8 +1677,11 @@ def _require_audit_event_payload_matches(
             continue
         payload_value = payload[field_name]
         if field_name == "actor" and isinstance(payload_value, Mapping):
-            if "id" in payload_value and payload_value["id"] != expected_value:
-                raise ValueError("payload actor.id must match the audit event row")
+            _require_nested_actor_id(
+                payload_value,
+                expected_value,
+                row_name="audit event",
+            )
             continue
         if payload_value != expected_value:
             raise ValueError(f"payload {field_name} must match the audit event row")
@@ -1610,6 +1708,18 @@ def _require_audit_event_payload_matches(
             raise ValueError(f"payload {field_name} is derived from the audit chain")
 
 
+def _require_nested_actor_id(
+    actor_payload: Mapping[str, Any],
+    expected_actor: str,
+    *,
+    row_name: str,
+) -> None:
+    if "id" not in actor_payload:
+        raise ValueError(f"payload actor.id is required for the {row_name} row")
+    if actor_payload["id"] != expected_actor:
+        raise ValueError(f"payload actor.id must match the {row_name} row")
+
+
 @dataclass(frozen=True)
 class _AuditActionContract:
     name: str
@@ -1620,6 +1730,7 @@ class _AuditActionContract:
     lifecycle_state: str | None = None
     evidence_type: str | None = None
     requires_uploader: bool = False
+    requires_unattempted_job: bool = False
 
 
 _JOB_AUDIT_SCOPES = frozenset({"conversion_job", "job", "job_event"})
@@ -1648,7 +1759,9 @@ _AUDIT_ACTION_CONTRACTS = (
         aliases=frozenset({"desktop_upload"}),
         scope_types=_DESKTOP_AUDIT_SCOPES,
         event_types=frozenset({"desktop.job_operation"}),
+        job_statuses=_QUEUED_JOB_STATUSES,
         requires_uploader=True,
+        requires_unattempted_job=True,
     ),
     _AuditActionContract(
         name="document_inspected",
@@ -1992,7 +2105,6 @@ def _require_audit_scope_semantics(
         return
 
     if scope_type in {"job", "conversion_job"}:
-        _require_job_action_available(row["status"], action)
         if _is_upload_action(action) and row["uploaded_by"] != actor:
             raise ValueError("audit actor must match the recorded uploader")
         return
@@ -2007,7 +2119,6 @@ def _require_audit_scope_semantics(
         event_action = _job_event_effective_action(row["event_type"], event_payload)
         if not _job_event_action_matches(event_action, action):
             raise ValueError("audit action must match the scoped job event type")
-        _require_job_action_available(row["status"], action)
         if _is_upload_action(action) and row["uploaded_by"] != actor:
             raise ValueError("audit actor must match the recorded uploader")
         return
@@ -2024,11 +2135,18 @@ def _require_audit_scope_semantics(
         _require_payload_review_outcome(payload, row["decision"])
 
 
-def _require_job_action_available(status: str, action: str) -> None:
+def _require_job_action_available(
+    status: str,
+    action: str,
+    *,
+    attempts: int,
+) -> None:
     contract = _audit_action_contract(action)
     expected_statuses = contract.job_statuses if contract is not None else None
     if expected_statuses is not None and status not in expected_statuses:
         raise ValueError("audit action is not valid for the current job status")
+    if contract is not None and contract.requires_unattempted_job and attempts != 0:
+        raise ValueError("audit action is not valid after a job attempt")
 
 
 def _require_declared_audit_scope_payload(
@@ -2265,32 +2383,6 @@ _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
     migration_id TEXT NOT NULL PRIMARY KEY,
     applied_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS source_artifact_insert_intents (
-    artifact_id TEXT NOT NULL PRIMARY KEY CHECK(
-        typeof(artifact_id) = 'text' AND length(trim(artifact_id)) > 0
-    ),
-    document_id TEXT NOT NULL UNIQUE CHECK(
-        typeof(document_id) = 'text' AND length(trim(document_id)) > 0
-    ),
-    storage_key TEXT NOT NULL UNIQUE CHECK(
-        typeof(storage_key) = 'text' AND length(trim(storage_key)) > 0
-    ),
-    content_hash TEXT NOT NULL CHECK(
-        typeof(content_hash) = 'text'
-        AND length(content_hash) = 64
-        AND content_hash NOT GLOB '*[^0-9a-f]*'
-    ),
-    source_type TEXT NOT NULL CHECK(
-        typeof(source_type) = 'text' AND length(trim(source_type)) > 0
-    ),
-    original_filename TEXT NOT NULL CHECK(
-        typeof(original_filename) = 'text' AND length(trim(original_filename)) > 0
-    ),
-    uploaded_by TEXT NOT NULL CHECK(
-        typeof(uploaded_by) = 'text' AND length(trim(uploaded_by)) > 0
-    )
 );
 
 CREATE TABLE IF NOT EXISTS source_artifacts (
@@ -2545,18 +2637,17 @@ WHEN NOT EXISTS (
       AND source_documents.original_filename = NEW.original_filename
       AND source_documents.uploaded_by = NEW.uploaded_by
 )
-AND NOT EXISTS (
-    SELECT 1 FROM source_artifact_insert_intents
-    WHERE source_artifact_insert_intents.artifact_id = NEW.artifact_id
-      AND source_artifact_insert_intents.document_id = NEW.document_id
-      AND source_artifact_insert_intents.storage_key = NEW.storage_key
-      AND source_artifact_insert_intents.content_hash = NEW.content_hash
-      AND source_artifact_insert_intents.source_type = NEW.source_type
-      AND source_artifact_insert_intents.original_filename = NEW.original_filename
-      AND source_artifact_insert_intents.uploaded_by = NEW.uploaded_by
-)
+AND veridoc_source_artifact_insert_allowed(
+    NEW.artifact_id,
+    NEW.document_id,
+    NEW.storage_key,
+    NEW.content_hash,
+    NEW.source_type,
+    NEW.original_filename,
+    NEW.uploaded_by
+) != 1
 BEGIN
-    SELECT RAISE(ABORT, 'source artifact must reference a matching document intent');
+    SELECT RAISE(ABORT, 'source artifact insert requires a repository document binding');
 END;
 
 CREATE TRIGGER IF NOT EXISTS jobs_parent_reference_insert
@@ -3415,7 +3506,6 @@ DROP TABLE IF EXISTS job_events;
 DROP TABLE IF EXISTS jobs;
 DROP TABLE IF EXISTS source_documents;
 DROP TABLE IF EXISTS source_artifacts;
-DROP TABLE IF EXISTS source_artifact_insert_intents;
 DROP TABLE IF EXISTS schema_migrations;
 """
 
