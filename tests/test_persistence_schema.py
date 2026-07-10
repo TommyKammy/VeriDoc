@@ -86,6 +86,7 @@ def _create_artifact(
         document_id=result.document_id,
         category="generated",
         format="docx",
+        display_filename=f"{artifact_id}.docx",
         storage_key=f"artifacts/{artifact_id}.docx",
         content_hash="c" * 64,
     )
@@ -135,6 +136,7 @@ def test_persistence_repository_initializes_and_reads_minimal_schema(tmp_path) -
         document_id=document.document_id,
         category="generated",
         format="docx",
+        display_filename="result-1.docx",
         storage_key="artifacts/result-1.docx",
         content_hash="c" * 64,
     )
@@ -653,6 +655,7 @@ def test_persistence_repository_rejects_cross_scope_relationships(tmp_path) -> N
             document_id=document_b.document_id,
             category="generated",
             format="docx",
+            display_filename="mixed.docx",
             storage_key="artifacts/mixed.docx",
             content_hash="c" * 64,
         )
@@ -798,8 +801,9 @@ def test_parent_bindings_are_enforced_without_foreign_key_pragma(tmp_path) -> No
             """
             INSERT INTO generated_artifacts(
                 artifact_id, result_id, job_id, document_id, category, format,
-                storage_key, content_hash, retention_state, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                display_filename, storage_key, content_hash, retention_state,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 "artifact-mixed",
@@ -808,6 +812,7 @@ def test_parent_bindings_are_enforced_without_foreign_key_pragma(tmp_path) -> No
                 document_b.document_id,
                 "generated",
                 "docx",
+                "mixed.docx",
                 "artifacts/mixed.docx",
                 "c" * 64,
                 "active",
@@ -1278,6 +1283,7 @@ def test_source_and_generated_artifacts_share_global_identity_keys(tmp_path) -> 
             document_id=document.document_id,
             category="generated",
             format="docx",
+            display_filename="generated.docx",
             storage_key="artifacts/generated.docx",
             content_hash="c" * 64,
         )
@@ -1290,6 +1296,7 @@ def test_source_and_generated_artifacts_share_global_identity_keys(tmp_path) -> 
             document_id=document.document_id,
             category="generated",
             format="docx",
+            display_filename="artifact-unique.docx",
             storage_key=document.source_storage_key,
             content_hash="c" * 64,
         )
@@ -2655,8 +2662,9 @@ def test_lifecycle_and_artifact_text_contracts_are_enforced_at_schema_boundary(
             """
             INSERT INTO generated_artifacts(
                 artifact_id, result_id, job_id, document_id, category, format,
-                storage_key, content_hash, retention_state, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                display_filename, storage_key, content_hash, retention_state,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 "artifact-blank-storage",
@@ -2665,6 +2673,7 @@ def test_lifecycle_and_artifact_text_contracts_are_enforced_at_schema_boundary(
                 document.document_id,
                 "generated",
                 "docx",
+                "artifact-blank-storage.docx",
                 "",
                 "c" * 64,
                 "active",
@@ -3603,6 +3612,174 @@ def test_known_review_actions_reject_unrelated_scope_without_event_type(
             scope_type="job",
             scope_id=job.job_id,
         )
+
+
+def test_audit_action_contract_aliases_are_unique() -> None:
+    declared_alias_count = sum(
+        len(contract.aliases) for contract in persistence._AUDIT_ACTION_CONTRACTS
+    )
+    assert declared_alias_count == len(persistence._AUDIT_ACTION_CONTRACT_BY_ALIAS)
+
+
+@pytest.mark.parametrize(
+    ("action", "scope_type"),
+    (
+        ("job.completed", "document"),
+        ("conversion.failed", "document"),
+        ("document.uploaded", "artifact"),
+        ("uploaded", "generated_artifact"),
+    ),
+)
+def test_action_contract_rejects_lifecycle_and_upload_actions_in_unrelated_scopes(
+    tmp_path,
+    action,
+    scope_type,
+) -> None:
+    repository = SQLitePersistenceRepository(tmp_path / "veridoc.sqlite3")
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+    result = _create_result(repository, job, "result-1")
+    artifact = _create_artifact(repository, result, "artifact-1")
+    scope_id = document.document_id if scope_type == "document" else artifact.artifact_id
+
+    with pytest.raises(ValueError, match="selected scope type"):
+        repository.create_audit_event(
+            event_id=f"audit-wrong-scope-{action}",
+            job_id=job.job_id,
+            document_id=document.document_id,
+            actor="mallory",
+            action=action,
+            scope_type=scope_type,
+            scope_id=scope_id,
+        )
+
+
+def test_retry_event_status_contract_is_enforced_on_write_and_read(tmp_path) -> None:
+    db_path = tmp_path / "veridoc.sqlite3"
+    repository = SQLitePersistenceRepository(db_path)
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+
+    for index, event_type in enumerate(("retry_conversion", "job.retry_requested")):
+        with pytest.raises(ValueError, match="job_status"):
+            repository.create_job_event(
+                event_id=f"retry-invalid-write-{index}",
+                job_id=job.job_id,
+                event_type=event_type,
+                actor="operator-1",
+                payload={
+                    "event_type": event_type,
+                    "job_status": "succeeded",
+                },
+            )
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO job_events(
+                event_id, job_id, sequence, event_type, actor, payload_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "retry-invalid-read",
+                job.job_id,
+                1,
+                "job.retry_requested",
+                "operator-1",
+                persistence._canonical_json(
+                    {
+                        "event_type": "job.retry_requested",
+                        "job_status": "succeeded",
+                    }
+                ),
+                job.created_at,
+            ),
+        )
+
+    with pytest.raises(ValueError, match="job_status"):
+        repository.list_job_events(job.job_id)
+
+
+def test_download_evidence_uses_display_filename_and_freezes_linked_rows(
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "veridoc.sqlite3"
+    repository = SQLitePersistenceRepository(db_path)
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = repository.create_conversion_job(
+        job_id="job-1",
+        document_id=document.document_id,
+        idempotency_key="upload-job-1",
+        mode="standard",
+        status="succeeded",
+    )
+    result = _create_result(repository, job, "result-1")
+    artifact = repository.create_artifact(
+        artifact_id="artifact-1",
+        result_id=result.result_id,
+        job_id=job.job_id,
+        document_id=document.document_id,
+        category="generated",
+        format="docx",
+        display_filename="report.veridoc-standard.docx",
+        storage_key="objects/abc123.bin",
+        content_hash="c" * 64,
+    )
+    audit_event = repository.create_audit_event(
+        event_id="audit-download-1",
+        job_id=job.job_id,
+        document_id=document.document_id,
+        actor="operator-1",
+        action="desktop_result_download",
+        scope_type="job",
+        scope_id=job.job_id,
+        payload={
+            "event_type": "desktop.job_operation",
+            "download_filename": artifact.display_filename,
+            "output_sha256": artifact.content_hash,
+        },
+    )
+
+    with sqlite3.connect(db_path) as connection:
+        evidence_row = connection.execute(
+            """
+            SELECT event_id, artifact_id, evidence_type
+            FROM audit_event_evidence
+            WHERE event_id = ?
+            """,
+            (audit_event.event_id,),
+        ).fetchone()
+        assert evidence_row == (
+            audit_event.event_id,
+            artifact.artifact_id,
+            "download_artifact",
+        )
+        for sql, params in (
+            (
+                "UPDATE generated_artifacts SET content_hash = ? WHERE artifact_id = ?",
+                ("d" * 64, artifact.artifact_id),
+            ),
+            (
+                "UPDATE generated_artifacts SET display_filename = ? WHERE artifact_id = ?",
+                ("rewritten.docx", artifact.artifact_id),
+            ),
+            (
+                "UPDATE conversion_results SET status = ? WHERE result_id = ?",
+                ("failed", result.result_id),
+            ),
+        ):
+            with pytest.raises(sqlite3.IntegrityError, match="audit evidence rows"):
+                connection.execute(sql, params)
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            connection.execute(
+                "DELETE FROM audit_event_evidence WHERE event_id = ?",
+                (audit_event.event_id,),
+            )
+
+    assert repository.get_audit_event(audit_event.event_id) == audit_event
 
 
 def test_all_declared_audit_scope_payload_aliases_are_enforced(tmp_path) -> None:

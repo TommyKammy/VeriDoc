@@ -10,11 +10,11 @@ from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, fields
 from datetime import datetime, timezone
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any, TypeVar
 
 
-SCHEMA_VERSION = "20260710_06_immutable_job_download_evidence_contract"
+SCHEMA_VERSION = "20260710_07_action_and_evidence_contract"
 AUDIT_INTEGRITY_ALGORITHM = "sha256-canonical-json-chain-v1"
 SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -89,6 +89,7 @@ class Artifact:
     document_id: str
     category: str
     format: str
+    display_filename: str
     storage_key: str
     content_hash: str
     retention_state: str
@@ -470,6 +471,7 @@ class SQLitePersistenceRepository:
         document_id: str,
         category: str,
         format: str,
+        display_filename: str,
         storage_key: str,
         content_hash: str,
         retention_state: str = "active",
@@ -481,6 +483,7 @@ class SQLitePersistenceRepository:
             document_id=document_id,
             category=category,
             format=format,
+            display_filename=display_filename,
             storage_key=storage_key,
             retention_state=retention_state,
         )
@@ -494,8 +497,9 @@ class SQLitePersistenceRepository:
                 """
                 INSERT INTO generated_artifacts(
                     artifact_id, result_id, job_id, document_id, category, format,
-                    storage_key, content_hash, retention_state, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    display_filename, storage_key, content_hash, retention_state,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     artifact_id,
@@ -504,6 +508,7 @@ class SQLitePersistenceRepository:
                     document_id,
                     category,
                     format,
+                    display_filename,
                     storage_key,
                     content_hash,
                     retention_state,
@@ -681,7 +686,7 @@ class SQLitePersistenceRepository:
         with self._connection_scope(immediate=True) as connection:
             now = _utc_now()
             self._require_job_document(connection, job_id, document_id)
-            self._require_audit_scope(
+            evidence_artifact_ids = self._require_audit_scope(
                 connection,
                 scope_type,
                 scope_id,
@@ -707,7 +712,7 @@ class SQLitePersistenceRepository:
                 payload_json=payload_json,
                 created_at=now,
             )
-            return self._insert_and_get_from_connection(
+            audit_event = self._insert_and_get_from_connection(
                 connection,
                 AuditEvent,
                 """
@@ -735,6 +740,19 @@ class SQLitePersistenceRepository:
                 "SELECT * FROM audit_events WHERE event_id = ?",
                 (event_id,),
             )
+            contract = _audit_action_contract(action)
+            if contract is not None and contract.evidence_type is not None:
+                connection.executemany(
+                    """
+                    INSERT INTO audit_event_evidence(event_id, artifact_id, evidence_type)
+                    VALUES (?, ?, ?)
+                    """,
+                    (
+                        (event_id, artifact_id, contract.evidence_type)
+                        for artifact_id in evidence_artifact_ids
+                    ),
+                )
+            return audit_event
 
     def get_audit_event(self, event_id: str) -> AuditEvent | None:
         with self._connection_scope() as connection:
@@ -1024,7 +1042,9 @@ class SQLitePersistenceRepository:
         actor: str,
         action: str,
         payload: Mapping[str, Any],
-    ) -> None:
+        *,
+        evidence_event_id: str | None = None,
+    ) -> tuple[str, ...]:
         if scope_type in {"document", "source_document"}:
             row = connection.execute(
                 """
@@ -1096,7 +1116,8 @@ class SQLitePersistenceRepository:
             row = connection.execute(
                 """
                 SELECT artifact_id, result_id, job_id, document_id, storage_key,
-                       content_hash, category, format, retention_state
+                       display_filename, content_hash, category, format,
+                       retention_state
                 FROM generated_artifacts
                 WHERE artifact_id = ?
                 """,
@@ -1135,13 +1156,16 @@ class SQLitePersistenceRepository:
                 raise ValueError("audit scope must match the event job and document")
         if scope_type == "job_event":
             self._verify_job_event_history(connection, row["job_id"])
-        if action in _DOWNLOAD_ACTIONS:
-            self._require_download_evidence(
+        evidence_artifact_ids: tuple[str, ...] = ()
+        contract = _audit_action_contract(action)
+        if contract is not None and contract.evidence_type == "download_artifact":
+            evidence_artifact_ids = self._require_download_evidence(
                 connection,
                 job_id=job_id,
                 document_id=document_id,
                 action=action,
                 payload=payload,
+                evidence_event_id=evidence_event_id,
             )
         _require_audit_scope_semantics(
             scope_type=scope_type,
@@ -1155,6 +1179,7 @@ class SQLitePersistenceRepository:
                 raise ValueError("audit actor must match the review decision actor")
             if not _review_decision_action_matches(row["decision"], action):
                 raise ValueError("audit action must match the review decision")
+        return evidence_artifact_ids
 
     def _require_download_evidence(
         self,
@@ -1164,10 +1189,15 @@ class SQLitePersistenceRepository:
         document_id: str,
         action: str,
         payload: Mapping[str, Any],
-    ) -> None:
+        evidence_event_id: str | None,
+    ) -> tuple[str, ...]:
         rows = connection.execute(
             """
-            SELECT generated_artifacts.storage_key, generated_artifacts.content_hash
+            SELECT generated_artifacts.artifact_id,
+                   generated_artifacts.display_filename,
+                   generated_artifacts.content_hash,
+                   conversion_results.status AS result_status,
+                   jobs.status AS job_status
             FROM generated_artifacts
             JOIN conversion_results
               ON conversion_results.result_id = generated_artifacts.result_id
@@ -1178,28 +1208,67 @@ class SQLitePersistenceRepository:
              AND jobs.document_id = generated_artifacts.document_id
             WHERE generated_artifacts.job_id = ?
               AND generated_artifacts.document_id = ?
-              AND conversion_results.status IN ('succeeded', 'completed', 'success')
-              AND jobs.status IN ('succeeded', 'completed', 'success')
             """,
             (job_id, document_id),
         ).fetchall()
+        contract = _audit_action_contract(action)
+        allowed_statuses = contract.job_statuses if contract is not None else None
+        rows = [
+            row
+            for row in rows
+            if allowed_statuses is not None
+            and row["result_status"] in allowed_statuses
+            and row["job_status"] in allowed_statuses
+        ]
         if not rows:
             raise ValueError("download audit requires a stored successful result artifact")
-        if action != "desktop_result_download":
-            return
+        matching_rows = rows
+        if action == "desktop_result_download":
+            output_sha256 = payload.get("output_sha256")
+            download_filename = payload.get("download_filename")
+            if (
+                not isinstance(output_sha256, str)
+                or SHA256_HEX.fullmatch(output_sha256) is None
+            ):
+                raise ValueError(
+                    "payload output_sha256 must identify a stored result artifact"
+                )
+            if not isinstance(download_filename, str) or not download_filename.strip():
+                raise ValueError(
+                    "payload download_filename must identify a stored result artifact"
+                )
+            matching_rows = [
+                row
+                for row in rows
+                if row["content_hash"] == output_sha256
+                and row["display_filename"] == download_filename
+            ]
+            if not matching_rows:
+                raise ValueError(
+                    "download audit evidence must match a stored result artifact"
+                )
 
-        output_sha256 = payload.get("output_sha256")
-        download_filename = payload.get("download_filename")
-        if not isinstance(output_sha256, str) or SHA256_HEX.fullmatch(output_sha256) is None:
-            raise ValueError("payload output_sha256 must identify a stored result artifact")
-        if not isinstance(download_filename, str) or not download_filename.strip():
-            raise ValueError("payload download_filename must identify a stored result artifact")
-        if not any(
-            row["content_hash"] == output_sha256
-            and PurePosixPath(row["storage_key"]).name == download_filename
-            for row in rows
+        matching_artifact_ids = tuple(row["artifact_id"] for row in matching_rows)
+        if evidence_event_id is None:
+            return matching_artifact_ids
+
+        recorded_artifact_ids = tuple(
+            row["artifact_id"]
+            for row in connection.execute(
+                """
+                SELECT artifact_id
+                FROM audit_event_evidence
+                WHERE event_id = ? AND evidence_type = 'download_artifact'
+                ORDER BY artifact_id
+                """,
+                (evidence_event_id,),
+            ).fetchall()
+        )
+        if not recorded_artifact_ids or not set(recorded_artifact_ids).issubset(
+            matching_artifact_ids
         ):
-            raise ValueError("download audit evidence must match a stored result artifact")
+            raise ValueError("download audit evidence link is missing or inconsistent")
+        return recorded_artifact_ids
 
     def _verify_audit_chain(self, connection: sqlite3.Connection) -> None:
         rows = connection.execute(
@@ -1229,6 +1298,7 @@ class SQLitePersistenceRepository:
                 row["actor"],
                 row["action"],
                 payload,
+                evidence_event_id=row["event_id"],
             )
             if row["integrity_algorithm"] != AUDIT_INTEGRITY_ALGORITHM:
                 raise ValueError("audit event chain integrity verification failed")
@@ -1362,8 +1432,8 @@ def _require_job_event_payload_status(
     payload: Mapping[str, Any],
     event_type: str,
 ) -> None:
-    lifecycle_state = _job_lifecycle_state(event_type)
-    allowed_statuses = _JOB_EVENT_STATE_STATUSES.get(lifecycle_state)
+    contract = _audit_action_contract(event_type)
+    allowed_statuses = contract.job_statuses if contract is not None else None
     if allowed_statuses is None:
         return
     for alias in ("job_status", "status"):
@@ -1468,62 +1538,189 @@ def _require_audit_event_payload_matches(
             raise ValueError(f"payload {field_name} is derived from the audit chain")
 
 
-_AUDIT_EVENT_TYPE_CATEGORIES = {
-    "conversion_job.action_requested": {
-        "actions": frozenset({"download_result", "open_detail", "retry_conversion"}),
-        "scope_types": frozenset({"conversion_job", "job", "job_event"}),
-    },
-    "conversion_review.action_requested": {
-        "actions": frozenset({"approve", "edit"}),
-        "scope_types": frozenset({"document", "review_decision", "review_item"}),
-    },
-    "desktop.job_operation": {
-        "actions": frozenset({"desktop_result_download", "desktop_upload"}),
-        "scope_types": frozenset({"conversion_job", "document", "job", "job_event"}),
-    },
-    "job.lifecycle": {
-        "actions": frozenset(
+@dataclass(frozen=True)
+class _AuditActionContract:
+    name: str
+    aliases: frozenset[str]
+    scope_types: frozenset[str]
+    event_types: frozenset[str] = frozenset()
+    job_statuses: frozenset[str] | None = None
+    lifecycle_state: str | None = None
+    evidence_type: str | None = None
+    requires_uploader: bool = False
+
+
+_JOB_AUDIT_SCOPES = frozenset({"conversion_job", "job", "job_event"})
+_RESULT_LIFECYCLE_SCOPES = _JOB_AUDIT_SCOPES | frozenset({"conversion_result"})
+_DESKTOP_AUDIT_SCOPES = _JOB_AUDIT_SCOPES | frozenset({"document"})
+_UPLOAD_AUDIT_SCOPES = _JOB_AUDIT_SCOPES | frozenset(
+    {"document", "source_artifact", "source_document"}
+)
+_REVIEW_REQUEST_SCOPES = frozenset(
+    {"document", "review_decision", "review_item"}
+)
+_QUEUED_JOB_STATUSES = frozenset({"queued"})
+_RUNNING_JOB_STATUSES = frozenset({"processing", "running", "started"})
+_FAILED_JOB_STATUSES = frozenset({"failed"})
+_SUCCEEDED_JOB_STATUSES = frozenset({"completed", "succeeded", "success"})
+
+_AUDIT_ACTION_CONTRACTS = (
+    _AuditActionContract(
+        name="source_upload",
+        aliases=frozenset({"document.uploaded", "upload", "uploaded"}),
+        scope_types=_UPLOAD_AUDIT_SCOPES,
+        requires_uploader=True,
+    ),
+    _AuditActionContract(
+        name="desktop_upload",
+        aliases=frozenset({"desktop_upload"}),
+        scope_types=_DESKTOP_AUDIT_SCOPES,
+        event_types=frozenset({"desktop.job_operation"}),
+        requires_uploader=True,
+    ),
+    _AuditActionContract(
+        name="job_queued",
+        aliases=frozenset(
+            {"conversion.queued", "conversion_queued", "job.queued", "job_queued"}
+        ),
+        scope_types=_JOB_AUDIT_SCOPES,
+        event_types=frozenset({"job.lifecycle"}),
+        job_statuses=_QUEUED_JOB_STATUSES,
+        lifecycle_state="queued",
+    ),
+    _AuditActionContract(
+        name="job_running",
+        aliases=frozenset(
             {
-                "conversion_completed",
-                "conversion_failed",
-                "conversion_queued",
+                "conversion.running",
+                "conversion.started",
+                "conversion_running",
                 "conversion_started",
+                "job.running",
+                "job.started",
+                "job_running",
+                "job_started",
+            }
+        ),
+        scope_types=_JOB_AUDIT_SCOPES,
+        event_types=frozenset({"job.lifecycle"}),
+        job_statuses=_RUNNING_JOB_STATUSES,
+        lifecycle_state="running",
+    ),
+    _AuditActionContract(
+        name="job_failed",
+        aliases=frozenset(
+            {"conversion.failed", "conversion_failed", "job.failed", "job_failed"}
+        ),
+        scope_types=_RESULT_LIFECYCLE_SCOPES,
+        event_types=frozenset({"job.lifecycle"}),
+        job_statuses=_FAILED_JOB_STATUSES,
+        lifecycle_state="failed",
+    ),
+    _AuditActionContract(
+        name="job_succeeded",
+        aliases=frozenset(
+            {
+                "conversion.completed",
+                "conversion.succeeded",
+                "conversion_completed",
+                "conversion_succeeded",
+                "job.completed",
+                "job.succeeded",
+                "job_completed",
+                "job_succeeded",
+            }
+        ),
+        scope_types=_RESULT_LIFECYCLE_SCOPES,
+        event_types=frozenset({"job.lifecycle"}),
+        job_statuses=_SUCCEEDED_JOB_STATUSES,
+        lifecycle_state="succeeded",
+    ),
+    _AuditActionContract(
+        name="job_retry",
+        aliases=frozenset(
+            {
+                "conversion.retry_requested",
+                "conversion_retry_requested",
+                "job.retry_requested",
+                "job_retry_requested",
                 "retry_conversion",
             }
         ),
-        "scope_types": frozenset({"conversion_job", "job", "job_event"}),
-    },
+        scope_types=_JOB_AUDIT_SCOPES,
+        event_types=frozenset(
+            {"conversion_job.action_requested", "job.lifecycle"}
+        ),
+        job_statuses=_FAILED_JOB_STATUSES,
+        lifecycle_state="retry",
+    ),
+    _AuditActionContract(
+        name="download_result",
+        aliases=frozenset({"download_result"}),
+        scope_types=_JOB_AUDIT_SCOPES,
+        event_types=frozenset({"conversion_job.action_requested"}),
+        job_statuses=_SUCCEEDED_JOB_STATUSES,
+        evidence_type="download_artifact",
+    ),
+    _AuditActionContract(
+        name="desktop_result_download",
+        aliases=frozenset({"desktop_result_download"}),
+        scope_types=_DESKTOP_AUDIT_SCOPES,
+        event_types=frozenset({"desktop.job_operation"}),
+        job_statuses=_SUCCEEDED_JOB_STATUSES,
+        evidence_type="download_artifact",
+    ),
+    _AuditActionContract(
+        name="open_detail",
+        aliases=frozenset({"open_detail"}),
+        scope_types=_JOB_AUDIT_SCOPES,
+        event_types=frozenset({"conversion_job.action_requested"}),
+    ),
+    _AuditActionContract(
+        name="review_approve_request",
+        aliases=frozenset({"approve"}),
+        scope_types=_REVIEW_REQUEST_SCOPES,
+        event_types=frozenset({"conversion_review.action_requested"}),
+    ),
+    _AuditActionContract(
+        name="review_edit_request",
+        aliases=frozenset({"edit"}),
+        scope_types=_REVIEW_REQUEST_SCOPES,
+        event_types=frozenset({"conversion_review.action_requested"}),
+    ),
+    _AuditActionContract(
+        name="review_outcome",
+        aliases=frozenset(
+            {
+                "approved",
+                "edited",
+                "rejected",
+                "review.approve",
+                "review.approved",
+                "review.edit",
+                "review.edited",
+                "review.reject",
+                "review.rejected",
+            }
+        ),
+        scope_types=frozenset({"review_decision"}),
+    ),
+)
+
+_AUDIT_ACTION_CONTRACT_BY_ALIAS = {
+    alias: contract
+    for contract in _AUDIT_ACTION_CONTRACTS
+    for alias in contract.aliases
 }
 
 
-_AUDIT_ACTION_SCOPE_TYPES: dict[str, frozenset[str]] = {}
-for _category in _AUDIT_EVENT_TYPE_CATEGORIES.values():
-    for _category_action in _category["actions"]:
-        _AUDIT_ACTION_SCOPE_TYPES[_category_action] = frozenset(
-            set(_AUDIT_ACTION_SCOPE_TYPES.get(_category_action, ()))
-            | set(_category["scope_types"])
-        )
-_AUDIT_ACTION_SCOPE_TYPES.update(
-    {
-        action: frozenset({"review_decision"})
-        for action in {
-            "approved",
-            "edited",
-            "rejected",
-            "review.approve",
-            "review.approved",
-            "review.edit",
-            "review.edited",
-            "review.reject",
-            "review.rejected",
-        }
-    }
-)
+def _audit_action_contract(action: str) -> _AuditActionContract | None:
+    return _AUDIT_ACTION_CONTRACT_BY_ALIAS.get(action)
 
 
 def _require_audit_action_scope(action: str, scope_type: str) -> None:
-    allowed_scope_types = _AUDIT_ACTION_SCOPE_TYPES.get(action)
-    if allowed_scope_types is not None and scope_type not in allowed_scope_types:
+    contract = _audit_action_contract(action)
+    if contract is not None and scope_type not in contract.scope_types:
         raise ValueError("audit action is not valid for the selected scope type")
 
 
@@ -1552,10 +1749,12 @@ def _audit_event_type_matches_action(
         return True
     if not isinstance(event_type, str):
         return False
-    category = _AUDIT_EVENT_TYPE_CATEGORIES.get(event_type)
-    if category is None:
-        return False
-    return action in category["actions"] and scope_type in category["scope_types"]
+    contract = _audit_action_contract(action)
+    return (
+        contract is not None
+        and event_type in contract.event_types
+        and scope_type in contract.scope_types
+    )
 
 
 def _review_decision_action_matches(decision: str, action: str) -> bool:
@@ -1615,6 +1814,7 @@ _RESULT_PAYLOAD_BINDINGS = (
 
 _ARTIFACT_PAYLOAD_BINDINGS = (
     (("result_id", "conversion_result_id"), "result_id", "artifact result id"),
+    (("display_filename", "artifact_filename"), "display_filename", "artifact display filename"),
     (("storage_key", "artifact_storage_key"), "storage_key", "artifact storage key"),
     (("content_hash", "artifact_content_hash"), "content_hash", "artifact content hash"),
     (("category", "artifact_category"), "category", "artifact category"),
@@ -1716,9 +1916,9 @@ def _require_audit_scope_semantics(
         return
 
     if scope_type == "conversion_result":
-        status = row["status"]
-        expected_statuses = _RESULT_ACTION_STATUSES.get(action)
-        if expected_statuses is not None and status not in expected_statuses:
+        contract = _audit_action_contract(action)
+        expected_statuses = contract.job_statuses if contract is not None else None
+        if expected_statuses is not None and row["status"] not in expected_statuses:
             raise ValueError("audit action must match the conversion result status")
         return
 
@@ -1728,7 +1928,8 @@ def _require_audit_scope_semantics(
 
 
 def _require_job_action_available(status: str, action: str) -> None:
-    expected_statuses = _JOB_ACTION_STATUSES.get(action)
+    contract = _audit_action_contract(action)
+    expected_statuses = contract.job_statuses if contract is not None else None
     if expected_statuses is not None and status not in expected_statuses:
         raise ValueError("audit action is not valid for the current job status")
 
@@ -1803,7 +2004,8 @@ def _require_payload_review_outcome(
 
 
 def _is_upload_action(action: str) -> bool:
-    return action in {"document.uploaded", "desktop_upload", "upload", "uploaded"}
+    contract = _audit_action_contract(action)
+    return contract is not None and contract.requires_uploader
 
 
 def _job_event_action_matches(event_type: str, action: str) -> bool:
@@ -1815,65 +2017,8 @@ def _job_event_action_matches(event_type: str, action: str) -> bool:
 
 
 def _job_lifecycle_state(value: str) -> str | None:
-    normalized = value.strip().lower().replace("-", "_")
-    aliases = {
-        "queued": "queued",
-        "started": "running",
-        "running": "running",
-        "processing": "running",
-        "failed": "failed",
-        "completed": "succeeded",
-        "succeeded": "succeeded",
-        "success": "succeeded",
-        "retry_requested": "retry",
-        "retry": "retry",
-    }
-    for prefix in ("job.", "conversion.", "job_", "conversion_"):
-        if normalized.startswith(prefix):
-            return aliases.get(normalized[len(prefix) :])
-    if normalized == "retry_conversion":
-        return "retry"
-    return None
-
-
-_JOB_EVENT_STATE_STATUSES = {
-    "queued": frozenset({"queued"}),
-    "running": frozenset({"running", "processing", "started"}),
-    "failed": frozenset({"failed"}),
-    "succeeded": frozenset({"succeeded", "completed", "success"}),
-}
-
-
-_JOB_ACTION_STATUSES = {
-    "job.queued": frozenset({"queued"}),
-    "conversion.queued": frozenset({"queued"}),
-    "conversion_queued": frozenset({"queued"}),
-    "job.started": frozenset({"running", "processing", "started"}),
-    "job.running": frozenset({"running", "processing", "started"}),
-    "conversion.started": frozenset({"running", "processing", "started"}),
-    "conversion_started": frozenset({"running", "processing", "started"}),
-    "job.failed": frozenset({"failed"}),
-    "conversion.failed": frozenset({"failed"}),
-    "conversion_failed": frozenset({"failed"}),
-    "job.completed": frozenset({"succeeded", "completed", "success"}),
-    "job.succeeded": frozenset({"succeeded", "completed", "success"}),
-    "conversion.completed": frozenset({"succeeded", "completed", "success"}),
-    "conversion_completed": frozenset({"succeeded", "completed", "success"}),
-    "download_result": frozenset({"succeeded", "completed", "success"}),
-    "desktop_result_download": frozenset({"succeeded", "completed", "success"}),
-    "retry_conversion": frozenset({"failed"}),
-}
-
-
-_DOWNLOAD_ACTIONS = frozenset({"desktop_result_download", "download_result"})
-
-
-_RESULT_ACTION_STATUSES = {
-    "conversion.completed": frozenset({"succeeded", "completed", "success"}),
-    "conversion_completed": frozenset({"succeeded", "completed", "success"}),
-    "conversion.failed": frozenset({"failed"}),
-    "conversion_failed": frozenset({"failed"}),
-}
+    contract = _audit_action_contract(value)
+    return contract.lifecycle_state if contract is not None else None
 
 
 def _canonical_json(payload: Mapping[str, Any]) -> str:
@@ -2152,6 +2297,9 @@ CREATE TABLE IF NOT EXISTS generated_artifacts (
     document_id TEXT NOT NULL REFERENCES source_documents(document_id) ON DELETE RESTRICT,
     category TEXT NOT NULL CHECK(typeof(category) = 'text' AND length(trim(category)) > 0),
     format TEXT NOT NULL CHECK(typeof(format) = 'text' AND length(trim(format)) > 0),
+    display_filename TEXT NOT NULL CHECK(
+        typeof(display_filename) = 'text' AND length(trim(display_filename)) > 0
+    ),
     storage_key TEXT NOT NULL UNIQUE CHECK(
         typeof(storage_key) = 'text' AND length(trim(storage_key)) > 0
     ),
@@ -2248,6 +2396,15 @@ CREATE TABLE IF NOT EXISTS audit_events (
     created_at TEXT NOT NULL CHECK(typeof(created_at) = 'text' AND length(trim(created_at)) > 0),
     UNIQUE(sequence),
     FOREIGN KEY(job_id, document_id) REFERENCES jobs(job_id, document_id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS audit_event_evidence (
+    event_id TEXT NOT NULL REFERENCES audit_events(event_id) ON DELETE RESTRICT,
+    artifact_id TEXT NOT NULL REFERENCES generated_artifacts(artifact_id) ON DELETE RESTRICT,
+    evidence_type TEXT NOT NULL CHECK(
+        typeof(evidence_type) = 'text' AND length(trim(evidence_type)) > 0
+    ),
+    PRIMARY KEY(event_id, artifact_id)
 );
 
 CREATE TRIGGER IF NOT EXISTS jobs_parent_reference_insert
@@ -2569,6 +2726,35 @@ BEGIN
     SELECT RAISE(ABORT, 'audit events are append-only');
 END;
 
+CREATE TRIGGER IF NOT EXISTS audit_event_evidence_reference_insert
+BEFORE INSERT ON audit_event_evidence
+WHEN NEW.evidence_type != 'download_artifact'
+OR NOT EXISTS (
+    SELECT 1
+    FROM audit_events
+    JOIN generated_artifacts
+      ON generated_artifacts.artifact_id = NEW.artifact_id
+    WHERE audit_events.event_id = NEW.event_id
+      AND audit_events.action IN ('desktop_result_download', 'download_result')
+      AND audit_events.job_id = generated_artifacts.job_id
+      AND audit_events.document_id = generated_artifacts.document_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'audit evidence must match its event and artifact');
+END;
+
+CREATE TRIGGER IF NOT EXISTS audit_event_evidence_no_update
+BEFORE UPDATE ON audit_event_evidence
+BEGIN
+    SELECT RAISE(ABORT, 'audit evidence links are append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS audit_event_evidence_no_delete
+BEFORE DELETE ON audit_event_evidence
+BEGIN
+    SELECT RAISE(ABORT, 'audit evidence links are append-only');
+END;
+
 CREATE TRIGGER IF NOT EXISTS source_artifacts_no_update
 BEFORE UPDATE ON source_artifacts
 BEGIN
@@ -2662,6 +2848,32 @@ BEGIN
     SELECT RAISE(ABORT, 'parent rows referenced by lifecycle rows cannot be deleted');
 END;
 
+CREATE TRIGGER IF NOT EXISTS conversion_results_audit_evidence_no_update
+BEFORE UPDATE ON conversion_results
+WHEN EXISTS (
+    SELECT 1
+    FROM audit_event_evidence
+    JOIN generated_artifacts
+      ON generated_artifacts.artifact_id = audit_event_evidence.artifact_id
+    WHERE generated_artifacts.result_id = OLD.result_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'audit evidence rows cannot be updated');
+END;
+
+CREATE TRIGGER IF NOT EXISTS conversion_results_audit_evidence_no_delete
+BEFORE DELETE ON conversion_results
+WHEN EXISTS (
+    SELECT 1
+    FROM audit_event_evidence
+    JOIN generated_artifacts
+      ON generated_artifacts.artifact_id = audit_event_evidence.artifact_id
+    WHERE generated_artifacts.result_id = OLD.result_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'audit evidence rows cannot be deleted');
+END;
+
 CREATE TRIGGER IF NOT EXISTS generated_artifacts_review_decision_no_update
 BEFORE UPDATE ON generated_artifacts
 WHEN EXISTS (
@@ -2670,6 +2882,26 @@ WHEN EXISTS (
 )
 BEGIN
     SELECT RAISE(ABORT, 'review decision evidence cannot be updated');
+END;
+
+CREATE TRIGGER IF NOT EXISTS generated_artifacts_audit_evidence_no_update
+BEFORE UPDATE ON generated_artifacts
+WHEN EXISTS (
+    SELECT 1 FROM audit_event_evidence
+    WHERE audit_event_evidence.artifact_id = OLD.artifact_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'audit evidence rows cannot be updated');
+END;
+
+CREATE TRIGGER IF NOT EXISTS generated_artifacts_audit_evidence_no_delete
+BEFORE DELETE ON generated_artifacts
+WHEN EXISTS (
+    SELECT 1 FROM audit_event_evidence
+    WHERE audit_event_evidence.artifact_id = OLD.artifact_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'audit evidence rows cannot be deleted');
 END;
 
 CREATE TRIGGER IF NOT EXISTS generated_artifacts_review_decision_no_delete
@@ -3011,6 +3243,7 @@ END;
 """
 
 _RESET_SQL = """
+DROP TABLE IF EXISTS audit_event_evidence;
 DROP TABLE IF EXISTS audit_events;
 DROP TABLE IF EXISTS review_decisions;
 DROP TABLE IF EXISTS review_items;
