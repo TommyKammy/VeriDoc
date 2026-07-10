@@ -996,6 +996,10 @@ def test_job_identity_and_source_binding_are_immutable_before_child_rows(
             "UPDATE jobs SET idempotency_key = ? WHERE job_id = ?",
             ("replacement-key", job.job_id),
         ),
+        (
+            "UPDATE jobs SET mode = ? WHERE job_id = ?",
+            ("high_quality", job.job_id),
+        ),
     )
     with sqlite3.connect(db_path) as connection:
         connection.execute("PRAGMA foreign_keys = OFF")
@@ -2211,10 +2215,7 @@ def test_audited_scope_row_contents_are_immutable_at_database_boundary(
             "UPDATE source_documents SET source_storage_key = ? WHERE document_id = ?",
             ("uploads/rewritten.pdf", document.document_id),
         ),
-        (
-            "UPDATE jobs SET status = ?, attempts = ?, mode = ? WHERE job_id = ?",
-            ("succeeded", 99, "other", job.job_id),
-        ),
+        ("UPDATE jobs SET mode = ? WHERE job_id = ?", ("other", job.job_id)),
         (
             "UPDATE generated_artifacts SET storage_key = ? WHERE artifact_id = ?",
             ("artifacts/rewritten.docx", artifact.artifact_id),
@@ -2247,12 +2248,21 @@ def test_audited_scope_row_contents_are_immutable_at_database_boundary(
         for sql, params in update_statements:
             with pytest.raises(
                 sqlite3.IntegrityError,
-                match="audit scope rows|append-only",
+                match="audit scope rows|append-only|job identity",
             ):
                 connection.execute(sql, params)
 
+        connection.execute(
+            "UPDATE jobs SET status = ?, attempts = ? WHERE job_id = ?",
+            ("succeeded", 99, job.job_id),
+        )
+
     assert repository.get_document(document.document_id) == document
-    assert repository.get_conversion_job(job.job_id) == job
+    updated_job = repository.get_conversion_job(job.job_id)
+    assert updated_job is not None
+    assert updated_job.status == "succeeded"
+    assert updated_job.attempts == 99
+    assert updated_job.mode == job.mode
     assert repository.get_artifact(artifact.artifact_id) == artifact
     assert repository.get_review_item(review_item.review_item_id) == review_item
     assert repository.get_review_decision(review_decision.decision_id) == review_decision
@@ -2320,7 +2330,7 @@ def test_audited_review_decision_freezes_approved_item_and_artifact(tmp_path) ->
     assert repository.get_audit_event(audit_event.event_id) == audit_event
 
 
-def test_document_and_job_rows_are_frozen_by_any_audit_event_reference(
+def test_document_and_job_identity_are_frozen_by_any_audit_event_reference(
     tmp_path,
 ) -> None:
     db_path = tmp_path / "veridoc.sqlite3"
@@ -2342,21 +2352,29 @@ def test_document_and_job_rows_are_frozen_by_any_audit_event_reference(
 
     with sqlite3.connect(db_path) as connection:
         connection.execute("PRAGMA foreign_keys = OFF")
-        for sql, params in (
-            (
+        with pytest.raises(sqlite3.IntegrityError, match="audit scope rows"):
+            connection.execute(
                 "UPDATE source_documents SET content_hash = ? WHERE document_id = ?",
                 ("d" * 64, document.document_id),
-            ),
-            (
-                "UPDATE jobs SET status = ? WHERE job_id = ?",
-                ("succeeded", job.job_id),
-            ),
+            )
+        with pytest.raises(
+            sqlite3.IntegrityError,
+            match="job identity|audit scope rows",
         ):
-            with pytest.raises(sqlite3.IntegrityError, match="audit scope rows"):
-                connection.execute(sql, params)
+            connection.execute(
+                "UPDATE jobs SET mode = ? WHERE job_id = ?",
+                ("high_quality", job.job_id),
+            )
+        connection.execute(
+            "UPDATE jobs SET status = ? WHERE job_id = ?",
+            ("succeeded", job.job_id),
+        )
 
     assert repository.get_document(document.document_id) == document
-    assert repository.get_conversion_job(job.job_id) == job
+    updated_job = repository.get_conversion_job(job.job_id)
+    assert updated_job is not None
+    assert updated_job.status == "succeeded"
+    assert updated_job.mode == job.mode
     assert repository.get_audit_event(audit_event.event_id) == audit_event
 
 
@@ -4104,6 +4122,51 @@ def test_desktop_upload_contract_requires_an_unattempted_queued_job(
         )
 
 
+def test_upload_audit_preserves_history_while_job_lifecycle_advances(tmp_path) -> None:
+    db_path = tmp_path / "veridoc.sqlite3"
+    repository = SQLitePersistenceRepository(db_path)
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+    upload_audit = repository.create_audit_event(
+        event_id="audit-desktop-upload",
+        job_id=job.job_id,
+        document_id=document.document_id,
+        actor="operator-1",
+        action="desktop_upload",
+        scope_type="job",
+        scope_id=job.job_id,
+        payload={
+            "event_type": "desktop.job_operation",
+            "job_status": "queued",
+            "attempts": 0,
+            "filename": document.original_filename,
+            "source_sha256": document.content_hash,
+        },
+    )
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "UPDATE jobs SET status = 'running', attempts = 1 WHERE job_id = ?",
+            (job.job_id,),
+        )
+
+    running_event = repository.create_job_event(
+        event_id="job-event-running",
+        job_id=job.job_id,
+        event_type="job.running",
+        actor="operator-1",
+        payload={
+            "event_type": "job.running",
+            "job_status": "running",
+            "attempts": 1,
+        },
+    )
+
+    assert repository.get_audit_event(upload_audit.event_id) == upload_audit
+    assert repository.list_job_events(job.job_id) == [running_event]
+
+
 def test_job_event_payload_action_must_match_the_event_contract(tmp_path) -> None:
     repository = SQLitePersistenceRepository(tmp_path / "veridoc.sqlite3")
     repository.initialize()
@@ -4122,6 +4185,110 @@ def test_job_event_payload_action_must_match_the_event_contract(tmp_path) -> Non
                 "job_status": "queued",
             },
         )
+
+
+@pytest.mark.parametrize("alias", ("download_filename", "output_sha256"))
+def test_download_evidence_aliases_are_rejected_for_non_download_actions(
+    tmp_path,
+    alias,
+) -> None:
+    repository = SQLitePersistenceRepository(tmp_path / "veridoc.sqlite3")
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+    value = "report.docx" if alias == "download_filename" else "c" * 64
+    payload = {"event_type": "job.queued", alias: value}
+
+    with pytest.raises(ValueError, match=alias):
+        repository.create_job_event(
+            event_id=f"job-event-queued-{alias}",
+            job_id=job.job_id,
+            event_type="job.queued",
+            actor="operator-1",
+            payload=payload,
+        )
+    with pytest.raises(ValueError, match=alias):
+        repository.create_audit_event(
+            event_id=f"audit-queued-{alias}",
+            job_id=job.job_id,
+            document_id=document.document_id,
+            actor="operator-1",
+            action="job.queued",
+            scope_type="job",
+            scope_id=job.job_id,
+            payload=payload,
+        )
+
+
+@pytest.mark.parametrize(
+    ("alias", "value"),
+    (("attempts", 0.0), ("attempts", False), ("job_attempts", 0.0), ("job_attempts", False)),
+)
+def test_job_event_attempt_aliases_require_real_integers(
+    tmp_path,
+    alias,
+    value,
+) -> None:
+    repository = SQLitePersistenceRepository(tmp_path / "veridoc.sqlite3")
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+
+    with pytest.raises(ValueError, match=alias):
+        repository.create_job_event(
+            event_id=f"job-event-invalid-{alias}-{type(value).__name__}",
+            job_id=job.job_id,
+            event_type="job.queued",
+            actor="operator-1",
+            payload={"event_type": "job.queued", alias: value},
+        )
+    with pytest.raises(ValueError, match=alias):
+        repository.create_audit_event(
+            event_id=f"audit-invalid-{alias}-{type(value).__name__}",
+            job_id=job.job_id,
+            document_id=document.document_id,
+            actor="operator-1",
+            action="job.queued",
+            scope_type="job",
+            scope_id=job.job_id,
+            payload={"event_type": "job.queued", alias: value},
+        )
+
+
+def test_job_event_history_rejects_attempted_upload_snapshots(tmp_path) -> None:
+    db_path = tmp_path / "veridoc.sqlite3"
+    repository = SQLitePersistenceRepository(db_path)
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+    payload = {
+        "event_type": "desktop.job_operation",
+        "action": "desktop_upload",
+        "attempts": 1,
+        "filename": document.original_filename,
+        "source_sha256": document.content_hash,
+    }
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO job_events(
+                event_id, job_id, sequence, event_type, actor, payload_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "job-event-attempted-upload",
+                job.job_id,
+                1,
+                "desktop.job_operation",
+                "operator-1",
+                persistence._canonical_json(payload),
+                job.created_at,
+            ),
+        )
+
+    with pytest.raises(ValueError, match="unattempted"):
+        repository.list_job_events(job.job_id)
 
 
 def test_generic_job_event_action_contract_drives_scoped_audit(tmp_path) -> None:

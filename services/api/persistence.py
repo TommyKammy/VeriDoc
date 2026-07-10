@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 
-SCHEMA_VERSION = "20260710_11_job_event_evidence_contract"
+SCHEMA_VERSION = "20260710_12_historical_lifecycle_contract"
 AUDIT_INTEGRITY_ALGORITHM = "sha256-canonical-json-chain-v1"
 SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -430,7 +430,12 @@ class SQLitePersistenceRepository:
                 effective_action,
                 attempts=job["attempts"],
             )
-            _require_declared_audit_scope_payload("job", job, event_payload)
+            _require_declared_audit_scope_payload(
+                "job",
+                job,
+                event_payload,
+                allowed_aliases=_evidence_aliases_for_contract(contract),
+            )
             if contract.requires_uploader and job["uploaded_by"] != actor:
                 raise ValueError("job event actor must match the recorded uploader")
             evidence_artifact_ids: tuple[str, ...] = ()
@@ -1304,7 +1309,9 @@ class SQLitePersistenceRepository:
                 payload=payload,
                 evidence_event_id=evidence_event_id,
                 required_artifact_ids=required_artifact_ids,
-                historical_job_event=scope_type == "job_event",
+                historical_job_event=(
+                    scope_type == "job_event" or evidence_event_id is not None
+                ),
             )
         _require_audit_scope_semantics(
             scope_type=scope_type,
@@ -1312,8 +1319,9 @@ class SQLitePersistenceRepository:
             actor=actor,
             action=action,
             payload=payload,
+            historical=evidence_event_id is not None,
         )
-        if scope_type != "job_event":
+        if scope_type != "job_event" and evidence_event_id is None:
             job_state = connection.execute(
                 "SELECT status, attempts FROM jobs WHERE job_id = ?",
                 (job_id,),
@@ -1624,6 +1632,7 @@ def _require_job_event_payload_matches(
             raise ValueError("payload evidence is not valid for the job event action")
         if not isinstance(payload["evidence"], Mapping):
             raise ValueError("payload evidence must be a mapping")
+    _require_job_attempt_aliases(payload, contract)
     _require_job_event_payload_status(payload, effective_action)
     for field_name in ("sequence", "created_at", "occurred_at"):
         if field_name in payload:
@@ -1989,6 +1998,17 @@ def _audit_action_contract(action: str) -> _AuditActionContract | None:
     return _AUDIT_ACTION_CONTRACT_BY_ALIAS.get(action)
 
 
+_DOWNLOAD_EVIDENCE_ALIASES = frozenset({"download_filename", "output_sha256"})
+
+
+def _evidence_aliases_for_contract(
+    contract: _AuditActionContract | None,
+) -> frozenset[str]:
+    if contract is not None and contract.evidence_type == "download_artifact":
+        return _DOWNLOAD_EVIDENCE_ALIASES
+    return frozenset()
+
+
 def _require_audit_action_scope(action: str, scope_type: str) -> None:
     contract = _audit_action_contract(action)
     if contract is not None and scope_type not in contract.scope_types:
@@ -2168,7 +2188,7 @@ _AUDIT_RESERVED_EVIDENCE_FIELDS = frozenset(
     field
     for fields in _AUDIT_SCOPE_SPECIAL_PAYLOAD_FIELDS.values()
     for field in fields
-)
+).union(_DOWNLOAD_EVIDENCE_ALIASES)
 
 
 def _require_audit_scope_semantics(
@@ -2178,23 +2198,34 @@ def _require_audit_scope_semantics(
     actor: str,
     action: str,
     payload: Mapping[str, Any],
+    historical: bool,
 ) -> None:
+    contract = _audit_action_contract(action)
     if scope_type == "job_event":
         event_payload = _load_json_object(
             row["payload_json"],
             field_name="job event payload_json",
         )
         event_action = _job_event_effective_action(row["event_type"], event_payload)
-        contract = _audit_action_contract(event_action)
+        event_contract = _audit_action_contract(event_action)
         _require_historical_job_event_payload(
             row,
             payload,
-            contract,
+            event_contract,
             scope_type="job_event",
         )
         _require_job_event_snapshot_aliases_match(payload, event_payload)
+    elif scope_type in {"job", "conversion_job"} and historical:
+        _require_historical_job_event_payload(row, payload, contract)
     else:
-        _require_declared_audit_scope_payload(scope_type, row, payload)
+        _require_declared_audit_scope_payload(
+            scope_type,
+            row,
+            payload,
+            allowed_aliases=_evidence_aliases_for_contract(contract),
+        )
+        if scope_type in {"job", "conversion_job"}:
+            _require_job_attempt_aliases(payload, contract)
 
     if scope_type in {"document", "source_document", "source_artifact"}:
         if _is_upload_action(action) and row["uploaded_by"] != actor:
@@ -2216,7 +2247,6 @@ def _require_audit_scope_semantics(
         return
 
     if scope_type == "conversion_result":
-        contract = _audit_action_contract(action)
         expected_statuses = contract.job_statuses if contract is not None else None
         if expected_statuses is not None and row["status"] not in expected_statuses:
             raise ValueError("audit action must match the conversion result status")
@@ -2293,7 +2323,10 @@ def _require_historical_job_event_payload(
         row,
         payload,
         bindings=bindings,
-        allowed_aliases=_JOB_HISTORY_MUTABLE_ALIASES,
+        allowed_aliases=(
+            _JOB_HISTORY_MUTABLE_ALIASES
+            | _evidence_aliases_for_contract(contract)
+        ),
     )
     expected_statuses = contract.job_statuses if contract is not None else None
     for alias in ("job_status", "status"):
@@ -2303,6 +2336,13 @@ def _require_historical_job_event_payload(
             raise ValueError(
                 f"payload {alias} must match the historical job event action"
             )
+    _require_job_attempt_aliases(payload, contract)
+
+
+def _require_job_attempt_aliases(
+    payload: Mapping[str, Any],
+    contract: _AuditActionContract | None,
+) -> None:
     attempt_values = []
     for alias in ("attempts", "job_attempts"):
         if alias not in payload:
@@ -2313,6 +2353,13 @@ def _require_historical_job_event_payload(
         attempt_values.append(value)
     if len(set(attempt_values)) > 1:
         raise ValueError("payload job attempt aliases must match")
+    if (
+        attempt_values
+        and contract is not None
+        and contract.requires_unattempted_job
+        and attempt_values[0] != 0
+    ):
+        raise ValueError("payload job attempts must record an unattempted job")
 
 
 def _require_job_event_snapshot_aliases_match(
@@ -3307,10 +3354,11 @@ BEGIN
 END;
 
 CREATE TRIGGER IF NOT EXISTS jobs_parent_key_no_update
-BEFORE UPDATE OF job_id, document_id, idempotency_key ON jobs
+BEFORE UPDATE OF job_id, document_id, idempotency_key, mode ON jobs
 WHEN NEW.job_id != OLD.job_id
   OR NEW.document_id != OLD.document_id
   OR NEW.idempotency_key != OLD.idempotency_key
+  OR NEW.mode != OLD.mode
 BEGIN
     SELECT RAISE(ABORT, 'job identity and source binding cannot be updated');
 END;
@@ -3596,8 +3644,14 @@ BEGIN
 END;
 
 CREATE TRIGGER IF NOT EXISTS jobs_audit_scope_no_update
-BEFORE UPDATE ON jobs
-WHEN EXISTS (
+BEFORE UPDATE OF job_id, document_id, idempotency_key, mode ON jobs
+WHEN (
+    NEW.job_id != OLD.job_id
+    OR NEW.document_id != OLD.document_id
+    OR NEW.idempotency_key != OLD.idempotency_key
+    OR NEW.mode != OLD.mode
+)
+AND EXISTS (
     SELECT 1 FROM audit_events
     WHERE audit_events.job_id = OLD.job_id
        OR (
