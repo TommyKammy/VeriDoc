@@ -3628,6 +3628,9 @@ def test_audit_action_contract_aliases_are_unique() -> None:
         ("conversion.failed", "document"),
         ("document.uploaded", "artifact"),
         ("uploaded", "generated_artifact"),
+        ("artifact.generated", "job"),
+        ("review.opened", "document"),
+        ("document.inspected", "job"),
     ),
 )
 def test_action_contract_rejects_lifecycle_and_upload_actions_in_unrelated_scopes(
@@ -3641,7 +3644,13 @@ def test_action_contract_rejects_lifecycle_and_upload_actions_in_unrelated_scope
     job = _create_job(repository, document, "job-1")
     result = _create_result(repository, job, "result-1")
     artifact = _create_artifact(repository, result, "artifact-1")
-    scope_id = document.document_id if scope_type == "document" else artifact.artifact_id
+    scope_ids = {
+        "artifact": artifact.artifact_id,
+        "document": document.document_id,
+        "generated_artifact": artifact.artifact_id,
+        "job": job.job_id,
+    }
+    scope_id = scope_ids[scope_type]
 
     with pytest.raises(ValueError, match="selected scope type"):
         repository.create_audit_event(
@@ -3662,7 +3671,12 @@ def test_retry_event_status_contract_is_enforced_on_write_and_read(tmp_path) -> 
     document = _create_document(repository, "doc-1")
     job = _create_job(repository, document, "job-1")
 
-    for index, event_type in enumerate(("retry_conversion", "job.retry_requested")):
+    cases = (
+        ("retry_conversion", "retry_conversion"),
+        ("job.retry_requested", "job.retry_requested"),
+        ("conversion_job.action_requested", "retry_conversion"),
+    )
+    for index, (event_type, action) in enumerate(cases):
         with pytest.raises(ValueError, match="job_status"):
             repository.create_job_event(
                 event_id=f"retry-invalid-write-{index}",
@@ -3671,6 +3685,7 @@ def test_retry_event_status_contract_is_enforced_on_write_and_read(tmp_path) -> 
                 actor="operator-1",
                 payload={
                     "event_type": event_type,
+                    "action": action,
                     "job_status": "succeeded",
                 },
             )
@@ -3686,11 +3701,12 @@ def test_retry_event_status_contract_is_enforced_on_write_and_read(tmp_path) -> 
                 "retry-invalid-read",
                 job.job_id,
                 1,
-                "job.retry_requested",
+                "conversion_job.action_requested",
                 "operator-1",
                 persistence._canonical_json(
                     {
-                        "event_type": "job.retry_requested",
+                        "event_type": "conversion_job.action_requested",
+                        "action": "retry_conversion",
                         "job_status": "succeeded",
                     }
                 ),
@@ -3700,6 +3716,62 @@ def test_retry_event_status_contract_is_enforced_on_write_and_read(tmp_path) -> 
 
     with pytest.raises(ValueError, match="job_status"):
         repository.list_job_events(job.job_id)
+
+
+def test_job_event_payload_action_must_match_the_event_contract(tmp_path) -> None:
+    repository = SQLitePersistenceRepository(tmp_path / "veridoc.sqlite3")
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+
+    with pytest.raises(ValueError, match="payload action"):
+        repository.create_job_event(
+            event_id="job-event-contradictory-action",
+            job_id=job.job_id,
+            event_type="job.queued",
+            actor="operator-1",
+            payload={
+                "event_type": "job.queued",
+                "action": "retry_conversion",
+                "job_status": "queued",
+            },
+        )
+
+
+def test_generic_job_event_action_contract_drives_scoped_audit(tmp_path) -> None:
+    repository = SQLitePersistenceRepository(tmp_path / "veridoc.sqlite3")
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = repository.create_conversion_job(
+        job_id="job-1",
+        document_id=document.document_id,
+        idempotency_key="upload-job-1",
+        mode="standard",
+        status="failed",
+    )
+    job_event = repository.create_job_event(
+        event_id="job-event-retry",
+        job_id=job.job_id,
+        event_type="conversion_job.action_requested",
+        actor="operator-1",
+        payload={
+            "event_type": "conversion_job.action_requested",
+            "action": "retry_conversion",
+            "job_status": "failed",
+        },
+    )
+
+    audit_event = repository.create_audit_event(
+        event_id="audit-retry",
+        job_id=job.job_id,
+        document_id=document.document_id,
+        actor="operator-1",
+        action="retry_conversion",
+        scope_type="job_event",
+        scope_id=job_event.event_id,
+        payload={"event_type": "conversion_job.action_requested"},
+    )
+    assert repository.get_audit_event(audit_event.event_id) == audit_event
 
 
 def test_download_evidence_uses_display_filename_and_freezes_linked_rows(
@@ -3728,19 +3800,45 @@ def test_download_evidence_uses_display_filename_and_freezes_linked_rows(
         storage_key="objects/abc123.bin",
         content_hash="c" * 64,
     )
+    job_event = repository.create_job_event(
+        event_id="job-event-download",
+        job_id=job.job_id,
+        event_type="desktop.job_operation",
+        actor="operator-1",
+        payload={
+            "event_type": "desktop.job_operation",
+            "action": "desktop_result_download",
+            "job_status": "succeeded",
+        },
+    )
     audit_event = repository.create_audit_event(
         event_id="audit-download-1",
         job_id=job.job_id,
         document_id=document.document_id,
         actor="operator-1",
         action="desktop_result_download",
-        scope_type="job",
-        scope_id=job.job_id,
+        scope_type="job_event",
+        scope_id=job_event.event_id,
         payload={
             "event_type": "desktop.job_operation",
             "download_filename": artifact.display_filename,
             "output_sha256": artifact.content_hash,
         },
+    )
+    assert json.loads(audit_event.payload_json)["evidence"] == {
+        "artifact_ids": [artifact.artifact_id],
+        "type": "download_artifact",
+    }
+    later_artifact = repository.create_artifact(
+        artifact_id="artifact-2",
+        result_id=result.result_id,
+        job_id=job.job_id,
+        document_id=document.document_id,
+        category="generated",
+        format="docx",
+        display_filename="later.docx",
+        storage_key="objects/def456.bin",
+        content_hash="d" * 64,
     )
 
     with sqlite3.connect(db_path) as connection:
@@ -3757,6 +3855,18 @@ def test_download_evidence_uses_display_filename_and_freezes_linked_rows(
             artifact.artifact_id,
             "download_artifact",
         )
+        with pytest.raises(sqlite3.IntegrityError, match="audit evidence"):
+            connection.execute(
+                """
+                INSERT INTO audit_event_evidence(event_id, artifact_id, evidence_type)
+                VALUES (?, ?, ?)
+                """,
+                (
+                    audit_event.event_id,
+                    later_artifact.artifact_id,
+                    "download_artifact",
+                ),
+            )
         for sql, params in (
             (
                 "UPDATE generated_artifacts SET content_hash = ? WHERE artifact_id = ?",
