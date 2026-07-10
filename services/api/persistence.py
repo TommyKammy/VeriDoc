@@ -1051,9 +1051,15 @@ class SQLitePersistenceRepository:
         elif scope_type in {"job", "conversion_job"}:
             row = connection.execute(
                 """
-                SELECT job_id, document_id, idempotency_key, mode, status, attempts
+                SELECT jobs.job_id, jobs.document_id, jobs.idempotency_key,
+                       jobs.mode, jobs.status, jobs.attempts,
+                       source_documents.original_filename,
+                       source_documents.content_hash AS source_content_hash,
+                       source_documents.uploaded_by
                 FROM jobs
-                WHERE job_id = ?
+                JOIN source_documents
+                  ON source_documents.document_id = jobs.document_id
+                WHERE jobs.job_id = ?
                 """,
                 (scope_id,),
             ).fetchone()
@@ -1062,9 +1068,15 @@ class SQLitePersistenceRepository:
             row = connection.execute(
                 """
                 SELECT job_events.event_id, job_events.job_id, jobs.document_id,
-                       job_events.sequence, job_events.event_type, job_events.actor
+                       job_events.sequence, job_events.event_type, job_events.actor,
+                       jobs.idempotency_key, jobs.mode, jobs.status, jobs.attempts,
+                       source_documents.original_filename,
+                       source_documents.content_hash AS source_content_hash,
+                       source_documents.uploaded_by
                 FROM job_events
                 JOIN jobs ON jobs.job_id = job_events.job_id
+                JOIN source_documents
+                  ON source_documents.document_id = jobs.document_id
                 WHERE job_events.event_id = ?
                 """,
                 (scope_id,),
@@ -1287,9 +1299,25 @@ def _require_job_event_payload_matches(
             raise ValueError(f"payload {field_name} must match the job event row")
     if "actor_id" in payload and payload["actor_id"] != actor:
         raise ValueError("payload actor_id must match the job event row")
+    _require_job_event_payload_status(payload, event_type)
     for field_name in ("sequence", "created_at", "occurred_at"):
         if field_name in payload:
             raise ValueError(f"payload {field_name} is derived from the job event row")
+
+
+def _require_job_event_payload_status(
+    payload: Mapping[str, Any],
+    event_type: str,
+) -> None:
+    lifecycle_state = _job_lifecycle_state(event_type)
+    allowed_statuses = _JOB_EVENT_STATE_STATUSES.get(lifecycle_state)
+    if allowed_statuses is None:
+        return
+    for alias in ("job_status", "status"):
+        if alias in payload and payload[alias] not in allowed_statuses:
+            raise ValueError(
+                f"payload {alias} must match the job event lifecycle state"
+            )
 
 
 def _require_job_event_row_payload_matches(row: sqlite3.Row) -> None:
@@ -1458,7 +1486,11 @@ def _review_decision_action_matches(decision: str, action: str) -> bool:
 _SOURCE_DOCUMENT_PAYLOAD_BINDINGS = (
     (("source_artifact_id", "artifact_id"), "source_artifact_id", "source artifact id"),
     (("storage_key", "source_storage_key"), "source_storage_key", "source storage key"),
-    (("content_hash", "source_content_hash"), "content_hash", "source content hash"),
+    (
+        ("content_hash", "source_content_hash", "source_sha256"),
+        "content_hash",
+        "source content hash",
+    ),
     (("source_type",), "source_type", "source type"),
     (("original_filename", "filename"), "original_filename", "source filename"),
     (("document_status", "status"), "status", "source document status"),
@@ -1467,7 +1499,11 @@ _SOURCE_DOCUMENT_PAYLOAD_BINDINGS = (
 
 _SOURCE_ARTIFACT_PAYLOAD_BINDINGS = (
     (("storage_key", "source_storage_key"), "storage_key", "source artifact storage key"),
-    (("content_hash", "source_content_hash"), "content_hash", "source artifact content hash"),
+    (
+        ("content_hash", "source_content_hash", "source_sha256"),
+        "content_hash",
+        "source artifact content hash",
+    ),
     (("source_type",), "source_type", "source artifact type"),
     (("original_filename", "filename"), "original_filename", "source artifact filename"),
     (("uploaded_by", "uploader_id"), "uploaded_by", "recorded uploader"),
@@ -1478,9 +1514,11 @@ _JOB_PAYLOAD_BINDINGS = (
     (("mode", "job_mode"), "mode", "job mode"),
     (("job_status", "status"), "status", "job status"),
     (("attempts", "job_attempts"), "attempts", "job attempts"),
+    (("filename", "source_filename"), "original_filename", "job source filename"),
+    (("source_sha256",), "source_content_hash", "job source hash"),
 )
 
-_JOB_EVENT_PAYLOAD_BINDINGS = (
+_JOB_EVENT_PAYLOAD_BINDINGS = _JOB_PAYLOAD_BINDINGS + (
     (("job_event_sequence",), "sequence", "job event sequence"),
     (("event_actor",), "actor", "job event actor"),
 )
@@ -1577,10 +1615,9 @@ def _require_audit_scope_semantics(
         return
 
     if scope_type in {"job", "conversion_job"}:
-        status = row["status"]
-        expected_statuses = _JOB_ACTION_STATUSES.get(action)
-        if expected_statuses is not None and status not in expected_statuses:
-            raise ValueError("audit action is not valid for the current job status")
+        _require_job_action_available(row["status"], action)
+        if _is_upload_action(action) and row["uploaded_by"] != actor:
+            raise ValueError("audit actor must match the recorded uploader")
         return
 
     if scope_type == "job_event":
@@ -1588,6 +1625,9 @@ def _require_audit_scope_semantics(
             raise ValueError("audit actor must match the scoped job event actor")
         if not _job_event_action_matches(row["event_type"], action):
             raise ValueError("audit action must match the scoped job event type")
+        _require_job_action_available(row["status"], action)
+        if _is_upload_action(action) and row["uploaded_by"] != actor:
+            raise ValueError("audit actor must match the recorded uploader")
         return
 
     if scope_type == "conversion_result":
@@ -1600,6 +1640,12 @@ def _require_audit_scope_semantics(
     if scope_type == "review_decision":
         _require_payload_actor_role(payload, row["role"])
         _require_payload_review_outcome(payload, row["decision"])
+
+
+def _require_job_action_available(status: str, action: str) -> None:
+    expected_statuses = _JOB_ACTION_STATUSES.get(action)
+    if expected_statuses is not None and status not in expected_statuses:
+        raise ValueError("audit action is not valid for the current job status")
 
 
 def _require_declared_audit_scope_payload(
@@ -1703,6 +1749,14 @@ def _job_lifecycle_state(value: str) -> str | None:
     if normalized == "retry_conversion":
         return "retry"
     return None
+
+
+_JOB_EVENT_STATE_STATUSES = {
+    "queued": frozenset({"queued"}),
+    "running": frozenset({"running", "processing", "started"}),
+    "failed": frozenset({"failed"}),
+    "succeeded": frozenset({"succeeded", "completed", "success"}),
+}
 
 
 _JOB_ACTION_STATUSES = {

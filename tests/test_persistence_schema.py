@@ -178,7 +178,6 @@ def test_persistence_repository_initializes_and_reads_minimal_schema(tmp_path) -
         scope_id=job_event.event_id,
         payload={"event_type": "job.queued"},
     )
-
     assert repository.get_document("doc-1") == document
     assert source_artifact == SourceArtifact(
         artifact_id=document.source_artifact_id,
@@ -1010,6 +1009,8 @@ def test_persistence_repository_rejects_conflicting_job_event_payload_fields(tmp
         ("event-job-mismatch", {"event_type": "job.queued", "job_id": job_b.job_id}),
         ("event-actor-mismatch", {"event_type": "job.queued", "actor": "other-actor"}),
         ("event-actor-id-mismatch", {"event_type": "job.queued", "actor_id": "other-actor"}),
+        ("event-job-status-mismatch", {"event_type": "job.queued", "job_status": "failed"}),
+        ("event-status-mismatch", {"event_type": "job.queued", "status": "failed"}),
         ("event-sequence-smuggled", {"event_type": "job.queued", "sequence": 10}),
         (
             "event-created-at-smuggled",
@@ -2479,6 +2480,47 @@ def test_job_event_payload_fields_are_validated_at_read_boundary(tmp_path) -> No
         repository.list_job_events(job.job_id)
 
 
+def test_job_event_status_is_validated_at_read_boundary(tmp_path) -> None:
+    db_path = tmp_path / "veridoc.sqlite3"
+    repository = SQLitePersistenceRepository(db_path)
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+    repository.create_job_event(
+        event_id="job-event-queued",
+        job_id=job.job_id,
+        event_type="job.queued",
+        actor="operator-1",
+        payload={"event_type": "job.queued", "job_status": "queued"},
+    )
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO job_events(
+                event_id, job_id, sequence, event_type, actor, payload_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "job-event-running-conflict",
+                job.job_id,
+                2,
+                "job.running",
+                "operator-1",
+                json.dumps(
+                    {"event_type": "job.running", "job_status": "failed"},
+                    sort_keys=True,
+                ),
+                "2026-07-10T00:00:00+00:00",
+            ),
+        )
+
+    with pytest.raises(ValueError, match="job_status"):
+        repository.get_job_event("job-event-running-conflict")
+    with pytest.raises(ValueError, match="job_status"):
+        repository.list_job_events(job.job_id)
+
+
 def test_audit_chain_verification_rejects_missing_scope_rows(tmp_path) -> None:
     db_path = tmp_path / "veridoc.sqlite3"
     repository = SQLitePersistenceRepository(db_path)
@@ -3152,6 +3194,13 @@ def test_audit_scopes_bind_authoritative_lifecycle_semantics(tmp_path) -> None:
         actor="operator-1",
         payload={"event_type": "job.queued"},
     )
+    retry_job_event = repository.create_job_event(
+        event_id="job-event-retry",
+        job_id=job.job_id,
+        event_type="retry_conversion",
+        actor="operator-1",
+        payload={"event_type": "retry_conversion"},
+    )
     result = _create_result(repository, job, "result-1")
     artifact = _create_artifact(repository, result, "artifact-1")
     review_item = repository.create_review_item(
@@ -3199,6 +3248,53 @@ def test_audit_scopes_bind_authoritative_lifecycle_semantics(tmp_path) -> None:
             job.job_id,
             None,
             "job status",
+        ),
+        (
+            "audit-retry-queued-job-event",
+            "operator-1",
+            "retry_conversion",
+            "job_event",
+            retry_job_event.event_id,
+            {"event_type": "conversion_job.action_requested"},
+            "job status",
+        ),
+        (
+            "audit-job-upload-wrong-actor",
+            "mallory",
+            "desktop_upload",
+            "job",
+            job.job_id,
+            {
+                "event_type": "desktop.job_operation",
+                "filename": document.original_filename,
+                "source_sha256": document.content_hash,
+            },
+            "uploader",
+        ),
+        (
+            "audit-job-upload-wrong-filename",
+            "operator-1",
+            "desktop_upload",
+            "job",
+            job.job_id,
+            {
+                "event_type": "desktop.job_operation",
+                "filename": "wrong.pdf",
+                "source_sha256": document.content_hash,
+            },
+            "filename",
+        ),
+        (
+            "audit-document-upload-wrong-source-hash",
+            "operator-1",
+            "desktop_upload",
+            "document",
+            document.document_id,
+            {
+                "event_type": "desktop.job_operation",
+                "source_sha256": "0" * 64,
+            },
+            "source_sha256",
         ),
         (
             "audit-wrong-job-status-payload",
@@ -3318,6 +3414,52 @@ def test_audit_scopes_bind_authoritative_lifecycle_semantics(tmp_path) -> None:
         },
     )
     assert repository.get_audit_event(valid_artifact_audit.event_id) == valid_artifact_audit
+
+    valid_desktop_audit = repository.create_audit_event(
+        event_id="audit-valid-desktop-job-contract",
+        job_id=job.job_id,
+        document_id=document.document_id,
+        actor="operator-1",
+        action="desktop_upload",
+        scope_type="job",
+        scope_id=job.job_id,
+        payload={
+            "event_type": "desktop.job_operation",
+            "job_id": job.job_id,
+            "job_status": job.status,
+            "action": "desktop_upload",
+            "filename": document.original_filename,
+            "mode": job.mode,
+            "source_sha256": document.content_hash,
+            "size_bytes": 123,
+            "content_type": "application/pdf",
+        },
+    )
+    assert repository.get_audit_event(valid_desktop_audit.event_id) == valid_desktop_audit
+
+    valid_desktop_download = repository.create_audit_event(
+        event_id="audit-valid-desktop-download-contract",
+        job_id=job.job_id,
+        document_id=document.document_id,
+        actor="operator-1",
+        action="desktop_result_download",
+        scope_type="job",
+        scope_id=job.job_id,
+        payload={
+            "event_type": "desktop.job_operation",
+            "job_id": job.job_id,
+            "job_status": job.status,
+            "action": "desktop_result_download",
+            "filename": document.original_filename,
+            "download_filename": "artifact-1.docx",
+            "source_sha256": document.content_hash,
+            "output_sha256": artifact.content_hash,
+        },
+    )
+    assert (
+        repository.get_audit_event(valid_desktop_download.event_id)
+        == valid_desktop_download
+    )
 
 
 def test_all_declared_audit_scope_payload_aliases_are_enforced(tmp_path) -> None:
