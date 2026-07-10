@@ -548,6 +548,74 @@ def test_source_artifacts_reject_orphan_documents_at_database_boundary(
     assert repository.get_source_artifact("source-artifact-orphan") is None
 
 
+def test_source_document_and_artifact_provenance_must_match_everywhere(
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "veridoc.sqlite3"
+    repository = SQLitePersistenceRepository(db_path)
+    repository.initialize()
+    created_at = "2026-07-10T00:00:00+00:00"
+
+    with pytest.raises(sqlite3.IntegrityError, match="source artifact"):
+        with sqlite3.connect(db_path) as connection:
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute(
+                """
+                INSERT INTO source_artifacts(
+                    artifact_id, document_id, storage_key, content_hash, source_type,
+                    original_filename, uploaded_by, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "source-artifact-mismatch",
+                    "doc-mismatch",
+                    "uploads/mismatch.pdf",
+                    VALID_HASH,
+                    "pdf",
+                    "mismatch.pdf",
+                    "alice",
+                    created_at,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO source_documents(
+                    document_id, source_type, original_filename, source_artifact_id,
+                    source_storage_key, content_hash, status, uploaded_by, created_at,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "doc-mismatch",
+                    "pdf",
+                    "mismatch.pdf",
+                    "source-artifact-mismatch",
+                    "uploads/mismatch.pdf",
+                    VALID_HASH,
+                    "uploaded",
+                    "bob",
+                    created_at,
+                    created_at,
+                ),
+            )
+
+    document = _create_document(repository, "doc-1")
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.execute(
+            "DROP TRIGGER source_documents_source_artifact_reference_update"
+        )
+        connection.execute(
+            "UPDATE source_documents SET uploaded_by = ? WHERE document_id = ?",
+            ("mallory", document.document_id),
+        )
+
+    with pytest.raises(ValueError, match="bound source artifact"):
+        repository.get_document(document.document_id)
+    with pytest.raises(ValueError, match="bound source document"):
+        repository.get_source_artifact(document.source_artifact_id)
+
+
 def test_persistence_repository_rejects_cross_scope_relationships(tmp_path) -> None:
     repository = SQLitePersistenceRepository(tmp_path / "veridoc.sqlite3")
     repository.initialize()
@@ -861,6 +929,72 @@ def test_parent_bindings_remain_guarded_after_insert_with_foreign_keys_off(
         for sql, identifier in statements:
             with pytest.raises(sqlite3.IntegrityError):
                 connection.execute(sql, (identifier,))
+
+
+def test_review_decision_evidence_is_immutable_before_audit(tmp_path) -> None:
+    db_path = tmp_path / "veridoc.sqlite3"
+    repository = SQLitePersistenceRepository(db_path)
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+    result = _create_result(repository, job, "result-1")
+    artifact = _create_artifact(repository, result, "artifact-1")
+    review_item = repository.create_review_item(
+        review_item_id="review-item-1",
+        document_id=document.document_id,
+        job_id=job.job_id,
+        target_path="sections[0]",
+        status="open",
+        severity="medium",
+    )
+    decision = repository.create_review_decision(
+        decision_id="decision-1",
+        review_item_id=review_item.review_item_id,
+        artifact_id=artifact.artifact_id,
+        actor="qa-approver",
+        role="approver",
+        decision="approved",
+    )
+
+    statements = (
+        (
+            "UPDATE generated_artifacts SET storage_key = ? WHERE artifact_id = ?",
+            ("artifacts/rewritten.docx", artifact.artifact_id),
+        ),
+        (
+            "UPDATE generated_artifacts SET content_hash = ? WHERE artifact_id = ?",
+            ("d" * 64, artifact.artifact_id),
+        ),
+        (
+            "UPDATE review_items SET target_path = ? WHERE review_item_id = ?",
+            ("sections[1]", review_item.review_item_id),
+        ),
+        (
+            "UPDATE review_items SET severity = ? WHERE review_item_id = ?",
+            ("critical", review_item.review_item_id),
+        ),
+        (
+            "UPDATE review_decisions SET actor = ?, role = ?, decision = ? "
+            "WHERE decision_id = ?",
+            ("mallory", "viewer", "rejected", decision.decision_id),
+        ),
+        (
+            "DELETE FROM review_decisions WHERE decision_id = ?",
+            (decision.decision_id,),
+        ),
+    )
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        for sql, params in statements:
+            with pytest.raises(
+                sqlite3.IntegrityError,
+                match="review decision evidence|append-only",
+            ):
+                connection.execute(sql, params)
+
+    assert repository.get_artifact(artifact.artifact_id) == artifact
+    assert repository.get_review_item(review_item.review_item_id) == review_item
+    assert repository.get_review_decision(decision.decision_id) == decision
 
 
 def test_persistence_repository_rejects_conflicting_job_event_payload_fields(tmp_path) -> None:
@@ -1757,7 +1891,10 @@ def test_audit_scope_rows_cannot_be_rekeyed_after_events_reference_them(tmp_path
     with sqlite3.connect(db_path) as connection:
         connection.execute("PRAGMA foreign_keys = ON")
         for sql, params in update_statements:
-            with pytest.raises(sqlite3.IntegrityError, match="audit scope rows"):
+            with pytest.raises(
+                sqlite3.IntegrityError,
+                match="audit scope rows|append-only",
+            ):
                 connection.execute(sql, params)
 
     for audit_event in audit_events:
@@ -1795,7 +1932,10 @@ def test_audited_conversion_result_contents_are_immutable_at_database_boundary(
                 ("d" * 64, result.result_id),
             ),
         ):
-            with pytest.raises(sqlite3.IntegrityError, match="audit scope rows"):
+            with pytest.raises(
+                sqlite3.IntegrityError,
+                match="audit scope rows|append-only",
+            ):
                 connection.execute(sql, params)
 
     assert repository.get_conversion_result(result.result_id) == result
@@ -1957,7 +2097,10 @@ def test_audited_scope_row_contents_are_immutable_at_database_boundary(
     with sqlite3.connect(db_path) as connection:
         connection.execute("PRAGMA foreign_keys = ON")
         for sql, params in update_statements:
-            with pytest.raises(sqlite3.IntegrityError, match="audit scope rows"):
+            with pytest.raises(
+                sqlite3.IntegrityError,
+                match="audit scope rows|append-only",
+            ):
                 connection.execute(sql, params)
 
     assert repository.get_document(document.document_id) == document
@@ -2017,7 +2160,10 @@ def test_audited_review_decision_freezes_approved_item_and_artifact(tmp_path) ->
     with sqlite3.connect(db_path) as connection:
         connection.execute("PRAGMA foreign_keys = ON")
         for sql, params in update_statements:
-            with pytest.raises(sqlite3.IntegrityError, match="audit scope rows"):
+            with pytest.raises(
+                sqlite3.IntegrityError,
+                match="audit scope rows|review decision evidence",
+            ):
                 connection.execute(sql, params)
 
     assert repository.get_review_item(review_item.review_item_id) == review_item
@@ -3008,6 +3154,14 @@ def test_audit_scopes_bind_authoritative_lifecycle_semantics(tmp_path) -> None:
     )
     result = _create_result(repository, job, "result-1")
     artifact = _create_artifact(repository, result, "artifact-1")
+    review_item = repository.create_review_item(
+        review_item_id="review-item-1",
+        document_id=document.document_id,
+        job_id=job.job_id,
+        target_path="sections[0]",
+        status="open",
+        severity="medium",
+    )
 
     cases = (
         (
@@ -3074,6 +3228,15 @@ def test_audit_scopes_bind_authoritative_lifecycle_semantics(tmp_path) -> None:
             "result_status",
         ),
         (
+            "audit-wrong-result-hash",
+            "operator-1",
+            "conversion.completed",
+            "conversion_result",
+            result.result_id,
+            {"event_type": "conversion.completed", "content_hash": "0" * 64},
+            "content_hash",
+        ),
+        (
             "audit-wrong-artifact-storage",
             "operator-1",
             "artifact.generated",
@@ -3094,6 +3257,33 @@ def test_audit_scopes_bind_authoritative_lifecycle_semantics(tmp_path) -> None:
             {"event_type": "artifact.generated", "content_hash": "0" * 64},
             "content_hash",
         ),
+        (
+            "audit-wrong-review-target",
+            "operator-1",
+            "review.opened",
+            "review_item",
+            review_item.review_item_id,
+            {"event_type": "review.opened", "target_path": "sections[9]"},
+            "target_path",
+        ),
+        (
+            "audit-wrong-review-status",
+            "operator-1",
+            "review.opened",
+            "review_item",
+            review_item.review_item_id,
+            {"event_type": "review.opened", "status": "closed"},
+            "status",
+        ),
+        (
+            "audit-cross-scope-evidence",
+            "operator-1",
+            "job.queued",
+            "job",
+            job.job_id,
+            {"event_type": "job.queued", "content_hash": result.content_hash},
+            "content_hash",
+        ),
     )
     for event_id, actor, action, scope_type, scope_id, payload, message in cases:
         with pytest.raises(ValueError, match=message):
@@ -3108,6 +3298,100 @@ def test_audit_scopes_bind_authoritative_lifecycle_semantics(tmp_path) -> None:
                 payload=payload,
             )
         assert repository.get_audit_event(event_id) is None
+
+    valid_artifact_audit = repository.create_audit_event(
+        event_id="audit-valid-artifact-contract",
+        job_id=job.job_id,
+        document_id=document.document_id,
+        actor="operator-1",
+        action="artifact.generated",
+        scope_type="artifact",
+        scope_id=artifact.artifact_id,
+        payload={
+            "event_type": "artifact.generated",
+            "result_id": artifact.result_id,
+            "storage_key": artifact.storage_key,
+            "content_hash": artifact.content_hash,
+            "category": artifact.category,
+            "format": artifact.format,
+            "retention_state": artifact.retention_state,
+        },
+    )
+    assert repository.get_audit_event(valid_artifact_audit.event_id) == valid_artifact_audit
+
+
+def test_all_declared_audit_scope_payload_aliases_are_enforced(tmp_path) -> None:
+    repository = SQLitePersistenceRepository(tmp_path / "veridoc.sqlite3")
+    repository.initialize()
+    document = _create_document(repository, "doc-1")
+    job = _create_job(repository, document, "job-1")
+    job_event = repository.create_job_event(
+        event_id="job-event-1",
+        job_id=job.job_id,
+        event_type="job.queued",
+        actor="operator-1",
+    )
+    result = _create_result(repository, job, "result-1")
+    artifact = _create_artifact(repository, result, "artifact-1")
+    review_item = repository.create_review_item(
+        review_item_id="review-item-1",
+        document_id=document.document_id,
+        job_id=job.job_id,
+        target_path="sections[0]",
+        status="open",
+        severity="medium",
+    )
+    decision = repository.create_review_decision(
+        decision_id="decision-1",
+        review_item_id=review_item.review_item_id,
+        artifact_id=artifact.artifact_id,
+        actor="qa-approver",
+        role="approver",
+        decision="approved",
+    )
+    scopes = {
+        "document": (document.document_id, "operator-1", "document.uploaded"),
+        "source_document": (document.document_id, "operator-1", "document.uploaded"),
+        "source_artifact": (
+            document.source_artifact_id,
+            "operator-1",
+            "document.uploaded",
+        ),
+        "job": (job.job_id, "operator-1", "job.queued"),
+        "conversion_job": (job.job_id, "operator-1", "job.queued"),
+        "job_event": (job_event.event_id, "operator-1", "job.queued"),
+        "conversion_result": (result.result_id, "operator-1", "conversion.completed"),
+        "artifact": (artifact.artifact_id, "operator-1", "artifact.generated"),
+        "generated_artifact": (
+            artifact.artifact_id,
+            "operator-1",
+            "artifact.generated",
+        ),
+        "review_item": (review_item.review_item_id, "operator-1", "review.opened"),
+        "review_decision": (
+            decision.decision_id,
+            "qa-approver",
+            "review.approved",
+        ),
+    }
+
+    for scope_type, bindings in persistence._AUDIT_SCOPE_PAYLOAD_BINDINGS.items():
+        scope_id, actor, action = scopes[scope_type]
+        for aliases, _, _ in bindings:
+            for alias in aliases:
+                event_id = f"audit-{scope_type}-{alias}"
+                with pytest.raises(ValueError, match=alias):
+                    repository.create_audit_event(
+                        event_id=event_id,
+                        job_id=job.job_id,
+                        document_id=document.document_id,
+                        actor=actor,
+                        action=action,
+                        scope_type=scope_type,
+                        scope_id=scope_id,
+                        payload={"event_type": action, alias: "definitely-wrong"},
+                    )
+                assert repository.get_audit_event(event_id) is None
 
 
 def test_create_audit_event_rejects_existing_corrupt_chain_before_append(

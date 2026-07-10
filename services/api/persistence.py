@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 
-SCHEMA_VERSION = "20260710_04_audit_semantics_and_parent_hardening"
+SCHEMA_VERSION = "20260710_05_declarative_evidence_contract"
 AUDIT_INTEGRITY_ALGORITHM = "sha256-canonical-json-chain-v1"
 SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -254,11 +254,15 @@ class SQLitePersistenceRepository:
             )
 
     def get_document(self, document_id: str) -> Document | None:
-        return self._get_one(
-            Document,
-            "SELECT * FROM source_documents WHERE document_id = ?",
-            (document_id,),
-        )
+        with self._connection_scope() as connection:
+            row = connection.execute(
+                "SELECT * FROM source_documents WHERE document_id = ?",
+                (document_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            self._require_document_source_artifact(connection, row)
+        return _row_to_dataclass(Document, row)
 
     def get_source_artifact(self, artifact_id: str) -> SourceArtifact | None:
         with self._connection_scope() as connection:
@@ -883,7 +887,8 @@ class SQLitePersistenceRepository:
     ) -> None:
         document = connection.execute(
             """
-            SELECT source_artifact_id, source_storage_key, content_hash
+            SELECT source_artifact_id, source_storage_key, content_hash,
+                   source_type, original_filename, uploaded_by
             FROM source_documents
             WHERE document_id = ?
             """,
@@ -895,8 +900,37 @@ class SQLitePersistenceRepository:
             document["source_artifact_id"] != row["artifact_id"]
             or document["source_storage_key"] != row["storage_key"]
             or document["content_hash"] != row["content_hash"]
+            or document["source_type"] != row["source_type"]
+            or document["original_filename"] != row["original_filename"]
+            or document["uploaded_by"] != row["uploaded_by"]
         ):
             raise ValueError("source_artifact must match the bound source document")
+
+    def _require_document_source_artifact(
+        self,
+        connection: sqlite3.Connection,
+        row: sqlite3.Row,
+    ) -> None:
+        artifact = connection.execute(
+            """
+            SELECT artifact_id, storage_key, content_hash, source_type,
+                   original_filename, uploaded_by
+            FROM source_artifacts
+            WHERE document_id = ?
+            """,
+            (row["document_id"],),
+        ).fetchone()
+        if artifact is None:
+            raise ValueError("source document must reference an existing source artifact")
+        if (
+            artifact["artifact_id"] != row["source_artifact_id"]
+            or artifact["storage_key"] != row["source_storage_key"]
+            or artifact["content_hash"] != row["content_hash"]
+            or artifact["source_type"] != row["source_type"]
+            or artifact["original_filename"] != row["original_filename"]
+            or artifact["uploaded_by"] != row["uploaded_by"]
+        ):
+            raise ValueError("source document must match the bound source artifact")
 
     def _next_job_event_sequence(
         self,
@@ -994,8 +1028,9 @@ class SQLitePersistenceRepository:
         if scope_type in {"document", "source_document"}:
             row = connection.execute(
                 """
-                SELECT document_id, uploaded_by, source_storage_key, content_hash,
-                       source_type, original_filename, status
+                SELECT document_id, source_artifact_id, uploaded_by,
+                       source_storage_key, content_hash, source_type,
+                       original_filename, status
                 FROM source_documents
                 WHERE document_id = ?
                 """,
@@ -1005,8 +1040,8 @@ class SQLitePersistenceRepository:
         elif scope_type == "source_artifact":
             row = connection.execute(
                 """
-                SELECT document_id, uploaded_by, storage_key, content_hash,
-                       source_type, original_filename
+                SELECT artifact_id, document_id, uploaded_by, storage_key,
+                       content_hash, source_type, original_filename
                 FROM source_artifacts
                 WHERE artifact_id = ?
                 """,
@@ -1015,15 +1050,19 @@ class SQLitePersistenceRepository:
             expected = {"document_id": document_id}
         elif scope_type in {"job", "conversion_job"}:
             row = connection.execute(
-                "SELECT job_id, document_id, status FROM jobs WHERE job_id = ?",
+                """
+                SELECT job_id, document_id, idempotency_key, mode, status, attempts
+                FROM jobs
+                WHERE job_id = ?
+                """,
                 (scope_id,),
             ).fetchone()
             expected = {"job_id": job_id, "document_id": document_id}
         elif scope_type == "job_event":
             row = connection.execute(
                 """
-                SELECT job_events.job_id, jobs.document_id, job_events.event_type,
-                       job_events.actor
+                SELECT job_events.event_id, job_events.job_id, jobs.document_id,
+                       job_events.sequence, job_events.event_type, job_events.actor
                 FROM job_events
                 JOIN jobs ON jobs.job_id = job_events.job_id
                 WHERE job_events.event_id = ?
@@ -1033,15 +1072,19 @@ class SQLitePersistenceRepository:
             expected = {"job_id": job_id, "document_id": document_id}
         elif scope_type == "conversion_result":
             row = connection.execute(
-                "SELECT job_id, document_id, status FROM conversion_results WHERE result_id = ?",
+                """
+                SELECT result_id, job_id, document_id, status, content_hash
+                FROM conversion_results
+                WHERE result_id = ?
+                """,
                 (scope_id,),
             ).fetchone()
             expected = {"job_id": job_id, "document_id": document_id}
         elif scope_type in {"artifact", "generated_artifact"}:
             row = connection.execute(
                 """
-                SELECT job_id, document_id, storage_key, content_hash, category,
-                       format, retention_state
+                SELECT artifact_id, result_id, job_id, document_id, storage_key,
+                       content_hash, category, format, retention_state
                 FROM generated_artifacts
                 WHERE artifact_id = ?
                 """,
@@ -1050,14 +1093,20 @@ class SQLitePersistenceRepository:
             expected = {"job_id": job_id, "document_id": document_id}
         elif scope_type == "review_item":
             row = connection.execute(
-                "SELECT job_id, document_id FROM review_items WHERE review_item_id = ?",
+                """
+                SELECT review_item_id, job_id, document_id, target_path, status,
+                       severity
+                FROM review_items
+                WHERE review_item_id = ?
+                """,
                 (scope_id,),
             ).fetchone()
             expected = {"job_id": job_id, "document_id": document_id}
         elif scope_type == "review_decision":
             row = connection.execute(
                 """
-                SELECT job_id, document_id, actor, role, decision
+                SELECT decision_id, review_item_id, artifact_id, job_id,
+                       document_id, actor, role, decision
                 FROM review_decisions
                 WHERE decision_id = ?
                 """,
@@ -1406,6 +1455,112 @@ def _review_decision_action_matches(decision: str, action: str) -> bool:
     return action in aliases.get(normalized, frozenset({normalized, f"review.{normalized}"}))
 
 
+_SOURCE_DOCUMENT_PAYLOAD_BINDINGS = (
+    (("source_artifact_id", "artifact_id"), "source_artifact_id", "source artifact id"),
+    (("storage_key", "source_storage_key"), "source_storage_key", "source storage key"),
+    (("content_hash", "source_content_hash"), "content_hash", "source content hash"),
+    (("source_type",), "source_type", "source type"),
+    (("original_filename", "filename"), "original_filename", "source filename"),
+    (("document_status", "status"), "status", "source document status"),
+    (("uploaded_by", "uploader_id"), "uploaded_by", "recorded uploader"),
+)
+
+_SOURCE_ARTIFACT_PAYLOAD_BINDINGS = (
+    (("storage_key", "source_storage_key"), "storage_key", "source artifact storage key"),
+    (("content_hash", "source_content_hash"), "content_hash", "source artifact content hash"),
+    (("source_type",), "source_type", "source artifact type"),
+    (("original_filename", "filename"), "original_filename", "source artifact filename"),
+    (("uploaded_by", "uploader_id"), "uploaded_by", "recorded uploader"),
+)
+
+_JOB_PAYLOAD_BINDINGS = (
+    (("idempotency_key",), "idempotency_key", "job idempotency key"),
+    (("mode", "job_mode"), "mode", "job mode"),
+    (("job_status", "status"), "status", "job status"),
+    (("attempts", "job_attempts"), "attempts", "job attempts"),
+)
+
+_JOB_EVENT_PAYLOAD_BINDINGS = (
+    (("job_event_sequence",), "sequence", "job event sequence"),
+    (("event_actor",), "actor", "job event actor"),
+)
+
+_RESULT_PAYLOAD_BINDINGS = (
+    (("result_status", "conversion_status", "status"), "status", "conversion result status"),
+    (("content_hash", "result_content_hash"), "content_hash", "conversion result hash"),
+)
+
+_ARTIFACT_PAYLOAD_BINDINGS = (
+    (("result_id", "conversion_result_id"), "result_id", "artifact result id"),
+    (("storage_key", "artifact_storage_key"), "storage_key", "artifact storage key"),
+    (("content_hash", "artifact_content_hash"), "content_hash", "artifact content hash"),
+    (("category", "artifact_category"), "category", "artifact category"),
+    (("format", "artifact_format"), "format", "artifact format"),
+    (("retention_state",), "retention_state", "artifact retention state"),
+)
+
+_REVIEW_ITEM_PAYLOAD_BINDINGS = (
+    (("target_path", "review_target_path"), "target_path", "review item target path"),
+    (("review_status", "status"), "status", "review item status"),
+    (("severity", "review_severity"), "severity", "review item severity"),
+)
+
+_REVIEW_DECISION_PAYLOAD_BINDINGS = (
+    (("review_item_id",), "review_item_id", "review item id"),
+    (("artifact_id", "generated_artifact_id"), "artifact_id", "review artifact id"),
+)
+
+_AUDIT_SCOPE_PAYLOAD_BINDINGS = {
+    "document": _SOURCE_DOCUMENT_PAYLOAD_BINDINGS,
+    "source_document": _SOURCE_DOCUMENT_PAYLOAD_BINDINGS,
+    "source_artifact": _SOURCE_ARTIFACT_PAYLOAD_BINDINGS,
+    "job": _JOB_PAYLOAD_BINDINGS,
+    "conversion_job": _JOB_PAYLOAD_BINDINGS,
+    "job_event": _JOB_EVENT_PAYLOAD_BINDINGS,
+    "conversion_result": _RESULT_PAYLOAD_BINDINGS,
+    "artifact": _ARTIFACT_PAYLOAD_BINDINGS,
+    "generated_artifact": _ARTIFACT_PAYLOAD_BINDINGS,
+    "review_item": _REVIEW_ITEM_PAYLOAD_BINDINGS,
+    "review_decision": _REVIEW_DECISION_PAYLOAD_BINDINGS,
+}
+
+_AUDIT_SCOPE_SPECIAL_PAYLOAD_FIELDS = {
+    "review_decision": frozenset(
+        {"actor_role", "role", "decision", "review_decision", "outcome"}
+    ),
+}
+
+_AUDIT_GLOBAL_PAYLOAD_FIELDS = frozenset(
+    {
+        "event_id",
+        "job_id",
+        "document_id",
+        "integrity_algorithm",
+        "actor",
+        "actor_id",
+        "action",
+        "event_type",
+        "scope_type",
+        "scope_id",
+    }
+)
+
+_AUDIT_RESERVED_EVIDENCE_FIELDS = frozenset(
+    alias
+    for bindings in _AUDIT_SCOPE_PAYLOAD_BINDINGS.values()
+    for aliases, _, _ in bindings
+    for alias in aliases
+).union(
+    alias
+    for aliases in _AUDIT_SCOPE_ID_ALIASES.values()
+    for alias in aliases
+).union(
+    field
+    for fields in _AUDIT_SCOPE_SPECIAL_PAYLOAD_FIELDS.values()
+    for field in fields
+)
+
+
 def _require_audit_scope_semantics(
     *,
     scope_type: str,
@@ -1414,78 +1569,15 @@ def _require_audit_scope_semantics(
     action: str,
     payload: Mapping[str, Any],
 ) -> None:
-    if scope_type in {"document", "source_document"}:
-        if _is_upload_action(action) and row["uploaded_by"] != actor:
-            raise ValueError("audit actor must match the recorded uploader")
-        _require_payload_aliases_match(
-            payload,
-            ("storage_key", "source_storage_key"),
-            row["source_storage_key"],
-            field_name="source document storage key",
-        )
-        _require_payload_aliases_match(
-            payload,
-            ("content_hash", "source_content_hash"),
-            row["content_hash"],
-            field_name="source document content hash",
-        )
-        _require_payload_aliases_match(
-            payload,
-            ("source_type",),
-            row["source_type"],
-            field_name="source document type",
-        )
-        _require_payload_aliases_match(
-            payload,
-            ("original_filename", "filename"),
-            row["original_filename"],
-            field_name="source document filename",
-        )
-        _require_payload_aliases_match(
-            payload,
-            ("document_status",),
-            row["status"],
-            field_name="source document status",
-        )
-        return
+    _require_declared_audit_scope_payload(scope_type, row, payload)
 
-    if scope_type == "source_artifact":
+    if scope_type in {"document", "source_document", "source_artifact"}:
         if _is_upload_action(action) and row["uploaded_by"] != actor:
             raise ValueError("audit actor must match the recorded uploader")
-        _require_payload_aliases_match(
-            payload,
-            ("storage_key", "source_storage_key"),
-            row["storage_key"],
-            field_name="source artifact storage key",
-        )
-        _require_payload_aliases_match(
-            payload,
-            ("content_hash", "source_content_hash"),
-            row["content_hash"],
-            field_name="source artifact content hash",
-        )
-        _require_payload_aliases_match(
-            payload,
-            ("source_type",),
-            row["source_type"],
-            field_name="source artifact type",
-        )
-        _require_payload_aliases_match(
-            payload,
-            ("original_filename", "filename"),
-            row["original_filename"],
-            field_name="source artifact filename",
-        )
         return
 
     if scope_type in {"job", "conversion_job"}:
         status = row["status"]
-        _require_payload_aliases_match(
-            payload,
-            ("job_status",),
-            status,
-            field_name="job status",
-        )
         expected_statuses = _JOB_ACTION_STATUSES.get(action)
         if expected_statuses is not None and status not in expected_statuses:
             raise ValueError("audit action is not valid for the current job status")
@@ -1500,36 +1592,41 @@ def _require_audit_scope_semantics(
 
     if scope_type == "conversion_result":
         status = row["status"]
-        _require_payload_aliases_match(
-            payload,
-            ("result_status", "conversion_status", "status"),
-            status,
-            field_name="conversion result status",
-        )
         expected_statuses = _RESULT_ACTION_STATUSES.get(action)
         if expected_statuses is not None and status not in expected_statuses:
             raise ValueError("audit action must match the conversion result status")
         return
 
-    if scope_type in {"artifact", "generated_artifact"}:
-        for aliases, column, field_name in (
-            (("storage_key", "artifact_storage_key"), "storage_key", "artifact storage key"),
-            (("content_hash", "artifact_content_hash"), "content_hash", "artifact content hash"),
-            (("category", "artifact_category"), "category", "artifact category"),
-            (("format", "artifact_format"), "format", "artifact format"),
-            (("retention_state",), "retention_state", "artifact retention state"),
-        ):
-            _require_payload_aliases_match(
-                payload,
-                aliases,
-                row[column],
-                field_name=field_name,
-            )
-        return
-
     if scope_type == "review_decision":
         _require_payload_actor_role(payload, row["role"])
         _require_payload_review_outcome(payload, row["decision"])
+
+
+def _require_declared_audit_scope_payload(
+    scope_type: str,
+    row: sqlite3.Row,
+    payload: Mapping[str, Any],
+) -> None:
+    bindings = _AUDIT_SCOPE_PAYLOAD_BINDINGS.get(scope_type, ())
+    allowed_fields = set(_AUDIT_GLOBAL_PAYLOAD_FIELDS)
+    allowed_fields.update(_AUDIT_SCOPE_ID_ALIASES.get(scope_type, ()))
+    allowed_fields.update(_AUDIT_SCOPE_SPECIAL_PAYLOAD_FIELDS.get(scope_type, ()))
+    for aliases, column, field_name in bindings:
+        allowed_fields.update(aliases)
+        _require_payload_aliases_match(
+            payload,
+            aliases,
+            row[column],
+            field_name=field_name,
+        )
+    for field_name in payload:
+        if (
+            field_name in _AUDIT_RESERVED_EVIDENCE_FIELDS
+            and field_name not in allowed_fields
+        ):
+            raise ValueError(
+                f"payload {field_name} is not valid for audit scope {scope_type}"
+            )
 
 
 def _require_payload_aliases_match(
@@ -1804,7 +1901,10 @@ CREATE TABLE IF NOT EXISTS source_artifacts (
     ),
     uploaded_by TEXT NOT NULL CHECK(typeof(uploaded_by) = 'text' AND length(trim(uploaded_by)) > 0),
     created_at TEXT NOT NULL CHECK(typeof(created_at) = 'text' AND length(trim(created_at)) > 0),
-    UNIQUE(artifact_id, document_id, storage_key, content_hash)
+    UNIQUE(
+        artifact_id, document_id, storage_key, content_hash, source_type,
+        original_filename, uploaded_by
+    )
 );
 
 CREATE TABLE IF NOT EXISTS source_documents (
@@ -1831,8 +1931,13 @@ CREATE TABLE IF NOT EXISTS source_documents (
     uploaded_by TEXT NOT NULL CHECK(typeof(uploaded_by) = 'text' AND length(trim(uploaded_by)) > 0),
     created_at TEXT NOT NULL CHECK(typeof(created_at) = 'text' AND length(trim(created_at)) > 0),
     updated_at TEXT NOT NULL CHECK(typeof(updated_at) = 'text' AND length(trim(updated_at)) > 0),
-    FOREIGN KEY(source_artifact_id, document_id, source_storage_key, content_hash)
-        REFERENCES source_artifacts(artifact_id, document_id, storage_key, content_hash)
+    FOREIGN KEY(
+        source_artifact_id, document_id, source_storage_key, content_hash,
+        source_type, original_filename, uploaded_by
+    ) REFERENCES source_artifacts(
+        artifact_id, document_id, storage_key, content_hash, source_type,
+        original_filename, uploaded_by
+    )
         ON DELETE RESTRICT
 );
 
@@ -2029,13 +2134,17 @@ WHEN NOT EXISTS (
       AND source_artifacts.document_id = NEW.document_id
       AND source_artifacts.storage_key = NEW.source_storage_key
       AND source_artifacts.content_hash = NEW.content_hash
+      AND source_artifacts.source_type = NEW.source_type
+      AND source_artifacts.original_filename = NEW.original_filename
+      AND source_artifacts.uploaded_by = NEW.uploaded_by
 )
 BEGIN
     SELECT RAISE(ABORT, 'source document must reference matching source artifact');
 END;
 
 CREATE TRIGGER IF NOT EXISTS source_documents_source_artifact_reference_update
-BEFORE UPDATE OF source_artifact_id, document_id, source_storage_key, content_hash
+BEFORE UPDATE OF source_artifact_id, document_id, source_storage_key, content_hash,
+                 source_type, original_filename, uploaded_by
 ON source_documents
 WHEN NOT EXISTS (
     SELECT 1 FROM source_artifacts
@@ -2043,6 +2152,9 @@ WHEN NOT EXISTS (
       AND source_artifacts.document_id = NEW.document_id
       AND source_artifacts.storage_key = NEW.source_storage_key
       AND source_artifacts.content_hash = NEW.content_hash
+      AND source_artifacts.source_type = NEW.source_type
+      AND source_artifacts.original_filename = NEW.original_filename
+      AND source_artifacts.uploaded_by = NEW.uploaded_by
 )
 BEGIN
     SELECT RAISE(ABORT, 'source document must reference matching source artifact');
@@ -2410,55 +2522,44 @@ BEGIN
     SELECT RAISE(ABORT, 'parent rows referenced by lifecycle rows cannot be deleted');
 END;
 
-CREATE TRIGGER IF NOT EXISTS generated_artifacts_parent_key_no_update
-BEFORE UPDATE OF artifact_id, result_id, job_id, document_id ON generated_artifacts
-WHEN (
-    NEW.artifact_id != OLD.artifact_id
-    OR NEW.result_id != OLD.result_id
-    OR NEW.job_id != OLD.job_id
-    OR NEW.document_id != OLD.document_id
-)
-AND EXISTS (
+CREATE TRIGGER IF NOT EXISTS generated_artifacts_review_decision_no_update
+BEFORE UPDATE ON generated_artifacts
+WHEN EXISTS (
     SELECT 1 FROM review_decisions
     WHERE review_decisions.artifact_id = OLD.artifact_id
 )
 BEGIN
-    SELECT RAISE(ABORT, 'parent keys referenced by lifecycle rows cannot be updated');
+    SELECT RAISE(ABORT, 'review decision evidence cannot be updated');
 END;
 
-CREATE TRIGGER IF NOT EXISTS generated_artifacts_parent_no_delete
+CREATE TRIGGER IF NOT EXISTS generated_artifacts_review_decision_no_delete
 BEFORE DELETE ON generated_artifacts
 WHEN EXISTS (
     SELECT 1 FROM review_decisions
     WHERE review_decisions.artifact_id = OLD.artifact_id
 )
 BEGIN
-    SELECT RAISE(ABORT, 'parent rows referenced by lifecycle rows cannot be deleted');
+    SELECT RAISE(ABORT, 'review decision evidence cannot be deleted');
 END;
 
-CREATE TRIGGER IF NOT EXISTS review_items_parent_key_no_update
-BEFORE UPDATE OF review_item_id, job_id, document_id ON review_items
-WHEN (
-    NEW.review_item_id != OLD.review_item_id
-    OR NEW.job_id != OLD.job_id
-    OR NEW.document_id != OLD.document_id
-)
-AND EXISTS (
+CREATE TRIGGER IF NOT EXISTS review_items_review_decision_no_update
+BEFORE UPDATE ON review_items
+WHEN EXISTS (
     SELECT 1 FROM review_decisions
     WHERE review_decisions.review_item_id = OLD.review_item_id
 )
 BEGIN
-    SELECT RAISE(ABORT, 'parent keys referenced by lifecycle rows cannot be updated');
+    SELECT RAISE(ABORT, 'review decision evidence cannot be updated');
 END;
 
-CREATE TRIGGER IF NOT EXISTS review_items_parent_no_delete
+CREATE TRIGGER IF NOT EXISTS review_items_review_decision_no_delete
 BEFORE DELETE ON review_items
 WHEN EXISTS (
     SELECT 1 FROM review_decisions
     WHERE review_decisions.review_item_id = OLD.review_item_id
 )
 BEGIN
-    SELECT RAISE(ABORT, 'parent rows referenced by lifecycle rows cannot be deleted');
+    SELECT RAISE(ABORT, 'review decision evidence cannot be deleted');
 END;
 
 CREATE TRIGGER IF NOT EXISTS source_documents_audit_scope_no_delete
@@ -2543,20 +2644,6 @@ BEGIN
     SELECT RAISE(ABORT, 'audit scope rows cannot be deleted');
 END;
 
-CREATE TRIGGER IF NOT EXISTS generated_artifacts_audited_decision_no_delete
-BEFORE DELETE ON generated_artifacts
-WHEN EXISTS (
-    SELECT 1
-    FROM audit_events
-    JOIN review_decisions
-      ON review_decisions.decision_id = audit_events.scope_id
-    WHERE audit_events.scope_type = 'review_decision'
-      AND review_decisions.artifact_id = OLD.artifact_id
-)
-BEGIN
-    SELECT RAISE(ABORT, 'audit scope rows cannot be deleted');
-END;
-
 CREATE TRIGGER IF NOT EXISTS review_items_audit_scope_no_delete
 BEFORE DELETE ON review_items
 WHEN EXISTS (
@@ -2568,29 +2655,10 @@ BEGIN
     SELECT RAISE(ABORT, 'audit scope rows cannot be deleted');
 END;
 
-CREATE TRIGGER IF NOT EXISTS review_items_audited_decision_no_delete
-BEFORE DELETE ON review_items
-WHEN EXISTS (
-    SELECT 1
-    FROM audit_events
-    JOIN review_decisions
-      ON review_decisions.decision_id = audit_events.scope_id
-    WHERE audit_events.scope_type = 'review_decision'
-      AND review_decisions.review_item_id = OLD.review_item_id
-)
-BEGIN
-    SELECT RAISE(ABORT, 'audit scope rows cannot be deleted');
-END;
-
-CREATE TRIGGER IF NOT EXISTS review_decisions_audit_scope_no_delete
+CREATE TRIGGER IF NOT EXISTS review_decisions_no_delete
 BEFORE DELETE ON review_decisions
-WHEN EXISTS (
-    SELECT 1 FROM audit_events
-    WHERE audit_events.scope_type = 'review_decision'
-      AND audit_events.scope_id = OLD.decision_id
-)
 BEGIN
-    SELECT RAISE(ABORT, 'audit scope rows cannot be deleted');
+    SELECT RAISE(ABORT, 'review decisions are append-only');
 END;
 
 CREATE TRIGGER IF NOT EXISTS source_documents_audit_scope_no_update
@@ -2664,20 +2732,6 @@ BEGIN
     SELECT RAISE(ABORT, 'audit scope rows cannot be updated');
 END;
 
-CREATE TRIGGER IF NOT EXISTS generated_artifacts_audited_decision_no_update
-BEFORE UPDATE ON generated_artifacts
-WHEN EXISTS (
-    SELECT 1
-    FROM audit_events
-    JOIN review_decisions
-      ON review_decisions.decision_id = audit_events.scope_id
-    WHERE audit_events.scope_type = 'review_decision'
-      AND review_decisions.artifact_id = OLD.artifact_id
-)
-BEGIN
-    SELECT RAISE(ABORT, 'audit scope rows cannot be updated');
-END;
-
 CREATE TRIGGER IF NOT EXISTS review_items_audit_scope_no_update
 BEFORE UPDATE ON review_items
 WHEN EXISTS (
@@ -2689,29 +2743,10 @@ BEGIN
     SELECT RAISE(ABORT, 'audit scope rows cannot be updated');
 END;
 
-CREATE TRIGGER IF NOT EXISTS review_items_audited_decision_no_update
-BEFORE UPDATE ON review_items
-WHEN EXISTS (
-    SELECT 1
-    FROM audit_events
-    JOIN review_decisions
-      ON review_decisions.decision_id = audit_events.scope_id
-    WHERE audit_events.scope_type = 'review_decision'
-      AND review_decisions.review_item_id = OLD.review_item_id
-)
-BEGIN
-    SELECT RAISE(ABORT, 'audit scope rows cannot be updated');
-END;
-
-CREATE TRIGGER IF NOT EXISTS review_decisions_audit_scope_no_update
+CREATE TRIGGER IF NOT EXISTS review_decisions_no_update
 BEFORE UPDATE ON review_decisions
-WHEN EXISTS (
-    SELECT 1 FROM audit_events
-    WHERE audit_events.scope_type = 'review_decision'
-      AND audit_events.scope_id = OLD.decision_id
-)
 BEGIN
-    SELECT RAISE(ABORT, 'audit scope rows cannot be updated');
+    SELECT RAISE(ABORT, 'review decisions are append-only');
 END;
 
 CREATE TRIGGER IF NOT EXISTS source_documents_artifact_id_global_insert
