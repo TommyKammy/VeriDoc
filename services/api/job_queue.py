@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 from collections import deque
+from collections.abc import Iterable
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -14,6 +15,8 @@ from threading import Condition, Lock
 from time import monotonic
 from typing import Any, Callable, Literal
 from uuid import uuid4
+
+from services.api.artifact_store import ArtifactFileRecord, ArtifactFileStore
 
 JobStatus = Literal["queued", "running", "succeeded", "failed"]
 JOB_STATUSES: set[JobStatus] = {"queued", "running", "succeeded", "failed"}
@@ -53,6 +56,7 @@ class JobQueue:
         *,
         max_attempts: int = 3,
         database_path: str | PathLike[str] | None = None,
+        artifact_store_root: str | PathLike[str] | None = None,
     ) -> None:
         if max_attempts < 1:
             raise ValueError("max_attempts must be at least 1")
@@ -66,13 +70,24 @@ class JobQueue:
         self._lock = Lock()
         self._condition = Condition(self._lock)
         self._database_path = str(database_path) if database_path is not None else None
+        self._artifact_store: ArtifactFileStore | None = None
         if self._database_path is not None:
+            artifact_root = (
+                Path(artifact_store_root)
+                if artifact_store_root is not None
+                else Path(self._database_path).parent / "artifacts"
+            )
+            self._artifact_store = ArtifactFileStore(artifact_root)
             self._initialize_store()
             self._restore_jobs()
 
     @property
     def database_path(self) -> str | None:
         return self._database_path
+
+    @property
+    def artifact_store_root(self) -> Path | None:
+        return self._artifact_store.root if self._artifact_store is not None else None
 
     def create_job(
         self,
@@ -463,18 +478,54 @@ class JobQueue:
                 )
                 """
             )
+            artifact_table_columns = {
+                row[1]
+                for row in connection.execute("PRAGMA table_info(job_queue_artifacts)")
+            }
+            if "content" in artifact_table_columns:
+                legacy_artifacts = connection.execute(
+                    "SELECT job_id, artifact_id, content FROM job_queue_artifacts"
+                ).fetchall()
+                migrated_artifacts = [
+                    (job_id, artifact_id, self._artifact_store.save(bytes(content)))
+                    for job_id, artifact_id, content in legacy_artifacts
+                ]
+                connection.execute(
+                    "ALTER TABLE job_queue_artifacts "
+                    "RENAME TO job_queue_artifacts_with_content"
+                )
+            else:
+                migrated_artifacts = []
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS job_queue_artifacts (
                     job_id TEXT NOT NULL,
                     artifact_id TEXT NOT NULL,
-                    content BLOB NOT NULL,
+                    content_sha256 TEXT NOT NULL,
+                    size_bytes INTEGER NOT NULL CHECK(size_bytes >= 0),
                     PRIMARY KEY(job_id, artifact_id),
                     FOREIGN KEY(job_id) REFERENCES job_queue_records(job_id)
                         ON DELETE CASCADE
                 )
                 """
             )
+            if migrated_artifacts:
+                connection.executemany(
+                    "INSERT INTO job_queue_artifacts("
+                    "job_id, artifact_id, content_sha256, size_bytes"
+                    ") VALUES (?, ?, ?, ?)",
+                    [
+                        (
+                            job_id,
+                            artifact_id,
+                            artifact.content_sha256,
+                            artifact.size_bytes,
+                        )
+                        for job_id, artifact_id, artifact in migrated_artifacts
+                    ],
+                )
+            if "content" in artifact_table_columns:
+                connection.execute("DROP TABLE job_queue_artifacts_with_content")
             columns = {
                 row[1]
                 for row in connection.execute("PRAGMA table_info(job_queue_records)")
@@ -495,11 +546,14 @@ class JobQueue:
                 "FROM job_queue_records ORDER BY rowid"
             ).fetchall()
             artifact_rows = connection.execute(
-                "SELECT job_id, artifact_id, content FROM job_queue_artifacts"
+                "SELECT job_id, artifact_id, content_sha256, size_bytes "
+                "FROM job_queue_artifacts"
             ).fetchall()
         artifacts_by_job: dict[str, dict[str, bytes]] = {}
-        for job_id, artifact_id, content in artifact_rows:
-            artifacts_by_job.setdefault(job_id, {})[artifact_id] = bytes(content)
+        for job_id, artifact_id, content_sha256, size_bytes in artifact_rows:
+            artifacts_by_job.setdefault(job_id, {})[artifact_id] = (
+                self._artifact_store.read(content_sha256, size_bytes=size_bytes)
+            )
         pending_jobs: list[tuple[int, int, str]] = []
         running_jobs: list[tuple[int, int | None, JobRecord]] = []
         for rowid, record_json, queue_sequence in rows:
@@ -552,8 +606,28 @@ class JobQueue:
                 raise ValueError("related persistence requires a durable job queue")
             return
         persisted_record, artifacts = _extract_binary_artifacts(job.to_dict())
-        with sqlite3.connect(self._database_path) as connection:
-            connection.execute(
+        stored_artifacts: dict[str, ArtifactFileRecord] = {}
+        try:
+            for artifact_id, content in artifacts.items():
+                stored_artifacts[artifact_id] = self._artifact_store.save(content)
+        except Exception:
+            self._cleanup_unreferenced_artifacts(
+                artifact
+                for artifact in stored_artifacts.values()
+                if artifact.created
+            )
+            raise
+        previous_hashes: set[str] = set()
+        try:
+            with sqlite3.connect(self._database_path) as connection:
+                previous_hashes = {
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT content_sha256 FROM job_queue_artifacts WHERE job_id = ?",
+                        (job.job_id,),
+                    )
+                }
+                connection.execute(
                 """
                 INSERT INTO job_queue_records(
                     job_id, idempotency_key, status, attempts, queue_sequence,
@@ -581,19 +655,38 @@ class JobQueue:
                     job.updated_at,
                 ),
             )
-            connection.execute(
-                "DELETE FROM job_queue_artifacts WHERE job_id = ?", (job.job_id,)
+                connection.execute(
+                    "DELETE FROM job_queue_artifacts WHERE job_id = ?", (job.job_id,)
+                )
+                connection.executemany(
+                    "INSERT INTO job_queue_artifacts("
+                    "job_id, artifact_id, content_sha256, size_bytes"
+                    ") VALUES (?, ?, ?, ?)",
+                    [
+                        (
+                            job.job_id,
+                            artifact_id,
+                            artifact.content_sha256,
+                            artifact.size_bytes,
+                        )
+                        for artifact_id, artifact in stored_artifacts.items()
+                    ],
+                )
+                if persist_related is not None:
+                    persist_related(connection)
+        except Exception:
+            self._cleanup_unreferenced_artifacts(
+                artifact
+                for artifact in stored_artifacts.values()
+                if artifact.created
             )
-            connection.executemany(
-                "INSERT INTO job_queue_artifacts(job_id, artifact_id, content) "
-                "VALUES (?, ?, ?)",
-                [
-                    (job.job_id, artifact_id, content)
-                    for artifact_id, content in artifacts.items()
-                ],
-            )
-            if persist_related is not None:
-                persist_related(connection)
+            raise
+        self._cleanup_unreferenced_artifacts(
+            ArtifactFileRecord(content_sha256, 0, False)
+            for content_sha256 in previous_hashes
+            if content_sha256
+            not in {artifact.content_sha256 for artifact in stored_artifacts.values()}
+        )
 
     def _allocate_pending_sequence(self) -> int:
         sequence = self._next_pending_sequence
@@ -610,10 +703,36 @@ class JobQueue:
         if self._database_path is None:
             return
         with sqlite3.connect(self._database_path) as connection:
+            artifact_hashes = [
+                row[0]
+                for row in connection.execute(
+                    "SELECT content_sha256 FROM job_queue_artifacts WHERE job_id = ?",
+                    (job_id,),
+                )
+            ]
             connection.execute(
                 "DELETE FROM job_queue_artifacts WHERE job_id = ?", (job_id,)
             )
             connection.execute("DELETE FROM job_queue_records WHERE job_id = ?", (job_id,))
+        self._cleanup_unreferenced_artifacts(
+            ArtifactFileRecord(content_sha256, 0, False)
+            for content_sha256 in artifact_hashes
+        )
+
+    def _cleanup_unreferenced_artifacts(
+        self, artifacts: Iterable[ArtifactFileRecord]
+    ) -> None:
+        if self._database_path is None or self._artifact_store is None:
+            return
+        with sqlite3.connect(self._database_path) as connection:
+            for artifact in artifacts:
+                referenced = connection.execute(
+                    "SELECT 1 FROM job_queue_artifacts "
+                    "WHERE content_sha256 = ? LIMIT 1",
+                    (artifact.content_sha256,),
+                ).fetchone()
+                if referenced is None:
+                    self._artifact_store.delete(artifact.content_sha256)
 
     def _has_active_high_quality_job(self) -> bool:
         return any(

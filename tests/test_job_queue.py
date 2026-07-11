@@ -108,7 +108,11 @@ def test_job_queue_restores_terminal_results_and_errors(tmp_path) -> None:
 
 def test_job_queue_keeps_binary_payloads_out_of_persisted_metadata(tmp_path) -> None:
     database_path = tmp_path / "job-queue.sqlite3"
-    queue = JobQueue(database_path=database_path)
+    artifact_store_root = tmp_path / "artifact-store"
+    queue = JobQueue(
+        database_path=database_path,
+        artifact_store_root=artifact_store_root,
+    )
     source_content = b"uploaded document"
     source = {
         "content": source_content,
@@ -148,21 +152,33 @@ def test_job_queue_keeps_binary_payloads_out_of_persisted_metadata(tmp_path) -> 
             "SELECT record_json FROM job_queue_records WHERE job_id = ?",
             (created.job_id,),
         ).fetchone()[0]
-        artifact_contents = connection.execute(
-            "SELECT content FROM job_queue_artifacts WHERE job_id = ? ORDER BY artifact_id",
+        artifact_columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(job_queue_artifacts)")
+        }
+        artifact_records = connection.execute(
+            "SELECT content_sha256, size_bytes FROM job_queue_artifacts "
+            "WHERE job_id = ? ORDER BY artifact_id",
             (created.job_id,),
         ).fetchall()
     assert "__veridoc_job_queue_bytes__" not in record_json
     assert "uploaded document" not in record_json
     assert "converted document" not in record_json
     assert "primary artifact" not in record_json
-    assert artifact_contents == [
-        (source_content,),
-        (b"converted document",),
-        (b"primary artifact",),
+    assert "content" not in artifact_columns
+    assert artifact_records == [
+        (sha256(source_content).hexdigest(), len(source_content)),
+        (sha256(b"converted document").hexdigest(), len(b"converted document")),
+        (sha256(b"primary artifact").hexdigest(), len(b"primary artifact")),
     ]
+    assert sorted(path.read_bytes() for path in artifact_store_root.rglob("*.bin")) == sorted(
+        [source_content, b"converted document", b"primary artifact"]
+    )
 
-    restored = JobQueue(database_path=database_path).get_job(created.job_id)
+    restored = JobQueue(
+        database_path=database_path,
+        artifact_store_root=artifact_store_root,
+    ).get_job(created.job_id)
 
     assert restored.source == source
     assert restored.result == {
@@ -174,7 +190,10 @@ def test_job_queue_keeps_binary_payloads_out_of_persisted_metadata(tmp_path) -> 
             {"artifact_id": "primary-json", "content": b"primary artifact"}
         ],
     }
-    replayed = JobQueue(database_path=database_path).get_or_create_job(
+    replayed = JobQueue(
+        database_path=database_path,
+        artifact_store_root=artifact_store_root,
+    ).get_or_create_job(
         idempotency_key="restart-bytes",
         filename="batch-record.pdf",
         mode="standard",
@@ -182,6 +201,91 @@ def test_job_queue_keeps_binary_payloads_out_of_persisted_metadata(tmp_path) -> 
     )
     assert replayed[0].job_id == created.job_id
     assert replayed[1] is False
+
+
+def test_job_queue_rejects_corrupted_file_store_artifact(tmp_path) -> None:
+    database_path = tmp_path / "job-queue.sqlite3"
+    artifact_store_root = tmp_path / "artifact-store"
+    queue = JobQueue(
+        database_path=database_path,
+        artifact_store_root=artifact_store_root,
+    )
+    queue.create_job(
+        idempotency_key="corrupted-artifact",
+        filename="batch-record.pdf",
+        mode="standard",
+        source={"content": b"uploaded document"},
+    )
+    artifact_path = next(artifact_store_root.rglob("*.bin"))
+    artifact_path.write_bytes(b"corrupted")
+
+    with pytest.raises(
+        ValueError, match="persisted job artifact integrity check failed"
+    ):
+        JobQueue(
+            database_path=database_path,
+            artifact_store_root=artifact_store_root,
+        )
+
+
+def test_job_queue_migrates_legacy_blob_artifacts_to_file_store(tmp_path) -> None:
+    database_path = tmp_path / "job-queue.sqlite3"
+    artifact_store_root = tmp_path / "artifact-store"
+    source_content = b"legacy uploaded document"
+    queue = JobQueue(
+        database_path=database_path,
+        artifact_store_root=artifact_store_root,
+    )
+    created = queue.create_job(
+        idempotency_key="legacy-blob-artifact",
+        filename="batch-record.pdf",
+        mode="standard",
+        source={"content": source_content},
+    )
+    with sqlite3.connect(database_path) as connection:
+        artifact_ids = connection.execute(
+            "SELECT job_id, artifact_id FROM job_queue_artifacts"
+        ).fetchall()
+        connection.executescript(
+            """
+            ALTER TABLE job_queue_artifacts RENAME TO job_queue_artifacts_metadata;
+            CREATE TABLE job_queue_artifacts (
+                job_id TEXT NOT NULL,
+                artifact_id TEXT NOT NULL,
+                content BLOB NOT NULL,
+                PRIMARY KEY(job_id, artifact_id)
+            );
+            DROP TABLE job_queue_artifacts_metadata;
+            """
+        )
+        connection.executemany(
+            "INSERT INTO job_queue_artifacts(job_id, artifact_id, content) "
+            "VALUES (?, ?, ?)",
+            [(*artifact_id, source_content) for artifact_id in artifact_ids],
+        )
+    for artifact_path in artifact_store_root.rglob("*.bin"):
+        artifact_path.unlink()
+
+    restored = JobQueue(
+        database_path=database_path,
+        artifact_store_root=artifact_store_root,
+    ).get_job(created.job_id)
+
+    assert restored.source == {"content": source_content}
+    with sqlite3.connect(database_path) as connection:
+        artifact_columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(job_queue_artifacts)")
+        }
+    assert artifact_columns == {
+        "job_id",
+        "artifact_id",
+        "content_sha256",
+        "size_bytes",
+    }
+    assert [path.read_bytes() for path in artifact_store_root.rglob("*.bin")] == [
+        source_content
+    ]
 
 
 def test_job_queue_preserves_artifact_marker_shaped_payloads(tmp_path) -> None:

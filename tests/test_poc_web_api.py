@@ -44,6 +44,7 @@ from services.api.poc_web import (
 
 def test_run_uses_configured_database_for_job_queue(tmp_path, monkeypatch) -> None:
     database_path = tmp_path / "veridoc.sqlite3"
+    artifact_store_root = tmp_path / "artifacts"
     servers = []
 
     class FakeServer:
@@ -56,9 +57,12 @@ def test_run_uses_configured_database_for_job_queue(tmp_path, monkeypatch) -> No
             return None
 
     monkeypatch.setenv("VERIDOC_DB_PATH", str(database_path))
+    monkeypatch.setenv("VERIDOC_ARTIFACT_STORE_ROOT", str(artifact_store_root))
     monkeypatch.setattr(poc_web, "ThreadingHTTPServer", FakeServer)
 
     poc_web.run()
+
+    assert servers[0].job_queue.artifact_store_root == artifact_store_root
 
     created = servers[0].job_queue.create_job(
         idempotency_key="run-persistence",

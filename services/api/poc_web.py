@@ -54,6 +54,7 @@ from core.render.ooxml import (
     render_editable_docx_from_pdf_ir,
     render_xlsx_from_ir,
 )
+from services.api.artifact_store import default_artifact_store_root
 from services.api.job_queue import JobQueue, JobRecord
 from services.api.persistence_repository import default_database_path
 
@@ -1286,7 +1287,10 @@ def _llm_plan_unavailable_reason(exc: Exception) -> str:
 def run(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> None:
     """Run the stdlib PoC API server."""
     database_path = default_database_path()
-    job_queue = JobQueue(database_path=database_path)
+    job_queue = JobQueue(
+        database_path=database_path,
+        artifact_store_root=default_artifact_store_root(),
+    )
     job_event_store = JobAuditEventStore(database_path=database_path)
     server = ThreadingHTTPServer((host, port), PocWebRequestHandler)
     server.job_queue = job_queue
