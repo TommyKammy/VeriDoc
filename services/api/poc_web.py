@@ -750,6 +750,37 @@ class TemplateStore:
             "name": record["name"],
         }
 
+    def mapping_snapshot(
+        self, template_id: str, *, template_version: int | None = None
+    ) -> dict[str, Any]:
+        record = self.get_template(template_id)
+        if template_version is None:
+            if record.get("status", "active") != "active":
+                raise ValueError("template_id is inactive")
+            template_version = record["current_version"]
+        version = next(
+            (
+                candidate
+                for candidate in record["versions"]
+                if candidate.get("version") == template_version
+            ),
+            None,
+        )
+        if version is None:
+            raise ValueError("template snapshot version is unknown")
+        return {
+            "template_id": record["template_id"],
+            "template_version": template_version,
+            "name": record["name"],
+            "document_type": version["document_type"],
+            "anchors": deepcopy(version["anchors"]),
+            "fields": deepcopy(version["fields"]),
+            "tables": deepcopy(version["tables"]),
+            "risk_rank": deepcopy(version["risk_rank"]),
+            "validation_rules": deepcopy(version["validation_rules"]),
+            "output_mapping": deepcopy(version["output_mapping"]),
+        }
+
 
 def _template_version_value(
     request: dict[str, Any],
@@ -908,7 +939,7 @@ def convert_uploaded_document(
         audit["requested_output_format"] = requested_output_format
     if requested_template_id is not None:
         audit["template_id"] = requested_template_id
-        audit["template"] = requested_template
+        audit["template"] = _template_audit_snapshot(requested_template)
     download_payload = {
         "document_ir": document_ir_dict,
         "validation": asdict(validation),
@@ -1663,6 +1694,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                         if isinstance(job.template, dict)
                         else None
                     ),
+                    template_store=self._template_store(),
                     template_snapshot=job.template,
                 )
                 result = _persistable_artifact_manifest(job.job_id, result)
@@ -3147,14 +3179,32 @@ def _direct_convert_template_snapshot(
             raise ValueError("template snapshot version is invalid")
         if not isinstance(snapshot.get("name"), str) or not snapshot["name"].strip():
             raise ValueError("template snapshot name is invalid")
-        return snapshot
+        if "fields" in snapshot:
+            return snapshot
+        if template_store is None:
+            raise ValueError("template snapshot definitions are unavailable")
+        try:
+            return template_store.mapping_snapshot(
+                template_id,
+                template_version=template_version,
+            )
+        except KeyError as exc:
+            raise ValueError("template_id is unknown") from exc
     if template_id is None:
         return None
     store = DEFAULT_TEMPLATE_STORE if template_store is None else template_store
     try:
-        return store.latest_job_snapshot(template_id)
+        return store.mapping_snapshot(template_id)
     except KeyError as exc:
         raise ValueError("template_id is unknown") from exc
+
+
+def _template_audit_snapshot(template: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "template_id": template["template_id"],
+        "template_version": template["template_version"],
+        "name": template["name"],
+    }
 
 
 def _render_primary_artifact(
@@ -4269,31 +4319,45 @@ def _template_mapping_review_items(
     for field in mapping.fields:
         if not field.requires_review:
             continue
-        block_id = field.evidence.get("block_id")
-        block = blocks_by_id.get(block_id) if isinstance(block_id, str) else None
+        evidence_block_id = field.evidence.get("block_id")
+        block = (
+            blocks_by_id.get(evidence_block_id)
+            if isinstance(evidence_block_id, str)
+            else None
+        )
         warnings = list(field.warnings) or [
             f"template field '{field.field_id}' requires review"
         ]
+        review_target_id = f"template-field:{field.field_id}"
+        source_page = (
+            block.source_page
+            if block is not None
+            else document_ir.pages[0].page_number
+            if document_ir.pages
+            else 1
+        )
         item: dict[str, Any] = {
             "document_id": document_ir.document.id,
+            "block_id": review_target_id,
+            "source_id": f"{document_ir.document.id}:{review_target_id}",
+            "source_page": source_page,
             "field_id": field.field_id,
             "source_confidence": field.confidence,
             "text": field.value or "",
             "warnings": warnings,
         }
         if block is not None:
-            item.update(
-                {
-                    "block_id": block.id,
-                    "source_id": f"{document_ir.document.id}:{block.id}",
-                    "source_page": block.source_page,
-                }
-            )
+            item["evidence_block_id"] = block.id
             page = pages_by_number.get(block.source_page)
             source_bbox = _review_source_bbox(block.bbox, page)
             if source_bbox is not None:
                 item["source_bbox"] = source_bbox
                 item["source_page_geometry"] = asdict(page)
+        else:
+            item["warnings"] = [
+                *warnings,
+                f"template field '{field.field_id}' source metadata incomplete; original jump unavailable",
+            ]
         items.append(item)
     return items
 
