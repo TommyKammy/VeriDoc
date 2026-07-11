@@ -385,6 +385,32 @@ class JobQueue:
                 return running
             return None
 
+    def start_job(self, job_id: str) -> JobRecord:
+        """Claim one known queued job for an in-process PoC worker."""
+        with self._lock:
+            try:
+                job = self._jobs[job_id]
+            except KeyError as exc:
+                raise KeyError(f"unknown job_id: {job_id}") from exc
+            if job_id in self._unpublished_job_ids:
+                raise KeyError(f"unknown job_id: {job_id}")
+            if job.status != "queued":
+                raise ValueError("job must be queued")
+            if job.mode == "high_quality" and self._has_running_high_quality_job():
+                raise RuntimeError("high_quality job already running")
+            pending_sequence = self._pending_sequences.get(job_id)
+            running = self._replace(
+                job,
+                queue_sequence=pending_sequence,
+                status="running",
+            )
+            try:
+                self._pending_job_ids.remove(job_id)
+            except ValueError:
+                pass
+            self._pending_sequences.pop(job_id, None)
+            return running
+
     def mark_succeeded(self, job_id: str, *, result: dict[str, Any]) -> JobRecord:
         with self._lock:
             job = self._require_running_job(job_id)

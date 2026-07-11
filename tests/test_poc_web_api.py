@@ -7615,6 +7615,75 @@ def test_poc_http_api_stores_uploaded_job_source_before_returning_reference() ->
     assert server.job_event_store.list_events(filters={"job_id": job.job_id}) == []
 
 
+def test_poc_http_api_job_submission_reaches_status_and_result() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue()
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    uploaded_content = json.dumps(
+        {
+            "document": {"id": "job-happy-path", "source_type": "pdf"},
+            "blocks": [
+                {
+                    "id": "block-0001",
+                    "type": "paragraph",
+                    "text": "Submitted through the job API.",
+                    "page": 1,
+                    "confidence": 0.99,
+                }
+            ],
+        }
+    ).encode("utf-8")
+    try:
+        payload = json.dumps(
+            {
+                "idempotency_key": "job-happy-path",
+                "filename": "job-happy-path.json",
+                "content_type": "application/json",
+                "content_base64": base64.b64encode(uploaded_content).decode("ascii"),
+                "size_bytes": len(uploaded_content),
+                "source_sha256": hashlib.sha256(uploaded_content).hexdigest(),
+                "mode": "standard",
+                "conversion_mode": "auto",
+                "use_llm": False,
+                "use_ocr": False,
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/jobs",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        submit_response = connection.getresponse()
+        submitted = json.loads(submit_response.read().decode("utf-8"))
+        job_id = submitted["job"]["job_id"]
+
+        connection.request("GET", f"/api/jobs/{job_id}")
+        status_response = connection.getresponse()
+        status_body = json.loads(status_response.read().decode("utf-8"))
+
+        connection.request("GET", f"/api/jobs/{job_id}/result")
+        result_response = connection.getresponse()
+        result_body = json.loads(result_response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert submit_response.status == 202
+    assert status_response.status == 200
+    assert status_body["job"]["status"] == "succeeded"
+    assert status_body["job"]["result"] == {
+        "available": True,
+        "href": f"/api/jobs/{job_id}/result",
+    }
+    assert status_body["job"]["artifacts"][0]["id"] == "debug-json"
+    assert result_response.status == 200
+    assert isinstance(result_body["document_ir"], dict)
+    assert isinstance(result_body["validation"], dict)
+
+
 def test_poc_http_api_rolls_back_desktop_upload_when_create_audit_fails() -> None:
     class RejectingJobAuditEventStore(JobAuditEventStore):
         def record_once(self, event: dict[str, object], *, dedupe: dict[str, object]) -> dict[str, object]:
@@ -10868,8 +10937,11 @@ def test_poc_http_api_sanitizes_succeeded_job_result_and_downloads_result() -> N
     detail_job = detail_body["job"]
     assert list_response.status == 200
     assert detail_response.status == 200
-    assert "result" not in list_job
-    assert "result" not in detail_job
+    assert list_job["result"] == {
+        "available": True,
+        "href": f"/api/jobs/{created.job_id}/result",
+    }
+    assert detail_job["result"] == list_job["result"]
     assert list_job["has_result"] is True
     assert detail_job["has_result"] is True
     assert [action["action"] for action in detail_job["available_actions"]] == [
@@ -10925,8 +10997,8 @@ def test_poc_http_api_summarizes_job_progress_without_exposing_result_payload() 
     assert detail_job["display_status"] == "review_required"
     assert detail_job["progress_percent"] == 100
     assert detail_job["warning_count"] == 2
-    assert "result" not in list_job
-    assert "result" not in detail_job
+    assert list_job["result"] == {"available": False, "href": None}
+    assert detail_job["result"] == list_job["result"]
     assert "hidden review payload" not in json.dumps(list_body)
     assert "hidden review payload" not in json.dumps(detail_body)
 
@@ -10971,8 +11043,8 @@ def test_poc_http_api_preserves_blocked_conversion_job_display_status() -> None:
     assert detail_job["display_status"] == "blocked"
     assert detail_job["progress_percent"] == 100
     assert detail_job["warning_count"] == 1
-    assert "result" not in list_job
-    assert "result" not in detail_job
+    assert list_job["result"] == {"available": False, "href": None}
+    assert detail_job["result"] == list_job["result"]
     assert "hidden blocked payload" not in json.dumps(list_body)
     assert "hidden blocked payload" not in json.dumps(detail_body)
 
@@ -12055,6 +12127,23 @@ def test_web_direct_convert_selects_and_posts_conversion_mode() -> None:
     assert '<option value="excel_to_word">excel_to_word</option>' in html
     assert "const directConversionMode = document.querySelector(\"#direct-conversion-mode\")" in html
     assert "conversion_mode: directConversionMode.value" in html
+
+
+def test_web_conversion_workflow_uses_job_submit_status_and_result_contract() -> None:
+    html = Path("apps/web/index.html").read_text(encoding="utf-8")
+    click_handler = re.search(
+        r'button\.addEventListener\("click", async \(\) => \{(?P<body>.*?)\n      \}\);',
+        html,
+        re.DOTALL,
+    )
+
+    assert click_handler is not None
+    body = click_handler.group("body")
+    assert 'apiFetch("/api/jobs"' in body
+    assert 'apiFetch("/api/convert"' not in body
+    assert "content_base64: contentBase64" in body
+    assert "const job = submission.job" in body
+    assert "apiFetch(job.result.href)" in body
 
 
 def test_web_direct_convert_selects_and_posts_llm_ocr_settings() -> None:

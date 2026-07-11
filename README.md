@@ -102,6 +102,22 @@ PY
 Expected result: `GET /` returns HTML, `POST /api/convert` returns JSON, and the
 script prints `PoC API smoke check passed`.
 
+### Conversion API responsibilities
+
+`POST /api/jobs` is the application workflow for conversions. Submit the source
+bytes and conversion settings there, read status from `GET /api/jobs/{job_id}`,
+and follow the returned `job.result.href` when `job.result.available` is true.
+Job responses include the durable `job_id`, a result reference, and sanitized
+`artifacts[]` references; binary artifact storage and dedicated artifact
+download endpoints remain outside this contract. The local PoC currently runs a
+source-bearing job during submission, while preserving the job-shaped contract
+for a later asynchronous worker.
+
+`POST /api/convert` is retained as a synchronous development and compatibility
+endpoint. It returns the conversion payload directly and is used by the smoke
+check above, but the bundled web UI and other application workflows should use
+`/api/jobs`.
+
 Supported input formats are PDF (`.pdf`), Word (`.docx`), Excel (`.xlsx`), and
 the current parser-output JSON shape used by the smoke test above. Uploads are
 limited to 2 MiB before base64 request expansion. PDF parsing depends on the

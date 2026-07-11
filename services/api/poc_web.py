@@ -1549,6 +1549,29 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 return
             self._send_json({"error": "invalid_job_request", "message": str(exc)}, status=400)
             return
+        if created_job and source is not None and not desktop_upload_audit:
+            try:
+                conversion_mode = _validate_conversion_mode(request.get("conversion_mode"))
+                use_llm = _validate_conversion_setting_boolean(request, "use_llm")
+                use_ocr = _validate_conversion_setting_boolean(request, "use_ocr")
+                llm_rejection = _llm_configuration_rejection(use_llm=use_llm, use_ocr=use_ocr)
+                if llm_rejection is not None:
+                    raise ValueError(str(llm_rejection["message"]))
+                job_queue.start_job(job.job_id)
+                result = convert_uploaded_document(
+                    filename=job.filename,
+                    content=source["content"],
+                    conversion_mode=conversion_mode,
+                    use_llm=use_llm,
+                    use_ocr=use_ocr,
+                    output_format=request.get("output_format"),
+                    template_id=request.get("template_id"),
+                    template_store=self._template_store(),
+                )
+                job = job_queue.mark_succeeded(job.job_id, result=result)
+            except (PocServerDependencyError, RuntimeError, ValueError) as exc:
+                if job_queue.get_job(job.job_id).status == "running":
+                    job = job_queue.mark_failed(job.job_id, error=str(exc))
         response = {"job": _job_response(job, self._job_queue(), role=role)}
         if upload_audit_event is not None:
             response["audit_event"] = upload_audit_event
@@ -2249,6 +2272,10 @@ def _job_response(
 ) -> dict[str, Any]:
     hashes = _job_hashes(job)
     hash_verification = _job_hash_verification(job)
+    result_reference = {
+        "available": _job_has_download(job),
+        "href": f"/api/jobs/{job.job_id}/result" if _job_has_download(job) else None,
+    }
     return {
         "job_id": job.job_id,
         "idempotency_key": job.idempotency_key,
@@ -2265,9 +2292,32 @@ def _job_response(
         "hashes": hashes,
         "hash_verification": hash_verification,
         "has_result": _job_has_download(job),
+        "result": result_reference,
+        "artifacts": _job_artifact_references(job, result_reference["href"]),
         "available_actions": _job_actions(job, job_queue, role=role),
         "template": deepcopy(job.template),
     }
+
+
+def _job_artifact_references(job: JobRecord, result_href: str | None) -> list[dict[str, Any]]:
+    if not isinstance(job.result, dict):
+        return []
+    artifacts = job.result.get("artifacts")
+    if not isinstance(artifacts, list):
+        return []
+    references = []
+    for artifact in artifacts:
+        if not isinstance(artifact, dict):
+            continue
+        references.append(
+            {
+                key: deepcopy(artifact[key])
+                for key in ("id", "filename", "content_type", "format", "metadata")
+                if key in artifact
+            }
+            | {"href": result_href}
+        )
+    return references
 
 
 def _job_actions(

@@ -1428,12 +1428,16 @@
           if (!isActiveDirectConversion(conversionToken)) return;
           setSourcePreview(file, fileBytes);
           const contentBase64 = arrayBufferToBase64(fileBytes);
-          const response = await apiFetch("/api/convert", {
+          const response = await apiFetch("/api/jobs", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
+              idempotency_key: `web-convert-${file.lastModified}-${file.size}-${file.name}`,
               filename: file.name,
+              content_type: file.type || "application/octet-stream",
               content_base64: contentBase64,
+              size_bytes: file.size,
+              mode: "standard",
               conversion_mode: directConversionMode.value,
               output_format: directOutputFormat.value || undefined,
               template_id: directTemplate.value || undefined,
@@ -1441,15 +1445,30 @@
               use_ocr: directUseOcr.checked,
             }),
           });
-          const result = await response.json();
+          const submission = await response.json();
           if (!isActiveDirectConversion(conversionToken)) return;
           if (!response.ok) {
-            renderDirectConvertError(result);
+            renderDirectConvertError(submission);
             setPageStatus("Direct conversion failed.", true);
             return;
           }
+          const job = submission.job;
+          state.selectedJob = job;
+          if (!job.result?.available || !job.result.href) {
+            await loadJobs();
+            setPageStatus(`Conversion job ${job.job_id} submitted.`);
+            return;
+          }
+          const resultResponse = await apiFetch(job.result.href);
+          const result = await resultResponse.json();
+          if (!resultResponse.ok) {
+            renderDirectConvertError(result);
+            setPageStatus("Conversion result failed.", true);
+            return;
+          }
           renderResult(result);
-          setPageStatus("Direct conversion finished.");
+          await loadJobs();
+          setPageStatus(`Conversion job ${job.job_id} finished.`);
         } catch (error) {
           if (!isActiveDirectConversion(conversionToken)) return;
           renderDirectConvertError({
