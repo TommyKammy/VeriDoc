@@ -312,6 +312,47 @@ class JobAuditEventStore:
             self._integrity_checkpoint = checkpoint
         return deepcopy(event), job
 
+    def record_and_retry(
+        self,
+        audit_event: dict[str, Any],
+        *,
+        job_queue: JobQueue,
+        job_id: str,
+    ) -> tuple[dict[str, Any], JobRecord]:
+        queue_database_path = job_queue.database_path
+        persistence_mismatch = (self._database_path is None) != (
+            queue_database_path is None
+        )
+        if not persistence_mismatch and self._database_path is not None:
+            persistence_mismatch = (
+                Path(queue_database_path).resolve()
+                != Path(self._database_path).resolve()
+            )
+        if persistence_mismatch:
+            raise ValueError("job and audit persistence must share one database")
+        with self._lock:
+            self._require_integrity_locked()
+            event = _audit_event_with_integrity(
+                audit_event,
+                previous_events=self._events,
+                checkpoint=self._integrity_checkpoint,
+            )
+            checkpoint = _audit_event_integrity_checkpoint([*self._events, event])
+            if self._database_path is None:
+                job = job_queue.retry_failed_job(job_id)
+            else:
+                job = job_queue.retry_failed_job(
+                    job_id,
+                    persist_related=lambda connection: self._persist_event(
+                        event,
+                        checkpoint=checkpoint,
+                        connection=connection,
+                    ),
+                )
+            self._events.append(event)
+            self._integrity_checkpoint = checkpoint
+        return deepcopy(event), job
+
     def find_once(self, *, dedupe: dict[str, Any]) -> dict[str, Any] | None:
         with self._lock:
             self._require_integrity_locked()
@@ -1590,11 +1631,15 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 accepted_event = _reject_direct_desktop_upload_audit_event(job, audit_event)
             else:
                 accepted_event = _validate_job_event(job, action, audit_event, job_queue)
-            if action == "retry_conversion":
-                job_event_store.require_integrity()
-                updated_job = job_queue.retry_failed_job(job_id)
             event = _job_event_with_auth_context(accepted_event, auth_context)
-            stored_event = job_event_store.record(event)
+            if action == "retry_conversion":
+                stored_event, updated_job = job_event_store.record_and_retry(
+                    event,
+                    job_queue=job_queue,
+                    job_id=job_id,
+                )
+            else:
+                stored_event = job_event_store.record(event)
         except KeyError:
             self._send_json({"error": "job_not_found"}, status=404)
             return

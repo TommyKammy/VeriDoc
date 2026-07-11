@@ -24,6 +24,11 @@ _ARTIFACT_MARKER = "__veridoc_job_queue_artifact__"
 
 
 @dataclass(frozen=True)
+class _ArtifactReference:
+    artifact_id: str
+
+
+@dataclass(frozen=True)
 class JobRecord:
     job_id: str
     idempotency_key: str
@@ -387,7 +392,12 @@ class JobQueue:
                 return retried
             return self._replace(job, status="failed", attempts=attempts, error=error)
 
-    def retry_failed_job(self, job_id: str) -> JobRecord:
+    def retry_failed_job(
+        self,
+        job_id: str,
+        *,
+        persist_related: Callable[[sqlite3.Connection], None] | None = None,
+    ) -> JobRecord:
         with self._lock:
             try:
                 job = self._jobs[job_id]
@@ -399,7 +409,11 @@ class JobQueue:
                 raise RuntimeError("high_quality job already active")
             pending_sequence = self._allocate_pending_sequence()
             retried = self._replace(
-                job, queue_sequence=pending_sequence, status="queued", error=None
+                job,
+                queue_sequence=pending_sequence,
+                persist_related=persist_related,
+                status="queued",
+                error=None,
             )
             self._append_pending(job_id, pending_sequence)
             return retried
@@ -418,13 +432,18 @@ class JobQueue:
         job: JobRecord,
         *,
         queue_sequence: int | None = None,
+        persist_related: Callable[[sqlite3.Connection], None] | None = None,
         **changes: Any,
     ) -> JobRecord:
         values = job.to_dict()
         values.update(changes)
         values["updated_at"] = _utc_now()
         updated = JobRecord(**values)
-        self._persist(updated, queue_sequence=queue_sequence)
+        self._persist(
+            updated,
+            queue_sequence=queue_sequence,
+            persist_related=persist_related,
+        )
         self._jobs[job.job_id] = updated
         return updated
 
@@ -620,7 +639,7 @@ def _extract_binary_artifacts(value: Any) -> tuple[Any, dict[str, bytes]]:
         if isinstance(item, bytes):
             artifact_id = str(len(artifacts))
             artifacts[artifact_id] = item
-            return {_ARTIFACT_MARKER: artifact_id}
+            return _ArtifactReference(artifact_id)
         if isinstance(item, dict):
             return {key: project(child) for key, child in item.items()}
         if isinstance(item, (list, tuple)):
@@ -631,12 +650,11 @@ def _extract_binary_artifacts(value: Any) -> tuple[Any, dict[str, bytes]]:
 
 
 def _restore_binary_artifacts(value: Any, artifacts: dict[str, bytes]) -> Any:
+    if isinstance(value, _ArtifactReference):
+        if value.artifact_id not in artifacts:
+            raise ValueError("persisted job artifact is missing")
+        return artifacts[value.artifact_id]
     if isinstance(value, dict):
-        if set(value) == {_ARTIFACT_MARKER}:
-            artifact_id = value[_ARTIFACT_MARKER]
-            if not isinstance(artifact_id, str) or artifact_id not in artifacts:
-                raise ValueError("persisted job artifact is missing")
-            return artifacts[artifact_id]
         return {
             key: _restore_binary_artifacts(item, artifacts)
             for key, item in value.items()
@@ -647,6 +665,8 @@ def _restore_binary_artifacts(value: Any, artifacts: dict[str, bytes]) -> Any:
 
 
 def _encode_persisted_value(value: Any) -> Any:
+    if isinstance(value, _ArtifactReference):
+        return {_ARTIFACT_MARKER: value.artifact_id}
     if isinstance(value, bytes):
         return {_BYTES_MARKER: base64.b64encode(value).decode("ascii")}
     if isinstance(value, dict):
@@ -664,6 +684,11 @@ def _encode_persisted_value(value: Any) -> Any:
 
 def _decode_persisted_value(value: Any) -> Any:
     if isinstance(value, dict):
+        if set(value) == {_ARTIFACT_MARKER}:
+            artifact_id = value[_ARTIFACT_MARKER]
+            if not isinstance(artifact_id, str):
+                raise ValueError("invalid persisted artifact reference")
+            return _ArtifactReference(artifact_id)
         if set(value) == {_BYTES_MARKER}:
             encoded = value[_BYTES_MARKER]
             if not isinstance(encoded, str):

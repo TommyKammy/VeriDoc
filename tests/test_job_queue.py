@@ -184,6 +184,68 @@ def test_job_queue_keeps_binary_payloads_out_of_persisted_metadata(tmp_path) -> 
     assert replayed[1] is False
 
 
+def test_job_queue_preserves_artifact_marker_shaped_payloads(tmp_path) -> None:
+    database_path = tmp_path / "job-queue.sqlite3"
+    marker_payload = {"__veridoc_job_queue_artifact__": "0"}
+    queue = JobQueue(database_path=database_path)
+    created = queue.create_job(
+        idempotency_key="artifact-marker-payload",
+        filename="batch-record.pdf",
+        mode="standard",
+        source={"metadata": marker_payload},
+    )
+    running = queue.start_next_job()
+    assert running is not None
+    queue.mark_succeeded(
+        running.job_id,
+        result={"metadata": marker_payload},
+    )
+
+    restored = JobQueue(database_path=database_path).get_job(created.job_id)
+
+    assert restored.source == {"metadata": marker_payload}
+    assert restored.result == {"metadata": marker_payload}
+
+
+def test_job_queue_rolls_back_durable_retry_when_audit_persistence_fails(
+    tmp_path, monkeypatch
+) -> None:
+    database_path = tmp_path / "job-queue.sqlite3"
+    queue = JobQueue(max_attempts=1, database_path=database_path)
+    audit_store = JobAuditEventStore(database_path=database_path)
+    created = queue.create_job(
+        idempotency_key="atomic-retry",
+        filename="batch-record.pdf",
+        mode="standard",
+    )
+    running = queue.start_next_job()
+    assert running is not None
+    queue.mark_failed(running.job_id, error="parser unavailable")
+
+    def fail_audit_persistence(*args, **kwargs) -> None:
+        raise sqlite3.OperationalError("audit persistence unavailable")
+
+    monkeypatch.setattr(audit_store, "_persist_event", fail_audit_persistence)
+
+    with pytest.raises(sqlite3.OperationalError, match="audit persistence unavailable"):
+        audit_store.record_and_retry(
+            {
+                "event_type": "conversion_job.action_requested",
+                "job_id": created.job_id,
+                "action": "retry_conversion",
+            },
+            job_queue=queue,
+            job_id=created.job_id,
+        )
+
+    assert queue.get_job(created.job_id).status == "failed"
+    assert queue.start_next_job() is None
+    restored_queue = JobQueue(max_attempts=1, database_path=database_path)
+    assert restored_queue.get_job(created.job_id).status == "failed"
+    assert restored_queue.start_next_job() is None
+    assert JobAuditEventStore(database_path=database_path).list_events() == []
+
+
 def test_job_queue_requeues_running_job_after_reinitialization(tmp_path) -> None:
     database_path = tmp_path / "job-queue.sqlite3"
     queue = JobQueue(database_path=database_path)
