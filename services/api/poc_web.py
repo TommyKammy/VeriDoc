@@ -1719,6 +1719,17 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
         if not authenticated:
             return
         role = auth_context["role"] if auth_context is not None else None
+        if role is not None and ROLE_PERMISSIONS[role].isdisjoint(
+            {"jobs:create", "jobs:read", "jobs:retry"}
+        ):
+            self._send_json(
+                {
+                    "error": "forbidden",
+                    "message": f"role {role} cannot perform job_events_write",
+                },
+                status=403,
+            )
+            return
         try:
             request = self._read_json_request()
             job_id = str(request.get("job_id") or "")

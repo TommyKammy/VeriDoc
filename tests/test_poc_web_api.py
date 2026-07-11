@@ -5858,6 +5858,20 @@ def test_operator_and_audit_viewer_enforce_api_boundaries_before_payload_handlin
         operator_review_body = json.loads(operator_review_response.read().decode("utf-8"))
 
         audit_headers = {"Authorization": "Bearer audit-viewer-token"}
+        connection.request(
+            "POST",
+            "/api/job-events",
+            body=invalid_payload,
+            headers={
+                **audit_headers,
+                "Content-Type": "application/json",
+                "Content-Length": str(len(invalid_payload)),
+            },
+        )
+        audit_job_event_write_response = connection.getresponse()
+        audit_job_event_write_body = json.loads(
+            audit_job_event_write_response.read().decode("utf-8")
+        )
         connection.request("GET", "/api/job-events", headers=audit_headers)
         audit_job_events_response = connection.getresponse()
         audit_job_events_response.read()
@@ -5877,6 +5891,12 @@ def test_operator_and_audit_viewer_enforce_api_boundaries_before_payload_handlin
         "message": "role operator cannot perform review_edit",
     }
     assert server.review_event_store.list_events() == []
+    assert audit_job_event_write_response.status == 403
+    assert audit_job_event_write_body == {
+        "error": "forbidden",
+        "message": "role audit_viewer cannot perform job_events_write",
+    }
+    assert server.job_event_store.list_events() == []
     assert audit_job_events_response.status == 200
     assert audit_review_events_response.status == 200
     assert audit_jobs_response.status == 403
