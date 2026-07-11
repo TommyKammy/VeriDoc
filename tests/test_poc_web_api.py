@@ -11210,7 +11210,7 @@ def test_bundled_web_ui_explains_token_state_and_auth_failures() -> None:
     assert "Token was rejected or has expired. Clear it, then set a new token." in html
     assert "Token is valid, but its role does not allow this operation." in html
     assert "function setAuthStatus(state, message)" in html
-    assert "function authFailure(response, body)" in html
+    assert "function authFailure(response, body, requestAuthToken)" in html
     assert "response.status === 401" in html
     assert "response.status === 403" in html
 

@@ -2212,8 +2212,22 @@
         authStatus.className = state === "configured" ? "page-status" : "page-status error";
       }
 
-      function authFailure(response, body) {
-        if (response.status === 401) {
+      function authFailure(response, body, requestAuthToken) {
+        const requiresIdentity =
+          response.status === 403 &&
+          body.error === "forbidden" &&
+          body.message === "review approval requires authenticated actor identity";
+        if (
+          !requestAuthToken &&
+          ((response.status === 401 && body.error === "auth_required") || requiresIdentity)
+        ) {
+          setAuthStatus(
+            "missing",
+            requiresIdentity
+              ? "Authenticated identity is required. Configure local authentication, then set a token."
+              : "Token is not set. Enter a token, then choose Save token.",
+          );
+        } else if (response.status === 401) {
           setAuthStatus(
             "rejected",
             "Token was rejected or has expired. Clear it, then set a new token.",
@@ -3216,13 +3230,20 @@
 
       async function apiFetch(url, options = {}) {
         const token = activeAuthToken();
+        const authGeneration = state.authGeneration;
         const headers = { ...(options.headers || {}) };
         if (token) headers.Authorization = `Bearer ${token}`;
         const signal = options.signal || state.credentialAbortController.signal;
         const response = await fetch(url, { ...options, headers, signal });
-        if (response.status === 401 || response.status === 403) {
+        if (
+          (response.status === 401 || response.status === 403) &&
+          !signal.aborted &&
+          isActiveCredentialRequest(token, authGeneration)
+        ) {
           const body = await response.clone().json().catch(() => ({}));
-          authFailure(response, body);
+          if (!signal.aborted && isActiveCredentialRequest(token, authGeneration)) {
+            authFailure(response, body, token);
+          }
         }
         return response;
       }
