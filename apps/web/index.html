@@ -3236,6 +3236,13 @@
         const signal = options.signal || state.credentialAbortController.signal;
         const response = await fetch(url, { ...options, headers, signal });
         if (
+          response.ok &&
+          token &&
+          !signal.aborted &&
+          isActiveCredentialRequest(token, authGeneration)
+        ) {
+          setAuthStatus("configured", "Token is set for this browser tab.");
+        } else if (
           (response.status === 401 || response.status === 403) &&
           !signal.aborted &&
           isActiveCredentialRequest(token, authGeneration)

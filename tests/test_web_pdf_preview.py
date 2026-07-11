@@ -228,8 +228,8 @@ def test_review_actions_clear_and_reject_stale_file_selection() -> None:
     assert "const signal = options.signal || state.credentialAbortController.signal;" in html
     assert "const response = await fetch(url, { ...options, headers, signal });" in html
     assert "const authGeneration = state.authGeneration;" in html
-    assert html.count("!signal.aborted") == 2
-    assert html.count("isActiveCredentialRequest(token, authGeneration)") == 2
+    assert html.count("!signal.aborted") == 3
+    assert html.count("isActiveCredentialRequest(token, authGeneration)") == 3
     assert re.search(
         r"\} finally \{\s+"
         r"if \(isActiveCredentialRequest\(requestAuthToken, requestAuthGeneration\)\) \{\s+"
@@ -258,7 +258,7 @@ def test_review_actions_clear_and_reject_stale_file_selection() -> None:
     assert "if (postResponseBlockReason) throw" not in html
 
 
-def test_auth_failure_preserves_missing_identity_and_token_states() -> None:
+def test_auth_status_tracks_active_credential_requests() -> None:
     html = _web_html()
 
     assert "function authFailure(response, body, requestAuthToken)" in html
@@ -279,6 +279,13 @@ def test_auth_failure_preserves_missing_identity_and_token_states() -> None:
         in html
     )
     assert "authFailure(response, body, token);" in html
+    assert re.search(
+        r"if \(\s+response\.ok &&\s+token &&\s+"
+        r"!signal\.aborted &&\s+isActiveCredentialRequest\(token, authGeneration\)\s+"
+        r'\) \{\s+setAuthStatus\("configured", "Token is set for this browser tab\."\);\s+'
+        r"\} else if \(\s+\(response\.status === 401 \|\| response\.status === 403\)",
+        html,
+    )
     assert (
         "Review action accepted; current review result changed before the response returned."
         in html
