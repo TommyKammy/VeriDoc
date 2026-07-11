@@ -7,6 +7,7 @@ from io import BytesIO
 import json
 import os
 import re
+import sqlite3
 import tempfile
 from http.client import HTTPConnection
 from http.server import ThreadingHTTPServer
@@ -31,6 +32,7 @@ from core.parsers.pdf_table_extraction import (
 )
 from core.parsers.xlsx_extraction import extract_xlsx_structure
 import services.api.poc_web as poc_web
+import services.api.persistence_repository as persistence_repository
 from services.api.job_queue import JobQueue
 from services.api.poc_web import (
     JobAuditEventStore,
@@ -38,6 +40,80 @@ from services.api.poc_web import (
     ReviewAuditEventStore,
     convert_uploaded_document,
 )
+
+
+def test_run_uses_configured_database_for_job_queue(tmp_path, monkeypatch) -> None:
+    database_path = tmp_path / "veridoc.sqlite3"
+    artifact_store_root = tmp_path / "artifacts"
+    servers = []
+
+    class FakeServer:
+        def __init__(self, server_address, request_handler) -> None:
+            self.server_address = server_address
+            self.request_handler = request_handler
+            servers.append(self)
+
+        def serve_forever(self) -> None:
+            return None
+
+    monkeypatch.setenv("VERIDOC_DB_PATH", str(database_path))
+    monkeypatch.setenv("VERIDOC_ARTIFACT_STORE_ROOT", str(artifact_store_root))
+    monkeypatch.setattr(poc_web, "ThreadingHTTPServer", FakeServer)
+
+    poc_web.run()
+
+    assert servers[0].job_queue.artifact_store_root == artifact_store_root
+
+    created = servers[0].job_queue.create_job(
+        idempotency_key="run-persistence",
+        filename="batch-record.pdf",
+        mode="standard",
+    )
+    audit_event = servers[0].job_event_store.record(
+        {
+            "event_type": "desktop.job_operation",
+            "job_id": created.job_id,
+            "action": "desktop_upload",
+        }
+    )
+    restored = JobQueue(database_path=database_path).get_job(created.job_id)
+    assert restored.status == "queued"
+    assert JobAuditEventStore(database_path=database_path).list_events() == [audit_event]
+
+
+def test_run_resolves_relative_database_path_from_repository_root(
+    tmp_path, monkeypatch
+) -> None:
+    repository_root = tmp_path / "repository"
+    working_directory = tmp_path / "working-directory"
+    working_directory.mkdir()
+    database_path = repository_root / "var" / "veridoc" / "relative.sqlite3"
+    servers = []
+
+    class FakeServer:
+        def __init__(self, server_address, request_handler) -> None:
+            self.server_address = server_address
+            self.request_handler = request_handler
+            servers.append(self)
+
+        def serve_forever(self) -> None:
+            return None
+
+    monkeypatch.setattr(persistence_repository, "REPO_ROOT", repository_root)
+    monkeypatch.chdir(working_directory)
+    monkeypatch.setenv("VERIDOC_DB_PATH", "var/veridoc/relative.sqlite3")
+    monkeypatch.setattr(poc_web, "ThreadingHTTPServer", FakeServer)
+
+    poc_web.run()
+
+    created = servers[0].job_queue.create_job(
+        idempotency_key="relative-run-persistence",
+        filename="batch-record.pdf",
+        mode="standard",
+    )
+    restored = JobQueue(database_path=database_path).get_job(created.job_id)
+    assert restored.status == "queued"
+    assert not (working_directory / "var" / "veridoc" / "relative.sqlite3").exists()
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_MANIFEST_PATH = REPO_ROOT / "datasets" / "fixtures" / "manifest.json"
@@ -5944,6 +6020,96 @@ def test_job_audit_event_store_rejects_append_after_tail_truncation() -> None:
     }
 
 
+def test_job_audit_event_store_restores_events_after_reinitialization(tmp_path) -> None:
+    database_path = tmp_path / "job-audits.sqlite3"
+    store = JobAuditEventStore(database_path=database_path)
+    recorded = store.record(
+        {
+            "event_type": "desktop.job_operation",
+            "job_id": "job-restored",
+            "action": "desktop_upload",
+        }
+    )
+
+    restored = JobAuditEventStore(database_path=database_path)
+
+    assert restored.list_events(filters={"job_id": "job-restored"}) == [recorded]
+    assert restored.verify_integrity()["ok"] is True
+
+
+def test_job_audit_event_store_rejects_persisted_tail_truncation(tmp_path) -> None:
+    database_path = tmp_path / "job-audits.sqlite3"
+    store = JobAuditEventStore(database_path=database_path)
+    for job_id in ("job-first", "job-second"):
+        store.record(
+            {
+                "event_type": "job.lifecycle",
+                "job_id": job_id,
+                "action": "conversion_completed",
+            }
+        )
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("DELETE FROM job_audit_event_records WHERE sequence = 2")
+
+    with pytest.raises(
+        ValueError,
+        match="audit log integrity violation: audit log terminal sequence mismatch",
+    ):
+        JobAuditEventStore(database_path=database_path)
+
+
+def test_job_audit_event_store_rejects_missing_persisted_checkpoint(tmp_path) -> None:
+    database_path = tmp_path / "job-audits.sqlite3"
+    store = JobAuditEventStore(database_path=database_path)
+    store.record(
+        {
+            "event_type": "job.lifecycle",
+            "job_id": "job-checkpoint-missing",
+            "action": "conversion_completed",
+        }
+    )
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("DELETE FROM job_audit_event_checkpoint")
+
+    with pytest.raises(
+        ValueError,
+        match="audit log integrity violation: audit log checkpoint is missing",
+    ):
+        JobAuditEventStore(database_path=database_path)
+
+
+def test_job_audit_event_store_rejects_durable_publish_without_durable_audit(
+    tmp_path,
+) -> None:
+    database_path = tmp_path / "jobs.sqlite3"
+    job_queue = JobQueue(database_path=database_path)
+    job = job_queue.create_job(
+        idempotency_key="mixed-upload-persistence",
+        filename="mixed-upload.pdf",
+        mode="standard",
+        enqueue=False,
+    )
+    store = JobAuditEventStore()
+
+    with pytest.raises(
+        ValueError,
+        match="job and audit persistence must share one database",
+    ):
+        store.record_once_and_publish(
+            {
+                "event_type": "desktop.job_operation",
+                "job_id": job.job_id,
+                "action": "desktop_upload",
+            },
+            dedupe={"job_id": job.job_id, "action": "desktop_upload"},
+            job_queue=job_queue,
+            job_id=job.job_id,
+        )
+
+    assert store.list_events() == []
+    assert job_queue.start_next_job() is None
+
+
 def test_poc_http_api_lists_server_side_review_action_audit_events() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     server.review_event_store = ReviewAuditEventStore()
@@ -7493,6 +7659,64 @@ def test_poc_http_api_rolls_back_desktop_upload_when_create_audit_fails() -> Non
     assert jobs == []
 
 
+def test_poc_http_api_persists_desktop_upload_job_and_audit_atomically(tmp_path) -> None:
+    class RejectAfterAuditInsertStore(JobAuditEventStore):
+        def _persist_event(
+            self,
+            event: dict[str, object],
+            *,
+            checkpoint: dict[str, object],
+            connection: sqlite3.Connection | None = None,
+        ) -> None:
+            super()._persist_event(
+                event,
+                checkpoint=checkpoint,
+                connection=connection,
+            )
+            raise ValueError("audit transaction interrupted")
+
+    database_path = tmp_path / "veridoc.sqlite3"
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue(database_path=database_path)
+    server.job_event_store = RejectAfterAuditInsertStore(database_path=database_path)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    uploaded_content = b"%PDF-1.7\natomic queued source"
+    payload = json.dumps(
+        {
+            "idempotency_key": "desktop-upload-atomic-failure",
+            "filename": "batch-record.pdf",
+            "content_type": "application/pdf",
+            "content_base64": base64.b64encode(uploaded_content).decode("ascii"),
+            "size_bytes": len(uploaded_content),
+            "source_sha256": hashlib.sha256(uploaded_content).hexdigest(),
+            "mode": "standard",
+            "desktop_upload_audit": True,
+        }
+    ).encode("utf-8")
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/jobs",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 400
+    assert body == {
+        "error": "invalid_job_request",
+        "message": "audit transaction interrupted",
+    }
+    assert JobQueue(database_path=database_path).list_jobs() == []
+    assert JobAuditEventStore(database_path=database_path).list_events() == []
+
+
 def test_poc_http_api_rolls_back_sourceless_desktop_upload_audit_create() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     server.job_queue = JobQueue()
@@ -7898,6 +8122,58 @@ def test_poc_http_api_rejects_late_idempotent_desktop_upload_audit_from_new_acto
     assert [event["action"] for event in events] == ["desktop_upload"]
     assert events[0]["actor"] == {"id": "local-principal:reviewer", "role": "reviewer"}
     assert stored_job.status == job_state
+
+
+def test_poc_http_api_restores_desktop_upload_audit_for_idempotent_retry(
+    tmp_path,
+) -> None:
+    database_path = tmp_path / "veridoc.sqlite3"
+    uploaded_content = b"%PDF-1.7\nrestart-safe queued source"
+    request = {
+        "idempotency_key": "desktop-upload-audit-restart",
+        "filename": "batch-record.pdf",
+        "content_type": "application/pdf",
+        "content_base64": base64.b64encode(uploaded_content).decode("ascii"),
+        "size_bytes": len(uploaded_content),
+        "source_sha256": hashlib.sha256(uploaded_content).hexdigest(),
+        "mode": "standard",
+        "desktop_upload_audit": True,
+    }
+    payload = json.dumps(request).encode("utf-8")
+    responses = []
+    bodies = []
+
+    for _ in range(2):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+        server.job_queue = JobQueue(database_path=database_path)
+        server.job_event_store = JobAuditEventStore(database_path=database_path)
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+            connection.request(
+                "POST",
+                "/api/jobs",
+                body=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Content-Length": str(len(payload)),
+                },
+            )
+            response = connection.getresponse()
+            responses.append(response.status)
+            bodies.append(json.loads(response.read().decode("utf-8")))
+        finally:
+            server.shutdown()
+            thread.join(timeout=5)
+
+    restored_events = JobAuditEventStore(database_path=database_path).list_events(
+        filters={"job_id": bodies[0]["job"]["job_id"]}
+    )
+
+    assert responses == [202, 202]
+    assert bodies[1]["job"]["job_id"] == bodies[0]["job"]["job_id"]
+    assert [event["action"] for event in restored_events] == ["desktop_upload"]
 
 
 def test_poc_http_api_records_desktop_upload_and_download_audit_events() -> None:
