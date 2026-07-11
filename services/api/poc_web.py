@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -36,6 +36,10 @@ from core.ir.document_ir_v1 import (
     adapt_document_ir_v0_blocks,
     from_parser_output,
     validate_document_ir_v1,
+)
+from core.ir.template_fingerprint import (
+    TemplateFieldMappingResult,
+    apply_template_field_mapping,
 )
 from core.llm.conversion_plan import (
     ConversionPlanValidationError,
@@ -835,12 +839,25 @@ def convert_uploaded_document(
     )
     document_ir_dict = _document_ir_with_parser_table_rows(document_ir.to_dict(), parser_output)
     validation = validate_document_ir_v1(document_ir)
+    template_mapping = (
+        apply_template_field_mapping(document_ir, requested_template)
+        if requested_template is not None
+        else None
+    )
+    if template_mapping is not None and template_mapping.requires_review:
+        validation = replace(
+            validation,
+            warnings=list(dict.fromkeys([*validation.warnings, *template_mapping.warnings])),
+            requires_review=True,
+        )
     conversion_plan_state = _local_llm_conversion_plan_state(
         document_ir_dict,
         use_llm=use_llm,
     )
     conversion_settings["use_llm"] = conversion_plan_state["setting"]
     review_items = _review_items(document_ir)
+    if template_mapping is not None:
+        review_items.extend(_template_mapping_review_items(document_ir, template_mapping))
     review_items.extend(_llm_fallback_review_items(document_ir_dict, conversion_plan_state))
     warnings = [
         *input_warnings,
@@ -899,6 +916,8 @@ def convert_uploaded_document(
         "warnings": warnings,
         "audit": audit,
     }
+    if template_mapping is not None:
+        download_payload["template_mapping"] = asdict(template_mapping)
     download_content = _strict_json_bytes(download_payload, indent=2)
     output_sha256 = _sha256_hex(download_content)
     download_filename = _artifact_filename(
@@ -4236,6 +4255,45 @@ def _review_items(document_ir: DocumentIRV1) -> list[dict[str, Any]]:
                 *item["warnings"],
                 f"blocks[{block_index}].source metadata incomplete; original jump unavailable",
             ]
+        items.append(item)
+    return items
+
+
+def _template_mapping_review_items(
+    document_ir: DocumentIRV1,
+    mapping: TemplateFieldMappingResult,
+) -> list[dict[str, Any]]:
+    blocks_by_id = {block.id: block for block in document_ir.blocks}
+    pages_by_number = {page.page_number: page for page in document_ir.pages}
+    items: list[dict[str, Any]] = []
+    for field in mapping.fields:
+        if not field.requires_review:
+            continue
+        block_id = field.evidence.get("block_id")
+        block = blocks_by_id.get(block_id) if isinstance(block_id, str) else None
+        warnings = list(field.warnings) or [
+            f"template field '{field.field_id}' requires review"
+        ]
+        item: dict[str, Any] = {
+            "document_id": document_ir.document.id,
+            "field_id": field.field_id,
+            "source_confidence": field.confidence,
+            "text": field.value or "",
+            "warnings": warnings,
+        }
+        if block is not None:
+            item.update(
+                {
+                    "block_id": block.id,
+                    "source_id": f"{document_ir.document.id}:{block.id}",
+                    "source_page": block.source_page,
+                }
+            )
+            page = pages_by_number.get(block.source_page)
+            source_bbox = _review_source_bbox(block.bbox, page)
+            if source_bbox is not None:
+                item["source_bbox"] = source_bbox
+                item["source_page_geometry"] = asdict(page)
         items.append(item)
     return items
 

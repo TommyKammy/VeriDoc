@@ -473,6 +473,105 @@ def test_convert_uploaded_document_surfaces_review_items_and_download_payload() 
     assert downloaded["document_ir"]["blocks"][0]["review"]["requires_review"] is True
 
 
+def test_convert_uploaded_document_requires_review_for_high_risk_template_field() -> None:
+    parser_output = {
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 320,
+                "height": 240,
+                "unit": "pt",
+                "fragments": [
+                    {
+                        "text": "Batch Production Record",
+                        "type": "heading",
+                        "bbox": {"x": 12, "y": 12, "width": 180, "height": 16},
+                        "confidence": 0.99,
+                    },
+                    {
+                        "text": "Batch No. SAMPLE-001",
+                        "type": "paragraph",
+                        "bbox": {"x": 12, "y": 40, "width": 180, "height": 16},
+                        "confidence": 0.99,
+                    },
+                ],
+            }
+        ]
+    }
+    template_snapshot = {
+        "template_id": "high-risk-batch-record",
+        "template_version": 1,
+        "name": "High-risk batch record",
+        "status": "active",
+        "effective": {"from": "2026-01-01", "to": None},
+        "document_type": "batch_record",
+        "anchors": [
+            {
+                "anchor_id": "batch-header",
+                "kind": "heading",
+                "text": "Batch Production Record",
+                "match": "normalized",
+                "scope": {"page": 1, "block_types": ["heading"]},
+            }
+        ],
+        "fields": [
+            {
+                "field_id": "batch_number",
+                "label": "Batch No.",
+                "value_type": "string",
+                "source": {"anchor_id": "batch-header", "direction": "below"},
+                "required": True,
+                "risk_level": "high",
+                "validation_rule_ids": ["batch-number-required"],
+                "output_key": "batch.number",
+            }
+        ],
+        "tables": [],
+        "risk_rank": {
+            "default_level": "medium",
+            "levels": [
+                {"level": "medium", "rank": 2},
+                {"level": "high", "rank": 3},
+            ],
+            "review_required_levels": ["high"],
+        },
+        "validation_rules": [
+            {
+                "rule_id": "batch-number-required",
+                "kind": "required",
+                "target": "field:batch_number",
+                "severity": "error",
+                "parameters": {},
+            }
+        ],
+        "output_mapping": {
+            "root_key": "document",
+            "field_map": [
+                {"field_id": "batch_number", "output_key": "batch.number"}
+            ],
+            "table_map": [],
+        },
+    }
+
+    results = [
+        convert_uploaded_document(
+            filename="high-risk.json",
+            content=json.dumps(parser_output).encode("utf-8"),
+            template_id="high-risk-batch-record",
+            template_snapshot=template_snapshot,
+        )
+        for _ in range(2)
+    ]
+
+    assert results[0]["conversion_id"] != results[1]["conversion_id"]
+    for result in results:
+        assert result["status"] == "requires_review"
+        assert result["validation"]["requires_review"] is True
+        assert result["template_mapping"]["requires_review"] is True
+        assert result["template_mapping"]["fields"][0]["requires_review"] is True
+        assert result["review_items"][0]["field_id"] == "batch_number"
+
+
 def test_convert_uploaded_document_returns_artifact_manifest_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
