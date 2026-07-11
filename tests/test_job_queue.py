@@ -31,6 +31,62 @@ def test_job_queue_persists_state_transitions_and_idempotent_creation() -> None:
     assert queue.get_job(created.job_id).status == "succeeded"
 
 
+def test_job_queue_restores_failed_retry_state_after_reinitialization(tmp_path) -> None:
+    database_path = tmp_path / "job-queue.sqlite3"
+    queue = JobQueue(max_attempts=2, database_path=database_path)
+    created = queue.create_job(
+        idempotency_key="restart-retry",
+        filename="batch-record.pdf",
+        mode="standard",
+    )
+    running = queue.start_next_job()
+    assert running is not None
+    retrying = queue.mark_failed(running.job_id, error="parser unavailable")
+    assert retrying.status == "queued"
+    assert retrying.attempts == 1
+
+    restored_queue = JobQueue(max_attempts=2, database_path=database_path)
+    restored = restored_queue.get_job(created.job_id)
+
+    assert restored.status == "queued"
+    assert restored.attempts == 1
+    assert restored.error == "parser unavailable"
+    restored_running = restored_queue.start_next_job()
+    assert restored_running is not None
+    assert restored_running.job_id == created.job_id
+
+
+def test_job_queue_restores_terminal_results_and_errors(tmp_path) -> None:
+    database_path = tmp_path / "job-queue.sqlite3"
+    queue = JobQueue(max_attempts=1, database_path=database_path)
+    successful = queue.create_job(
+        idempotency_key="restart-success",
+        filename="successful.pdf",
+        mode="standard",
+    )
+    successful_running = queue.start_next_job()
+    assert successful_running is not None
+    queue.mark_succeeded(successful_running.job_id, result={"status": "converted"})
+    failed = queue.create_job(
+        idempotency_key="restart-failure",
+        filename="failed.pdf",
+        mode="standard",
+    )
+    failed_running = queue.start_next_job()
+    assert failed_running is not None
+    queue.mark_failed(failed_running.job_id, error="parser unavailable")
+
+    restored_queue = JobQueue(max_attempts=1, database_path=database_path)
+
+    restored_success = restored_queue.get_job(successful.job_id)
+    assert restored_success.status == "succeeded"
+    assert restored_success.result == {"status": "converted"}
+    restored_failure = restored_queue.get_job(failed.job_id)
+    assert restored_failure.status == "failed"
+    assert restored_failure.attempts == 1
+    assert restored_failure.error == "parser unavailable"
+
+
 def test_job_queue_idempotent_retry_keeps_original_template_version() -> None:
     queue = JobQueue()
 

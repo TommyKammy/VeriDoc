@@ -4,6 +4,9 @@ from collections import deque
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+import json
+from os import PathLike
+import sqlite3
 from threading import Condition, Lock
 from time import monotonic
 from typing import Any, Callable, Literal
@@ -34,7 +37,12 @@ class JobRecord:
 
 
 class JobQueue:
-    def __init__(self, *, max_attempts: int = 3) -> None:
+    def __init__(
+        self,
+        *,
+        max_attempts: int = 3,
+        database_path: str | PathLike[str] | None = None,
+    ) -> None:
         if max_attempts < 1:
             raise ValueError("max_attempts must be at least 1")
         self._max_attempts = max_attempts
@@ -44,6 +52,10 @@ class JobQueue:
         self._unpublished_job_ids: set[str] = set()
         self._lock = Lock()
         self._condition = Condition(self._lock)
+        self._database_path = str(database_path) if database_path is not None else None
+        if self._database_path is not None:
+            self._initialize_store()
+            self._restore_jobs()
 
     def create_job(
         self,
@@ -129,6 +141,7 @@ class JobQueue:
             except KeyError as exc:
                 raise KeyError(f"unknown job_id: {job_id}") from exc
             was_unpublished = job_id in self._unpublished_job_ids
+            self._persist(job)
             self._unpublished_job_ids.discard(job_id)
             if enqueue and job_id not in self._pending_job_ids:
                 if job.status != "queued":
@@ -145,6 +158,7 @@ class JobQueue:
                 job = self._jobs[job_id]
             except KeyError as exc:
                 raise KeyError(f"unknown job_id: {job_id}") from exc
+            self._persist(job)
             self._unpublished_job_ids.discard(job_id)
             if job.status != "queued":
                 raise RuntimeError("job is already active")
@@ -161,6 +175,7 @@ class JobQueue:
                 return
             if job.status != "queued":
                 raise RuntimeError("job is already active")
+            self._delete_persisted(job_id)
             del self._jobs[job_id]
             self._unpublished_job_ids.discard(job_id)
             self._idempotency_index.pop(job.idempotency_key, None)
@@ -263,6 +278,8 @@ class JobQueue:
             source=deepcopy(source),
             template=deepcopy(template),
         )
+        if publish:
+            self._persist(job)
         self._jobs[job.job_id] = job
         self._idempotency_index[idempotency_key] = job.job_id
         if not publish:
@@ -348,8 +365,71 @@ class JobQueue:
         values.update(changes)
         values["updated_at"] = _utc_now()
         updated = JobRecord(**values)
+        self._persist(updated)
         self._jobs[job.job_id] = updated
         return updated
+
+    def _initialize_store(self) -> None:
+        with sqlite3.connect(self._database_path) as connection:
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS job_queue_records (
+                    job_id TEXT PRIMARY KEY,
+                    idempotency_key TEXT NOT NULL UNIQUE,
+                    status TEXT NOT NULL,
+                    attempts INTEGER NOT NULL CHECK(attempts >= 0),
+                    record_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+
+    def _restore_jobs(self) -> None:
+        with sqlite3.connect(self._database_path) as connection:
+            rows = connection.execute(
+                "SELECT record_json FROM job_queue_records ORDER BY rowid"
+            ).fetchall()
+        for (record_json,) in rows:
+            values = json.loads(record_json)
+            job = JobRecord(**values)
+            if job.status not in JOB_STATUSES:
+                raise ValueError(f"unsupported persisted job status: {job.status}")
+            self._jobs[job.job_id] = job
+            self._idempotency_index[job.idempotency_key] = job.job_id
+            if job.status == "queued":
+                self._pending_job_ids.append(job.job_id)
+
+    def _persist(self, job: JobRecord) -> None:
+        if self._database_path is None:
+            return
+        with sqlite3.connect(self._database_path) as connection:
+            connection.execute(
+                """
+                INSERT INTO job_queue_records(
+                    job_id, idempotency_key, status, attempts, record_json, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(job_id) DO UPDATE SET
+                    idempotency_key = excluded.idempotency_key,
+                    status = excluded.status,
+                    attempts = excluded.attempts,
+                    record_json = excluded.record_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    job.job_id,
+                    job.idempotency_key,
+                    job.status,
+                    job.attempts,
+                    json.dumps(job.to_dict(), sort_keys=True, separators=(",", ":")),
+                    job.updated_at,
+                ),
+            )
+
+    def _delete_persisted(self, job_id: str) -> None:
+        if self._database_path is None:
+            return
+        with sqlite3.connect(self._database_path) as connection:
+            connection.execute("DELETE FROM job_queue_records WHERE job_id = ?", (job_id,))
 
     def _has_active_high_quality_job(self) -> bool:
         return any(
