@@ -193,3 +193,14 @@ The code-level source of truth is `ROLE_PERMISSIONS` in
 | `approver` | create, convert, read | read, edit, approve | job and review read | read |
 | `admin` | create, convert, read, retry | read, edit, approve | job and review read | read, manage |
 | `audit_viewer` | none | audit read only | job and review read | none |
+
+The Web UI keeps the entered token in memory only for the current browser tab;
+it does not write tokens to local or session storage. Choose **Clear token**
+before leaving a shared workstation. When the UI reports that a token was
+rejected or may have expired, clear it and obtain a replacement from the
+operator responsible for `VERIDOC_LOCAL_AUTH_TOKENS`; do not reuse sample or
+placeholder values. A permission warning means the token was authenticated but
+its assigned role does not allow that operation. Request the narrowest required
+role instead of sharing a more privileged token. Token rotation is performed by
+updating the trusted environment value, restarting the local API, clearing the
+old token in each open UI tab, and entering the replacement.

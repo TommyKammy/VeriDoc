@@ -749,10 +749,13 @@
         <div class="auth-controls">
           <div class="field">
             <label for="auth-token">API token</label>
-            <input id="auth-token" autocomplete="off" spellcheck="false" />
+            <input id="auth-token" type="password" autocomplete="off" spellcheck="false" />
           </div>
           <button id="save-auth-token" class="secondary" type="button">Save token</button>
           <button id="clear-auth-token" class="secondary" type="button">Clear token</button>
+          <div id="auth-status" class="page-status" role="status" data-auth-state="missing">
+            Token is not set.
+          </div>
           <div id="page-status" class="page-status" role="status"></div>
         </div>
       </header>
@@ -1257,6 +1260,7 @@
       const PDFJS_WORKER_URL = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs";
 
       const pageStatus = document.querySelector("#page-status");
+      const authStatus = document.querySelector("#auth-status");
       const authToken = document.querySelector("#auth-token");
       const saveAuthToken = document.querySelector("#save-auth-token");
       const clearAuthToken = document.querySelector("#clear-auth-token");
@@ -1364,8 +1368,10 @@
         savedAuthToken = token;
         authToken.value = "";
         if (token) {
+          setAuthStatus("configured", "Token is set for this browser tab.");
           setPageStatus("API token saved.");
         } else {
+          setAuthStatus("missing", "Token is not set.");
           setPageStatus("API token cleared.");
         }
         loadJobs();
@@ -1375,6 +1381,7 @@
         savedAuthToken = "";
         authToken.value = "";
         clearCredentialBoundState();
+        setAuthStatus("missing", "Token is not set. Enter a token, then choose Save token.");
         setPageStatus("API token cleared.");
         loadJobs();
         loadTemplates();
@@ -2197,6 +2204,27 @@
       function setPageStatus(message, isError = false) {
         pageStatus.textContent = message;
         pageStatus.className = isError ? "page-status error" : "page-status";
+      }
+
+      function setAuthStatus(state, message) {
+        authStatus.dataset.authState = state;
+        authStatus.textContent = message;
+        authStatus.className = state === "configured" ? "page-status" : "page-status error";
+      }
+
+      function authFailure(response, body) {
+        if (response.status === 401) {
+          setAuthStatus(
+            "rejected",
+            "Token was rejected or has expired. Clear it, then set a new token.",
+          );
+        } else if (response.status === 403) {
+          setAuthStatus(
+            "forbidden",
+            "Token is valid, but its role does not allow this operation.",
+          );
+        }
+        return body;
       }
 
       function routeFromHash() {
@@ -3186,12 +3214,17 @@
         }
       }
 
-      function apiFetch(url, options = {}) {
+      async function apiFetch(url, options = {}) {
         const token = activeAuthToken();
         const headers = { ...(options.headers || {}) };
         if (token) headers.Authorization = `Bearer ${token}`;
         const signal = options.signal || state.credentialAbortController.signal;
-        return fetch(url, { ...options, headers, signal });
+        const response = await fetch(url, { ...options, headers, signal });
+        if (response.status === 401 || response.status === 403) {
+          const body = await response.clone().json().catch(() => ({}));
+          authFailure(response, body);
+        }
+        return response;
       }
 
       routeFromHash();
