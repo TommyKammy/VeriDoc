@@ -7695,6 +7695,71 @@ def test_poc_http_api_job_submission_reaches_status_and_result() -> None:
     assert isinstance(result_body["download"]["content_text"], str)
 
 
+def test_poc_http_api_converts_with_stored_job_template_snapshot() -> None:
+    class AdvancingTemplateStore:
+        def __init__(self) -> None:
+            self.snapshot_reads = 0
+
+        def latest_job_snapshot(self, template_id: str) -> dict[str, object]:
+            self.snapshot_reads += 1
+            if self.snapshot_reads > 1:
+                raise AssertionError("conversion re-read the latest template")
+            return {
+                "template_id": template_id,
+                "template_version": 4,
+                "name": "Batch Record",
+            }
+
+    template_store = AdvancingTemplateStore()
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue()
+    server.template_store = template_store
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    uploaded_content = json.dumps(
+        {
+            "document": {"id": "template-snapshot", "source_type": "pdf"},
+            "blocks": [],
+        }
+    ).encode("utf-8")
+    try:
+        payload = json.dumps(
+            {
+                "idempotency_key": "stored-template-snapshot",
+                "filename": "template-snapshot.json",
+                "content_base64": base64.b64encode(uploaded_content).decode("ascii"),
+                "size_bytes": len(uploaded_content),
+                "template_id": "batch-record",
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/jobs",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        submit_response = connection.getresponse()
+        submitted = json.loads(submit_response.read().decode("utf-8"))
+        connection.request("GET", submitted["job"]["result"]["href"])
+        result_response = connection.getresponse()
+        result = json.loads(result_response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert submit_response.status == 202
+    assert submitted["job"]["status"] == "succeeded"
+    assert submitted["job"]["template"] == {
+        "template_id": "batch-record",
+        "template_version": 4,
+        "name": "Batch Record",
+    }
+    assert result_response.status == 200
+    assert result["audit"]["template"] == submitted["job"]["template"]
+    assert template_store.snapshot_reads == 1
+
+
 def test_poc_http_api_primary_artifact_does_not_reference_debug_download() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     server.job_queue = JobQueue()
@@ -7926,7 +7991,7 @@ def test_poc_http_api_marks_in_process_conversion_failure_terminal(
     assert [job.status for job in server.job_queue.list_jobs()] == ["failed"]
 
 
-def test_poc_http_api_keeps_dependency_conversion_failure_retryable(
+def test_poc_http_api_surfaces_dependency_conversion_failure_as_terminal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def reject_conversion(**_: object) -> dict[str, object]:
@@ -7941,7 +8006,7 @@ def test_poc_http_api_keeps_dependency_conversion_failure_retryable(
     try:
         payload = json.dumps(
             {
-                "idempotency_key": "retryable-source-job",
+                "idempotency_key": "dependency-failed-source-job",
                 "filename": "source.json",
                 "content_base64": base64.b64encode(source).decode("ascii"),
                 "size_bytes": len(source),
@@ -7961,10 +8026,13 @@ def test_poc_http_api_keeps_dependency_conversion_failure_retryable(
         thread.join(timeout=5)
 
     assert response.status == 202
-    assert body["job"]["status"] == "queued"
+    assert body["job"]["status"] == "failed"
     assert body["job"]["attempts"] == 1
     assert body["job"]["error"] == "parser unavailable"
-    assert server.job_queue.get_job(body["job"]["job_id"]).retryable is True
+    assert [action["action"] for action in body["job"]["available_actions"]] == [
+        "open_detail"
+    ]
+    assert server.job_queue.get_job(body["job"]["job_id"]).retryable is False
 
 
 def test_poc_http_api_preserves_job_llm_configuration_rejection(
@@ -12477,13 +12545,21 @@ def test_web_conversion_workflow_uses_job_submit_status_and_result_contract() ->
     assert "settings: conversionSettings" in body
     assert 'crypto.subtle.digest("SHA-256", fileBytes)' in body
     assert "source_sha256: sourceSha256" in body
+    assert "template_version: selectedTemplate?.current_version ?? null" in body
     assert body.index('job.status === "failed"') < body.index("!job.result?.available")
     result_read = body.index("const result = await resultResponse.json()")
     active_result_guard = body.index(
         "if (!isActiveDirectConversion(conversionToken)) return;", result_read
     )
     assert active_result_guard < body.index("renderResult(result)", active_result_guard)
-    for setting in ("conversion_mode", "output_format", "template_id", "use_llm", "use_ocr"):
+    for setting in (
+        "conversion_mode",
+        "output_format",
+        "template_id",
+        "template_version",
+        "use_llm",
+        "use_ocr",
+    ):
         assert f"{setting}:" in body
 
 

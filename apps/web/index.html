@@ -1433,10 +1433,14 @@
           const sourceSha256 = Array.from(new Uint8Array(sourceDigest), (byte) =>
             byte.toString(16).padStart(2, "0")
           ).join("");
+          const selectedTemplate = state.templates.find(
+            (template) => template.template_id === directTemplate.value
+          );
           const conversionSettings = {
             conversion_mode: directConversionMode.value,
             output_format: directOutputFormat.value || null,
             template_id: directTemplate.value || null,
+            template_version: selectedTemplate?.current_version ?? null,
             use_llm: directUseLlm.checked,
             use_ocr: directUseOcr.checked,
           };

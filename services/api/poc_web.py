@@ -789,6 +789,7 @@ def convert_uploaded_document(
     output_format: str | None = None,
     template_id: str | None = None,
     template_store: TemplateStore | None = None,
+    template_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Convert one uploaded PoC document into IR, review details, and download bytes."""
     safe_filename = _safe_filename(filename)
@@ -801,6 +802,7 @@ def convert_uploaded_document(
     requested_template = _direct_convert_template_snapshot(
         requested_template_id,
         template_store=template_store,
+        template_snapshot=template_snapshot,
     )
     conversion_settings = _conversion_settings(use_llm=use_llm, use_ocr=use_ocr)
     conversion_id = _conversion_id()
@@ -1595,11 +1597,18 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                     use_llm=use_llm,
                     use_ocr=use_ocr,
                     output_format=output_format,
-                    template_id=request.get("template_id"),
-                    template_store=self._template_store(),
+                    template_id=(
+                        job.template.get("template_id")
+                        if isinstance(job.template, dict)
+                        else None
+                    ),
+                    template_snapshot=job.template,
                 )
                 job = job_queue.mark_succeeded(job.job_id, result=result)
-            except (PocServerDependencyError, RuntimeError) as exc:
+            except PocServerDependencyError as exc:
+                if job_queue.get_job(job.job_id).status == "running":
+                    job = job_queue.mark_failed(job.job_id, error=str(exc), retryable=False)
+            except RuntimeError as exc:
                 if job_queue.get_job(job.job_id).status == "running":
                     job = job_queue.mark_failed(job.job_id, error=str(exc))
             except ValueError as exc:
@@ -3045,7 +3054,22 @@ def _direct_convert_template_snapshot(
     template_id: str | None,
     *,
     template_store: TemplateStore | None,
+    template_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
+    if template_snapshot is not None:
+        snapshot = deepcopy(template_snapshot)
+        if template_id is None or snapshot.get("template_id") != template_id:
+            raise ValueError("template snapshot does not match template_id")
+        template_version = snapshot.get("template_version")
+        if (
+            not isinstance(template_version, int)
+            or isinstance(template_version, bool)
+            or template_version < 1
+        ):
+            raise ValueError("template snapshot version is invalid")
+        if not isinstance(snapshot.get("name"), str) or not snapshot["name"].strip():
+            raise ValueError("template snapshot name is invalid")
+        return snapshot
     if template_id is None:
         return None
     store = DEFAULT_TEMPLATE_STORE if template_store is None else template_store
