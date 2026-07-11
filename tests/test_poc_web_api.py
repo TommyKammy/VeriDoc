@@ -543,7 +543,7 @@ def test_convert_uploaded_document_requires_review_for_high_risk_template_field(
                 {"level": "medium", "rank": 2},
                 {"level": "high", "rank": 3},
             ],
-            "review_required_levels": ["high"],
+            "review_required_levels": [],
         },
         "validation_rules": [
             {
@@ -616,6 +616,76 @@ def test_convert_uploaded_document_requires_review_for_high_risk_template_field(
         assert set(field_review_items) == {"batch_number", "release_status"}
         assert len({item["block_id"] for item in field_review_items.values()}) == 2
         assert all(item["source_page"] == 1 for item in field_review_items.values())
+
+
+def test_convert_uploaded_document_emits_template_mapping_warning_review_item() -> None:
+    parser_output = {
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 320,
+                "height": 240,
+                "unit": "pt",
+                "fragments": [
+                    {
+                        "text": "Unrecognized document",
+                        "type": "paragraph",
+                        "bbox": {"x": 12, "y": 12, "width": 180, "height": 16},
+                        "confidence": 0.99,
+                    }
+                ],
+            }
+        ]
+    }
+    template_snapshot = {
+        "template_id": "optional-low-risk-template",
+        "template_version": 1,
+        "name": "Optional low-risk template",
+        "document_type": "batch_record",
+        "anchors": [],
+        "fields": [
+            {
+                "field_id": "note",
+                "label": "Note",
+                "value_type": "string",
+                "source": {"anchor_id": "note", "direction": "same_block"},
+                "required": False,
+                "risk_level": "low",
+                "validation_rule_ids": [],
+                "output_key": "note",
+            }
+        ],
+        "tables": [],
+        "risk_rank": {
+            "default_level": "low",
+            "levels": [{"level": "low", "rank": 1}],
+            "review_required_levels": [],
+        },
+        "validation_rules": [],
+        "output_mapping": {
+            "root_key": "document",
+            "field_map": [{"field_id": "note", "output_key": "note"}],
+            "table_map": [],
+        },
+    }
+
+    result = convert_uploaded_document(
+        filename="unrecognized.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+        template_id="optional-low-risk-template",
+        template_snapshot=template_snapshot,
+    )
+
+    assert result["status"] == "requires_review"
+    assert result["template_mapping"]["requires_review"] is True
+    assert result["template_mapping"]["fields"][0]["requires_review"] is False
+    mapping_review_items = [
+        item for item in result["review_items"] if item["block_id"] == "template-mapping"
+    ]
+    assert len(mapping_review_items) == 1
+    assert "template anchors missing; template fingerprint requires review" in (
+        mapping_review_items[0]["warnings"]
+    )
 
 
 def test_convert_uploaded_document_returns_artifact_manifest_contract(
@@ -8034,7 +8104,7 @@ def test_poc_http_api_converts_with_stored_job_template_snapshot() -> None:
             return {
                 "template_id": template_id,
                 "template_version": template_version,
-                "name": "Batch Record",
+                "name": "Renamed Batch Record",
                 "document_type": "batch_record",
                 "anchors": [],
                 "fields": [

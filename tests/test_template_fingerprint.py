@@ -961,12 +961,11 @@ class TemplateFingerprintTest(unittest.TestCase):
         self.assertEqual("BN-001", mapped["batch_number"].value)
         self.assertEqual("94", mapped["actual_yield"].value)
         self.assertIsNone(mapped["missing_required"].value)
+        self.assertTrue(mapped["batch_number"].requires_review)
+        self.assertTrue(mapped["actual_yield"].requires_review)
         self.assertTrue(mapped["missing_required"].requires_review)
         self.assertIn("template field 'missing_required' missing; requires review", result.warnings)
-        self.assertEqual(
-            {"template_result": {"batch": {"number": "BN-001", "actual_yield": "94"}}},
-            result.output,
-        )
+        self.assertEqual({"template_result": {}}, result.output)
         self.assertEqual("paragraph-120", mapped["batch_number"].evidence["block_id"])
         self.assertEqual("table-180", mapped["actual_yield"].evidence["block_id"])
         self.assertGreaterEqual(mapped["batch_number"].confidence, 0.90)
@@ -3346,6 +3345,39 @@ class TemplateFingerprintTest(unittest.TestCase):
         mapped = {field.field_id: field for field in result.fields}
 
         self.assertEqual("BN-001", mapped["batch_number"].value)
+        self.assertTrue(mapped["batch_number"].requires_review)
+        self.assertEqual({"template_result": {}}, result.output)
+        self.assertIn(
+            "template field 'batch_number' risk_level 'high' requires review",
+            result.warnings,
+        )
+
+    def test_high_risk_field_requires_review_when_matrix_omits_review_level(self) -> None:
+        template = self.template_definition()
+        template["risk_rank"] = {
+            "levels": [
+                {"level": "low", "rank": 1},
+                {"level": "high", "rank": 2},
+            ],
+            "review_required_levels": [],
+        }
+        template["fields"] = [
+            {
+                "field_id": "batch_number",
+                "label": "Batch No.",
+                "value_type": "string",
+                "source": {"anchor_id": "batch-header", "direction": "below"},
+                "required": True,
+                "risk_level": "high",
+                "validation_rule_ids": [],
+                "output_key": "batch.number",
+            }
+        ]
+
+        result = apply_template_field_mapping(self.document_with_blocks(), template)
+        mapped = {field.field_id: field for field in result.fields}
+
+        self.assertTrue(result.requires_review)
         self.assertTrue(mapped["batch_number"].requires_review)
         self.assertEqual({"template_result": {}}, result.output)
         self.assertIn(

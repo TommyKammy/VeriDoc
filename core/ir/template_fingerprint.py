@@ -15,6 +15,7 @@ KNOWN_TEMPLATE_THRESHOLD = 0.95
 CAUTION_TEMPLATE_THRESHOLD = 0.80
 FAIL_CLOSED_MAX_SCORE = 0.79
 INCOMPLETE_REQUIRED_COLUMNS_MAX_SCORE = 0.94
+ALWAYS_REVIEW_RISK_LEVELS = frozenset({"high", "critical"})
 
 
 class TemplateMatchClassification(Enum):
@@ -619,18 +620,24 @@ def _template_field_risk_warnings(
     defined_levels: set[str],
     review_required_levels: set[str],
 ) -> tuple[str, ...]:
-    # GMP/data-integrity guard: once a template declares a risk matrix, missing
-    # or non-matrix field risk cannot be treated as confirmed extraction output.
-    if not risk_rank_declared:
-        return ()
+    # GMP/data-integrity guard: high/critical risk always requires review. Once
+    # a matrix is declared, missing or non-matrix risk also fails closed.
     field_id = str(field.get("field_id") or "<unknown>")
     raw_risk_level = field.get("risk_level")
     if raw_risk_level is not None and not isinstance(raw_risk_level, str):
+        if not risk_rank_declared:
+            return ()
         return (
             f"template field '{field_id}' risk_level '{raw_risk_level}' is not defined "
             "by template risk_rank; requires review",
         )
     risk_level = _normalized_risk_level(raw_risk_level)
+    if not risk_rank_declared:
+        if risk_level in ALWAYS_REVIEW_RISK_LEVELS:
+            return (
+                f"template field '{field_id}' risk_level '{raw_risk_level}' requires review",
+            )
+        return ()
     if not risk_level:
         return (f"template field '{field_id}' missing risk_level; requires review",)
     if risk_level not in defined_levels:
@@ -638,7 +645,7 @@ def _template_field_risk_warnings(
             f"template field '{field_id}' risk_level '{raw_risk_level}' is not defined "
             "by template risk_rank; requires review",
         )
-    if risk_level in review_required_levels:
+    if risk_level in ALWAYS_REVIEW_RISK_LEVELS or risk_level in review_required_levels:
         return (
             f"template field '{field_id}' risk_level '{raw_risk_level}' requires review",
         )

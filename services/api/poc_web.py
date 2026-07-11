@@ -3184,12 +3184,13 @@ def _direct_convert_template_snapshot(
         if template_store is None:
             raise ValueError("template snapshot definitions are unavailable")
         try:
-            return template_store.mapping_snapshot(
+            mapping_snapshot = template_store.mapping_snapshot(
                 template_id,
                 template_version=template_version,
             )
         except KeyError as exc:
             raise ValueError("template_id is unknown") from exc
+        return {**mapping_snapshot, "name": snapshot["name"]}
     if template_id is None:
         return None
     store = DEFAULT_TEMPLATE_STORE if template_store is None else template_store
@@ -4359,6 +4360,20 @@ def _template_mapping_review_items(
                 f"template field '{field.field_id}' source metadata incomplete; original jump unavailable",
             ]
         items.append(item)
+    if mapping.requires_review and not items:
+        review_target_id = "template-mapping"
+        items.append(
+            {
+                "document_id": document_ir.document.id,
+                "block_id": review_target_id,
+                "source_id": f"{document_ir.document.id}:{review_target_id}",
+                "source_page": document_ir.pages[0].page_number if document_ir.pages else 1,
+                "source_confidence": 0.0,
+                "text": "",
+                "warnings": list(mapping.warnings)
+                or ["template mapping requires review"],
+            }
+        )
     return items
 
 
