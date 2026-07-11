@@ -4770,16 +4770,18 @@ def _llm_configuration_rejection(*, use_llm: bool, use_ocr: bool) -> dict[str, A
     reason = _configured_llm_rejection_reason()
     if reason is None or reason == "missing_configured_profile":
         return None
+    warning = _llm_configuration_warning(reason)
     return {
         "error": "llm_configuration_rejected",
         "message": "LLM conversion is blocked until the configured endpoint is local-only",
-        "warnings": [_llm_configuration_warning(reason)],
+        "warnings": [warning],
+        "warning_details": warning_details([warning]),
         "audit": {
             "conversion_settings": {
                 "use_llm": _blocked_conversion_setting(
                     True,
                     reason,
-                    message=_llm_configuration_warning(reason),
+                    message=warning,
                     support_status=_llm_support_status(reason),
                 ),
                 "use_ocr": _unsupported_conversion_setting(use_ocr),

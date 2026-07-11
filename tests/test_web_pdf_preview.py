@@ -362,6 +362,10 @@ def test_review_warning_badges_show_codes_levels_and_llm_involvement() -> None:
     assert "descriptor.message" in html
     assert "descriptor.remediation" in html
     assert 'warning-details' in html
+    assert 'message.className = "warning-message";' in html
+    assert "badge.append(message, details);" in html
+    assert "Array.isArray(errorPayload?.warning_details)" in html
+    assert "gap: 6px;" in html
     assert '"blocks[0].low confidence; block marked requires_review"' in html
     assert 'code: "W002"' in html
     assert 'severity: "yellow"' in html

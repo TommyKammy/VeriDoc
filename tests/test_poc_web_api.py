@@ -40,6 +40,25 @@ from services.api.poc_web import (
     ReviewAuditEventStore,
     convert_uploaded_document,
 )
+from services.api.warning_catalog import warning_details
+
+
+@pytest.mark.parametrize(
+    ("warning_token", "expected_code"),
+    [
+        ("llm_fallback_untrusted_endpoint", "LLM_FALLBACK_UNTRUSTED_ENDPOINT"),
+        ("llm_fallback_untrusted_credential", "LLM_FALLBACK_UNTRUSTED_CREDENTIAL"),
+        ("llm_fallback_missing_model", "LLM_FALLBACK_MISSING_MODEL"),
+        ("llm_fallback_unavailable", "LLM_FALLBACK_UNAVAILABLE"),
+    ],
+)
+def test_warning_details_preserve_distinct_llm_fallback_codes(
+    warning_token: str,
+    expected_code: str,
+) -> None:
+    warning = f"LLM conversion plan fallback {warning_token}: deterministic conversion used"
+
+    assert warning_details([warning])[0]["code"] == expected_code
 
 
 def test_run_uses_configured_database_for_job_queue(tmp_path, monkeypatch) -> None:
@@ -8533,6 +8552,14 @@ def test_poc_http_api_preserves_job_llm_configuration_rejection(
     assert body["warnings"] == [
         "LLM conversion blocked: configured endpoint must be local-only"
     ]
+    assert body["warning_details"] == [
+        {
+            "code": "LLM_CONFIGURATION_ENDPOINT_REJECTED",
+            "severity": "error",
+            "message": body["warnings"][0],
+            "remediation": "Configure a local-only LLM endpoint before retrying.",
+        }
+    ]
     assert "api.openai.com" not in body_text
     assert server.job_queue.list_jobs() == []
 
@@ -12644,6 +12671,7 @@ def test_poc_http_api_rejects_external_llm_endpoint_before_conversion(
     assert body["warnings"] == [
         "LLM conversion blocked: configured endpoint must be local-only"
     ]
+    assert body["warning_details"][0]["code"] == "LLM_CONFIGURATION_ENDPOINT_REJECTED"
     assert "api.openai.com" not in body_text
     assert "DO-NOT-SEND-DOCUMENT-BODY" not in body_text
 
@@ -12697,6 +12725,14 @@ def test_poc_http_api_rejects_placeholder_llm_api_key(
     assert body["audit"]["conversion_settings"]["use_llm"]["reason"] == "placeholder_api_key"
     assert body["warnings"] == [
         "LLM conversion blocked: configured API key is not trusted"
+    ]
+    assert body["warning_details"] == [
+        {
+            "code": "LLM_CONFIGURATION_CREDENTIAL_REJECTED",
+            "severity": "error",
+            "message": body["warnings"][0],
+            "remediation": "Replace the placeholder API key with a trusted credential before retrying.",
+        }
     ]
     assert "fake-api-key" not in body_text
 
