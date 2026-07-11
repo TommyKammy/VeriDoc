@@ -39,6 +39,33 @@ from services.api.poc_web import (
     convert_uploaded_document,
 )
 
+
+def test_run_uses_configured_database_for_job_queue(tmp_path, monkeypatch) -> None:
+    database_path = tmp_path / "veridoc.sqlite3"
+    servers = []
+
+    class FakeServer:
+        def __init__(self, server_address, request_handler) -> None:
+            self.server_address = server_address
+            self.request_handler = request_handler
+            servers.append(self)
+
+        def serve_forever(self) -> None:
+            return None
+
+    monkeypatch.setenv("VERIDOC_DB_PATH", str(database_path))
+    monkeypatch.setattr(poc_web, "ThreadingHTTPServer", FakeServer)
+
+    poc_web.run()
+
+    created = servers[0].job_queue.create_job(
+        idempotency_key="run-persistence",
+        filename="batch-record.pdf",
+        mode="standard",
+    )
+    restored = JobQueue(database_path=database_path).get_job(created.job_id)
+    assert restored.status == "queued"
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_MANIFEST_PATH = REPO_ROOT / "datasets" / "fixtures" / "manifest.json"
 

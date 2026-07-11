@@ -1,6 +1,9 @@
+import sqlite3
+
 import pytest
 
 from services.api.job_queue import JobQueue
+from services.api.persistence_repository import reset_database
 
 
 def test_job_queue_persists_state_transitions_and_idempotent_creation() -> None:
@@ -199,6 +202,60 @@ def test_job_queue_preserves_deferred_job_after_reinitialization(tmp_path) -> No
     started = restored_queue.start_next_job()
     assert started is not None
     assert started.job_id == created.job_id
+
+
+def test_job_queue_backfills_legacy_queued_sequences_durably(tmp_path) -> None:
+    database_path = tmp_path / "job-queue.sqlite3"
+    queue = JobQueue(database_path=database_path)
+    created = queue.create_job(
+        idempotency_key="legacy-queued",
+        filename="batch-record.pdf",
+        mode="standard",
+    )
+    with sqlite3.connect(database_path) as connection:
+        connection.executescript(
+            """
+            ALTER TABLE job_queue_records RENAME TO job_queue_records_with_sequence;
+            CREATE TABLE job_queue_records (
+                job_id TEXT PRIMARY KEY,
+                idempotency_key TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL,
+                attempts INTEGER NOT NULL CHECK(attempts >= 0),
+                record_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO job_queue_records(
+                job_id, idempotency_key, status, attempts, record_json, updated_at
+            )
+            SELECT job_id, idempotency_key, status, attempts, record_json, updated_at
+            FROM job_queue_records_with_sequence;
+            DROP TABLE job_queue_records_with_sequence;
+            """
+        )
+
+    JobQueue(database_path=database_path)
+    restored_again = JobQueue(database_path=database_path)
+
+    running = restored_again.start_next_job()
+    assert running is not None
+    assert running.job_id == created.job_id
+
+
+def test_persistence_reset_drops_job_queue_records(tmp_path) -> None:
+    database_path = tmp_path / "veridoc.sqlite3"
+    queue = JobQueue(database_path=database_path)
+    created = queue.create_job(
+        idempotency_key="reset-queued",
+        filename="batch-record.pdf",
+        mode="standard",
+    )
+
+    reset_database(database_path)
+    restored = JobQueue(database_path=database_path)
+
+    with pytest.raises(KeyError, match=created.job_id):
+        restored.get_job(created.job_id)
+    assert restored.start_next_job() is None
 
 
 def test_job_queue_preserves_retry_queue_order_after_reinitialization(tmp_path) -> None:

@@ -430,10 +430,13 @@ class JobQueue:
                 row[1]
                 for row in connection.execute("PRAGMA table_info(job_queue_records)")
             }
-            self._restore_legacy_queue_state = "queue_sequence" not in columns
-            if self._restore_legacy_queue_state:
+            if "queue_sequence" not in columns:
                 connection.execute(
                     "ALTER TABLE job_queue_records ADD COLUMN queue_sequence INTEGER"
+                )
+                connection.execute(
+                    "UPDATE job_queue_records SET queue_sequence = rowid "
+                    "WHERE status = 'queued'"
                 )
 
     def _restore_jobs(self) -> None:
@@ -453,11 +456,8 @@ class JobQueue:
             self._idempotency_index[job.idempotency_key] = job.job_id
             if job.status == "running":
                 running_jobs.append((rowid, queue_sequence, job))
-            elif job.status == "queued" and (
-                queue_sequence is not None or self._restore_legacy_queue_state
-            ):
-                sequence = rowid if queue_sequence is None else queue_sequence
-                pending_jobs.append((sequence, rowid, job.job_id))
+            elif job.status == "queued" and queue_sequence is not None:
+                pending_jobs.append((queue_sequence, rowid, job.job_id))
 
         fallback_sequence = min((item[0] for item in pending_jobs), default=0) - len(
             running_jobs

@@ -1344,6 +1344,7 @@ END;
 """
 
 _RESET_SQL = """
+DROP TABLE IF EXISTS job_queue_records;
 DROP TABLE IF EXISTS audit_event_evidence;
 DROP TABLE IF EXISTS job_event_evidence;
 DROP TABLE IF EXISTS audit_events;
@@ -1357,4 +1358,3 @@ DROP TABLE IF EXISTS source_documents;
 DROP TABLE IF EXISTS source_artifacts;
 DROP TABLE IF EXISTS schema_migrations;
 """
-

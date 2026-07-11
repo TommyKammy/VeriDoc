@@ -54,6 +54,7 @@ from core.render.ooxml import (
     render_xlsx_from_ir,
 )
 from services.api.job_queue import JobQueue, JobRecord
+from services.api.persistence_repository import default_database_path
 
 WEB_ROOT = REPO_ROOT / "apps" / "web"
 INFERENCE_PROFILES_PATH = REPO_ROOT / "services" / "api" / "inference_profiles.json"
@@ -1102,7 +1103,9 @@ def _llm_plan_unavailable_reason(exc: Exception) -> str:
 
 def run(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> None:
     """Run the stdlib PoC API server."""
+    job_queue = JobQueue(database_path=default_database_path())
     server = ThreadingHTTPServer((host, port), PocWebRequestHandler)
+    server.job_queue = job_queue
     print(f"VeriDoc PoC web API listening on http://{host}:{port}")
     server.serve_forever()
 
