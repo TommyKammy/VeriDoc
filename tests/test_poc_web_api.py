@@ -6054,6 +6054,58 @@ def test_job_audit_event_store_rejects_persisted_tail_truncation(tmp_path) -> No
         JobAuditEventStore(database_path=database_path)
 
 
+def test_job_audit_event_store_rejects_missing_persisted_checkpoint(tmp_path) -> None:
+    database_path = tmp_path / "job-audits.sqlite3"
+    store = JobAuditEventStore(database_path=database_path)
+    store.record(
+        {
+            "event_type": "job.lifecycle",
+            "job_id": "job-checkpoint-missing",
+            "action": "conversion_completed",
+        }
+    )
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("DELETE FROM job_audit_event_checkpoint")
+
+    with pytest.raises(
+        ValueError,
+        match="audit log integrity violation: audit log checkpoint is missing",
+    ):
+        JobAuditEventStore(database_path=database_path)
+
+
+def test_job_audit_event_store_rejects_durable_publish_without_durable_audit(
+    tmp_path,
+) -> None:
+    database_path = tmp_path / "jobs.sqlite3"
+    job_queue = JobQueue(database_path=database_path)
+    job = job_queue.create_job(
+        idempotency_key="mixed-upload-persistence",
+        filename="mixed-upload.pdf",
+        mode="standard",
+        enqueue=False,
+    )
+    store = JobAuditEventStore()
+
+    with pytest.raises(
+        ValueError,
+        match="job and audit persistence must share one database",
+    ):
+        store.record_once_and_publish(
+            {
+                "event_type": "desktop.job_operation",
+                "job_id": job.job_id,
+                "action": "desktop_upload",
+            },
+            dedupe={"job_id": job.job_id, "action": "desktop_upload"},
+            job_queue=job_queue,
+            job_id=job.job_id,
+        )
+
+    assert store.list_events() == []
+    assert job_queue.start_next_job() is None
+
+
 def test_poc_http_api_lists_server_side_review_action_audit_events() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     server.review_event_store = ReviewAuditEventStore()

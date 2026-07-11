@@ -281,6 +281,8 @@ class JobAuditEventStore:
         job_id: str,
     ) -> tuple[dict[str, Any], JobRecord]:
         if self._database_path is None:
+            if job_queue.database_path is not None:
+                raise ValueError("job and audit persistence must share one database")
             event = self.record_once(audit_event, dedupe=dedupe)
             return event, job_queue.publish_job(job_id, enqueue=True)
         queue_database_path = job_queue.database_path
@@ -426,6 +428,10 @@ class JobAuditEventStore:
                     raise ValueError("persisted job audit event is invalid")
                 events.append(event)
             if checkpoint_row is None:
+                if events:
+                    raise ValueError(
+                        "audit log integrity violation: audit log checkpoint is missing"
+                    )
                 checkpoint = _audit_event_integrity_checkpoint(events)
                 connection.execute(
                     "INSERT INTO job_audit_event_checkpoint(singleton, checkpoint_json) "
