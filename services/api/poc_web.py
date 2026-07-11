@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import sqlite3
 import sys
 from tempfile import TemporaryDirectory
 from threading import Lock
@@ -226,9 +227,14 @@ class ReviewAuditEventStore:
 
 
 class JobAuditEventStore:
-    def __init__(self) -> None:
-        self._events: list[dict[str, Any]] = []
+    def __init__(self, *, database_path: str | Path | None = None) -> None:
+        self._database_path = str(database_path) if database_path is not None else None
+        self._events = self._restore_events()
         self._integrity_checkpoint = _audit_event_integrity_checkpoint(self._events)
+        _raise_for_audit_event_integrity_violation(
+            self._events,
+            checkpoint=self._integrity_checkpoint,
+        )
         self._lock = Lock()
 
     def record(self, audit_event: dict[str, Any]) -> dict[str, Any]:
@@ -239,6 +245,7 @@ class JobAuditEventStore:
                 previous_events=self._events,
                 checkpoint=self._integrity_checkpoint,
             )
+            self._persist_event(event)
             self._events.append(event)
             self._integrity_checkpoint = _audit_event_integrity_checkpoint(self._events)
         return deepcopy(event)
@@ -259,6 +266,7 @@ class JobAuditEventStore:
                 previous_events=self._events,
                 checkpoint=self._integrity_checkpoint,
             )
+            self._persist_event(event)
             self._events.append(event)
             self._integrity_checkpoint = _audit_event_integrity_checkpoint(self._events)
         return deepcopy(event)
@@ -298,6 +306,43 @@ class JobAuditEventStore:
             return _verify_audit_event_integrity(
                 self._events,
                 checkpoint=self._integrity_checkpoint,
+            )
+
+    def _restore_events(self) -> list[dict[str, Any]]:
+        if self._database_path is None:
+            return []
+        Path(self._database_path).parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(self._database_path) as connection:
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS job_audit_event_records (
+                    sequence INTEGER PRIMARY KEY CHECK(sequence > 0),
+                    event_json TEXT NOT NULL
+                )
+                """
+            )
+            rows = connection.execute(
+                "SELECT sequence, event_json FROM job_audit_event_records "
+                "ORDER BY sequence"
+            ).fetchall()
+        events: list[dict[str, Any]] = []
+        for sequence, event_json in rows:
+            event = json.loads(event_json)
+            if not isinstance(event, dict) or event.get("sequence") != sequence:
+                raise ValueError("persisted job audit event is invalid")
+            events.append(event)
+        return events
+
+    def _persist_event(self, event: dict[str, Any]) -> None:
+        if self._database_path is None:
+            return
+        with sqlite3.connect(self._database_path) as connection:
+            connection.execute(
+                "INSERT INTO job_audit_event_records(sequence, event_json) VALUES (?, ?)",
+                (
+                    event["sequence"],
+                    json.dumps(event, sort_keys=True, separators=(",", ":")),
+                ),
             )
 
 
@@ -1103,9 +1148,12 @@ def _llm_plan_unavailable_reason(exc: Exception) -> str:
 
 def run(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> None:
     """Run the stdlib PoC API server."""
-    job_queue = JobQueue(database_path=default_database_path())
+    database_path = default_database_path()
+    job_queue = JobQueue(database_path=database_path)
+    job_event_store = JobAuditEventStore(database_path=database_path)
     server = ThreadingHTTPServer((host, port), PocWebRequestHandler)
     server.job_queue = job_queue
+    server.job_event_store = job_event_store
     print(f"VeriDoc PoC web API listening on http://{host}:{port}")
     server.serve_forever()
 

@@ -20,7 +20,7 @@ JOB_STATUSES: set[JobStatus] = {"queued", "running", "succeeded", "failed"}
 TERMINAL_STATUSES: set[JobStatus] = {"succeeded", "failed"}
 _BYTES_MARKER = "__veridoc_job_queue_bytes__"
 _DICT_MARKER = "__veridoc_job_queue_dict__"
-_OMITTED_BINARY = object()
+_ARTIFACT_MARKER = "__veridoc_job_queue_artifact__"
 
 
 @dataclass(frozen=True)
@@ -430,6 +430,18 @@ class JobQueue:
                 )
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS job_queue_artifacts (
+                    job_id TEXT NOT NULL,
+                    artifact_id TEXT NOT NULL,
+                    content BLOB NOT NULL,
+                    PRIMARY KEY(job_id, artifact_id),
+                    FOREIGN KEY(job_id) REFERENCES job_queue_records(job_id)
+                        ON DELETE CASCADE
+                )
+                """
+            )
             columns = {
                 row[1]
                 for row in connection.execute("PRAGMA table_info(job_queue_records)")
@@ -449,10 +461,20 @@ class JobQueue:
                 "SELECT rowid, record_json, queue_sequence "
                 "FROM job_queue_records ORDER BY rowid"
             ).fetchall()
+            artifact_rows = connection.execute(
+                "SELECT job_id, artifact_id, content FROM job_queue_artifacts"
+            ).fetchall()
+        artifacts_by_job: dict[str, dict[str, bytes]] = {}
+        for job_id, artifact_id, content in artifact_rows:
+            artifacts_by_job.setdefault(job_id, {})[artifact_id] = bytes(content)
         pending_jobs: list[tuple[int, int, str]] = []
         running_jobs: list[tuple[int, int | None, JobRecord]] = []
         for rowid, record_json, queue_sequence in rows:
             values = _decode_persisted_value(json.loads(record_json))
+            values = _restore_binary_artifacts(
+                values,
+                artifacts_by_job.get(values.get("job_id"), {}),
+            )
             job = JobRecord(**values)
             if job.status not in JOB_STATUSES:
                 raise ValueError(f"unsupported persisted job status: {job.status}")
@@ -488,6 +510,7 @@ class JobQueue:
     def _persist(self, job: JobRecord, *, queue_sequence: int | None = None) -> None:
         if self._database_path is None:
             return
+        persisted_record, artifacts = _extract_binary_artifacts(job.to_dict())
         with sqlite3.connect(self._database_path) as connection:
             connection.execute(
                 """
@@ -510,12 +533,23 @@ class JobQueue:
                     job.attempts,
                     queue_sequence,
                     json.dumps(
-                        _encode_persisted_value(_without_binary_values(job.to_dict())),
+                        _encode_persisted_value(persisted_record),
                         sort_keys=True,
                         separators=(",", ":"),
                     ),
                     job.updated_at,
                 ),
+            )
+            connection.execute(
+                "DELETE FROM job_queue_artifacts WHERE job_id = ?", (job.job_id,)
+            )
+            connection.executemany(
+                "INSERT INTO job_queue_artifacts(job_id, artifact_id, content) "
+                "VALUES (?, ?, ?)",
+                [
+                    (job.job_id, artifact_id, content)
+                    for artifact_id, content in artifacts.items()
+                ],
             )
 
     def _allocate_pending_sequence(self) -> int:
@@ -533,6 +567,9 @@ class JobQueue:
         if self._database_path is None:
             return
         with sqlite3.connect(self._database_path) as connection:
+            connection.execute(
+                "DELETE FROM job_queue_artifacts WHERE job_id = ?", (job_id,)
+            )
             connection.execute("DELETE FROM job_queue_records WHERE job_id = ?", (job_id,))
 
     def _has_active_high_quality_job(self) -> bool:
@@ -552,23 +589,36 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _without_binary_values(value: Any) -> Any:
-    if isinstance(value, bytes):
-        return _OMITTED_BINARY
+def _extract_binary_artifacts(value: Any) -> tuple[Any, dict[str, bytes]]:
+    artifacts: dict[str, bytes] = {}
+
+    def project(item: Any) -> Any:
+        if isinstance(item, bytes):
+            artifact_id = str(len(artifacts))
+            artifacts[artifact_id] = item
+            return {_ARTIFACT_MARKER: artifact_id}
+        if isinstance(item, dict):
+            return {key: project(child) for key, child in item.items()}
+        if isinstance(item, (list, tuple)):
+            return [project(child) for child in item]
+        return item
+
+    return project(value), artifacts
+
+
+def _restore_binary_artifacts(value: Any, artifacts: dict[str, bytes]) -> Any:
     if isinstance(value, dict):
-        projected: dict[str, Any] = {}
-        for key, item in value.items():
-            projected_item = _without_binary_values(item)
-            if projected_item is not _OMITTED_BINARY:
-                projected[key] = projected_item
-        return projected
-    if isinstance(value, (list, tuple)):
-        projected_items = []
-        for item in value:
-            projected_item = _without_binary_values(item)
-            if projected_item is not _OMITTED_BINARY:
-                projected_items.append(projected_item)
-        return projected_items
+        if set(value) == {_ARTIFACT_MARKER}:
+            artifact_id = value[_ARTIFACT_MARKER]
+            if not isinstance(artifact_id, str) or artifact_id not in artifacts:
+                raise ValueError("persisted job artifact is missing")
+            return artifacts[artifact_id]
+        return {
+            key: _restore_binary_artifacts(item, artifacts)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_restore_binary_artifacts(item, artifacts) for item in value]
     return value
 
 

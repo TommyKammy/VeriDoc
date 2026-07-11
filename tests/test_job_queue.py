@@ -147,21 +147,31 @@ def test_job_queue_keeps_binary_payloads_out_of_persisted_metadata(tmp_path) -> 
             "SELECT record_json FROM job_queue_records WHERE job_id = ?",
             (created.job_id,),
         ).fetchone()[0]
+        artifact_contents = connection.execute(
+            "SELECT content FROM job_queue_artifacts WHERE job_id = ? ORDER BY artifact_id",
+            (created.job_id,),
+        ).fetchall()
     assert "__veridoc_job_queue_bytes__" not in record_json
     assert "uploaded document" not in record_json
     assert "converted document" not in record_json
     assert "primary artifact" not in record_json
+    assert artifact_contents == [
+        (source_content,),
+        (b"converted document",),
+        (b"primary artifact",),
+    ]
 
     restored = JobQueue(database_path=database_path).get_job(created.job_id)
 
-    assert restored.source == {
-        "sha256": source["sha256"],
-        "size_bytes": len(source_content),
-        "content_type": "application/pdf",
-    }
+    assert restored.source == source
     assert restored.result == {
-        "download": {"filename": "converted.json"},
-        "artifacts": [{"artifact_id": "primary-json"}],
+        "download": {
+            "content": b"converted document",
+            "filename": "converted.json",
+        },
+        "artifacts": [
+            {"artifact_id": "primary-json", "content": b"primary artifact"}
+        ],
     }
     replayed = JobQueue(database_path=database_path).get_or_create_job(
         idempotency_key="restart-bytes",

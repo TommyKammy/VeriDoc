@@ -64,8 +64,16 @@ def test_run_uses_configured_database_for_job_queue(tmp_path, monkeypatch) -> No
         filename="batch-record.pdf",
         mode="standard",
     )
+    audit_event = servers[0].job_event_store.record(
+        {
+            "event_type": "desktop.job_operation",
+            "job_id": created.job_id,
+            "action": "desktop_upload",
+        }
+    )
     restored = JobQueue(database_path=database_path).get_job(created.job_id)
     assert restored.status == "queued"
+    assert JobAuditEventStore(database_path=database_path).list_events() == [audit_event]
 
 
 def test_run_resolves_relative_database_path_from_repository_root(
@@ -6007,6 +6015,23 @@ def test_job_audit_event_store_rejects_append_after_tail_truncation() -> None:
     }
 
 
+def test_job_audit_event_store_restores_events_after_reinitialization(tmp_path) -> None:
+    database_path = tmp_path / "job-audits.sqlite3"
+    store = JobAuditEventStore(database_path=database_path)
+    recorded = store.record(
+        {
+            "event_type": "desktop.job_operation",
+            "job_id": "job-restored",
+            "action": "desktop_upload",
+        }
+    )
+
+    restored = JobAuditEventStore(database_path=database_path)
+
+    assert restored.list_events(filters={"job_id": "job-restored"}) == [recorded]
+    assert restored.verify_integrity()["ok"] is True
+
+
 def test_poc_http_api_lists_server_side_review_action_audit_events() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     server.review_event_store = ReviewAuditEventStore()
@@ -7961,6 +7986,58 @@ def test_poc_http_api_rejects_late_idempotent_desktop_upload_audit_from_new_acto
     assert [event["action"] for event in events] == ["desktop_upload"]
     assert events[0]["actor"] == {"id": "local-principal:reviewer", "role": "reviewer"}
     assert stored_job.status == job_state
+
+
+def test_poc_http_api_restores_desktop_upload_audit_for_idempotent_retry(
+    tmp_path,
+) -> None:
+    database_path = tmp_path / "veridoc.sqlite3"
+    uploaded_content = b"%PDF-1.7\nrestart-safe queued source"
+    request = {
+        "idempotency_key": "desktop-upload-audit-restart",
+        "filename": "batch-record.pdf",
+        "content_type": "application/pdf",
+        "content_base64": base64.b64encode(uploaded_content).decode("ascii"),
+        "size_bytes": len(uploaded_content),
+        "source_sha256": hashlib.sha256(uploaded_content).hexdigest(),
+        "mode": "standard",
+        "desktop_upload_audit": True,
+    }
+    payload = json.dumps(request).encode("utf-8")
+    responses = []
+    bodies = []
+
+    for _ in range(2):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+        server.job_queue = JobQueue(database_path=database_path)
+        server.job_event_store = JobAuditEventStore(database_path=database_path)
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+            connection.request(
+                "POST",
+                "/api/jobs",
+                body=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Content-Length": str(len(payload)),
+                },
+            )
+            response = connection.getresponse()
+            responses.append(response.status)
+            bodies.append(json.loads(response.read().decode("utf-8")))
+        finally:
+            server.shutdown()
+            thread.join(timeout=5)
+
+    restored_events = JobAuditEventStore(database_path=database_path).list_events(
+        filters={"job_id": bodies[0]["job"]["job_id"]}
+    )
+
+    assert responses == [202, 202]
+    assert bodies[1]["job"]["job_id"] == bodies[0]["job"]["job_id"]
+    assert [event["action"] for event in restored_events] == ["desktop_upload"]
 
 
 def test_poc_http_api_records_desktop_upload_and_download_audit_events() -> None:
