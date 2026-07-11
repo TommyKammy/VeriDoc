@@ -473,6 +473,221 @@ def test_convert_uploaded_document_surfaces_review_items_and_download_payload() 
     assert downloaded["document_ir"]["blocks"][0]["review"]["requires_review"] is True
 
 
+def test_convert_uploaded_document_requires_review_for_high_risk_template_field() -> None:
+    parser_output = {
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 320,
+                "height": 240,
+                "unit": "pt",
+                "fragments": [
+                    {
+                        "text": "Batch Production Record",
+                        "type": "heading",
+                        "bbox": {"x": 12, "y": 12, "width": 180, "height": 16},
+                        "confidence": 0.99,
+                    },
+                    {
+                        "text": "Batch No. SAMPLE-001",
+                        "type": "paragraph",
+                        "bbox": {"x": 12, "y": 40, "width": 180, "height": 16},
+                        "confidence": 0.99,
+                    },
+                ],
+            }
+        ]
+    }
+    template_snapshot = {
+        "template_id": "high-risk-batch-record",
+        "template_version": 1,
+        "name": "High-risk batch record",
+        "status": "active",
+        "effective": {"from": "2026-01-01", "to": None},
+        "document_type": "batch_record",
+        "anchors": [
+            {
+                "anchor_id": "batch-header",
+                "kind": "heading",
+                "text": "Batch Production Record",
+                "match": "normalized",
+                "scope": {"page": 1, "block_types": ["heading"]},
+            }
+        ],
+        "fields": [
+            {
+                "field_id": "batch_number",
+                "label": "Batch No.",
+                "value_type": "string",
+                "source": {"anchor_id": "batch-header", "direction": "below"},
+                "required": True,
+                "risk_level": "high",
+                "validation_rule_ids": ["batch-number-required"],
+                "output_key": "batch.number",
+            },
+            {
+                "field_id": "release_status",
+                "label": "Release status",
+                "value_type": "string",
+                "source": {"anchor_id": "batch-header", "direction": "below"},
+                "required": True,
+                "risk_level": "high",
+                "validation_rule_ids": ["release-status-required"],
+                "output_key": "batch.release_status",
+            },
+        ],
+        "tables": [],
+        "risk_rank": {
+            "default_level": "medium",
+            "levels": [
+                {"level": "medium", "rank": 2},
+                {"level": "high", "rank": 3},
+            ],
+            "review_required_levels": [],
+        },
+        "validation_rules": [
+            {
+                "rule_id": "batch-number-required",
+                "kind": "required",
+                "target": "field:batch_number",
+                "severity": "error",
+                "parameters": {},
+            },
+            {
+                "rule_id": "release-status-required",
+                "kind": "required",
+                "target": "field:release_status",
+                "severity": "error",
+                "parameters": {},
+            },
+        ],
+        "output_mapping": {
+            "root_key": "document",
+            "field_map": [
+                {"field_id": "batch_number", "output_key": "batch.number"},
+                {"field_id": "release_status", "output_key": "batch.release_status"},
+            ],
+            "table_map": [],
+        },
+    }
+
+    results = [
+        convert_uploaded_document(
+            filename="high-risk.json",
+            content=json.dumps(parser_output).encode("utf-8"),
+            template_id="high-risk-batch-record",
+            template_snapshot=template_snapshot,
+        )
+        for _ in range(2)
+    ]
+    template_store = poc_web.TemplateStore()
+    template_store.register_template(
+        {
+            **{
+                key: value
+                for key, value in template_snapshot.items()
+                if key not in {"template_version", "status", "effective"}
+            },
+            "category": "manufacturing",
+            "change_reason": "Register high-risk conversion regression template",
+            "actor": {"principal_id": "qa-author", "role": "admin"},
+        }
+    )
+    results.append(
+        convert_uploaded_document(
+            filename="high-risk.json",
+            content=json.dumps(parser_output).encode("utf-8"),
+            template_id="high-risk-batch-record",
+            template_store=template_store,
+        )
+    )
+
+    assert results[0]["conversion_id"] != results[1]["conversion_id"]
+    for result in results:
+        assert result["status"] == "requires_review"
+        assert result["validation"]["requires_review"] is True
+        assert result["template_mapping"]["requires_review"] is True
+        assert result["template_mapping"]["fields"][0]["requires_review"] is True
+        field_review_items = {
+            item["field_id"]: item
+            for item in result["review_items"]
+            if "field_id" in item
+        }
+        assert set(field_review_items) == {"batch_number", "release_status"}
+        assert len({item["block_id"] for item in field_review_items.values()}) == 2
+        assert all(item["source_page"] == 1 for item in field_review_items.values())
+
+
+def test_convert_uploaded_document_emits_template_mapping_warning_review_item() -> None:
+    parser_output = {
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 320,
+                "height": 240,
+                "unit": "pt",
+                "fragments": [
+                    {
+                        "text": "Unrecognized document",
+                        "type": "paragraph",
+                        "bbox": {"x": 12, "y": 12, "width": 180, "height": 16},
+                        "confidence": 0.99,
+                    }
+                ],
+            }
+        ]
+    }
+    template_snapshot = {
+        "template_id": "optional-low-risk-template",
+        "template_version": 1,
+        "name": "Optional low-risk template",
+        "document_type": "batch_record",
+        "anchors": [],
+        "fields": [
+            {
+                "field_id": "note",
+                "label": "Note",
+                "value_type": "string",
+                "source": {"anchor_id": "note", "direction": "same_block"},
+                "required": False,
+                "risk_level": "low",
+                "validation_rule_ids": [],
+                "output_key": "note",
+            }
+        ],
+        "tables": [],
+        "risk_rank": {
+            "default_level": "low",
+            "levels": [{"level": "low", "rank": 1}],
+            "review_required_levels": [],
+        },
+        "validation_rules": [],
+        "output_mapping": {
+            "root_key": "document",
+            "field_map": [{"field_id": "note", "output_key": "note"}],
+            "table_map": [],
+        },
+    }
+
+    result = convert_uploaded_document(
+        filename="unrecognized.json",
+        content=json.dumps(parser_output).encode("utf-8"),
+        template_id="optional-low-risk-template",
+        template_snapshot=template_snapshot,
+    )
+
+    assert result["status"] == "requires_review"
+    assert result["template_mapping"]["requires_review"] is True
+    assert result["template_mapping"]["fields"][0]["requires_review"] is False
+    mapping_review_items = [
+        item for item in result["review_items"] if item["block_id"] == "template-mapping"
+    ]
+    assert len(mapping_review_items) == 1
+    assert "template anchors missing; template fingerprint requires review" in (
+        mapping_review_items[0]["warnings"]
+    )
+
+
 def test_convert_uploaded_document_returns_artifact_manifest_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -7869,6 +8084,7 @@ def test_poc_http_api_converts_with_stored_job_template_snapshot() -> None:
     class AdvancingTemplateStore:
         def __init__(self) -> None:
             self.snapshot_reads = 0
+            self.mapping_reads = 0
 
         def latest_job_snapshot(self, template_id: str) -> dict[str, object]:
             self.snapshot_reads += 1
@@ -7880,6 +8096,41 @@ def test_poc_http_api_converts_with_stored_job_template_snapshot() -> None:
                 "name": "Batch Record",
             }
 
+        def mapping_snapshot(
+            self, template_id: str, *, template_version: int | None = None
+        ) -> dict[str, object]:
+            self.mapping_reads += 1
+            assert template_version == 4
+            return {
+                "template_id": template_id,
+                "template_version": template_version,
+                "name": "Renamed Batch Record",
+                "document_type": "batch_record",
+                "anchors": [],
+                "fields": [
+                    {
+                        "field_id": "batch_number",
+                        "label": "Batch number",
+                        "required": True,
+                        "risk_level": "high",
+                        "output_key": "batch.number",
+                    }
+                ],
+                "tables": [],
+                "risk_rank": {
+                    "levels": [{"level": "high", "rank": 3}],
+                    "review_required_levels": ["high"],
+                },
+                "validation_rules": [],
+                "output_mapping": {
+                    "root_key": "document",
+                    "field_map": [
+                        {"field_id": "batch_number", "output_key": "batch.number"}
+                    ],
+                    "table_map": [],
+                },
+            }
+
     template_store = AdvancingTemplateStore()
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     server.job_queue = JobQueue()
@@ -7888,8 +8139,20 @@ def test_poc_http_api_converts_with_stored_job_template_snapshot() -> None:
     thread.start()
     uploaded_content = json.dumps(
         {
-            "document": {"id": "template-snapshot", "source_type": "pdf"},
-            "blocks": [],
+            "pages": [
+                {
+                    "page_number": 1,
+                    "width": 320,
+                    "height": 240,
+                    "unit": "pt",
+                    "fragments": [
+                        {
+                            "text": "Batch Production Record\nSAMPLE-001",
+                            "confidence": 0.99,
+                        }
+                    ],
+                }
+            ]
         }
     ).encode("utf-8")
     try:
@@ -7927,7 +8190,13 @@ def test_poc_http_api_converts_with_stored_job_template_snapshot() -> None:
     }
     assert result_response.status == 200
     assert result["audit"]["template"] == submitted["job"]["template"]
+    assert result["status"] == "requires_review"
+    field_review_item = next(
+        item for item in result["review_items"] if item.get("field_id") == "batch_number"
+    )
+    assert field_review_item["block_id"] == "template-field:batch_number"
     assert template_store.snapshot_reads == 1
+    assert template_store.mapping_reads == 1
 
 
 def test_poc_http_api_primary_artifact_does_not_reference_debug_download() -> None:
