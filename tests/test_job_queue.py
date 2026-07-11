@@ -128,6 +128,59 @@ def test_job_queue_requeues_running_job_after_reinitialization(tmp_path) -> None
     assert recovered.job_id == created.job_id
 
 
+def test_job_queue_requeues_running_job_before_later_queued_jobs(tmp_path) -> None:
+    database_path = tmp_path / "job-queue.sqlite3"
+    queue = JobQueue(database_path=database_path)
+    older = queue.create_job(
+        idempotency_key="restart-running-older",
+        filename="older.pdf",
+        mode="standard",
+    )
+    newer = queue.create_job(
+        idempotency_key="restart-running-newer",
+        filename="newer.pdf",
+        mode="standard",
+    )
+    running = queue.start_next_job()
+    assert running is not None
+    assert running.job_id == older.job_id
+
+    restored_queue = JobQueue(database_path=database_path)
+
+    recovered = restored_queue.start_next_job()
+    assert recovered is not None
+    assert recovered.job_id == older.job_id
+    restored_queue.mark_succeeded(recovered.job_id, result={})
+    next_job = restored_queue.start_next_job()
+    assert next_job is not None
+    assert next_job.job_id == newer.job_id
+
+
+def test_job_queue_keeps_job_pending_when_running_persistence_fails(
+    tmp_path, monkeypatch
+) -> None:
+    database_path = tmp_path / "job-queue.sqlite3"
+    queue = JobQueue(database_path=database_path)
+    created = queue.create_job(
+        idempotency_key="running-persistence-failure",
+        filename="batch-record.pdf",
+        mode="standard",
+    )
+    persist = queue._persist
+
+    def fail_persistence(*args, **kwargs) -> None:
+        raise OSError("simulated persistence failure")
+
+    monkeypatch.setattr(queue, "_persist", fail_persistence)
+    with pytest.raises(OSError, match="simulated persistence failure"):
+        queue.start_next_job()
+
+    monkeypatch.setattr(queue, "_persist", persist)
+    running = queue.start_next_job()
+    assert running is not None
+    assert running.job_id == created.job_id
+
+
 def test_job_queue_preserves_deferred_job_after_reinitialization(tmp_path) -> None:
     database_path = tmp_path / "job-queue.sqlite3"
     queue = JobQueue(database_path=database_path)

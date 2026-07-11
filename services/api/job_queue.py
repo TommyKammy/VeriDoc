@@ -329,16 +329,23 @@ class JobQueue:
     def start_next_job(self) -> JobRecord | None:
         with self._lock:
             while self._pending_job_ids:
-                job_id = self._pending_job_ids.popleft()
+                job_id = self._pending_job_ids[0]
                 job = self._jobs[job_id]
                 if job.status != "queued":
+                    self._pending_job_ids.popleft()
                     self._pending_sequences.pop(job_id, None)
                     continue
                 if job.mode == "high_quality" and self._has_running_high_quality_job():
-                    self._pending_job_ids.appendleft(job_id)
                     return None
+                pending_sequence = self._pending_sequences.get(job_id)
+                running = self._replace(
+                    job,
+                    queue_sequence=pending_sequence,
+                    status="running",
+                )
+                self._pending_job_ids.popleft()
                 self._pending_sequences.pop(job_id, None)
-                return self._replace(job, status="running")
+                return running
             return None
 
     def mark_succeeded(self, job_id: str, *, result: dict[str, Any]) -> JobRecord:
@@ -436,7 +443,7 @@ class JobQueue:
                 "FROM job_queue_records ORDER BY rowid"
             ).fetchall()
         pending_jobs: list[tuple[int, int, str]] = []
-        running_job_ids: list[str] = []
+        running_jobs: list[tuple[int, int | None, JobRecord]] = []
         for rowid, record_json, queue_sequence in rows:
             values = _decode_persisted_value(json.loads(record_json))
             job = JobRecord(**values)
@@ -445,28 +452,34 @@ class JobQueue:
             self._jobs[job.job_id] = job
             self._idempotency_index[job.idempotency_key] = job.job_id
             if job.status == "running":
-                running_job_ids.append(job.job_id)
+                running_jobs.append((rowid, queue_sequence, job))
             elif job.status == "queued" and (
                 queue_sequence is not None or self._restore_legacy_queue_state
             ):
                 sequence = rowid if queue_sequence is None else queue_sequence
                 pending_jobs.append((sequence, rowid, job.job_id))
 
+        fallback_sequence = min((item[0] for item in pending_jobs), default=0) - len(
+            running_jobs
+        )
+        for index, (rowid, queue_sequence, job) in enumerate(running_jobs):
+            sequence = (
+                fallback_sequence + index
+                if queue_sequence is None
+                else queue_sequence
+            )
+            values = job.to_dict()
+            values.update(status="queued", updated_at=_utc_now())
+            recovered = JobRecord(**values)
+            self._persist(recovered, queue_sequence=sequence)
+            self._jobs[job.job_id] = recovered
+            pending_jobs.append((sequence, rowid, job.job_id))
+
         for sequence, _, job_id in sorted(pending_jobs):
             self._pending_job_ids.append(job_id)
             self._pending_sequences[job_id] = sequence
         if pending_jobs:
             self._next_pending_sequence = max(item[0] for item in pending_jobs) + 1
-
-        for job_id in running_job_ids:
-            job = self._jobs[job_id]
-            pending_sequence = self._allocate_pending_sequence()
-            values = job.to_dict()
-            values.update(status="queued", updated_at=_utc_now())
-            recovered = JobRecord(**values)
-            self._persist(recovered, queue_sequence=pending_sequence)
-            self._jobs[job_id] = recovered
-            self._append_pending(job_id, pending_sequence)
 
     def _persist(self, job: JobRecord, *, queue_sequence: int | None = None) -> None:
         if self._database_path is None:
