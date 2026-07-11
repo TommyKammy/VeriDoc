@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from collections import deque
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
@@ -15,6 +16,8 @@ from uuid import uuid4
 JobStatus = Literal["queued", "running", "succeeded", "failed"]
 JOB_STATUSES: set[JobStatus] = {"queued", "running", "succeeded", "failed"}
 TERMINAL_STATUSES: set[JobStatus] = {"succeeded", "failed"}
+_BYTES_MARKER = "__veridoc_job_queue_bytes__"
+_DICT_MARKER = "__veridoc_job_queue_dict__"
 
 
 @dataclass(frozen=True)
@@ -49,6 +52,8 @@ class JobQueue:
         self._jobs: dict[str, JobRecord] = {}
         self._idempotency_index: dict[str, str] = {}
         self._pending_job_ids: deque[str] = deque()
+        self._pending_sequences: dict[str, int] = {}
+        self._next_pending_sequence = 0
         self._unpublished_job_ids: set[str] = set()
         self._lock = Lock()
         self._condition = Condition(self._lock)
@@ -141,14 +146,18 @@ class JobQueue:
             except KeyError as exc:
                 raise KeyError(f"unknown job_id: {job_id}") from exc
             was_unpublished = job_id in self._unpublished_job_ids
-            self._persist(job)
-            self._unpublished_job_ids.discard(job_id)
-            if enqueue and job_id not in self._pending_job_ids:
+            pending_sequence = self._pending_sequences.get(job_id)
+            should_enqueue = enqueue and job_id not in self._pending_job_ids
+            if should_enqueue:
                 if job.status != "queued":
                     if not was_unpublished:
                         return job
                     raise RuntimeError("job is already active")
-                self._pending_job_ids.append(job_id)
+                pending_sequence = self._allocate_pending_sequence()
+            self._persist(job, queue_sequence=pending_sequence)
+            self._unpublished_job_ids.discard(job_id)
+            if should_enqueue:
+                self._append_pending(job_id, pending_sequence)
             self._condition.notify_all()
             return job
 
@@ -158,12 +167,16 @@ class JobQueue:
                 job = self._jobs[job_id]
             except KeyError as exc:
                 raise KeyError(f"unknown job_id: {job_id}") from exc
-            self._persist(job)
-            self._unpublished_job_ids.discard(job_id)
             if job.status != "queued":
                 raise RuntimeError("job is already active")
-            if job_id not in self._pending_job_ids:
-                self._pending_job_ids.append(job_id)
+            pending_sequence = self._pending_sequences.get(job_id)
+            should_enqueue = job_id not in self._pending_job_ids
+            if should_enqueue:
+                pending_sequence = self._allocate_pending_sequence()
+            self._persist(job, queue_sequence=pending_sequence)
+            self._unpublished_job_ids.discard(job_id)
+            if should_enqueue:
+                self._append_pending(job_id, pending_sequence)
             self._condition.notify_all()
             return job
 
@@ -183,6 +196,7 @@ class JobQueue:
                 self._pending_job_ids.remove(job_id)
             except ValueError:
                 pass
+            self._pending_sequences.pop(job_id, None)
             self._condition.notify_all()
 
     def is_pending(self, job_id: str) -> bool:
@@ -278,14 +292,17 @@ class JobQueue:
             source=deepcopy(source),
             template=deepcopy(template),
         )
+        pending_sequence = (
+            self._allocate_pending_sequence() if enqueue and publish else None
+        )
         if publish:
-            self._persist(job)
+            self._persist(job, queue_sequence=pending_sequence)
         self._jobs[job.job_id] = job
         self._idempotency_index[idempotency_key] = job.job_id
         if not publish:
             self._unpublished_job_ids.add(job.job_id)
         if enqueue and publish:
-            self._pending_job_ids.append(job.job_id)
+            self._append_pending(job.job_id, pending_sequence)
         return job
 
     def get_job(self, job_id: str) -> JobRecord:
@@ -315,10 +332,12 @@ class JobQueue:
                 job_id = self._pending_job_ids.popleft()
                 job = self._jobs[job_id]
                 if job.status != "queued":
+                    self._pending_sequences.pop(job_id, None)
                     continue
                 if job.mode == "high_quality" and self._has_running_high_quality_job():
                     self._pending_job_ids.appendleft(job_id)
                     return None
+                self._pending_sequences.pop(job_id, None)
                 return self._replace(job, status="running")
             return None
 
@@ -332,8 +351,15 @@ class JobQueue:
             job = self._require_running_job(job_id)
             attempts = job.attempts + 1
             if attempts < self._max_attempts:
-                retried = self._replace(job, status="queued", attempts=attempts, error=error)
-                self._pending_job_ids.append(job_id)
+                pending_sequence = self._allocate_pending_sequence()
+                retried = self._replace(
+                    job,
+                    queue_sequence=pending_sequence,
+                    status="queued",
+                    attempts=attempts,
+                    error=error,
+                )
+                self._append_pending(job_id, pending_sequence)
                 return retried
             return self._replace(job, status="failed", attempts=attempts, error=error)
 
@@ -347,8 +373,11 @@ class JobQueue:
                 raise ValueError("job must be failed")
             if job.mode == "high_quality" and self._has_active_high_quality_job():
                 raise RuntimeError("high_quality job already active")
-            retried = self._replace(job, status="queued", error=None)
-            self._pending_job_ids.append(job_id)
+            pending_sequence = self._allocate_pending_sequence()
+            retried = self._replace(
+                job, queue_sequence=pending_sequence, status="queued", error=None
+            )
+            self._append_pending(job_id, pending_sequence)
             return retried
 
     def _require_running_job(self, job_id: str) -> JobRecord:
@@ -360,12 +389,18 @@ class JobQueue:
             raise ValueError("job must be running")
         return job
 
-    def _replace(self, job: JobRecord, **changes: Any) -> JobRecord:
+    def _replace(
+        self,
+        job: JobRecord,
+        *,
+        queue_sequence: int | None = None,
+        **changes: Any,
+    ) -> JobRecord:
         values = job.to_dict()
         values.update(changes)
         values["updated_at"] = _utc_now()
         updated = JobRecord(**values)
-        self._persist(updated)
+        self._persist(updated, queue_sequence=queue_sequence)
         self._jobs[job.job_id] = updated
         return updated
 
@@ -378,40 +413,76 @@ class JobQueue:
                     idempotency_key TEXT NOT NULL UNIQUE,
                     status TEXT NOT NULL,
                     attempts INTEGER NOT NULL CHECK(attempts >= 0),
+                    queue_sequence INTEGER,
                     record_json TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
                 """
             )
+            columns = {
+                row[1]
+                for row in connection.execute("PRAGMA table_info(job_queue_records)")
+            }
+            self._restore_legacy_queue_state = "queue_sequence" not in columns
+            if self._restore_legacy_queue_state:
+                connection.execute(
+                    "ALTER TABLE job_queue_records ADD COLUMN queue_sequence INTEGER"
+                )
 
     def _restore_jobs(self) -> None:
         with sqlite3.connect(self._database_path) as connection:
             rows = connection.execute(
-                "SELECT record_json FROM job_queue_records ORDER BY rowid"
+                "SELECT rowid, record_json, queue_sequence "
+                "FROM job_queue_records ORDER BY rowid"
             ).fetchall()
-        for (record_json,) in rows:
-            values = json.loads(record_json)
+        pending_jobs: list[tuple[int, int, str]] = []
+        running_job_ids: list[str] = []
+        for rowid, record_json, queue_sequence in rows:
+            values = _decode_persisted_value(json.loads(record_json))
             job = JobRecord(**values)
             if job.status not in JOB_STATUSES:
                 raise ValueError(f"unsupported persisted job status: {job.status}")
             self._jobs[job.job_id] = job
             self._idempotency_index[job.idempotency_key] = job.job_id
-            if job.status == "queued":
-                self._pending_job_ids.append(job.job_id)
+            if job.status == "running":
+                running_job_ids.append(job.job_id)
+            elif job.status == "queued" and (
+                queue_sequence is not None or self._restore_legacy_queue_state
+            ):
+                sequence = rowid if queue_sequence is None else queue_sequence
+                pending_jobs.append((sequence, rowid, job.job_id))
 
-    def _persist(self, job: JobRecord) -> None:
+        for sequence, _, job_id in sorted(pending_jobs):
+            self._pending_job_ids.append(job_id)
+            self._pending_sequences[job_id] = sequence
+        if pending_jobs:
+            self._next_pending_sequence = max(item[0] for item in pending_jobs) + 1
+
+        for job_id in running_job_ids:
+            job = self._jobs[job_id]
+            pending_sequence = self._allocate_pending_sequence()
+            values = job.to_dict()
+            values.update(status="queued", updated_at=_utc_now())
+            recovered = JobRecord(**values)
+            self._persist(recovered, queue_sequence=pending_sequence)
+            self._jobs[job_id] = recovered
+            self._append_pending(job_id, pending_sequence)
+
+    def _persist(self, job: JobRecord, *, queue_sequence: int | None = None) -> None:
         if self._database_path is None:
             return
         with sqlite3.connect(self._database_path) as connection:
             connection.execute(
                 """
                 INSERT INTO job_queue_records(
-                    job_id, idempotency_key, status, attempts, record_json, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    job_id, idempotency_key, status, attempts, queue_sequence,
+                    record_json, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(job_id) DO UPDATE SET
                     idempotency_key = excluded.idempotency_key,
                     status = excluded.status,
                     attempts = excluded.attempts,
+                    queue_sequence = excluded.queue_sequence,
                     record_json = excluded.record_json,
                     updated_at = excluded.updated_at
                 """,
@@ -420,10 +491,26 @@ class JobQueue:
                     job.idempotency_key,
                     job.status,
                     job.attempts,
-                    json.dumps(job.to_dict(), sort_keys=True, separators=(",", ":")),
+                    queue_sequence,
+                    json.dumps(
+                        _encode_persisted_value(job.to_dict()),
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
                     job.updated_at,
                 ),
             )
+
+    def _allocate_pending_sequence(self) -> int:
+        sequence = self._next_pending_sequence
+        self._next_pending_sequence += 1
+        return sequence
+
+    def _append_pending(self, job_id: str, sequence: int | None) -> None:
+        if sequence is None:
+            raise ValueError("pending jobs require a queue sequence")
+        self._pending_job_ids.append(job_id)
+        self._pending_sequences[job_id] = sequence
 
     def _delete_persisted(self, job_id: str) -> None:
         if self._database_path is None:
@@ -446,6 +533,53 @@ class JobQueue:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _encode_persisted_value(value: Any) -> Any:
+    if isinstance(value, bytes):
+        return {_BYTES_MARKER: base64.b64encode(value).decode("ascii")}
+    if isinstance(value, dict):
+        return {
+            _DICT_MARKER: [
+                [key, _encode_persisted_value(item)] for key, item in value.items()
+            ]
+        }
+    if isinstance(value, list):
+        return [_encode_persisted_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_encode_persisted_value(item) for item in value]
+    return value
+
+
+def _decode_persisted_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        if set(value) == {_BYTES_MARKER}:
+            encoded = value[_BYTES_MARKER]
+            if not isinstance(encoded, str):
+                raise ValueError("invalid persisted byte payload")
+            try:
+                return base64.b64decode(encoded, validate=True)
+            except ValueError as exc:
+                raise ValueError("invalid persisted byte payload") from exc
+        if set(value) == {_DICT_MARKER}:
+            items = value[_DICT_MARKER]
+            if not isinstance(items, list):
+                raise ValueError("invalid persisted dictionary payload")
+            decoded: dict[str, Any] = {}
+            for item in items:
+                if (
+                    not isinstance(item, list)
+                    or len(item) != 2
+                    or not isinstance(item[0], str)
+                    or item[0] in decoded
+                ):
+                    raise ValueError("invalid persisted dictionary payload")
+                decoded[item[0]] = _decode_persisted_value(item[1])
+            return decoded
+        return {key: _decode_persisted_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_decode_persisted_value(item) for item in value]
+    return value
 
 
 def _normalize_job_request(

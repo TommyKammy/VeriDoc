@@ -87,6 +87,96 @@ def test_job_queue_restores_terminal_results_and_errors(tmp_path) -> None:
     assert restored_failure.error == "parser unavailable"
 
 
+def test_job_queue_restores_byte_payloads(tmp_path) -> None:
+    database_path = tmp_path / "job-queue.sqlite3"
+    queue = JobQueue(database_path=database_path)
+    created = queue.create_job(
+        idempotency_key="restart-bytes",
+        filename="batch-record.pdf",
+        mode="standard",
+        source={"content": b"uploaded document"},
+    )
+    running = queue.start_next_job()
+    assert running is not None
+    queue.mark_succeeded(
+        running.job_id,
+        result={"download": {"content": b"converted document"}},
+    )
+
+    restored = JobQueue(database_path=database_path).get_job(created.job_id)
+
+    assert restored.source == {"content": b"uploaded document"}
+    assert restored.result == {"download": {"content": b"converted document"}}
+
+
+def test_job_queue_requeues_running_job_after_reinitialization(tmp_path) -> None:
+    database_path = tmp_path / "job-queue.sqlite3"
+    queue = JobQueue(database_path=database_path)
+    created = queue.create_job(
+        idempotency_key="restart-running",
+        filename="batch-record.pdf",
+        mode="standard",
+    )
+    running = queue.start_next_job()
+    assert running is not None
+
+    restored_queue = JobQueue(database_path=database_path)
+
+    assert restored_queue.get_job(created.job_id).status == "queued"
+    recovered = restored_queue.start_next_job()
+    assert recovered is not None
+    assert recovered.job_id == created.job_id
+
+
+def test_job_queue_preserves_deferred_job_after_reinitialization(tmp_path) -> None:
+    database_path = tmp_path / "job-queue.sqlite3"
+    queue = JobQueue(database_path=database_path)
+    created = queue.create_job(
+        idempotency_key="restart-deferred",
+        filename="batch-record.pdf",
+        mode="standard",
+        enqueue=False,
+    )
+
+    restored_queue = JobQueue(database_path=database_path)
+
+    assert restored_queue.get_job(created.job_id).status == "queued"
+    assert restored_queue.start_next_job() is None
+    restored_queue.enqueue_job(created.job_id)
+    started = restored_queue.start_next_job()
+    assert started is not None
+    assert started.job_id == created.job_id
+
+
+def test_job_queue_preserves_retry_queue_order_after_reinitialization(tmp_path) -> None:
+    database_path = tmp_path / "job-queue.sqlite3"
+    queue = JobQueue(max_attempts=2, database_path=database_path)
+    older = queue.create_job(
+        idempotency_key="restart-order-older",
+        filename="older.pdf",
+        mode="standard",
+    )
+    newer = queue.create_job(
+        idempotency_key="restart-order-newer",
+        filename="newer.pdf",
+        mode="standard",
+    )
+    running = queue.start_next_job()
+    assert running is not None
+    assert running.job_id == older.job_id
+    queue.mark_failed(running.job_id, error="temporary failure")
+
+    restored_queue = JobQueue(max_attempts=2, database_path=database_path)
+
+    first = restored_queue.start_next_job()
+    assert first is not None
+    assert first.job_id == newer.job_id
+    restored_queue.mark_succeeded(first.job_id, result={})
+    second = restored_queue.start_next_job()
+    assert second is not None
+    assert second.job_id == older.job_id
+
+
 def test_job_queue_idempotent_retry_keeps_original_template_version() -> None:
     queue = JobQueue()
 
