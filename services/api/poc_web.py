@@ -1335,6 +1335,11 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 return
             self._handle_list_job_events(parsed_url.query)
             return
+        if path.startswith("/api/artifacts/"):
+            if not self._require_permission("jobs:read"):
+                return
+            self._handle_artifact_download(path.removeprefix("/api/artifacts/"))
+            return
         if path == "/api/templates":
             if not self._require_permission("templates:read"):
                 return
@@ -1373,6 +1378,31 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"job": _job_response(job, job_queue, role=role)})
             return
         self._send_json({"error": "not_found"}, status=404)
+
+    def _handle_artifact_download(self, artifact_id: str) -> None:
+        try:
+            artifact = self._job_queue().get_artifact(
+                artifact_id,
+                validate_job=_job_download,
+            )
+            content_type = _download_content_type(artifact["content_type"])
+            filename = _download_filename(artifact["filename"])
+        except KeyError:
+            self._send_json({"error": "artifact_not_found"}, status=404)
+            return
+        except (RuntimeError, ValueError) as exc:
+            self._send_json(
+                {"error": "artifact_unavailable", "message": str(exc)}, status=409
+            )
+            return
+        content = artifact["content"]
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("X-Content-SHA256", artifact["sha256"])
+        self.send_header("Content-Length", str(len(content)))
+        self.end_headers()
+        self.wfile.write(content)
 
     def do_POST(self) -> None:
         path = urlsplit(self.path).path
@@ -1604,6 +1634,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                     ),
                     template_snapshot=job.template,
                 )
+                result = _persistable_artifact_manifest(job.job_id, result)
                 job = job_queue.mark_succeeded(job.job_id, result=result)
             except PocServerDependencyError as exc:
                 if job_queue.get_job(job.job_id).status == "running":
@@ -2334,13 +2365,14 @@ def _job_response(
 ) -> dict[str, Any]:
     hashes = _job_hashes(job)
     hash_verification = _job_hash_verification(job)
+    has_download = _job_has_download(job)
     result_reference = {
-        "available": _job_has_download(job),
-        "href": f"/api/jobs/{job.job_id}/result" if _job_has_download(job) else None,
+        "available": has_download,
+        "href": f"/api/jobs/{job.job_id}/result" if has_download else None,
     }
     download_reference = {
-        "available": _job_has_download(job),
-        "href": f"/api/jobs/{job.job_id}/download" if _job_has_download(job) else None,
+        "available": has_download,
+        "href": f"/api/jobs/{job.job_id}/download" if has_download else None,
     }
     return {
         "job_id": job.job_id,
@@ -2357,17 +2389,17 @@ def _job_response(
         "updated_at": job.updated_at,
         "hashes": hashes,
         "hash_verification": hash_verification,
-        "has_result": _job_has_download(job),
+        "has_result": has_download,
         "result": result_reference,
         "download": download_reference,
-        "artifacts": _job_artifact_references(job, download_reference["href"]),
+        "artifacts": _job_artifact_references(job, has_download),
         "available_actions": _job_actions(job, job_queue, role=role),
         "template": deepcopy(job.template),
     }
 
 
 def _job_artifact_references(
-    job: JobRecord, debug_download_href: str | None
+    job: JobRecord, artifacts_available: bool
 ) -> list[dict[str, Any]]:
     if not isinstance(job.result, dict):
         return []
@@ -2383,8 +2415,12 @@ def _job_artifact_references(
             for key in ("id", "filename", "content_type", "format", "metadata")
             if key in artifact
         }
+        artifact_id = artifact.get("artifact_id")
+        reference["artifact_id"] = artifact_id
         reference["href"] = (
-            debug_download_href if artifact.get("id") == "debug-json" else None
+            f"/api/artifacts/{artifact_id}"
+            if artifacts_available and isinstance(artifact_id, str) and artifact_id
+            else None
         )
         metadata = reference.get("metadata")
         if reference["href"] is None and isinstance(metadata, dict):
@@ -4298,6 +4334,49 @@ def _http_result(result: dict[str, Any], *, role: str | None = None) -> dict[str
             "content_text": content.decode("utf-8"),
         },
     }
+
+
+def _persistable_artifact_manifest(job_id: str, result: dict[str, Any]) -> dict[str, Any]:
+    persisted = deepcopy(result)
+    download = persisted.get("download")
+    artifacts = persisted.get("artifacts")
+    if not isinstance(download, dict) or not isinstance(download.get("content"), bytes):
+        raise ValueError("conversion result download is missing")
+    if not isinstance(artifacts, list):
+        raise ValueError("conversion artifact manifest is missing")
+    for artifact in artifacts:
+        if not isinstance(artifact, dict) or not isinstance(artifact.get("id"), str):
+            raise ValueError("conversion artifact manifest is malformed")
+        artifact["artifact_id"] = f"{job_id}-{artifact['id']}"
+        if artifact["id"] == "debug-json":
+            artifact["content"] = download["content"]
+        if not isinstance(artifact.get("content"), bytes):
+            raise ValueError("conversion artifact content is missing")
+        artifact["href"] = f"/api/artifacts/{artifact['artifact_id']}"
+        metadata = artifact.get("metadata")
+        if isinstance(metadata, dict):
+            metadata.pop("download", None)
+    audit = persisted.get("audit")
+    if isinstance(audit, dict):
+        audit_content = json.dumps(
+            audit, sort_keys=True, separators=(",", ":"), allow_nan=False
+        ).encode("utf-8")
+        artifacts.append(
+            {
+                "artifact_id": f"{job_id}-audit-json",
+                "id": "audit-json",
+                "kind": "audit",
+                "format": "json",
+                "filename": f"{job_id}.audit.json",
+                "content_type": "application/json",
+                "size_bytes": len(audit_content),
+                "sha256": _sha256_hex(audit_content),
+                "content": audit_content,
+                "href": f"/api/artifacts/{job_id}-audit-json",
+                "metadata": {"role": "audit"},
+            }
+        )
+    return persisted
 
 
 def _http_artifact(artifact: Any, *, artifact_index: int | None = None) -> Any:

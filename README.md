@@ -109,12 +109,11 @@ bytes and conversion settings there, read status from `GET /api/jobs/{job_id}`,
 and follow the returned `job.result.href` when `job.result.available` is true.
 That result URL returns the full conversion payload used by the review UI.
 Job responses also include the durable `job_id`, a `job.download.href` for the
-existing debug JSON download, and sanitized `artifacts[]` references. The debug
-artifact points to that download URL; primary DOCX/XLSX artifacts deliberately
-leave `href` unset until the dedicated binary artifact download contract is
-implemented. The local PoC currently runs a source-bearing job during
-submission, while preserving the job-shaped contract for a later asynchronous
-worker.
+existing debug JSON download, and sanitized `artifacts[]` references. Completed
+jobs persist primary DOCX/XLSX, debug JSON, and audit JSON artifacts with a
+job-bound `artifact_id`; each manifest entry exposes an artifact download URL.
+The local PoC currently runs a source-bearing job during submission, while
+preserving the job-shaped contract for a later asynchronous worker.
 
 `POST /api/convert` is retained as a synchronous development and compatibility
 endpoint. It returns the conversion payload directly and is used by the smoke
