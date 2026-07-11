@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 import json
 from os import PathLike
+from pathlib import Path
 import sqlite3
 from threading import Condition, Lock
 from time import monotonic
@@ -412,6 +413,7 @@ class JobQueue:
         return updated
 
     def _initialize_store(self) -> None:
+        Path(self._database_path).parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(self._database_path) as connection:
             connection.execute(
                 """

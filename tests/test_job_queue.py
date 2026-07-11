@@ -6,6 +6,20 @@ from services.api.job_queue import JobQueue
 from services.api.persistence_repository import reset_database
 
 
+def test_job_queue_creates_missing_database_parent_directory(tmp_path) -> None:
+    database_path = tmp_path / "var" / "veridoc" / "job-queue.sqlite3"
+
+    queue = JobQueue(database_path=database_path)
+    created = queue.create_job(
+        idempotency_key="missing-parent",
+        filename="batch-record.pdf",
+        mode="standard",
+    )
+
+    assert database_path.is_file()
+    assert JobQueue(database_path=database_path).get_job(created.job_id).status == "queued"
+
+
 def test_job_queue_persists_state_transitions_and_idempotent_creation() -> None:
     queue = JobQueue()
 
