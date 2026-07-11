@@ -665,6 +665,23 @@ def test_job_queue_retries_failed_job_with_bounded_attempts() -> None:
     ).job_id == created.job_id
 
 
+def test_job_queue_can_mark_in_process_failure_as_non_retryable() -> None:
+    queue = JobQueue(max_attempts=3)
+    created = queue.create_job(
+        idempotency_key="non-retryable-failure",
+        filename="source.pdf",
+        mode="standard",
+    )
+    queue.start_job(created.job_id)
+
+    failed = queue.mark_failed(created.job_id, error="conversion rejected", retryable=False)
+
+    assert failed.status == "failed"
+    assert failed.attempts == 1
+    assert failed.error == "conversion rejected"
+    assert queue.start_next_job() is None
+
+
 def test_job_queue_requeues_explicit_retry_for_failed_job() -> None:
     queue = JobQueue(max_attempts=1)
     created = queue.create_job(

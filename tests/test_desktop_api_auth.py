@@ -431,7 +431,7 @@ def test_desktop_api_client_result_save_records_audit_event_after_authenticated_
     assert len(transport.requests) == 2
     download_request = transport.requests[0]
     audit_request = transport.requests[1]
-    assert download_request.full_url == "http://127.0.0.1:8765/api/jobs/job-complete-1/result"
+    assert download_request.full_url == "http://127.0.0.1:8765/api/jobs/job-complete-1/download"
     assert download_request.get_method() == "GET"
     assert download_request.get_header("Authorization") == "Bearer reviewer-token"
     assert download_request.get_header("Accept") == "application/octet-stream"
@@ -613,8 +613,8 @@ def test_desktop_api_client_retries_result_save_audit_pre_connection_failure(
     assert client.save_job_result("job-complete-1", tmp_path) == tmp_path / "result.json"
 
     assert [request.full_url for request in transport.requests] == [
-        "http://[::1]:8765/api/jobs/job-complete-1/result",
-        "http://127.0.0.1:8765/api/jobs/job-complete-1/result",
+        "http://[::1]:8765/api/jobs/job-complete-1/download",
+        "http://127.0.0.1:8765/api/jobs/job-complete-1/download",
         "http://127.0.0.1:8765/api/job-events",
     ]
     assert all(request.get_header("Host") == "localhost:8765" for request in transport.requests)
@@ -758,7 +758,7 @@ def test_desktop_api_client_removes_partial_result_file_after_failed_write(
         client.save_job_result("job-complete-1", tmp_path)
 
     assert len(transport.requests) == 1
-    assert transport.requests[0].full_url == "http://127.0.0.1:8765/api/jobs/job-complete-1/result"
+    assert transport.requests[0].full_url == "http://127.0.0.1:8765/api/jobs/job-complete-1/download"
     assert not target_path.exists()
 
 
@@ -1475,7 +1475,7 @@ def test_desktop_api_client_preserves_pinned_https_result_download_headers(
     assert captured["tls_server_name"] == "localhost"
     requests = captured["requests"]
     assert requests[0]["method"] == "GET"
-    assert requests[0]["path"] == "/api/jobs/job-complete-1/result"
+    assert requests[0]["path"] == "/api/jobs/job-complete-1/download"
     assert requests[0]["headers"] == {
         "Accept": "application/octet-stream",
         "Authorization": "Bearer reviewer-token",

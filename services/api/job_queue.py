@@ -416,11 +416,11 @@ class JobQueue:
             job = self._require_running_job(job_id)
             return self._replace(job, status="succeeded", result=result, error=None)
 
-    def mark_failed(self, job_id: str, *, error: str) -> JobRecord:
+    def mark_failed(self, job_id: str, *, error: str, retryable: bool = True) -> JobRecord:
         with self._lock:
             job = self._require_running_job(job_id)
             attempts = job.attempts + 1
-            if attempts < self._max_attempts:
+            if retryable and attempts < self._max_attempts:
                 pending_sequence = self._allocate_pending_sequence()
                 retried = self._replace(
                     job,

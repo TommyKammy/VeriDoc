@@ -7667,6 +7667,7 @@ def test_poc_http_api_job_submission_reaches_status_and_result() -> None:
         connection.request("GET", f"/api/jobs/{job_id}/result")
         result_response = connection.getresponse()
         result_body = json.loads(result_response.read().decode("utf-8"))
+
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -7678,10 +7679,150 @@ def test_poc_http_api_job_submission_reaches_status_and_result() -> None:
         "available": True,
         "href": f"/api/jobs/{job_id}/result",
     }
-    assert status_body["job"]["artifacts"][0]["id"] == "debug-json"
+    assert status_body["job"]["download"] == {
+        "available": True,
+        "href": f"/api/jobs/{job_id}/download",
+    }
+    debug_reference = status_body["job"]["artifacts"][0]
+    assert debug_reference["id"] == "debug-json"
+    assert debug_reference["href"] == f"/api/jobs/{job_id}/download"
+    assert debug_reference["href"] != status_body["job"]["result"]["href"]
     assert result_response.status == 200
+    assert result_body["status"] == "blocked"
     assert isinstance(result_body["document_ir"], dict)
     assert isinstance(result_body["validation"], dict)
+    assert result_body["artifacts"][0]["id"] == "debug-json"
+    assert isinstance(result_body["download"]["content_text"], str)
+
+
+def test_poc_http_api_primary_artifact_does_not_reference_debug_download() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue()
+    primary_content = b"PK\x03\x04primary-docx"
+    debug_content = b'{"converted": true}'
+    job = server.job_queue.create_job(
+        idempotency_key="primary-artifact-reference",
+        filename="source.pdf",
+        mode="standard",
+    )
+    server.job_queue.start_job(job.job_id)
+    server.job_queue.mark_succeeded(
+        job.job_id,
+        result={
+            "status": "converted",
+            "hashes": {"output_sha256": hashlib.sha256(debug_content).hexdigest()},
+            "download": {
+                "filename": "source.veridoc-result.json",
+                "content_type": "application/json",
+                "content": debug_content,
+            },
+            "artifacts": [
+                {
+                    "id": "primary-docx",
+                    "filename": "source.docx",
+                    "format": "docx",
+                    "content_type": (
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    ),
+                    "sha256": hashlib.sha256(primary_content).hexdigest(),
+                    "content": primary_content,
+                }
+            ],
+        },
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request("GET", f"/api/jobs/{job.job_id}")
+        detail_response = connection.getresponse()
+        detail = json.loads(detail_response.read().decode("utf-8"))["job"]
+        artifact_reference = detail["artifacts"][0]
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert detail_response.status == 200
+    assert artifact_reference["href"] is None
+    assert artifact_reference["href"] != detail["result"]["href"]
+
+
+def test_poc_http_api_rejects_invalid_source_job_before_creation() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue()
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    source = b"{}"
+    try:
+        payload = json.dumps(
+            {
+                "idempotency_key": "invalid-source-job",
+                "filename": "source.json",
+                "content_base64": base64.b64encode(source).decode("ascii"),
+                "size_bytes": len(source),
+                "conversion_mode": "unsupported",
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/jobs",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 400
+    assert body["error"] == "invalid_job_request"
+    assert server.job_queue.list_jobs() == []
+
+
+def test_poc_http_api_marks_in_process_conversion_failure_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def reject_conversion(**_: object) -> dict[str, object]:
+        raise ValueError("conversion rejected")
+
+    monkeypatch.setattr(poc_web, "convert_uploaded_document", reject_conversion)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue(max_attempts=3)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    source = b"{}"
+    try:
+        payload = json.dumps(
+            {
+                "idempotency_key": "terminal-source-job",
+                "filename": "source.json",
+                "content_base64": base64.b64encode(source).decode("ascii"),
+                "size_bytes": len(source),
+                "conversion_mode": "auto",
+                "use_llm": False,
+                "use_ocr": False,
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/jobs",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 202
+    assert body["job"]["status"] == "failed"
+    assert body["job"]["attempts"] == 1
+    assert body["job"]["error"] == "conversion rejected"
+    assert [job.status for job in server.job_queue.list_jobs()] == ["failed"]
 
 
 def test_poc_http_api_rolls_back_desktop_upload_when_create_audit_fails() -> None:
@@ -8029,7 +8170,7 @@ def test_poc_http_api_rejects_late_idempotent_desktop_upload_audit_create() -> N
     assert events == []
     assert len(jobs) == 1
     assert jobs[0].job_id == initial_body["job"]["job_id"]
-    assert jobs[0].status == "queued"
+    assert jobs[0].status == "failed"
 
 
 @pytest.mark.parametrize("job_state", ["queued_not_pending", "running", "succeeded"])
@@ -8331,7 +8472,7 @@ def test_poc_http_api_records_desktop_upload_and_download_audit_events() -> None
         )
         replay_response = connection.getresponse()
         replay_body = json.loads(replay_response.read().decode("utf-8"))
-        connection.request("GET", f"/api/jobs/{job_id}/result")
+        connection.request("GET", f"/api/jobs/{job_id}/download")
         download_response = connection.getresponse()
         browser_download_proof = download_response.getheader(poc_web.DESKTOP_SAVE_PROOF_HEADER)
         download_body = download_response.read()
@@ -8363,7 +8504,7 @@ def test_poc_http_api_records_desktop_upload_and_download_audit_events() -> None
         rejected_events = server.job_event_store.list_events(filters={"job_id": job_id})
         connection.request(
             "GET",
-            f"/api/jobs/{job_id}/result",
+            f"/api/jobs/{job_id}/download",
             headers={poc_web.DESKTOP_CLIENT_HEADER: poc_web.DESKTOP_CLIENT_HEADER_VALUE},
         )
         desktop_download_response = connection.getresponse()
@@ -8491,7 +8632,7 @@ def test_poc_http_api_downloads_result_when_job_audit_log_is_tampered() -> None:
         connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
         connection.request(
             "GET",
-            f"/api/jobs/{job.job_id}/result",
+            f"/api/jobs/{job.job_id}/download",
             headers={poc_web.DESKTOP_CLIENT_HEADER: poc_web.DESKTOP_CLIENT_HEADER_VALUE},
         )
         download_response = connection.getresponse()
@@ -8570,7 +8711,7 @@ def test_poc_http_api_rejects_unwritable_desktop_saved_filename(saved_filename: 
         connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
         connection.request(
             "GET",
-            f"/api/jobs/{job.job_id}/result",
+            f"/api/jobs/{job.job_id}/download",
             headers={poc_web.DESKTOP_CLIENT_HEADER: poc_web.DESKTOP_CLIENT_HEADER_VALUE},
         )
         download_response = connection.getresponse()
@@ -8646,7 +8787,7 @@ def test_poc_http_api_rejects_desktop_save_proof_from_different_token() -> None:
         connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
         connection.request(
             "GET",
-            f"/api/jobs/{job.job_id}/result",
+            f"/api/jobs/{job.job_id}/download",
             headers={
                 "Authorization": "Bearer reviewer-token",
                 poc_web.DESKTOP_CLIENT_HEADER: poc_web.DESKTOP_CLIENT_HEADER_VALUE,
@@ -8999,7 +9140,7 @@ def test_poc_http_api_accepts_desktop_save_audit_for_hashless_downloadable_resul
         connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
         connection.request(
             "GET",
-            f"/api/jobs/{job.job_id}/result",
+            f"/api/jobs/{job.job_id}/download",
             headers={poc_web.DESKTOP_CLIENT_HEADER: poc_web.DESKTOP_CLIENT_HEADER_VALUE},
         )
         download_response = connection.getresponse()
@@ -10923,7 +11064,7 @@ def test_poc_http_api_sanitizes_succeeded_job_result_and_downloads_result() -> N
         connection.request("GET", f"/api/jobs/{created.job_id}")
         detail_response = connection.getresponse()
         detail_body = json.loads(detail_response.read().decode("utf-8"))
-        connection.request("GET", f"/api/jobs/{created.job_id}/result")
+        connection.request("GET", f"/api/jobs/{created.job_id}/download")
         download_response = connection.getresponse()
         download_content_type = download_response.getheader("Content-Type")
         download_disposition = download_response.getheader("Content-Disposition")
@@ -12144,6 +12285,9 @@ def test_web_conversion_workflow_uses_job_submit_status_and_result_contract() ->
     assert "content_base64: contentBase64" in body
     assert "const job = submission.job" in body
     assert "apiFetch(job.result.href)" in body
+    assert "settings: conversionSettings" in body
+    for setting in ("conversion_mode", "output_format", "template_id", "use_llm", "use_ocr"):
+        assert f"{setting}:" in body
 
 
 def test_web_direct_convert_selects_and_posts_llm_ocr_settings() -> None:
@@ -12812,7 +12956,8 @@ def test_web_job_detail_actions_perform_download_and_retry_side_effects() -> Non
     assert 'sendJobAction(\n            "retry_conversion"' in selected_retry_body
     assert "await loadJobs()" in selected_retry_body
     assert "renderDetail(body.job)" in selected_retry_body
-    assert 'apiFetch(`/api/jobs/${encodeURIComponent(job.job_id)}/result`)' in download_body
+    assert "job.download?.href" in download_body
+    assert '`/api/jobs/${encodeURIComponent(job.job_id)}/download`' in download_body
     assert "await response.blob()" in download_body
     assert "URL.createObjectURL(blob)" in download_body
     assert "link.click()" in download_body

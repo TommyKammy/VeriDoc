@@ -107,11 +107,14 @@ script prints `PoC API smoke check passed`.
 `POST /api/jobs` is the application workflow for conversions. Submit the source
 bytes and conversion settings there, read status from `GET /api/jobs/{job_id}`,
 and follow the returned `job.result.href` when `job.result.available` is true.
-Job responses include the durable `job_id`, a result reference, and sanitized
-`artifacts[]` references; binary artifact storage and dedicated artifact
-download endpoints remain outside this contract. The local PoC currently runs a
-source-bearing job during submission, while preserving the job-shaped contract
-for a later asynchronous worker.
+That result URL returns the full conversion payload used by the review UI.
+Job responses also include the durable `job_id`, a `job.download.href` for the
+existing debug JSON download, and sanitized `artifacts[]` references. The debug
+artifact points to that download URL; primary DOCX/XLSX artifacts deliberately
+leave `href` unset until the dedicated binary artifact download contract is
+implemented. The local PoC currently runs a source-bearing job during
+submission, while preserving the job-shaped contract for a later asynchronous
+worker.
 
 `POST /api/convert` is retained as a synchronous development and compatibility
 endpoint. It returns the conversion payload directly and is used by the smoke

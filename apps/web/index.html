@@ -1428,11 +1428,21 @@
           if (!isActiveDirectConversion(conversionToken)) return;
           setSourcePreview(file, fileBytes);
           const contentBase64 = arrayBufferToBase64(fileBytes);
+          const conversionSettings = {
+            conversion_mode: directConversionMode.value,
+            output_format: directOutputFormat.value || null,
+            template_id: directTemplate.value || null,
+            use_llm: directUseLlm.checked,
+            use_ocr: directUseOcr.checked,
+          };
           const response = await apiFetch("/api/jobs", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              idempotency_key: `web-convert-${file.lastModified}-${file.size}-${file.name}`,
+              idempotency_key: JSON.stringify({
+                file: [file.lastModified, file.size, file.name],
+                settings: conversionSettings,
+              }),
               filename: file.name,
               content_type: file.type || "application/octet-stream",
               content_base64: contentBase64,
@@ -1707,7 +1717,9 @@
         requestAuthToken = activeAuthToken(),
         requestAuthGeneration = state.authGeneration
       ) {
-        const response = await apiFetch(`/api/jobs/${encodeURIComponent(job.job_id)}/result`);
+        const response = await apiFetch(
+          job.download?.href || `/api/jobs/${encodeURIComponent(job.job_id)}/download`
+        );
         if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return false;
         if (!response.ok) {
           const body = await response.json();
