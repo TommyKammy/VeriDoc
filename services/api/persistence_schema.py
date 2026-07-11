@@ -1344,6 +1344,9 @@ END;
 """
 
 _RESET_SQL = """
+DROP TABLE IF EXISTS job_audit_event_checkpoint;
+DROP TABLE IF EXISTS job_audit_event_records;
+DROP TABLE IF EXISTS job_queue_artifacts;
 DROP TABLE IF EXISTS job_queue_records;
 DROP TABLE IF EXISTS audit_event_evidence;
 DROP TABLE IF EXISTS job_event_evidence;

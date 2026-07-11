@@ -7,6 +7,7 @@ from io import BytesIO
 import json
 import os
 import re
+import sqlite3
 import tempfile
 from http.client import HTTPConnection
 from http.server import ThreadingHTTPServer
@@ -6032,6 +6033,27 @@ def test_job_audit_event_store_restores_events_after_reinitialization(tmp_path) 
     assert restored.verify_integrity()["ok"] is True
 
 
+def test_job_audit_event_store_rejects_persisted_tail_truncation(tmp_path) -> None:
+    database_path = tmp_path / "job-audits.sqlite3"
+    store = JobAuditEventStore(database_path=database_path)
+    for job_id in ("job-first", "job-second"):
+        store.record(
+            {
+                "event_type": "job.lifecycle",
+                "job_id": job_id,
+                "action": "conversion_completed",
+            }
+        )
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("DELETE FROM job_audit_event_records WHERE sequence = 2")
+
+    with pytest.raises(
+        ValueError,
+        match="audit log integrity violation: audit log terminal sequence mismatch",
+    ):
+        JobAuditEventStore(database_path=database_path)
+
+
 def test_poc_http_api_lists_server_side_review_action_audit_events() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     server.review_event_store = ReviewAuditEventStore()
@@ -7579,6 +7601,64 @@ def test_poc_http_api_rolls_back_desktop_upload_when_create_audit_fails() -> Non
     assert response.status == 400
     assert body == {"error": "invalid_job_request", "message": "audit log unavailable"}
     assert jobs == []
+
+
+def test_poc_http_api_persists_desktop_upload_job_and_audit_atomically(tmp_path) -> None:
+    class RejectAfterAuditInsertStore(JobAuditEventStore):
+        def _persist_event(
+            self,
+            event: dict[str, object],
+            *,
+            checkpoint: dict[str, object],
+            connection: sqlite3.Connection | None = None,
+        ) -> None:
+            super()._persist_event(
+                event,
+                checkpoint=checkpoint,
+                connection=connection,
+            )
+            raise ValueError("audit transaction interrupted")
+
+    database_path = tmp_path / "veridoc.sqlite3"
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue(database_path=database_path)
+    server.job_event_store = RejectAfterAuditInsertStore(database_path=database_path)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    uploaded_content = b"%PDF-1.7\natomic queued source"
+    payload = json.dumps(
+        {
+            "idempotency_key": "desktop-upload-atomic-failure",
+            "filename": "batch-record.pdf",
+            "content_type": "application/pdf",
+            "content_base64": base64.b64encode(uploaded_content).decode("ascii"),
+            "size_bytes": len(uploaded_content),
+            "source_sha256": hashlib.sha256(uploaded_content).hexdigest(),
+            "mode": "standard",
+            "desktop_upload_audit": True,
+        }
+    ).encode("utf-8")
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/jobs",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 400
+    assert body == {
+        "error": "invalid_job_request",
+        "message": "audit transaction interrupted",
+    }
+    assert JobQueue(database_path=database_path).list_jobs() == []
+    assert JobAuditEventStore(database_path=database_path).list_events() == []
 
 
 def test_poc_http_api_rolls_back_sourceless_desktop_upload_audit_create() -> None:

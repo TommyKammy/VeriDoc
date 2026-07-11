@@ -65,6 +65,10 @@ class JobQueue:
             self._initialize_store()
             self._restore_jobs()
 
+    @property
+    def database_path(self) -> str | None:
+        return self._database_path
+
     def create_job(
         self,
         *,
@@ -142,7 +146,13 @@ class JobQueue:
             )
             return job, True
 
-    def publish_job(self, job_id: str, *, enqueue: bool = True) -> JobRecord:
+    def publish_job(
+        self,
+        job_id: str,
+        *,
+        enqueue: bool = True,
+        persist_related: Callable[[sqlite3.Connection], None] | None = None,
+    ) -> JobRecord:
         with self._lock:
             try:
                 job = self._jobs[job_id]
@@ -157,7 +167,11 @@ class JobQueue:
                         return job
                     raise RuntimeError("job is already active")
                 pending_sequence = self._allocate_pending_sequence()
-            self._persist(job, queue_sequence=pending_sequence)
+            self._persist(
+                job,
+                queue_sequence=pending_sequence,
+                persist_related=persist_related,
+            )
             self._unpublished_job_ids.discard(job_id)
             if should_enqueue:
                 self._append_pending(job_id, pending_sequence)
@@ -507,8 +521,16 @@ class JobQueue:
         if pending_jobs:
             self._next_pending_sequence = max(item[0] for item in pending_jobs) + 1
 
-    def _persist(self, job: JobRecord, *, queue_sequence: int | None = None) -> None:
+    def _persist(
+        self,
+        job: JobRecord,
+        *,
+        queue_sequence: int | None = None,
+        persist_related: Callable[[sqlite3.Connection], None] | None = None,
+    ) -> None:
         if self._database_path is None:
+            if persist_related is not None:
+                raise ValueError("related persistence requires a durable job queue")
             return
         persisted_record, artifacts = _extract_binary_artifacts(job.to_dict())
         with sqlite3.connect(self._database_path) as connection:
@@ -551,6 +573,8 @@ class JobQueue:
                     for artifact_id, content in artifacts.items()
                 ],
             )
+            if persist_related is not None:
+                persist_related(connection)
 
     def _allocate_pending_sequence(self) -> int:
         sequence = self._next_pending_sequence

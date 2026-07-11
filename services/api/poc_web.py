@@ -229,8 +229,7 @@ class ReviewAuditEventStore:
 class JobAuditEventStore:
     def __init__(self, *, database_path: str | Path | None = None) -> None:
         self._database_path = str(database_path) if database_path is not None else None
-        self._events = self._restore_events()
-        self._integrity_checkpoint = _audit_event_integrity_checkpoint(self._events)
+        self._events, self._integrity_checkpoint = self._restore_state()
         _raise_for_audit_event_integrity_violation(
             self._events,
             checkpoint=self._integrity_checkpoint,
@@ -245,9 +244,10 @@ class JobAuditEventStore:
                 previous_events=self._events,
                 checkpoint=self._integrity_checkpoint,
             )
-            self._persist_event(event)
+            checkpoint = _audit_event_integrity_checkpoint([*self._events, event])
+            self._persist_event(event, checkpoint=checkpoint)
             self._events.append(event)
-            self._integrity_checkpoint = _audit_event_integrity_checkpoint(self._events)
+            self._integrity_checkpoint = checkpoint
         return deepcopy(event)
 
     def record_once(
@@ -266,10 +266,51 @@ class JobAuditEventStore:
                 previous_events=self._events,
                 checkpoint=self._integrity_checkpoint,
             )
-            self._persist_event(event)
+            checkpoint = _audit_event_integrity_checkpoint([*self._events, event])
+            self._persist_event(event, checkpoint=checkpoint)
             self._events.append(event)
-            self._integrity_checkpoint = _audit_event_integrity_checkpoint(self._events)
+            self._integrity_checkpoint = checkpoint
         return deepcopy(event)
+
+    def record_once_and_publish(
+        self,
+        audit_event: dict[str, Any],
+        *,
+        dedupe: dict[str, Any],
+        job_queue: JobQueue,
+        job_id: str,
+    ) -> tuple[dict[str, Any], JobRecord]:
+        if self._database_path is None:
+            event = self.record_once(audit_event, dedupe=dedupe)
+            return event, job_queue.publish_job(job_id, enqueue=True)
+        queue_database_path = job_queue.database_path
+        if queue_database_path is None or (
+            Path(queue_database_path).resolve() != Path(self._database_path).resolve()
+        ):
+            raise ValueError("job and audit persistence must share one database")
+        with self._lock:
+            self._require_integrity_locked()
+            for event in self._events:
+                if all(event.get(name) == value for name, value in dedupe.items()):
+                    return deepcopy(event), job_queue.publish_job(job_id, enqueue=True)
+            event = _audit_event_with_integrity(
+                audit_event,
+                previous_events=self._events,
+                checkpoint=self._integrity_checkpoint,
+            )
+            checkpoint = _audit_event_integrity_checkpoint([*self._events, event])
+            job = job_queue.publish_job(
+                job_id,
+                enqueue=True,
+                persist_related=lambda connection: self._persist_event(
+                    event,
+                    checkpoint=checkpoint,
+                    connection=connection,
+                ),
+            )
+            self._events.append(event)
+            self._integrity_checkpoint = checkpoint
+        return deepcopy(event), job
 
     def find_once(self, *, dedupe: dict[str, Any]) -> dict[str, Any] | None:
         with self._lock:
@@ -308,9 +349,10 @@ class JobAuditEventStore:
                 checkpoint=self._integrity_checkpoint,
             )
 
-    def _restore_events(self) -> list[dict[str, Any]]:
+    def _restore_state(self) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         if self._database_path is None:
-            return []
+            events: list[dict[str, Any]] = []
+            return events, _audit_event_integrity_checkpoint(events)
         Path(self._database_path).parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(self._database_path) as connection:
             connection.execute(
@@ -321,29 +363,77 @@ class JobAuditEventStore:
                 )
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS job_audit_event_checkpoint (
+                    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                    checkpoint_json TEXT NOT NULL
+                )
+                """
+            )
             rows = connection.execute(
                 "SELECT sequence, event_json FROM job_audit_event_records "
                 "ORDER BY sequence"
             ).fetchall()
-        events: list[dict[str, Any]] = []
-        for sequence, event_json in rows:
-            event = json.loads(event_json)
-            if not isinstance(event, dict) or event.get("sequence") != sequence:
-                raise ValueError("persisted job audit event is invalid")
-            events.append(event)
-        return events
+            checkpoint_row = connection.execute(
+                "SELECT checkpoint_json FROM job_audit_event_checkpoint WHERE singleton = 1"
+            ).fetchone()
+            events = []
+            for sequence, event_json in rows:
+                event = json.loads(event_json)
+                if not isinstance(event, dict) or event.get("sequence") != sequence:
+                    raise ValueError("persisted job audit event is invalid")
+                events.append(event)
+            if checkpoint_row is None:
+                checkpoint = _audit_event_integrity_checkpoint(events)
+                connection.execute(
+                    "INSERT INTO job_audit_event_checkpoint(singleton, checkpoint_json) "
+                    "VALUES (1, ?)",
+                    (json.dumps(checkpoint, sort_keys=True, separators=(",", ":")),),
+                )
+            else:
+                checkpoint = json.loads(checkpoint_row[0])
+                if not isinstance(checkpoint, dict):
+                    raise ValueError("persisted job audit checkpoint is invalid")
+        return events, checkpoint
 
-    def _persist_event(self, event: dict[str, Any]) -> None:
+    def _persist_event(
+        self,
+        event: dict[str, Any],
+        *,
+        checkpoint: dict[str, Any],
+        connection: sqlite3.Connection | None = None,
+    ) -> None:
         if self._database_path is None:
             return
-        with sqlite3.connect(self._database_path) as connection:
-            connection.execute(
+        owned_connection = connection is None
+        target = connection or sqlite3.connect(self._database_path)
+        try:
+            target.execute(
                 "INSERT INTO job_audit_event_records(sequence, event_json) VALUES (?, ?)",
                 (
                     event["sequence"],
                     json.dumps(event, sort_keys=True, separators=(",", ":")),
                 ),
             )
+            target.execute(
+                """
+                INSERT INTO job_audit_event_checkpoint(singleton, checkpoint_json)
+                VALUES (1, ?)
+                ON CONFLICT(singleton) DO UPDATE SET
+                    checkpoint_json = excluded.checkpoint_json
+                """,
+                (json.dumps(checkpoint, sort_keys=True, separators=(",", ":")),),
+            )
+            if owned_connection:
+                target.commit()
+        except Exception:
+            if owned_connection:
+                target.rollback()
+            raise
+        finally:
+            if owned_connection:
+                target.close()
 
 
 class DesktopSaveProofStore:
@@ -1386,16 +1476,16 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                         if job_queue.is_unpublished(job.job_id):
                             job = job_queue.publish_job(job.job_id, enqueue=True)
                     else:
-                        upload_audit_event = job_event_store.record_once(
+                        upload_audit_event, job = job_event_store.record_once_and_publish(
                             upload_audit_event,
                             dedupe=upload_dedupe,
+                            job_queue=job_queue,
+                            job_id=job.job_id,
                         )
                 except Exception:
                     if created_job:
                         job_queue.discard_queued_job(job.job_id)
                     raise
-                if created_job:
-                    job = job_queue.publish_job(job.job_id, enqueue=True)
         except RuntimeError as exc:
             self._send_json({"error": "job_conflict", "message": str(exc)}, status=409)
             return

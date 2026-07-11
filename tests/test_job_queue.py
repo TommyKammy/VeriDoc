@@ -5,6 +5,7 @@ import pytest
 
 from services.api.job_queue import JobQueue
 from services.api.persistence_repository import reset_database
+from services.api.poc_web import JobAuditEventStore
 
 
 def test_job_queue_creates_missing_database_parent_directory(tmp_path) -> None:
@@ -319,14 +320,38 @@ def test_persistence_reset_drops_job_queue_records(tmp_path) -> None:
         idempotency_key="reset-queued",
         filename="batch-record.pdf",
         mode="standard",
+        source={"content": b"persisted source"},
+    )
+    JobAuditEventStore(database_path=database_path).record(
+        {
+            "event_type": "desktop.job_operation",
+            "job_id": created.job_id,
+            "action": "desktop_upload",
+        }
     )
 
     reset_database(database_path)
+    with sqlite3.connect(database_path) as connection:
+        remaining_tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+    assert remaining_tables.isdisjoint(
+        {
+            "job_queue_records",
+            "job_queue_artifacts",
+            "job_audit_event_records",
+            "job_audit_event_checkpoint",
+        }
+    )
     restored = JobQueue(database_path=database_path)
 
     with pytest.raises(KeyError, match=created.job_id):
         restored.get_job(created.job_id)
     assert restored.start_next_job() is None
+    assert JobAuditEventStore(database_path=database_path).list_events() == []
 
 
 def test_job_queue_preserves_retry_queue_order_after_reinitialization(tmp_path) -> None:
