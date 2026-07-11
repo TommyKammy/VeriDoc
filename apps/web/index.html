@@ -2218,8 +2218,8 @@
           body.error === "forbidden" &&
           body.message === "review approval requires authenticated actor identity";
         if (
-          !requestAuthToken &&
-          ((response.status === 401 && body.error === "auth_required") || requiresIdentity)
+          requiresIdentity ||
+          (!requestAuthToken && response.status === 401 && body.error === "auth_required")
         ) {
           setAuthStatus(
             "missing",

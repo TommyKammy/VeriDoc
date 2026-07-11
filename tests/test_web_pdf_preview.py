@@ -268,6 +268,11 @@ def test_auth_failure_preserves_missing_identity_and_token_states() -> None:
         'body.message === "review approval requires authenticated actor identity"'
         in html
     )
+    assert re.search(
+        r"if \(\s+requiresIdentity \|\|\s+"
+        r'\(!requestAuthToken && response\.status === 401 && body\.error === "auth_required"\)',
+        html,
+    )
     assert '"Token is not set. Enter a token, then choose Save token."' in html
     assert (
         '"Authenticated identity is required. Configure local authentication, then set a token."'
