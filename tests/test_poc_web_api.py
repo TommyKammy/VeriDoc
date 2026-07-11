@@ -31,6 +31,7 @@ from core.parsers.pdf_table_extraction import (
 )
 from core.parsers.xlsx_extraction import extract_xlsx_structure
 import services.api.poc_web as poc_web
+import services.api.persistence_repository as persistence_repository
 from services.api.job_queue import JobQueue
 from services.api.poc_web import (
     JobAuditEventStore,
@@ -65,6 +66,41 @@ def test_run_uses_configured_database_for_job_queue(tmp_path, monkeypatch) -> No
     )
     restored = JobQueue(database_path=database_path).get_job(created.job_id)
     assert restored.status == "queued"
+
+
+def test_run_resolves_relative_database_path_from_repository_root(
+    tmp_path, monkeypatch
+) -> None:
+    repository_root = tmp_path / "repository"
+    working_directory = tmp_path / "working-directory"
+    working_directory.mkdir()
+    database_path = repository_root / "var" / "veridoc" / "relative.sqlite3"
+    servers = []
+
+    class FakeServer:
+        def __init__(self, server_address, request_handler) -> None:
+            self.server_address = server_address
+            self.request_handler = request_handler
+            servers.append(self)
+
+        def serve_forever(self) -> None:
+            return None
+
+    monkeypatch.setattr(persistence_repository, "REPO_ROOT", repository_root)
+    monkeypatch.chdir(working_directory)
+    monkeypatch.setenv("VERIDOC_DB_PATH", "var/veridoc/relative.sqlite3")
+    monkeypatch.setattr(poc_web, "ThreadingHTTPServer", FakeServer)
+
+    poc_web.run()
+
+    created = servers[0].job_queue.create_job(
+        idempotency_key="relative-run-persistence",
+        filename="batch-record.pdf",
+        mode="standard",
+    )
+    restored = JobQueue(database_path=database_path).get_job(created.job_id)
+    assert restored.status == "queued"
+    assert not (working_directory / "var" / "veridoc" / "relative.sqlite3").exists()
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_MANIFEST_PATH = REPO_ROOT / "datasets" / "fixtures" / "manifest.json"

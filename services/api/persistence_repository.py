@@ -1449,9 +1449,8 @@ class SQLitePersistenceRepository:
 
 def default_database_path() -> Path:
     configured = os.environ.get("VERIDOC_DB_PATH")
-    if configured:
-        return Path(configured)
-    return DEFAULT_DB_PATH
+    database_path = Path(configured) if configured else DEFAULT_DB_PATH
+    return _validate_database_path(database_path)
 
 
 def initialize_database(db_path: str | os.PathLike[str] | None = None) -> None:

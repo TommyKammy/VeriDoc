@@ -5,6 +5,7 @@ from collections import deque
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+from hashlib import sha256
 import json
 from os import PathLike
 from pathlib import Path
@@ -19,6 +20,7 @@ JOB_STATUSES: set[JobStatus] = {"queued", "running", "succeeded", "failed"}
 TERMINAL_STATUSES: set[JobStatus] = {"succeeded", "failed"}
 _BYTES_MARKER = "__veridoc_job_queue_bytes__"
 _DICT_MARKER = "__veridoc_job_queue_dict__"
+_OMITTED_BINARY = object()
 
 
 @dataclass(frozen=True)
@@ -508,7 +510,7 @@ class JobQueue:
                     job.attempts,
                     queue_sequence,
                     json.dumps(
-                        _encode_persisted_value(job.to_dict()),
+                        _encode_persisted_value(_without_binary_values(job.to_dict())),
                         sort_keys=True,
                         separators=(",", ":"),
                     ),
@@ -548,6 +550,26 @@ class JobQueue:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _without_binary_values(value: Any) -> Any:
+    if isinstance(value, bytes):
+        return _OMITTED_BINARY
+    if isinstance(value, dict):
+        projected: dict[str, Any] = {}
+        for key, item in value.items():
+            projected_item = _without_binary_values(item)
+            if projected_item is not _OMITTED_BINARY:
+                projected[key] = projected_item
+        return projected
+    if isinstance(value, (list, tuple)):
+        projected_items = []
+        for item in value:
+            projected_item = _without_binary_values(item)
+            if projected_item is not _OMITTED_BINARY:
+                projected_items.append(projected_item)
+        return projected_items
+    return value
 
 
 def _encode_persisted_value(value: Any) -> Any:
@@ -620,12 +642,18 @@ def _same_source_binding(
 ) -> bool:
     if existing_source is None or requested_source is None:
         return existing_source is requested_source
-    return (
+    metadata_matches = (
         existing_source.get("sha256") == requested_source.get("sha256")
         and existing_source.get("size_bytes") == requested_source.get("size_bytes")
         and existing_source.get("content_type") == requested_source.get("content_type")
-        and existing_source.get("content") == requested_source.get("content")
     )
+    if not metadata_matches:
+        return False
+    existing_content = existing_source.get("content")
+    requested_content = requested_source.get("content")
+    if existing_content is None and isinstance(requested_content, bytes):
+        return existing_source.get("sha256") == sha256(requested_content).hexdigest()
+    return existing_content == requested_content
 
 
 def _same_template_binding(

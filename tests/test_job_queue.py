@@ -1,3 +1,4 @@
+from hashlib import sha256
 import sqlite3
 
 import pytest
@@ -104,26 +105,72 @@ def test_job_queue_restores_terminal_results_and_errors(tmp_path) -> None:
     assert restored_failure.error == "parser unavailable"
 
 
-def test_job_queue_restores_byte_payloads(tmp_path) -> None:
+def test_job_queue_keeps_binary_payloads_out_of_persisted_metadata(tmp_path) -> None:
     database_path = tmp_path / "job-queue.sqlite3"
     queue = JobQueue(database_path=database_path)
+    source_content = b"uploaded document"
+    source = {
+        "content": source_content,
+        "sha256": sha256(source_content).hexdigest(),
+        "size_bytes": len(source_content),
+        "content_type": "application/pdf",
+    }
     created = queue.create_job(
         idempotency_key="restart-bytes",
         filename="batch-record.pdf",
         mode="standard",
-        source={"content": b"uploaded document"},
+        source=source,
     )
     running = queue.start_next_job()
     assert running is not None
-    queue.mark_succeeded(
+    succeeded = queue.mark_succeeded(
         running.job_id,
-        result={"download": {"content": b"converted document"}},
+        result={
+            "download": {
+                "content": b"converted document",
+                "filename": "converted.json",
+            },
+            "artifacts": [
+                {
+                    "artifact_id": "primary-json",
+                    "content": b"primary artifact",
+                }
+            ],
+        },
     )
+
+    assert succeeded.source == source
+    assert succeeded.result["download"]["content"] == b"converted document"
+    assert succeeded.result["artifacts"][0]["content"] == b"primary artifact"
+    with sqlite3.connect(database_path) as connection:
+        record_json = connection.execute(
+            "SELECT record_json FROM job_queue_records WHERE job_id = ?",
+            (created.job_id,),
+        ).fetchone()[0]
+    assert "__veridoc_job_queue_bytes__" not in record_json
+    assert "uploaded document" not in record_json
+    assert "converted document" not in record_json
+    assert "primary artifact" not in record_json
 
     restored = JobQueue(database_path=database_path).get_job(created.job_id)
 
-    assert restored.source == {"content": b"uploaded document"}
-    assert restored.result == {"download": {"content": b"converted document"}}
+    assert restored.source == {
+        "sha256": source["sha256"],
+        "size_bytes": len(source_content),
+        "content_type": "application/pdf",
+    }
+    assert restored.result == {
+        "download": {"filename": "converted.json"},
+        "artifacts": [{"artifact_id": "primary-json"}],
+    }
+    replayed = JobQueue(database_path=database_path).get_or_create_job(
+        idempotency_key="restart-bytes",
+        filename="batch-record.pdf",
+        mode="standard",
+        source=source,
+    )
+    assert replayed[0].job_id == created.job_id
+    assert replayed[1] is False
 
 
 def test_job_queue_requeues_running_job_after_reinitialization(tmp_path) -> None:
