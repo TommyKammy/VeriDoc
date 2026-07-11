@@ -7726,6 +7726,13 @@ def test_poc_http_api_primary_artifact_does_not_reference_debug_download() -> No
                     ),
                     "sha256": hashlib.sha256(primary_content).hexdigest(),
                     "content": primary_content,
+                    "metadata": {
+                        "role": "primary",
+                        "download": {
+                            "available": True,
+                            "field": "artifacts[0].content_base64",
+                        },
+                    },
                 }
             ],
         },
@@ -7745,6 +7752,7 @@ def test_poc_http_api_primary_artifact_does_not_reference_debug_download() -> No
     assert detail_response.status == 200
     assert artifact_reference["href"] is None
     assert artifact_reference["href"] != detail["result"]["href"]
+    assert artifact_reference["metadata"] == {"role": "primary"}
 
 
 def test_poc_http_api_rejects_invalid_source_job_before_creation() -> None:
@@ -7779,6 +7787,96 @@ def test_poc_http_api_rejects_invalid_source_job_before_creation() -> None:
     assert response.status == 400
     assert body["error"] == "invalid_job_request"
     assert server.job_queue.list_jobs() == []
+
+
+def test_poc_http_api_rejects_invalid_source_job_output_format_before_creation() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue()
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    source = b"{}"
+    try:
+        payload = json.dumps(
+            {
+                "idempotency_key": "invalid-source-job-output",
+                "filename": "source.pdf",
+                "content_base64": base64.b64encode(source).decode("ascii"),
+                "size_bytes": len(source),
+                "conversion_mode": "pdf_to_excel",
+                "output_format": "docx",
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/jobs",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 400
+    assert body["error"] == "invalid_job_request"
+    assert server.job_queue.list_jobs() == []
+
+
+def test_poc_http_api_binds_source_job_idempotency_to_conversion_settings() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue()
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    source = b'{"pages": []}'
+    base_request = {
+        "idempotency_key": "source-job-settings",
+        "filename": "source.json",
+        "content_base64": base64.b64encode(source).decode("ascii"),
+        "size_bytes": len(source),
+        "conversion_mode": "auto",
+        "output_format": "json",
+        "use_llm": False,
+        "use_ocr": False,
+    }
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        first_payload = json.dumps(base_request).encode("utf-8")
+        connection.request(
+            "POST",
+            "/api/jobs",
+            body=first_payload,
+            headers={
+                "Content-Type": "application/json",
+                "Content-Length": str(len(first_payload)),
+            },
+        )
+        first_response = connection.getresponse()
+        first_response.read()
+
+        changed_request = {**base_request, "output_format": None}
+        changed_payload = json.dumps(changed_request).encode("utf-8")
+        connection.request(
+            "POST",
+            "/api/jobs",
+            body=changed_payload,
+            headers={
+                "Content-Type": "application/json",
+                "Content-Length": str(len(changed_payload)),
+            },
+        )
+        changed_response = connection.getresponse()
+        changed_body = json.loads(changed_response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert first_response.status == 202
+    assert changed_response.status == 400
+    assert changed_body["error"] == "invalid_job_request"
+    assert "different job parameters" in changed_body["message"]
+    assert len(server.job_queue.list_jobs()) == 1
 
 
 def test_poc_http_api_marks_in_process_conversion_failure_terminal(
@@ -7826,6 +7924,47 @@ def test_poc_http_api_marks_in_process_conversion_failure_terminal(
         "open_detail"
     ]
     assert [job.status for job in server.job_queue.list_jobs()] == ["failed"]
+
+
+def test_poc_http_api_keeps_dependency_conversion_failure_retryable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def reject_conversion(**_: object) -> dict[str, object]:
+        raise poc_web.PocServerDependencyError("parser unavailable")
+
+    monkeypatch.setattr(poc_web, "convert_uploaded_document", reject_conversion)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue(max_attempts=3)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    source = b"{}"
+    try:
+        payload = json.dumps(
+            {
+                "idempotency_key": "retryable-source-job",
+                "filename": "source.json",
+                "content_base64": base64.b64encode(source).decode("ascii"),
+                "size_bytes": len(source),
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/jobs",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 202
+    assert body["job"]["status"] == "queued"
+    assert body["job"]["attempts"] == 1
+    assert body["job"]["error"] == "parser unavailable"
+    assert server.job_queue.get_job(body["job"]["job_id"]).retryable is True
 
 
 def test_poc_http_api_preserves_job_llm_configuration_rejection(

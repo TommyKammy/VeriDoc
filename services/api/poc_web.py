@@ -1462,15 +1462,30 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             source = _job_source_from_request(request, filename=filename)
             desktop_upload_audit = _desktop_upload_audit_requested(request)
             conversion_settings = None
-            if source is not None and not desktop_upload_audit:
+            request_parameters = None
+            if source is not None:
                 conversion_mode = _validate_conversion_mode(request.get("conversion_mode"))
+                output_format = _validate_direct_output_format_for_conversion_mode(
+                    conversion_mode=conversion_mode,
+                    output_format=_validate_direct_output_format(request.get("output_format")),
+                )
                 use_llm = _validate_conversion_setting_boolean(request, "use_llm")
                 use_ocr = _validate_conversion_setting_boolean(request, "use_ocr")
-                llm_rejection = _llm_configuration_rejection(use_llm=use_llm, use_ocr=use_ocr)
-                if llm_rejection is not None:
-                    self._send_json(llm_rejection, status=400)
-                    return
-                conversion_settings = (conversion_mode, use_llm, use_ocr)
+                request_parameters = {
+                    "conversion_mode": conversion_mode,
+                    "output_format": output_format,
+                    "use_llm": use_llm,
+                    "use_ocr": use_ocr,
+                }
+                if not desktop_upload_audit:
+                    llm_rejection = _llm_configuration_rejection(
+                        use_llm=use_llm,
+                        use_ocr=use_ocr,
+                    )
+                    if llm_rejection is not None:
+                        self._send_json(llm_rejection, status=400)
+                        return
+                    conversion_settings = (conversion_mode, output_format, use_llm, use_ocr)
             requested_template = self._job_template_binding(request.get("template_id"))
             job_queue = self._job_queue()
             upload_audit_event = None
@@ -1481,6 +1496,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                     mode=mode,
                     source=source,
                     template=requested_template,
+                    request_parameters=request_parameters,
                     create_template=lambda: self._job_template_snapshot(request.get("template_id")),
                 )
             else:
@@ -1490,12 +1506,14 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                     mode=mode,
                     source=source,
                     template=requested_template,
+                    request_parameters=request_parameters,
                     create_template=lambda: self._job_template_snapshot(
                         request.get("template_id")
                     ),
                     enqueue=False,
                     publish=False,
                     include_unpublished=True,
+                    compare_request_parameters=False,
                 )
                 job_event_store = self._job_event_store()
                 try:
@@ -1567,7 +1585,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             return
         if created_job and source is not None and not desktop_upload_audit:
             assert conversion_settings is not None
-            conversion_mode, use_llm, use_ocr = conversion_settings
+            conversion_mode, output_format, use_llm, use_ocr = conversion_settings
             try:
                 job_queue.start_job(job.job_id)
                 result = convert_uploaded_document(
@@ -1576,12 +1594,15 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                     conversion_mode=conversion_mode,
                     use_llm=use_llm,
                     use_ocr=use_ocr,
-                    output_format=request.get("output_format"),
+                    output_format=output_format,
                     template_id=request.get("template_id"),
                     template_store=self._template_store(),
                 )
                 job = job_queue.mark_succeeded(job.job_id, result=result)
-            except (PocServerDependencyError, RuntimeError, ValueError) as exc:
+            except (PocServerDependencyError, RuntimeError) as exc:
+                if job_queue.get_job(job.job_id).status == "running":
+                    job = job_queue.mark_failed(job.job_id, error=str(exc))
+            except ValueError as exc:
                 if job_queue.get_job(job.job_id).status == "running":
                     job = job_queue.mark_failed(job.job_id, error=str(exc), retryable=False)
         response = {"job": _job_response(job, self._job_queue(), role=role)}
@@ -2356,6 +2377,9 @@ def _job_artifact_references(
         reference["href"] = (
             debug_download_href if artifact.get("id") == "debug-json" else None
         )
+        metadata = reference.get("metadata")
+        if reference["href"] is None and isinstance(metadata, dict):
+            metadata.pop("download", None)
         references.append(reference)
     return references
 

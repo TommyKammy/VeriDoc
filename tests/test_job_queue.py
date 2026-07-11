@@ -50,6 +50,43 @@ def test_job_queue_persists_state_transitions_and_idempotent_creation() -> None:
     assert queue.get_job(created.job_id).status == "succeeded"
 
 
+def test_job_queue_restores_idempotent_request_parameter_binding(tmp_path) -> None:
+    database_path = tmp_path / "job-queue.sqlite3"
+    request_parameters = {
+        "conversion_mode": "pdf_to_excel",
+        "output_format": "xlsx",
+        "use_llm": False,
+        "use_ocr": False,
+    }
+    queue = JobQueue(database_path=database_path)
+    created, was_created = queue.get_or_create_job(
+        idempotency_key="conversion-settings",
+        filename="batch-record.pdf",
+        mode="standard",
+        request_parameters=request_parameters,
+    )
+
+    restored_queue = JobQueue(database_path=database_path)
+    restored, was_restored_created = restored_queue.get_or_create_job(
+        idempotency_key="conversion-settings",
+        filename="batch-record.pdf",
+        mode="standard",
+        request_parameters=request_parameters,
+    )
+
+    assert was_created is True
+    assert was_restored_created is False
+    assert restored.job_id == created.job_id
+    assert restored.request_parameters == request_parameters
+    with pytest.raises(ValueError, match="different job parameters"):
+        restored_queue.get_or_create_job(
+            idempotency_key="conversion-settings",
+            filename="batch-record.pdf",
+            mode="standard",
+            request_parameters={**request_parameters, "output_format": "json"},
+        )
+
+
 def test_job_queue_restores_failed_retry_state_after_reinitialization(tmp_path) -> None:
     database_path = tmp_path / "job-queue.sqlite3"
     queue = JobQueue(max_attempts=2, database_path=database_path)
