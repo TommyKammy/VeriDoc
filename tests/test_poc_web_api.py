@@ -7750,8 +7750,9 @@ def test_poc_http_api_job_submission_reaches_status_and_result() -> None:
     }
     debug_reference = status_body["job"]["artifacts"][0]
     assert debug_reference["id"] == "debug-json"
-    assert debug_reference["href"] == f"/api/jobs/{job_id}/download"
+    assert debug_reference["href"] == f"/api/artifacts/{debug_reference['artifact_id']}"
     assert debug_reference["href"] != status_body["job"]["result"]["href"]
+    assert "download" not in debug_reference["metadata"]
     assert result_response.status == 200
     assert result_body["status"] == "blocked"
     assert isinstance(result_body["document_ir"], dict)
@@ -11524,6 +11525,8 @@ def test_poc_http_api_detects_output_hash_mismatch_and_blocks_redownload() -> No
     assert running is not None
     original_output = b'{"converted": true}'
     tampered_output = b'{"converted": false}'
+    artifact_content = b"independently valid artifact"
+    artifact_id = "hash-mismatch-primary"
     server.job_queue.mark_succeeded(
         created.job_id,
         result={
@@ -11537,6 +11540,16 @@ def test_poc_http_api_detects_output_hash_mismatch_and_blocks_redownload() -> No
                 "content_type": "application/json; charset=utf-8",
                 "content": tampered_output,
             },
+            "artifacts": [
+                {
+                    "artifact_id": artifact_id,
+                    "id": "primary-json",
+                    "filename": "converted-record.json",
+                    "content_type": "application/json",
+                    "sha256": hashlib.sha256(artifact_content).hexdigest(),
+                    "content": artifact_content,
+                }
+            ],
         },
     )
     thread = Thread(target=server.serve_forever, daemon=True)
@@ -11552,6 +11565,9 @@ def test_poc_http_api_detects_output_hash_mismatch_and_blocks_redownload() -> No
         connection.request("GET", f"/api/jobs/{created.job_id}/result")
         download_response = connection.getresponse()
         download_body = json.loads(download_response.read().decode("utf-8"))
+        connection.request("GET", f"/api/artifacts/{artifact_id}")
+        artifact_response = connection.getresponse()
+        artifact_body = json.loads(artifact_response.read().decode("utf-8"))
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -11562,6 +11578,8 @@ def test_poc_http_api_detects_output_hash_mismatch_and_blocks_redownload() -> No
     assert detail_response.status == 200
     assert list_job["has_result"] is False
     assert detail_job["has_result"] is False
+    assert list_job["artifacts"][0]["href"] is None
+    assert detail_job["artifacts"][0]["href"] is None
     assert [action["action"] for action in detail_job["available_actions"]] == [
         "open_detail"
     ]
@@ -11576,6 +11594,11 @@ def test_poc_http_api_detects_output_hash_mismatch_and_blocks_redownload() -> No
     assert download_response.status == 409
     assert download_body == {
         "error": "job_result_integrity_mismatch",
+        "message": "job result output hash does not match stored content",
+    }
+    assert artifact_response.status == 409
+    assert artifact_body == {
+        "error": "artifact_unavailable",
         "message": "job result output hash does not match stored content",
     }
 

@@ -372,10 +372,15 @@ class JobQueue:
                 raise KeyError(f"unknown job_id: {job_id}")
             return job
 
-    def get_artifact(self, artifact_id: str) -> dict[str, Any]:
+    def get_artifact(
+        self,
+        artifact_id: str,
+        *,
+        validate_job: Callable[[JobRecord], object] | None = None,
+    ) -> dict[str, Any]:
         if not isinstance(artifact_id, str) or not artifact_id.strip():
             raise KeyError("unknown artifact_id")
-        matches: list[dict[str, Any]] = []
+        matches: list[tuple[JobRecord, dict[str, Any]]] = []
         with self._lock:
             for job in self._jobs.values():
                 if (
@@ -388,21 +393,23 @@ class JobQueue:
                 if not isinstance(artifacts, list):
                     continue
                 matches.extend(
-                    artifact
+                    (job, artifact)
                     for artifact in artifacts
                     if isinstance(artifact, dict)
                     and artifact.get("artifact_id") == artifact_id
                 )
-        if len(matches) != 1:
-            raise KeyError("unknown or ambiguous artifact_id")
-        artifact = matches[0]
-        content = artifact.get("content")
-        expected_hash = artifact.get("sha256")
-        if not isinstance(content, bytes) or not isinstance(expected_hash, str):
-            raise ValueError("artifact content metadata is incomplete")
-        if sha256(content).hexdigest() != expected_hash:
-            raise ValueError("artifact integrity check failed")
-        return deepcopy(artifact)
+            if len(matches) != 1:
+                raise KeyError("unknown or ambiguous artifact_id")
+            job, artifact = matches[0]
+            if validate_job is not None:
+                validate_job(job)
+            content = artifact.get("content")
+            expected_hash = artifact.get("sha256")
+            if not isinstance(content, bytes) or not isinstance(expected_hash, str):
+                raise ValueError("artifact content metadata is incomplete")
+            if sha256(content).hexdigest() != expected_hash:
+                raise ValueError("artifact integrity check failed")
+            return deepcopy(artifact)
 
     def list_jobs(self, *, status: str | None = None) -> list[JobRecord]:
         if status is not None and status not in JOB_STATUSES:

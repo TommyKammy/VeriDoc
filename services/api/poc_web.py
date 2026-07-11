@@ -1381,13 +1381,16 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_artifact_download(self, artifact_id: str) -> None:
         try:
-            artifact = self._job_queue().get_artifact(artifact_id)
+            artifact = self._job_queue().get_artifact(
+                artifact_id,
+                validate_job=_job_download,
+            )
             content_type = _download_content_type(artifact["content_type"])
             filename = _download_filename(artifact["filename"])
         except KeyError:
             self._send_json({"error": "artifact_not_found"}, status=404)
             return
-        except ValueError as exc:
+        except (RuntimeError, ValueError) as exc:
             self._send_json(
                 {"error": "artifact_unavailable", "message": str(exc)}, status=409
             )
@@ -2362,13 +2365,14 @@ def _job_response(
 ) -> dict[str, Any]:
     hashes = _job_hashes(job)
     hash_verification = _job_hash_verification(job)
+    has_download = _job_has_download(job)
     result_reference = {
-        "available": _job_has_download(job),
-        "href": f"/api/jobs/{job.job_id}/result" if _job_has_download(job) else None,
+        "available": has_download,
+        "href": f"/api/jobs/{job.job_id}/result" if has_download else None,
     }
     download_reference = {
-        "available": _job_has_download(job),
-        "href": f"/api/jobs/{job.job_id}/download" if _job_has_download(job) else None,
+        "available": has_download,
+        "href": f"/api/jobs/{job.job_id}/download" if has_download else None,
     }
     return {
         "job_id": job.job_id,
@@ -2385,17 +2389,17 @@ def _job_response(
         "updated_at": job.updated_at,
         "hashes": hashes,
         "hash_verification": hash_verification,
-        "has_result": _job_has_download(job),
+        "has_result": has_download,
         "result": result_reference,
         "download": download_reference,
-        "artifacts": _job_artifact_references(job, download_reference["href"]),
+        "artifacts": _job_artifact_references(job, has_download),
         "available_actions": _job_actions(job, job_queue, role=role),
         "template": deepcopy(job.template),
     }
 
 
 def _job_artifact_references(
-    job: JobRecord, debug_download_href: str | None
+    job: JobRecord, artifacts_available: bool
 ) -> list[dict[str, Any]]:
     if not isinstance(job.result, dict):
         return []
@@ -2414,10 +2418,8 @@ def _job_artifact_references(
         artifact_id = artifact.get("artifact_id")
         reference["artifact_id"] = artifact_id
         reference["href"] = (
-            debug_download_href
-            if artifact.get("id") == "debug-json"
-            else f"/api/artifacts/{artifact_id}"
-            if isinstance(artifact_id, str) and artifact_id
+            f"/api/artifacts/{artifact_id}"
+            if artifacts_available and isinstance(artifact_id, str) and artifact_id
             else None
         )
         metadata = reference.get("metadata")
@@ -4351,6 +4353,9 @@ def _persistable_artifact_manifest(job_id: str, result: dict[str, Any]) -> dict[
         if not isinstance(artifact.get("content"), bytes):
             raise ValueError("conversion artifact content is missing")
         artifact["href"] = f"/api/artifacts/{artifact['artifact_id']}"
+        metadata = artifact.get("metadata")
+        if isinstance(metadata, dict):
+            metadata.pop("download", None)
     audit = persisted.get("audit")
     if isinstance(audit, dict):
         audit_content = json.dumps(
