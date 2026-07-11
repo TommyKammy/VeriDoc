@@ -179,12 +179,17 @@ Review and Artifact downloads regions before relying on Detail JSON.
 `role:principal-id=token` entries:
 
 ```bash
-VERIDOC_LOCAL_AUTH_TOKENS='viewer:<viewer-id>=<viewer-token>,reviewer:<reviewer-id>=<reviewer-token>,approver:<approver-id>=<approver-token>,admin:<admin-id>=<admin-token>' python3 -m services.api.poc_web
+VERIDOC_LOCAL_AUTH_TOKENS='viewer:<viewer-id>=<viewer-token>,operator:<operator-id>=<operator-token>,reviewer:<reviewer-id>=<reviewer-token>,approver:<approver-id>=<approver-token>,admin:<admin-id>=<admin-token>,audit_viewer:<audit-id>=<audit-token>' python3 -m services.api.poc_web
 ```
 
-Roles are intentionally narrow:
+The code-level source of truth is `ROLE_PERMISSIONS` in
+`services/api/poc_web.py`. Its sensitive boundaries are intentionally narrow:
 
-- `viewer`: read jobs, downloads, and review audit events.
-- `reviewer`: viewer access plus conversions, job creation, and review edit events.
-- `approver`: reviewer access plus review approve events.
-- `admin`: approver access plus retrying failed conversion jobs.
+| Role | Job operations | Review | Audit events | Templates |
+| --- | --- | --- | --- | --- |
+| `viewer` | read | read | job and review read | read |
+| `operator` | create, convert, read, retry | none | job read | read |
+| `reviewer` | create, convert, read | read, edit | job and review read | read |
+| `approver` | create, convert, read | read, edit, approve | job and review read | read |
+| `admin` | create, convert, read, retry | read, edit, approve | job and review read | read, manage |
+| `audit_viewer` | none | audit read only | job and review read | none |

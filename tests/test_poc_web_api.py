@@ -5807,6 +5807,105 @@ def test_poc_http_api_scopes_review_actions_by_conversion_role() -> None:
     assert approver_body["available_review_actions"] == ["edit", "approve"]
 
 
+def test_role_permission_matrix_defines_all_mvp_roles_and_sensitive_boundaries() -> None:
+    assert poc_web.ROLES == {
+        "viewer",
+        "operator",
+        "reviewer",
+        "approver",
+        "admin",
+        "audit_viewer",
+    }
+
+    assert poc_web.ROLE_PERMISSIONS["operator"] >= {
+        "convert",
+        "jobs:create",
+        "jobs:read",
+        "jobs:retry",
+    }
+    assert "review_events:edit" not in poc_web.ROLE_PERMISSIONS["operator"]
+    assert "review_events:approve" not in poc_web.ROLE_PERMISSIONS["operator"]
+    assert "review_events:edit" in poc_web.ROLE_PERMISSIONS["reviewer"]
+    assert "review_events:approve" not in poc_web.ROLE_PERMISSIONS["reviewer"]
+    assert "review_events:approve" in poc_web.ROLE_PERMISSIONS["approver"]
+    assert poc_web.ROLE_PERMISSIONS["audit_viewer"] == {
+        "job_events:read",
+        "review_events:read",
+    }
+
+
+def test_operator_and_audit_viewer_enforce_api_boundaries_before_payload_handling() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.local_auth_tokens = _local_auth_tokens()
+    server.review_event_store = ReviewAuditEventStore()
+    server.job_event_store = JobAuditEventStore()
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        invalid_payload = b"{not valid json"
+        connection.request(
+            "POST",
+            "/api/review-events",
+            body=invalid_payload,
+            headers={
+                "Authorization": "Bearer operator-token",
+                "Content-Type": "application/json",
+                "Content-Length": str(len(invalid_payload)),
+            },
+        )
+        operator_review_response = connection.getresponse()
+        operator_review_body = json.loads(operator_review_response.read().decode("utf-8"))
+
+        audit_headers = {"Authorization": "Bearer audit-viewer-token"}
+        connection.request(
+            "POST",
+            "/api/job-events",
+            body=invalid_payload,
+            headers={
+                **audit_headers,
+                "Content-Type": "application/json",
+                "Content-Length": str(len(invalid_payload)),
+            },
+        )
+        audit_job_event_write_response = connection.getresponse()
+        audit_job_event_write_body = json.loads(
+            audit_job_event_write_response.read().decode("utf-8")
+        )
+        connection.request("GET", "/api/job-events", headers=audit_headers)
+        audit_job_events_response = connection.getresponse()
+        audit_job_events_response.read()
+        connection.request("GET", "/api/review-events", headers=audit_headers)
+        audit_review_events_response = connection.getresponse()
+        audit_review_events_response.read()
+        connection.request("GET", "/api/jobs", headers=audit_headers)
+        audit_jobs_response = connection.getresponse()
+        audit_jobs_body = json.loads(audit_jobs_response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert operator_review_response.status == 403
+    assert operator_review_body == {
+        "error": "forbidden",
+        "message": "role operator cannot perform review_edit",
+    }
+    assert server.review_event_store.list_events() == []
+    assert audit_job_event_write_response.status == 403
+    assert audit_job_event_write_body == {
+        "error": "forbidden",
+        "message": "role audit_viewer cannot perform job_events_write",
+    }
+    assert server.job_event_store.list_events() == []
+    assert audit_job_events_response.status == 200
+    assert audit_review_events_response.status == 200
+    assert audit_jobs_response.status == 403
+    assert audit_jobs_body == {
+        "error": "forbidden",
+        "message": "role audit_viewer cannot perform jobs_read",
+    }
+
+
 def test_poc_http_api_reads_local_auth_tokens_from_env_for_review_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -7534,9 +7633,14 @@ def _post_review_audit_event_with_store(
 def _local_auth_tokens() -> dict[str, dict[str, str]]:
     return {
         "viewer-token": {"role": "viewer", "principal_id": "viewer"},
+        "operator-token": {"role": "operator", "principal_id": "operator"},
         "reviewer-token": {"role": "reviewer", "principal_id": "reviewer"},
         "approver-token": {"role": "approver", "principal_id": "approver"},
         "admin-token": {"role": "admin", "principal_id": "admin"},
+        "audit-viewer-token": {
+            "role": "audit_viewer",
+            "principal_id": "audit-viewer",
+        },
     }
 
 

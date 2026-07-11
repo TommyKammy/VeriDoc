@@ -113,12 +113,20 @@ UNSUPPORTED_CONVERSION_SETTING_WARNINGS = {
     "use_ocr": "OCR conversion setting is not implemented in the local PoC API",
 }
 LOCAL_AUTH_TOKENS_ENV = "VERIDOC_LOCAL_AUTH_TOKENS"
-ROLES = {"viewer", "reviewer", "approver", "admin"}
+ROLES = {"viewer", "operator", "reviewer", "approver", "admin", "audit_viewer"}
 ROLE_PERMISSIONS = {
     "viewer": {
         "job_events:read",
         "jobs:read",
         "review_events:read",
+        "templates:read",
+    },
+    "operator": {
+        "convert",
+        "job_events:read",
+        "jobs:create",
+        "jobs:read",
+        "jobs:retry",
         "templates:read",
     },
     "reviewer": {
@@ -151,6 +159,10 @@ ROLE_PERMISSIONS = {
         "review_events:read",
         "templates:manage",
         "templates:read",
+    },
+    "audit_viewer": {
+        "job_events:read",
+        "review_events:read",
     },
 }
 HTTP_CONTENT_TYPE = re.compile(
@@ -1707,6 +1719,17 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
         if not authenticated:
             return
         role = auth_context["role"] if auth_context is not None else None
+        if role is not None and ROLE_PERMISSIONS[role].isdisjoint(
+            {"jobs:create", "jobs:read", "jobs:retry"}
+        ):
+            self._send_json(
+                {
+                    "error": "forbidden",
+                    "message": f"role {role} cannot perform job_events_write",
+                },
+                status=403,
+            )
+            return
         try:
             request = self._read_json_request()
             job_id = str(request.get("job_id") or "")
