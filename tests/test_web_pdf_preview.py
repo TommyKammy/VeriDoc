@@ -226,7 +226,7 @@ def test_review_actions_clear_and_reject_stale_file_selection() -> None:
     assert "function isActiveDirectConversion(conversionToken)" in html
     assert "if (!isActiveDirectConversion(conversionToken)) return;" in html
     assert "const signal = options.signal || state.credentialAbortController.signal;" in html
-    assert "return fetch(url, { ...options, headers, signal });" in html
+    assert "const response = await fetch(url, { ...options, headers, signal });" in html
     assert re.search(
         r"\} finally \{\s+"
         r"if \(isActiveCredentialRequest\(requestAuthToken, requestAuthGeneration\)\) \{\s+"
