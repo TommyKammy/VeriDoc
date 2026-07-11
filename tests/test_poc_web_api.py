@@ -466,6 +466,14 @@ def test_convert_uploaded_document_surfaces_review_items_and_download_payload() 
             "warnings": ["blocks[0].low confidence; block marked requires_review"],
         }
     ]
+    assert result["warning_details"] == [
+        {
+            "code": "DOCUMENT_LOW_CONFIDENCE",
+            "severity": "warning",
+            "message": "blocks[0].low confidence; block marked requires_review",
+            "remediation": "Compare the extracted value with the source document before approval.",
+        }
+    ]
     assert result["download"]["filename"] == "phase0-output.veridoc-result.json"
     downloaded = json.loads(result["download"]["content"].decode("utf-8"))
     assert "conversion_id" not in downloaded
@@ -1146,6 +1154,14 @@ def test_convert_uploaded_document_falls_back_for_schema_invalid_local_llm_plan(
             "deterministic conversion used; "
             "requires review"
         )
+    ]
+    assert result["warning_details"] == [
+        {
+            "code": "LLM_FALLBACK_SCHEMA_INVALID",
+            "severity": "error",
+            "message": result["warnings"][0],
+            "remediation": "Review the rejected LLM plan and correct its schema before retrying.",
+        }
     ]
     assert {
         "document_id": "phase8-output",
@@ -13161,7 +13177,7 @@ def test_web_direct_convert_defines_phase6_review_information_architecture() -> 
     ]:
         assert "review" in parser.element_regions[element_id]
     assert 'function renderTopLevelWarnings(warnings)' in html
-    assert "renderTopLevelWarnings(result.warnings || [])" in html
+    assert "renderTopLevelWarnings(result.warning_details || result.warnings || [])" in html
     for element_id in [
         "artifact-summary",
         "download-link",

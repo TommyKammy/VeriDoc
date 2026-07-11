@@ -359,6 +359,9 @@ def test_review_warning_badges_show_codes_levels_and_llm_involvement() -> None:
     html = _web_html()
 
     assert "function warningBadgeDescriptor(warning)" in html
+    assert "descriptor.message" in html
+    assert "descriptor.remediation" in html
+    assert 'warning-details' in html
     assert '"blocks[0].low confidence; block marked requires_review"' in html
     assert 'code: "W002"' in html
     assert 'severity: "yellow"' in html

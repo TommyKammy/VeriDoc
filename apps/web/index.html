@@ -2271,7 +2271,7 @@
         renderConversionSettingStatus(result.audit?.conversion_settings, result.audit?.llm);
         status.textContent = result.status;
         status.className = `status ${result.status}`;
-        renderTopLevelWarnings(result.warnings || []);
+        renderTopLevelWarnings(result.warning_details || result.warnings || []);
         renderReviewItems(result.review_items || []);
         clearDownload();
         renderDownloadLinks(
@@ -2593,7 +2593,11 @@
           const descriptor = warningBadgeDescriptor(warning);
           const badge = document.createElement("span");
           badge.className = `warning-badge ${severityClass(descriptor.severity)}`;
-          badge.textContent = `${descriptor.code} ${descriptor.label}`;
+          badge.textContent = `${descriptor.code} ${descriptor.message}`;
+          const details = document.createElement("span");
+          details.className = "warning-details";
+          details.textContent = descriptor.remediation;
+          badge.append(details);
           badges.append(badge);
         }
         topLevelWarnings.append(title, badges);
@@ -2953,6 +2957,15 @@
       }
 
       function warningBadgeDescriptor(warning) {
+        if (warning && typeof warning === "object" && typeof warning.code === "string") {
+          return {
+            code: warning.code,
+            severity: warning.severity || "warning",
+            message: warningText(warning),
+            remediation: warning.remediation || "Review the warning and source evidence before approval.",
+            label: warningText(warning),
+          };
+        }
         const text = warningText(warning);
         const knownWarnings = {
           "blocks[0].bbox missing; block marked requires_review": {
@@ -2987,7 +3000,12 @@
           },
         };
         const normalizedText = text.replace(/blocks\[\d+\]/, "blocks[0]");
-        return knownWarnings[normalizedText] || { code: "W000", severity: "gray", label: warningText(warning) };
+        const descriptor = knownWarnings[normalizedText] || { code: "W000", severity: "gray", label: warningText(warning) };
+        return {
+          ...descriptor,
+          message: text,
+          remediation: "Review the warning and source evidence before approval.",
+        };
       }
 
       function warningText(warning) {
@@ -2997,6 +3015,9 @@
       }
 
       function severityClass(severity) {
+        if (severity === "warning") return "yellow";
+        if (severity === "error") return "red";
+        if (severity === "info") return "green";
         if (["green", "yellow", "red", "gray"].includes(severity)) return severity;
         return "gray";
       }

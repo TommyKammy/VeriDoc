@@ -61,6 +61,7 @@ from core.render.ooxml import (
 from services.api.artifact_store import default_artifact_store_root
 from services.api.job_queue import JobQueue, JobRecord
 from services.api.persistence_repository import default_database_path
+from services.api.warning_catalog import warning_details
 
 WEB_ROOT = REPO_ROOT / "apps" / "web"
 INFERENCE_PROFILES_PATH = REPO_ROOT / "services" / "api" / "inference_profiles.json"
@@ -945,6 +946,7 @@ def convert_uploaded_document(
         "validation": asdict(validation),
         "review_items": review_items,
         "warnings": warnings,
+        "warning_details": warning_details(warnings),
         "audit": audit,
     }
     if template_mapping is not None:
