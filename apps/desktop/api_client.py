@@ -399,7 +399,7 @@ class DesktopApiClient:
         token = self._credential_store.require_token()
         response = self._request_bytes(
             "GET",
-            f"/api/jobs/{quote(job_id, safe='')}/result",
+            f"/api/jobs/{quote(job_id, safe='')}/download",
             token=token,
         )
         body = response.body

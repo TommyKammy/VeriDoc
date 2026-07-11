@@ -789,6 +789,7 @@ def convert_uploaded_document(
     output_format: str | None = None,
     template_id: str | None = None,
     template_store: TemplateStore | None = None,
+    template_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Convert one uploaded PoC document into IR, review details, and download bytes."""
     safe_filename = _safe_filename(filename)
@@ -801,6 +802,7 @@ def convert_uploaded_document(
     requested_template = _direct_convert_template_snapshot(
         requested_template_id,
         template_store=template_store,
+        template_snapshot=template_snapshot,
     )
     conversion_settings = _conversion_settings(use_llm=use_llm, use_ocr=use_ocr)
     conversion_id = _conversion_id()
@@ -1350,8 +1352,14 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             role = auth_context["role"] if auth_context is not None else None
             job_path = path.removeprefix("/api/jobs/")
             if job_path.endswith("/result"):
-                self._handle_job_result_download(
+                self._handle_job_result(
                     job_path.removesuffix("/result"),
+                    role=role,
+                )
+                return
+            if job_path.endswith("/download"):
+                self._handle_job_result_download(
+                    job_path.removesuffix("/download"),
                     auth_context=auth_context,
                 )
                 return
@@ -1455,6 +1463,31 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             )
             source = _job_source_from_request(request, filename=filename)
             desktop_upload_audit = _desktop_upload_audit_requested(request)
+            conversion_settings = None
+            request_parameters = None
+            if source is not None:
+                conversion_mode = _validate_conversion_mode(request.get("conversion_mode"))
+                output_format = _validate_direct_output_format_for_conversion_mode(
+                    conversion_mode=conversion_mode,
+                    output_format=_validate_direct_output_format(request.get("output_format")),
+                )
+                use_llm = _validate_conversion_setting_boolean(request, "use_llm")
+                use_ocr = _validate_conversion_setting_boolean(request, "use_ocr")
+                request_parameters = {
+                    "conversion_mode": conversion_mode,
+                    "output_format": output_format,
+                    "use_llm": use_llm,
+                    "use_ocr": use_ocr,
+                }
+                if not desktop_upload_audit:
+                    llm_rejection = _llm_configuration_rejection(
+                        use_llm=use_llm,
+                        use_ocr=use_ocr,
+                    )
+                    if llm_rejection is not None:
+                        self._send_json(llm_rejection, status=400)
+                        return
+                    conversion_settings = (conversion_mode, output_format, use_llm, use_ocr)
             requested_template = self._job_template_binding(request.get("template_id"))
             job_queue = self._job_queue()
             upload_audit_event = None
@@ -1465,6 +1498,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                     mode=mode,
                     source=source,
                     template=requested_template,
+                    request_parameters=request_parameters,
                     create_template=lambda: self._job_template_snapshot(request.get("template_id")),
                 )
             else:
@@ -1474,12 +1508,14 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                     mode=mode,
                     source=source,
                     template=requested_template,
+                    request_parameters=request_parameters,
                     create_template=lambda: self._job_template_snapshot(
                         request.get("template_id")
                     ),
                     enqueue=False,
                     publish=False,
                     include_unpublished=True,
+                    compare_request_parameters=False,
                 )
                 job_event_store = self._job_event_store()
                 try:
@@ -1549,6 +1585,35 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 return
             self._send_json({"error": "invalid_job_request", "message": str(exc)}, status=400)
             return
+        if created_job and source is not None and not desktop_upload_audit:
+            assert conversion_settings is not None
+            conversion_mode, output_format, use_llm, use_ocr = conversion_settings
+            try:
+                job_queue.start_job(job.job_id)
+                result = convert_uploaded_document(
+                    filename=job.filename,
+                    content=source["content"],
+                    conversion_mode=conversion_mode,
+                    use_llm=use_llm,
+                    use_ocr=use_ocr,
+                    output_format=output_format,
+                    template_id=(
+                        job.template.get("template_id")
+                        if isinstance(job.template, dict)
+                        else None
+                    ),
+                    template_snapshot=job.template,
+                )
+                job = job_queue.mark_succeeded(job.job_id, result=result)
+            except PocServerDependencyError as exc:
+                if job_queue.get_job(job.job_id).status == "running":
+                    job = job_queue.mark_failed(job.job_id, error=str(exc), retryable=False)
+            except RuntimeError as exc:
+                if job_queue.get_job(job.job_id).status == "running":
+                    job = job_queue.mark_failed(job.job_id, error=str(exc))
+            except ValueError as exc:
+                if job_queue.get_job(job.job_id).status == "running":
+                    job = job_queue.mark_failed(job.job_id, error=str(exc), retryable=False)
         response = {"job": _job_response(job, self._job_queue(), role=role)}
         if upload_audit_event is not None:
             response["audit_event"] = upload_audit_event
@@ -1788,6 +1853,26 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(download["content"])))
         self.end_headers()
         self.wfile.write(download["content"])
+
+    def _handle_job_result(self, job_id: str, *, role: str | None = None) -> None:
+        try:
+            job = self._job_queue().get_job(job_id)
+            _job_download(job)
+            if not isinstance(job.result, dict):
+                raise ValueError("job result is missing")
+        except KeyError:
+            self._send_json({"error": "job_not_found"}, status=404)
+            return
+        except RuntimeError as exc:
+            self._send_json(
+                {"error": "job_result_integrity_mismatch", "message": str(exc)},
+                status=409,
+            )
+            return
+        except ValueError as exc:
+            self._send_json({"error": "job_result_unavailable", "message": str(exc)}, status=400)
+            return
+        self._send_json(_http_result(job.result, role=role))
 
     def _read_json_request(self, *, max_request_bytes: int = MAX_UPLOAD_REQUEST_BYTES) -> dict[str, Any]:
         length = self.headers.get("Content-Length")
@@ -2249,6 +2334,14 @@ def _job_response(
 ) -> dict[str, Any]:
     hashes = _job_hashes(job)
     hash_verification = _job_hash_verification(job)
+    result_reference = {
+        "available": _job_has_download(job),
+        "href": f"/api/jobs/{job.job_id}/result" if _job_has_download(job) else None,
+    }
+    download_reference = {
+        "available": _job_has_download(job),
+        "href": f"/api/jobs/{job.job_id}/download" if _job_has_download(job) else None,
+    }
     return {
         "job_id": job.job_id,
         "idempotency_key": job.idempotency_key,
@@ -2265,9 +2358,39 @@ def _job_response(
         "hashes": hashes,
         "hash_verification": hash_verification,
         "has_result": _job_has_download(job),
+        "result": result_reference,
+        "download": download_reference,
+        "artifacts": _job_artifact_references(job, download_reference["href"]),
         "available_actions": _job_actions(job, job_queue, role=role),
         "template": deepcopy(job.template),
     }
+
+
+def _job_artifact_references(
+    job: JobRecord, debug_download_href: str | None
+) -> list[dict[str, Any]]:
+    if not isinstance(job.result, dict):
+        return []
+    artifacts = job.result.get("artifacts")
+    if not isinstance(artifacts, list):
+        return []
+    references = []
+    for artifact in artifacts:
+        if not isinstance(artifact, dict):
+            continue
+        reference = {
+            key: deepcopy(artifact[key])
+            for key in ("id", "filename", "content_type", "format", "metadata")
+            if key in artifact
+        }
+        reference["href"] = (
+            debug_download_href if artifact.get("id") == "debug-json" else None
+        )
+        metadata = reference.get("metadata")
+        if reference["href"] is None and isinstance(metadata, dict):
+            metadata.pop("download", None)
+        references.append(reference)
+    return references
 
 
 def _job_actions(
@@ -2284,6 +2407,7 @@ def _job_actions(
     if (
         (role is None or "jobs:retry" in ROLE_PERMISSIONS[role])
         and job.status == "failed"
+        and job.retryable
         and not _retry_blocked_by_active_high_quality(job, job_queue)
     ):
         actions.append(_job_action(job, "retry_conversion", "Retry conversion"))
@@ -2930,7 +3054,22 @@ def _direct_convert_template_snapshot(
     template_id: str | None,
     *,
     template_store: TemplateStore | None,
+    template_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
+    if template_snapshot is not None:
+        snapshot = deepcopy(template_snapshot)
+        if template_id is None or snapshot.get("template_id") != template_id:
+            raise ValueError("template snapshot does not match template_id")
+        template_version = snapshot.get("template_version")
+        if (
+            not isinstance(template_version, int)
+            or isinstance(template_version, bool)
+            or template_version < 1
+        ):
+            raise ValueError("template snapshot version is invalid")
+        if not isinstance(snapshot.get("name"), str) or not snapshot["name"].strip():
+            raise ValueError("template snapshot name is invalid")
+        return snapshot
     if template_id is None:
         return None
     store = DEFAULT_TEMPLATE_STORE if template_store is None else template_store

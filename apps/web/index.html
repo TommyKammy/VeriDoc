@@ -1428,12 +1428,36 @@
           if (!isActiveDirectConversion(conversionToken)) return;
           setSourcePreview(file, fileBytes);
           const contentBase64 = arrayBufferToBase64(fileBytes);
-          const response = await apiFetch("/api/convert", {
+          const sourceDigest = await crypto.subtle.digest("SHA-256", fileBytes);
+          if (!isActiveDirectConversion(conversionToken)) return;
+          const sourceSha256 = Array.from(new Uint8Array(sourceDigest), (byte) =>
+            byte.toString(16).padStart(2, "0")
+          ).join("");
+          const selectedTemplate = state.templates.find(
+            (template) => template.template_id === directTemplate.value
+          );
+          const conversionSettings = {
+            conversion_mode: directConversionMode.value,
+            output_format: directOutputFormat.value || null,
+            template_id: directTemplate.value || null,
+            template_version: selectedTemplate?.current_version ?? null,
+            use_llm: directUseLlm.checked,
+            use_ocr: directUseOcr.checked,
+          };
+          const response = await apiFetch("/api/jobs", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
+              idempotency_key: JSON.stringify({
+                file: [file.lastModified, file.size, file.name],
+                source_sha256: sourceSha256,
+                settings: conversionSettings,
+              }),
               filename: file.name,
+              content_type: file.type || "application/octet-stream",
               content_base64: contentBase64,
+              size_bytes: file.size,
+              mode: "standard",
               conversion_mode: directConversionMode.value,
               output_format: directOutputFormat.value || undefined,
               template_id: directTemplate.value || undefined,
@@ -1441,15 +1465,39 @@
               use_ocr: directUseOcr.checked,
             }),
           });
-          const result = await response.json();
+          const submission = await response.json();
           if (!isActiveDirectConversion(conversionToken)) return;
           if (!response.ok) {
-            renderDirectConvertError(result);
+            renderDirectConvertError(submission);
             setPageStatus("Direct conversion failed.", true);
             return;
           }
+          const job = submission.job;
+          state.selectedJob = job;
+          if (job.status === "failed") {
+            renderDirectConvertError({
+              error: "conversion_failed",
+              message: job.error || "Conversion job failed.",
+            });
+            setPageStatus("Direct conversion failed.", true);
+            return;
+          }
+          if (!job.result?.available || !job.result.href) {
+            await loadJobs();
+            setPageStatus(`Conversion job ${job.job_id} submitted.`);
+            return;
+          }
+          const resultResponse = await apiFetch(job.result.href);
+          const result = await resultResponse.json();
+          if (!isActiveDirectConversion(conversionToken)) return;
+          if (!resultResponse.ok) {
+            renderDirectConvertError(result);
+            setPageStatus("Conversion result failed.", true);
+            return;
+          }
           renderResult(result);
-          setPageStatus("Direct conversion finished.");
+          await loadJobs();
+          setPageStatus(`Conversion job ${job.job_id} finished.`);
         } catch (error) {
           if (!isActiveDirectConversion(conversionToken)) return;
           renderDirectConvertError({
@@ -1688,7 +1736,9 @@
         requestAuthToken = activeAuthToken(),
         requestAuthGeneration = state.authGeneration
       ) {
-        const response = await apiFetch(`/api/jobs/${encodeURIComponent(job.job_id)}/result`);
+        const response = await apiFetch(
+          job.download?.href || `/api/jobs/${encodeURIComponent(job.job_id)}/download`
+        );
         if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return false;
         if (!response.ok) {
           const body = await response.json();

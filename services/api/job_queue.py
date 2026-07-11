@@ -40,9 +40,11 @@ class JobRecord:
     status: JobStatus
     source: dict[str, Any] | None = None
     template: dict[str, Any] | None = None
+    request_parameters: dict[str, Any] | None = None
     attempts: int = 0
     result: dict[str, Any] | None = None
     error: str | None = None
+    retryable: bool = True
     created_at: str = field(default_factory=lambda: _utc_now())
     updated_at: str = field(default_factory=lambda: _utc_now())
 
@@ -97,6 +99,7 @@ class JobQueue:
         mode: str,
         source: dict[str, Any] | None = None,
         template: dict[str, Any] | None = None,
+        request_parameters: dict[str, Any] | None = None,
         enqueue: bool = True,
     ) -> JobRecord:
         key, filename, mode = _normalize_job_request(
@@ -112,6 +115,7 @@ class JobQueue:
                 mode=mode,
                 source=source,
                 template=template,
+                request_parameters=request_parameters,
             )
             if existing is not None:
                 return existing
@@ -121,6 +125,7 @@ class JobQueue:
                 mode=mode,
                 source=source,
                 template=template,
+                request_parameters=request_parameters,
                 enqueue=enqueue,
             )
 
@@ -132,10 +137,12 @@ class JobQueue:
         mode: str,
         source: dict[str, Any] | None = None,
         template: dict[str, Any] | None = None,
+        request_parameters: dict[str, Any] | None = None,
         create_template: Callable[[], dict[str, Any] | None] | None = None,
         enqueue: bool = True,
         publish: bool = True,
         include_unpublished: bool = False,
+        compare_request_parameters: bool = True,
     ) -> tuple[JobRecord, bool]:
         key, filename, mode = _normalize_job_request(
             idempotency_key=idempotency_key,
@@ -150,7 +157,9 @@ class JobQueue:
                 mode=mode,
                 source=source,
                 template=template,
+                request_parameters=request_parameters,
                 include_unpublished=include_unpublished,
+                compare_request_parameters=compare_request_parameters,
             )
             if existing is not None:
                 return existing, False
@@ -161,6 +170,7 @@ class JobQueue:
                 mode=mode,
                 source=source,
                 template=stored_template,
+                request_parameters=request_parameters,
                 enqueue=enqueue,
                 publish=publish,
             )
@@ -266,6 +276,7 @@ class JobQueue:
         mode: str,
         source: dict[str, Any] | None = None,
         template: dict[str, Any] | None = None,
+        request_parameters: dict[str, Any] | None = None,
     ) -> JobRecord | None:
         key, filename, mode = _normalize_job_request(
             idempotency_key=idempotency_key,
@@ -279,6 +290,7 @@ class JobQueue:
                 mode=mode,
                 source=source,
                 template=template,
+                request_parameters=request_parameters,
                 include_unpublished=False,
             )
 
@@ -290,7 +302,9 @@ class JobQueue:
         mode: str,
         source: dict[str, Any] | None,
         template: dict[str, Any] | None,
+        request_parameters: dict[str, Any] | None,
         include_unpublished: bool = False,
+        compare_request_parameters: bool = True,
     ) -> JobRecord | None:
         existing_id = self._idempotency_index.get(idempotency_key)
         if existing_id is None:
@@ -303,6 +317,10 @@ class JobQueue:
             or existing.mode != mode
             or not _same_source_binding(existing.source, source)
             or not _same_template_binding(existing.template, template)
+            or (
+                compare_request_parameters
+                and existing.request_parameters != request_parameters
+            )
         ):
             raise ValueError("idempotency_key already bound to different job parameters")
         return existing
@@ -315,6 +333,7 @@ class JobQueue:
         mode: str,
         source: dict[str, Any] | None,
         template: dict[str, Any] | None,
+        request_parameters: dict[str, Any] | None,
         enqueue: bool,
         publish: bool = True,
     ) -> JobRecord:
@@ -328,6 +347,7 @@ class JobQueue:
             status="queued",
             source=deepcopy(source),
             template=deepcopy(template),
+            request_parameters=deepcopy(request_parameters),
         )
         pending_sequence = (
             self._allocate_pending_sequence() if enqueue and publish else None
@@ -385,16 +405,42 @@ class JobQueue:
                 return running
             return None
 
+    def start_job(self, job_id: str) -> JobRecord:
+        """Claim one known queued job for an in-process PoC worker."""
+        with self._lock:
+            try:
+                job = self._jobs[job_id]
+            except KeyError as exc:
+                raise KeyError(f"unknown job_id: {job_id}") from exc
+            if job_id in self._unpublished_job_ids:
+                raise KeyError(f"unknown job_id: {job_id}")
+            if job.status != "queued":
+                raise ValueError("job must be queued")
+            if job.mode == "high_quality" and self._has_running_high_quality_job():
+                raise RuntimeError("high_quality job already running")
+            pending_sequence = self._pending_sequences.get(job_id)
+            running = self._replace(
+                job,
+                queue_sequence=pending_sequence,
+                status="running",
+            )
+            try:
+                self._pending_job_ids.remove(job_id)
+            except ValueError:
+                pass
+            self._pending_sequences.pop(job_id, None)
+            return running
+
     def mark_succeeded(self, job_id: str, *, result: dict[str, Any]) -> JobRecord:
         with self._lock:
             job = self._require_running_job(job_id)
             return self._replace(job, status="succeeded", result=result, error=None)
 
-    def mark_failed(self, job_id: str, *, error: str) -> JobRecord:
+    def mark_failed(self, job_id: str, *, error: str, retryable: bool = True) -> JobRecord:
         with self._lock:
             job = self._require_running_job(job_id)
             attempts = job.attempts + 1
-            if attempts < self._max_attempts:
+            if retryable and attempts < self._max_attempts:
                 pending_sequence = self._allocate_pending_sequence()
                 retried = self._replace(
                     job,
@@ -405,7 +451,13 @@ class JobQueue:
                 )
                 self._append_pending(job_id, pending_sequence)
                 return retried
-            return self._replace(job, status="failed", attempts=attempts, error=error)
+            return self._replace(
+                job,
+                status="failed",
+                attempts=attempts,
+                error=error,
+                retryable=retryable,
+            )
 
     def retry_failed_job(
         self,
@@ -420,6 +472,8 @@ class JobQueue:
                 raise KeyError(f"unknown job_id: {job_id}") from exc
             if job.status != "failed":
                 raise ValueError("job must be failed")
+            if not job.retryable:
+                raise ValueError("job is not retryable")
             if job.mode == "high_quality" and self._has_active_high_quality_job():
                 raise RuntimeError("high_quality job already active")
             pending_sequence = self._allocate_pending_sequence()
