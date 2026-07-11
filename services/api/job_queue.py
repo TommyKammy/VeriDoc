@@ -43,6 +43,7 @@ class JobRecord:
     attempts: int = 0
     result: dict[str, Any] | None = None
     error: str | None = None
+    retryable: bool = True
     created_at: str = field(default_factory=lambda: _utc_now())
     updated_at: str = field(default_factory=lambda: _utc_now())
 
@@ -431,7 +432,13 @@ class JobQueue:
                 )
                 self._append_pending(job_id, pending_sequence)
                 return retried
-            return self._replace(job, status="failed", attempts=attempts, error=error)
+            return self._replace(
+                job,
+                status="failed",
+                attempts=attempts,
+                error=error,
+                retryable=retryable,
+            )
 
     def retry_failed_job(
         self,
@@ -446,6 +453,8 @@ class JobQueue:
                 raise KeyError(f"unknown job_id: {job_id}") from exc
             if job.status != "failed":
                 raise ValueError("job must be failed")
+            if not job.retryable:
+                raise ValueError("job is not retryable")
             if job.mode == "high_quality" and self._has_active_high_quality_job():
                 raise RuntimeError("high_quality job already active")
             pending_sequence = self._allocate_pending_sequence()

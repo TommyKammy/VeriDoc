@@ -679,7 +679,10 @@ def test_job_queue_can_mark_in_process_failure_as_non_retryable() -> None:
     assert failed.status == "failed"
     assert failed.attempts == 1
     assert failed.error == "conversion rejected"
+    assert failed.retryable is False
     assert queue.start_next_job() is None
+    with pytest.raises(ValueError, match="job is not retryable"):
+        queue.retry_failed_job(failed.job_id)
 
 
 def test_job_queue_requeues_explicit_retry_for_failed_job() -> None:

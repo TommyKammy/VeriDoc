@@ -1428,6 +1428,11 @@
           if (!isActiveDirectConversion(conversionToken)) return;
           setSourcePreview(file, fileBytes);
           const contentBase64 = arrayBufferToBase64(fileBytes);
+          const sourceDigest = await crypto.subtle.digest("SHA-256", fileBytes);
+          if (!isActiveDirectConversion(conversionToken)) return;
+          const sourceSha256 = Array.from(new Uint8Array(sourceDigest), (byte) =>
+            byte.toString(16).padStart(2, "0")
+          ).join("");
           const conversionSettings = {
             conversion_mode: directConversionMode.value,
             output_format: directOutputFormat.value || null,
@@ -1441,6 +1446,7 @@
             body: JSON.stringify({
               idempotency_key: JSON.stringify({
                 file: [file.lastModified, file.size, file.name],
+                source_sha256: sourceSha256,
                 settings: conversionSettings,
               }),
               filename: file.name,
@@ -1464,6 +1470,14 @@
           }
           const job = submission.job;
           state.selectedJob = job;
+          if (job.status === "failed") {
+            renderDirectConvertError({
+              error: "conversion_failed",
+              message: job.error || "Conversion job failed.",
+            });
+            setPageStatus("Direct conversion failed.", true);
+            return;
+          }
           if (!job.result?.available || !job.result.href) {
             await loadJobs();
             setPageStatus(`Conversion job ${job.job_id} submitted.`);
@@ -1471,6 +1485,7 @@
           }
           const resultResponse = await apiFetch(job.result.href);
           const result = await resultResponse.json();
+          if (!isActiveDirectConversion(conversionToken)) return;
           if (!resultResponse.ok) {
             renderDirectConvertError(result);
             setPageStatus("Conversion result failed.", true);

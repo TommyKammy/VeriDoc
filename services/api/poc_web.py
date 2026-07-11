@@ -1468,7 +1468,8 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 use_ocr = _validate_conversion_setting_boolean(request, "use_ocr")
                 llm_rejection = _llm_configuration_rejection(use_llm=use_llm, use_ocr=use_ocr)
                 if llm_rejection is not None:
-                    raise ValueError(str(llm_rejection["message"]))
+                    self._send_json(llm_rejection, status=400)
+                    return
                 conversion_settings = (conversion_mode, use_llm, use_ocr)
             requested_template = self._job_template_binding(request.get("template_id"))
             job_queue = self._job_queue()
@@ -2373,6 +2374,7 @@ def _job_actions(
     if (
         (role is None or "jobs:retry" in ROLE_PERMISSIONS[role])
         and job.status == "failed"
+        and job.retryable
         and not _retry_blocked_by_active_high_quality(job, job_queue)
     ):
         actions.append(_job_action(job, "retry_conversion", "Retry conversion"))

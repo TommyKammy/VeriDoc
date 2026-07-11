@@ -7822,7 +7822,57 @@ def test_poc_http_api_marks_in_process_conversion_failure_terminal(
     assert body["job"]["status"] == "failed"
     assert body["job"]["attempts"] == 1
     assert body["job"]["error"] == "conversion rejected"
+    assert [action["action"] for action in body["job"]["available_actions"]] == [
+        "open_detail"
+    ]
     assert [job.status for job in server.job_queue.list_jobs()] == ["failed"]
+
+
+def test_poc_http_api_preserves_job_llm_configuration_rejection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VERIDOC_STANDARD_OPENAI_BASE_URL", "https://api.openai.com/v1")
+    monkeypatch.setenv("VERIDOC_STANDARD_MODEL", "cloud-model")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue()
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    source = b'{"pages": []}'
+    try:
+        payload = json.dumps(
+            {
+                "idempotency_key": "rejected-job-llm",
+                "filename": "source.json",
+                "content_base64": base64.b64encode(source).decode("ascii"),
+                "size_bytes": len(source),
+                "conversion_mode": "auto",
+                "use_llm": True,
+                "use_ocr": True,
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/jobs",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        response = connection.getresponse()
+        body_text = response.read().decode("utf-8")
+        body = json.loads(body_text)
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 400
+    assert body["error"] == "llm_configuration_rejected"
+    assert body["audit"]["conversion_settings"]["use_llm"]["reason"] == "non_local_endpoint"
+    assert body["audit"]["conversion_settings"]["use_ocr"]["reason"] == "not_implemented"
+    assert body["warnings"] == [
+        "LLM conversion blocked: configured endpoint must be local-only"
+    ]
+    assert "api.openai.com" not in body_text
+    assert server.job_queue.list_jobs() == []
 
 
 def test_poc_http_api_rolls_back_desktop_upload_when_create_audit_fails() -> None:
@@ -12286,6 +12336,14 @@ def test_web_conversion_workflow_uses_job_submit_status_and_result_contract() ->
     assert "const job = submission.job" in body
     assert "apiFetch(job.result.href)" in body
     assert "settings: conversionSettings" in body
+    assert 'crypto.subtle.digest("SHA-256", fileBytes)' in body
+    assert "source_sha256: sourceSha256" in body
+    assert body.index('job.status === "failed"') < body.index("!job.result?.available")
+    result_read = body.index("const result = await resultResponse.json()")
+    active_result_guard = body.index(
+        "if (!isActiveDirectConversion(conversionToken)) return;", result_read
+    )
+    assert active_result_guard < body.index("renderResult(result)", active_result_guard)
     for setting in ("conversion_mode", "output_format", "template_id", "use_llm", "use_ocr"):
         assert f"{setting}:" in body
 
