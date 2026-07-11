@@ -5570,6 +5570,71 @@ def test_poc_http_api_returns_json_safe_download_content() -> None:
     assert downloaded["document_ir"]["document"]["id"] == "upload"
 
 
+def test_poc_http_api_downloads_persisted_artifact_by_artifact_id(tmp_path) -> None:
+    queue = JobQueue(
+        database_path=tmp_path / "veridoc.sqlite3",
+        artifact_store_root=tmp_path / "artifacts",
+    )
+    created = queue.create_job(
+        idempotency_key="artifact-download",
+        filename="batch-record.pdf",
+        mode="standard",
+    )
+    running = queue.start_next_job()
+    assert running is not None
+    content = b"primary artifact"
+    queue.mark_succeeded(
+        created.job_id,
+        result={
+            "download": {
+                "content": b"{}",
+                "content_type": "application/json",
+                "filename": "batch-record.veridoc-result.json",
+            },
+            "artifacts": [
+                {
+                    "artifact_id": "artifact-primary-docx",
+                    "id": "primary-docx",
+                    "filename": "batch-record.docx",
+                    "content_type": (
+                        "application/vnd.openxmlformats-officedocument."
+                        "wordprocessingml.document"
+                    ),
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                    "content": content,
+                }
+            ],
+        },
+    )
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue(
+        database_path=tmp_path / "veridoc.sqlite3",
+        artifact_store_root=tmp_path / "artifacts",
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request("GET", "/api/artifacts/artifact-primary-docx")
+        response = connection.getresponse()
+        body = response.read()
+        connection.request("GET", "/api/artifacts/missing-artifact")
+        missing_response = connection.getresponse()
+        missing_body = json.loads(missing_response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 200
+    assert response.getheader("Content-Type") == (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    )
+    assert response.getheader("X-Content-SHA256") == hashlib.sha256(content).hexdigest()
+    assert body == content
+    assert missing_response.status == 404
+    assert missing_body == {"error": "artifact_not_found"}
+
+
 def test_poc_http_api_advertises_base64_artifact_payload_field() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     thread = Thread(target=server.serve_forever, daemon=True)
