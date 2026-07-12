@@ -567,6 +567,7 @@
       .llm-badge {
         display: inline-flex;
         align-items: center;
+        gap: 6px;
         min-height: 24px;
         padding: 2px 8px;
         border-radius: 999px;
@@ -2271,7 +2272,7 @@
         renderConversionSettingStatus(result.audit?.conversion_settings, result.audit?.llm);
         status.textContent = result.status;
         status.className = `status ${result.status}`;
-        renderTopLevelWarnings(result.warnings || []);
+        renderTopLevelWarnings(result.warning_details || result.warnings || []);
         renderReviewItems(result.review_items || []);
         clearDownload();
         renderDownloadLinks(
@@ -2302,7 +2303,11 @@
       function renderDirectConvertError(errorPayload) {
         state.latestResult = null;
         state.availableReviewActions = [];
-        const warnings = Array.isArray(errorPayload?.warnings) ? errorPayload.warnings : [];
+        const warnings = Array.isArray(errorPayload?.warning_details)
+          ? errorPayload.warning_details
+          : Array.isArray(errorPayload?.warnings)
+            ? errorPayload.warnings
+            : [];
         status.textContent = "failed";
         status.className = "status blocked";
         directConvertError.textContent = sanitizedUserMessage(errorPayload);
@@ -2593,7 +2598,13 @@
           const descriptor = warningBadgeDescriptor(warning);
           const badge = document.createElement("span");
           badge.className = `warning-badge ${severityClass(descriptor.severity)}`;
-          badge.textContent = `${descriptor.code} ${descriptor.label}`;
+          const message = document.createElement("span");
+          message.className = "warning-message";
+          message.textContent = `${descriptor.code} ${descriptor.message}`;
+          const details = document.createElement("span");
+          details.className = "warning-details";
+          details.textContent = descriptor.remediation;
+          badge.append(message, details);
           badges.append(badge);
         }
         topLevelWarnings.append(title, badges);
@@ -2953,6 +2964,15 @@
       }
 
       function warningBadgeDescriptor(warning) {
+        if (warning && typeof warning === "object" && typeof warning.code === "string") {
+          return {
+            code: warning.code,
+            severity: warning.severity || "warning",
+            message: warningText(warning),
+            remediation: warning.remediation || "Review the warning and source evidence before approval.",
+            label: warningText(warning),
+          };
+        }
         const text = warningText(warning);
         const knownWarnings = {
           "blocks[0].bbox missing; block marked requires_review": {
@@ -2987,7 +3007,12 @@
           },
         };
         const normalizedText = text.replace(/blocks\[\d+\]/, "blocks[0]");
-        return knownWarnings[normalizedText] || { code: "W000", severity: "gray", label: warningText(warning) };
+        const descriptor = knownWarnings[normalizedText] || { code: "W000", severity: "gray", label: warningText(warning) };
+        return {
+          ...descriptor,
+          message: text,
+          remediation: "Review the warning and source evidence before approval.",
+        };
       }
 
       function warningText(warning) {
@@ -2997,6 +3022,9 @@
       }
 
       function severityClass(severity) {
+        if (severity === "warning") return "yellow";
+        if (severity === "error") return "red";
+        if (severity === "info") return "green";
         if (["green", "yellow", "red", "gray"].includes(severity)) return severity;
         return "gray";
       }
