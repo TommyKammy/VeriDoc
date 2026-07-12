@@ -138,10 +138,13 @@ Supported `conversion_mode` values are:
 - `excel_to_word`: accept XLSX input and include a downloadable DOCX primary
   artifact.
 
-The direct conversion request accepts boolean `use_llm` and `use_ocr` settings.
-OCR is unsupported for the MVP: `use_ocr: true` is rejected with HTTP 400 and
-`ocr_not_supported`, and the web UI keeps the OCR control disabled. Supported
-LLM behavior remains dependent on the configured local-only inference profile.
+The direct conversion request accepts boolean `use_llm` and `use_ocr` settings
+and records accepted values in `audit.conversion_settings`. OCR is unsupported
+for the MVP: `use_ocr: true` is rejected with HTTP 400 and
+`ocr_not_supported`, and the web UI keeps the OCR control disabled. When
+`use_llm` is `true`, the response keeps the setting disabled and warns that the
+selected setting is not yet implemented in the local PoC API unless a supported
+local-only inference profile is configured.
 
 The artifact manifest is intentionally honest about current PoC limits. The
 debug JSON artifact remains available at `download` and in `artifacts[]` with
