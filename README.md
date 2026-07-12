@@ -138,10 +138,10 @@ Supported `conversion_mode` values are:
 - `excel_to_word`: accept XLSX input and include a downloadable DOCX primary
   artifact.
 
-The direct conversion request also accepts boolean `use_llm` and `use_ocr`
-settings. The current local PoC API records the requested values in
-`audit.conversion_settings`; when either value is `true`, the response keeps the
-setting disabled and returns a warning that the selected setting is not yet implemented in the local PoC API.
+The direct conversion request accepts boolean `use_llm` and `use_ocr` settings.
+OCR is unsupported for the MVP: `use_ocr: true` is rejected with HTTP 400 and
+`ocr_not_supported`, and the web UI keeps the OCR control disabled. Supported
+LLM behavior remains dependent on the configured local-only inference profile.
 
 The artifact manifest is intentionally honest about current PoC limits. The
 debug JSON artifact remains available at `download` and in `artifacts[]` with
@@ -159,8 +159,9 @@ main review surface:
 
 - Upload: accepts the source file and sends `content_base64`; the converted
   `document_ir` feeds preview and source-location surfaces after conversion.
-- Conversion settings: sends the selected `conversion_mode`, `use_llm`, and
-  `use_ocr` values and keeps conversion setup separate from review judgment.
+- Conversion settings: sends the selected `conversion_mode` and `use_llm`
+  value, while showing the disabled MVP OCR control separately from review
+  judgment.
 - Review: displays `review_items`, `warnings`, and `document_ir` source page or
   bbox context as the primary operator review surface.
 - Artifact downloads: presents primary files and debug exports from

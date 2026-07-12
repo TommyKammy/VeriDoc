@@ -12522,7 +12522,52 @@ def test_poc_http_api_rejects_conflicting_direct_convert_output_format() -> None
     }
 
 
-def test_poc_http_api_reflects_unavailable_llm_and_unsupported_ocr_settings(
+def test_poc_http_api_rejects_unsupported_ocr_before_conversion() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = json.dumps(
+            {
+                "filename": "phase0-output.json",
+                "content": json.dumps({"pages": []}),
+                "conversion_mode": "auto",
+                "use_ocr": True,
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/convert",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 400
+    assert body == {
+        "error": "ocr_not_supported",
+        "message": "OCR conversion is not supported in the MVP",
+        "audit": {
+            "conversion_settings": {
+                "use_ocr": {
+                    "requested": True,
+                    "enabled": False,
+                    "status": "unsupported",
+                    "support_status": "unsupported",
+                    "reason": "not_implemented",
+                    "message": "OCR conversion setting is not implemented in the local PoC API",
+                }
+            }
+        },
+    }
+
+
+def test_poc_http_api_reflects_unavailable_llm_and_disabled_ocr_settings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("VERIDOC_STANDARD_OPENAI_BASE_URL", raising=False)
@@ -12549,7 +12594,7 @@ def test_poc_http_api_reflects_unavailable_llm_and_unsupported_ocr_settings(
                 ),
                 "conversion_mode": "auto",
                 "use_llm": True,
-                "use_ocr": True,
+                "use_ocr": False,
             }
         ).encode("utf-8")
         connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
@@ -12576,9 +12621,9 @@ def test_poc_http_api_reflects_unavailable_llm_and_unsupported_ocr_settings(
             "message": "LLM conversion plan unavailable: no configured local LLM profile",
         },
         "use_ocr": {
-            "requested": True,
+            "requested": False,
             "enabled": False,
-            "status": "unsupported",
+            "status": "disabled",
             "support_status": "unsupported",
             "reason": "not_implemented",
             "message": "OCR conversion setting is not implemented in the local PoC API",
@@ -12589,7 +12634,6 @@ def test_poc_http_api_reflects_unavailable_llm_and_unsupported_ocr_settings(
         "LLM conversion plan unavailable: no configured local LLM profile; "
         "deterministic conversion used; requires review"
     ) in body["warnings"]
-    assert "OCR conversion setting is not implemented in the local PoC API" in body["warnings"]
     assert body["audit"]["conversion_plan"] == {
         "requested": True,
         "status": "fallback",
@@ -13097,6 +13141,8 @@ def test_web_direct_convert_selects_and_posts_llm_ocr_settings() -> None:
 
     assert 'id="direct-use-llm"' in html
     assert 'id="direct-use-ocr"' in html
+    assert 'id="direct-use-ocr" type="checkbox" disabled' in html
+    assert "OCR is not supported in the MVP. OCR requests are rejected by the API." in html
     assert "const directUseLlm = document.querySelector(\"#direct-use-llm\")" in html
     assert "const directUseOcr = document.querySelector(\"#direct-use-ocr\")" in html
     assert "use_llm: directUseLlm.checked" in html
@@ -13164,7 +13210,7 @@ def test_web_upload_settings_distinguishes_unsupported_and_blocked_states() -> N
     parser = _PocUiRegionParser()
     parser.feed(html)
 
-    assert "OCR is not implemented in this local PoC; enabling it records an unsupported request." in html
+    assert "OCR is not supported in the MVP. OCR requests are rejected by the API." in html
     assert "LLM unset, local LLM unavailable, and external endpoint rejection are shown separately after conversion." in html
     assert "External AI endpoints are rejected; document content stays on the local API boundary." in html
     assert "GMP review is always required before operational use; local-only conversion does not certify GMP suitability." in html

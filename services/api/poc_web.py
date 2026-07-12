@@ -1508,6 +1508,10 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             if llm_rejection is not None:
                 self._send_json(llm_rejection, status=400)
                 return
+            ocr_rejection = _ocr_configuration_rejection(use_ocr=use_ocr)
+            if ocr_rejection is not None:
+                self._send_json(ocr_rejection, status=400)
+                return
             content = _decode_request_content(request)
             if len(content) > MAX_UPLOAD_BYTES:
                 self._send_json({"error": "upload_too_large"}, status=413)
@@ -1582,6 +1586,10 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                         self._send_json(llm_rejection, status=400)
                         return
                     conversion_settings = (conversion_mode, output_format, use_llm, use_ocr)
+                ocr_rejection = _ocr_configuration_rejection(use_ocr=use_ocr)
+                if ocr_rejection is not None:
+                    self._send_json(ocr_rejection, status=400)
+                    return
             requested_template = self._job_template_binding(request.get("template_id"))
             job_queue = self._job_queue()
             upload_audit_event = None
@@ -4785,6 +4793,20 @@ def _llm_configuration_rejection(*, use_llm: bool, use_ocr: bool) -> dict[str, A
                     support_status=_llm_support_status(reason),
                 ),
                 "use_ocr": _unsupported_conversion_setting(use_ocr),
+            }
+        },
+    }
+
+
+def _ocr_configuration_rejection(*, use_ocr: bool) -> dict[str, Any] | None:
+    if not use_ocr:
+        return None
+    return {
+        "error": "ocr_not_supported",
+        "message": "OCR conversion is not supported in the MVP",
+        "audit": {
+            "conversion_settings": {
+                "use_ocr": _unsupported_conversion_setting(True),
             }
         },
     }

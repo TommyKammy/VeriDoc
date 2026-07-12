@@ -1058,7 +1058,7 @@
           </div>
           <div class="field setting-toggle">
             <label for="direct-use-ocr">Use OCR</label>
-            <input id="direct-use-ocr" type="checkbox" />
+            <input id="direct-use-ocr" type="checkbox" disabled aria-describedby="unsupported-settings-note" />
           </div>
           <button id="convert-button" type="button">Convert now</button>
           </div>
@@ -1073,7 +1073,7 @@
             </div>
             <div class="setting-summary-item">
               <strong>Unsupported settings</strong>
-              <span id="unsupported-settings-note">OCR is not implemented in this local PoC; enabling it records an unsupported request.</span>
+              <span id="unsupported-settings-note">OCR is not supported in the MVP. OCR requests are rejected by the API.</span>
             </div>
             <div class="setting-summary-item">
               <strong>LLM / endpoint status</strong>
