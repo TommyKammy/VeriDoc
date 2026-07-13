@@ -261,13 +261,25 @@ class EvaluateDatasetTest(unittest.TestCase):
         fixture_path: Path,
         fixture_content: bytes,
     ) -> dict[str, object]:
-        from services.api.poc_web import CONVERSION_AUDIT_SCHEMA_VERSION
+        from services.api.poc_web import (
+            CONVERSION_AUDIT_SCHEMA_VERSION,
+            CONVERSION_PLAN_PROMPT_ID,
+            CONVERSION_PLAN_PROMPT_VERSION,
+            CONVERSION_PLAN_SCHEMA_VERSION,
+        )
+        from core.ir.document_ir_v1 import SCHEMA_VERSION as DOCUMENT_IR_SCHEMA_VERSION
 
         source_sha256 = hashlib.sha256(fixture_content).hexdigest()
         conversion_id = "conversion-mvp-review-test"
         source_type = str(case["source_type"])
         conversion_mode = str(case["conversion_mode"])
         warnings = copy.deepcopy(case["expected_warnings"])
+        review_items = (
+            [{"id": "review-item-mvp-test"}]
+            if case["expected_status"] == "requires_review"
+            else []
+        )
+        document_ir_schema_version = DOCUMENT_IR_SCHEMA_VERSION
         return {
             "status": case["expected_status"],
             "conversion_id": conversion_id,
@@ -281,7 +293,8 @@ class EvaluateDatasetTest(unittest.TestCase):
                 }
             ],
             "warnings": warnings,
-            "review_items": [],
+            "review_items": review_items,
+            "document_ir": {"schema_version": document_ir_schema_version},
             "audit": {
                 "schema_version": CONVERSION_AUDIT_SCHEMA_VERSION,
                 "conversion_id": conversion_id,
@@ -296,12 +309,18 @@ class EvaluateDatasetTest(unittest.TestCase):
                 "source_sha256": source_sha256,
                 "conversion_mode": conversion_mode,
                 "versions": {
+                    "prompt": {
+                        "id": CONVERSION_PLAN_PROMPT_ID,
+                        "version": CONVERSION_PLAN_PROMPT_VERSION,
+                    },
                     "schemas": {
                         "conversion_audit": CONVERSION_AUDIT_SCHEMA_VERSION,
+                        "conversion_plan": CONVERSION_PLAN_SCHEMA_VERSION,
+                        "document_ir": document_ir_schema_version,
                     }
                 },
                 "warnings": {"count": len(warnings)},
-                "review_items": {"count": 0},
+                "review_items": {"count": len(review_items)},
             },
         }
 
@@ -990,6 +1009,56 @@ class EvaluateDatasetTest(unittest.TestCase):
         ):
             evaluate_dataset.mvp_evaluation_cases(manifest, fixture_manifest)
 
+    def test_mvp_harness_rejects_reduced_fixed_category_set(self) -> None:
+        manifest = self.valid_mvp_manifest_data()
+        fixture_manifest = evaluate_dataset.load_json(FIXTURE_MANIFEST_PATH)
+        manifest["cases"] = [
+            case for case in manifest["cases"] if case["category"] != "scanned_pdf"
+        ]
+        manifest["required_categories"].remove("scanned_pdf")
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError,
+            "fixed MVP category set",
+        ):
+            evaluate_dataset.mvp_evaluation_cases(manifest, fixture_manifest)
+
+    def test_mvp_harness_fails_requires_review_without_review_items(self) -> None:
+        case = self.valid_mvp_case()
+        fixture_content = b"mvp review handoff fixture"
+        with tempfile.NamedTemporaryFile(suffix=".docx") as fixture_file:
+            fixture_file.write(fixture_content)
+            fixture_file.flush()
+            fixture_path = Path(fixture_file.name)
+            converted = self.valid_mvp_conversion_payload(
+                case,
+                fixture_path=fixture_path,
+                fixture_content=fixture_content,
+            )
+            converted["review_items"] = []
+            converted["audit"]["review_items"]["count"] = 0
+
+            with mock.patch(
+                "services.api.poc_web.convert_uploaded_document",
+                return_value=converted,
+            ), mock.patch.object(
+                evaluate_dataset,
+                "p9_validate_artifact_expectations",
+                return_value=[],
+            ):
+                result = evaluate_dataset.mvp_conversion_result(
+                    case,
+                    fixture_path=fixture_path,
+                )
+
+        self.assertEqual(0, result["review_items_count"])
+        self.assertEqual("fail", result["evaluations"]["review"]["status"])
+        self.assertIn(
+            "requires_review conversion did not emit review items",
+            result["evaluations"]["review"]["reason"],
+        )
+        self.assertEqual("fail", result["acceptance_status"])
+
     def test_mvp_harness_fails_artifact_content_validation_mismatch(self) -> None:
         case = self.valid_mvp_case()
         fixture_content = b"mvp artifact review fixture"
@@ -1114,6 +1183,27 @@ class EvaluateDatasetTest(unittest.TestCase):
                         "count", 999
                     ),
                     "review_items count",
+                ),
+                (
+                    "prompt version",
+                    lambda payload: payload["audit"]["versions"]["prompt"].pop(
+                        "version"
+                    ),
+                    "prompt lineage",
+                ),
+                (
+                    "conversion plan schema",
+                    lambda payload: payload["audit"]["versions"]["schemas"].pop(
+                        "conversion_plan"
+                    ),
+                    "conversion_plan schema lineage",
+                ),
+                (
+                    "document IR schema",
+                    lambda payload: payload["audit"]["versions"]["schemas"].pop(
+                        "document_ir"
+                    ),
+                    "document_ir schema lineage",
                 ),
             )
             for label, mutate, expected_reason in mutations:

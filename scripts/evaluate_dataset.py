@@ -261,6 +261,9 @@ P9_FIXTURE_SOURCE_TYPES_BY_CATEGORY = {
     "scanned_pdf": frozenset(("scanned_pdf",)),
 }
 P9_REQUIRED_SOURCE_CATEGORIES = frozenset(P9_FIXTURE_SOURCE_TYPES_BY_CATEGORY)
+MVP_REQUIRED_SOURCE_CATEGORIES = frozenset(
+    ("word", "excel", "text_pdf", "scanned_pdf", "record_pdf")
+)
 P9_REPRESENTATIVE_FLAG_BY_CATEGORY = {
     "record_pdf": "record_pdf_representative",
 }
@@ -5094,9 +5097,14 @@ def mvp_evaluation_cases(
         raise EvaluationCaseError(
             "MVP evaluation manifest must declare required_categories"
         )
-    if set(required_categories) != observed_categories:
+    if set(required_categories) != MVP_REQUIRED_SOURCE_CATEGORIES:
         raise EvaluationCaseError(
-            "MVP evaluation manifest required_categories must match case categories"
+            "MVP evaluation manifest required_categories must match the fixed MVP "
+            "category set"
+        )
+    if observed_categories != MVP_REQUIRED_SOURCE_CATEGORIES:
+        raise EvaluationCaseError(
+            "MVP evaluation manifest cases must cover the fixed MVP category set"
         )
     return evaluation_cases
 
@@ -5165,6 +5173,10 @@ def mvp_audit_failures(
     fixture_content: bytes,
     conversion_mode: str,
     audit_schema_version: str,
+    conversion_plan_schema_version: int,
+    document_ir_schema_version: str,
+    prompt_id: str,
+    prompt_version: str,
 ) -> list[str]:
     audit = converted.get("audit")
     if not isinstance(audit, dict):
@@ -5212,12 +5224,35 @@ def mvp_audit_failures(
         failures.append("conversion result source hash did not match the case input")
 
     versions = audit.get("versions")
+    prompt = versions.get("prompt") if isinstance(versions, dict) else None
+    if not isinstance(prompt, dict) or {
+        "id": prompt.get("id"),
+        "version": prompt.get("version"),
+    } != {"id": prompt_id, "version": prompt_version}:
+        failures.append("conversion audit prompt lineage did not match the supported prompt")
+
+    document_ir = converted.get("document_ir")
+    converted_document_ir_schema_version = (
+        document_ir.get("schema_version") if isinstance(document_ir, dict) else None
+    )
+    if converted_document_ir_schema_version != document_ir_schema_version:
+        failures.append(
+            "conversion result document_ir schema_version did not match the supported "
+            "schema"
+        )
+
     schemas = versions.get("schemas") if isinstance(versions, dict) else None
-    if (
-        not isinstance(schemas, dict)
-        or schemas.get("conversion_audit") != audit_schema_version
-    ):
-        failures.append("conversion audit schema lineage did not match the supported schema")
+    expected_schema_versions = {
+        "conversion_audit": audit_schema_version,
+        "conversion_plan": conversion_plan_schema_version,
+        "document_ir": document_ir_schema_version,
+    }
+    for field, expected in expected_schema_versions.items():
+        if not isinstance(schemas, dict) or schemas.get(field) != expected:
+            failures.append(
+                f"conversion audit {field} schema lineage did not match the "
+                "conversion result"
+            )
 
     for field, result_field in (("warnings", "warnings"), ("review_items", "review_items")):
         result_items = converted.get(result_field)
@@ -5238,8 +5273,12 @@ def mvp_conversion_result(
 ) -> dict[str, object]:
     from services.api.poc_web import (
         CONVERSION_AUDIT_SCHEMA_VERSION,
+        CONVERSION_PLAN_PROMPT_ID,
+        CONVERSION_PLAN_PROMPT_VERSION,
+        CONVERSION_PLAN_SCHEMA_VERSION,
         convert_uploaded_document,
     )
+    from core.ir.document_ir_v1 import SCHEMA_VERSION as DOCUMENT_IR_SCHEMA_VERSION
 
     started_at = time.perf_counter()
     try:
@@ -5296,6 +5335,8 @@ def mvp_conversion_result(
     artifact_status = "fail" if artifact_failures else "pass"
 
     observed_status = converted.get("status")
+    review_items = converted.get("review_items")
+    review_items_count = len(review_items) if isinstance(review_items, list) else 0
     review_failures: list[str] = []
     if observed_status != case["expected_status"]:
         review_failures.append(
@@ -5304,6 +5345,8 @@ def mvp_conversion_result(
         )
     if actual_warnings != case["expected_warnings"]:
         review_failures.append("runtime warnings did not match manifest expectations")
+    if case["expected_status"] == "requires_review" and review_items_count == 0:
+        review_failures.append("requires_review conversion did not emit review items")
     review_status = "fail" if review_failures else "unknown"
     review_reason = (
         "; ".join(review_failures)
@@ -5318,6 +5361,10 @@ def mvp_conversion_result(
         fixture_content=fixture_content,
         conversion_mode=str(case["conversion_mode"]),
         audit_schema_version=CONVERSION_AUDIT_SCHEMA_VERSION,
+        conversion_plan_schema_version=CONVERSION_PLAN_SCHEMA_VERSION,
+        document_ir_schema_version=DOCUMENT_IR_SCHEMA_VERSION,
+        prompt_id=CONVERSION_PLAN_PROMPT_ID,
+        prompt_version=CONVERSION_PLAN_PROMPT_VERSION,
     )
     evaluations = {
         "artifact": {
@@ -5344,7 +5391,6 @@ def mvp_conversion_result(
     acceptance_status = mvp_acceptance_status(
         str(evaluation["status"]) for evaluation in evaluations.values()
     )
-    review_items = converted.get("review_items")
     return {
         "case_id": case["case_id"],
         "fixture_id": case["fixture_id"],
@@ -5354,7 +5400,7 @@ def mvp_conversion_result(
         "processing_time_ms": round(elapsed_ms, 3),
         "artifact_formats": actual_formats,
         "review_decision": None,
-        "review_items_count": len(review_items) if isinstance(review_items, list) else 0,
+        "review_items_count": review_items_count,
         "audit_present": audit_present,
         "warnings": actual_warnings,
         "failure_reason": (
