@@ -20,6 +20,7 @@ from core.ir.template_fingerprint import (
     apply_template_field_mapping,
     match_template_fingerprint,
 )
+from services.api.poc_web import convert_uploaded_document
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = REPO_ROOT / "datasets" / "fixtures" / "manifest.json"
@@ -119,6 +120,27 @@ class DatasetFixturesTest(unittest.TestCase):
                     scanned_pdf = (REPO_ROOT / fixture_path).read_bytes()
                     self.assertIn(b"/Subtype /Image", scanned_pdf)
                     self.assertNotIn(b"/Font", scanned_pdf)
+
+        cases_by_id = {case["id"]: case for case in cases}
+        for case_id in {
+            "mvp-excel-001",
+            "mvp-scanned-pdf-001",
+            "mvp-record-pdf-001",
+        }:
+            case = cases_by_id[case_id]
+            fixture_path = REPO_ROOT / case["fixture_path"]
+            result = convert_uploaded_document(
+                filename=fixture_path.name,
+                content=fixture_path.read_bytes(),
+                conversion_mode=case["conversion_mode"],
+            )
+
+            with self.subTest(case=case_id, boundary="emitted warnings"):
+                self.assertLessEqual(
+                    set(case["expected_warnings"]),
+                    set(result["warnings"]),
+                )
+                self.assertEqual(case["expected_status"], result["status"])
 
     def test_poc_evaluation_manifest_defines_representative_safe_dataset(self) -> None:
         manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))

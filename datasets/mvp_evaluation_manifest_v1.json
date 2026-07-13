@@ -46,6 +46,7 @@
       "fixture_path": "datasets/fixtures/excel/excel-to-word-representative.xlsx",
       "source_classification": "synthetic",
       "conversion_mode": "excel_to_word",
+      "expected_status": "requires_review",
       "expected_artifacts": [
         {
           "type": "docx",
@@ -57,7 +58,9 @@
         }
       ],
       "expected_warnings": [
-        "source bounding boxes are unavailable and converted blocks require review"
+        "blocks[0].bbox missing; block marked requires_review",
+        "blocks[1].bbox missing; block marked requires_review",
+        "blocks[2].bbox missing; block marked requires_review"
       ],
       "review_focus": [
         "confirm worksheet ordering and headings",
@@ -96,21 +99,23 @@
       "fixture_path": "datasets/fixtures/pdf/scanned-pdf-representative.pdf",
       "source_classification": "synthetic",
       "conversion_mode": "pdf_to_word",
+      "expected_status": "requires_review",
       "expected_artifacts": [
         {
           "type": "docx",
           "expectations": [
-            "the image-only source is recognized as requiring OCR",
-            "any OCR-derived content remains explicitly review-required"
+            "the image-only page is represented without inventing extracted text",
+            "the empty-page placeholder remains explicitly review-required"
           ]
         }
       ],
       "expected_warnings": [
-        "image-only scanned PDF requires OCR and reviewer confirmation"
+        "pdf_to_word reconstruction preserves editable text structure for review; exact PDF layout, fonts, coordinates, columns, footnotes, and OCR fidelity are not guaranteed",
+        "blocks[0].parser marked block requires_review"
       ],
       "review_focus": [
-        "reject automatic confirmation without trusted OCR evidence",
-        "confirm orientation and completeness before accepting OCR-derived text"
+        "confirm unsupported OCR is not treated as successful text extraction",
+        "route the scan through a separate trusted OCR workflow before accepting text"
       ]
     },
     {
@@ -120,21 +125,22 @@
       "fixture_path": "datasets/fixtures/pdf/record-pdf-representative.pdf",
       "source_classification": "synthetic",
       "conversion_mode": "pdf_to_word",
+      "expected_status": "converted",
       "expected_artifacts": [
         {
           "type": "docx",
           "expectations": [
-            "record fields remain linked to source evidence",
-            "high-risk values remain review-required"
+            "record text remains editable",
+            "record sections remain complete and in source order"
           ]
         }
       ],
       "expected_warnings": [
-        "high-risk record fields require reviewer confirmation"
+        "pdf_to_word reconstruction preserves editable text structure for review; exact PDF layout, fonts, coordinates, columns, footnotes, and OCR fidelity are not guaranteed"
       ],
       "review_focus": [
-        "confirm high-risk field evidence against the source page",
-        "confirm no signature or approval value is auto-confirmed"
+        "confirm the converted record text is complete",
+        "confirm section ordering against the source pages"
       ]
     }
   ]
