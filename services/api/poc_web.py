@@ -1539,7 +1539,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 return
             content = _decode_request_content(request)
             if len(content) > MAX_UPLOAD_BYTES:
-                self._send_json({"error": "upload_too_large"}, status=413)
+                self._send_json(_upload_too_large_payload(), status=413)
                 return
             result = convert_uploaded_document(
                 filename=filename,
@@ -1562,7 +1562,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "content_length_required"}, status=411)
                 return
             if str(exc) == "upload_too_large":
-                self._send_json({"error": "upload_too_large"}, status=413)
+                self._send_json(_upload_too_large_payload(), status=413)
                 return
             self._send_json({"error": "invalid_upload", "message": str(exc)}, status=400)
             return
@@ -1718,7 +1718,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "content_length_required"}, status=411)
                 return
             if str(exc) == "upload_too_large":
-                self._send_json({"error": "upload_too_large"}, status=413)
+                self._send_json(_upload_too_large_payload(), status=413)
                 return
             self._send_json({"error": "invalid_job_request", "message": str(exc)}, status=400)
             return
@@ -4618,6 +4618,14 @@ def _decode_request_content(request: dict[str, Any]) -> bytes:
     if "content" in request:
         return _request_string_field(request, "content").encode("utf-8")
     raise ValueError("content or content_base64 is required")
+
+
+def _upload_too_large_payload() -> dict[str, Any]:
+    return {
+        "error": "upload_too_large",
+        "message": f"Upload exceeds the {MAX_UPLOAD_BYTES} byte MVP limit.",
+        "max_upload_bytes": MAX_UPLOAD_BYTES,
+    }
 
 
 def _job_source_from_request(request: dict[str, Any], *, filename: str) -> dict[str, Any] | None:

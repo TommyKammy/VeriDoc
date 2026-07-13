@@ -4997,7 +4997,36 @@ def mvp_fixture_manifest_path(manifest: dict[str, Any], repo_root: Path) -> Path
         raise EvaluationCaseError(
             "MVP evaluation manifest must disallow confidential source documents"
         )
+    mvp_acceptance_limits(manifest)
     return repo_root / EXPECTED_DATASET_MANIFEST
+
+
+def mvp_acceptance_limits(manifest: dict[str, Any]) -> dict[str, int]:
+    limits = manifest.get("acceptance_limits")
+    if not isinstance(limits, dict):
+        raise EvaluationCaseError(
+            "MVP evaluation manifest must define acceptance_limits"
+        )
+    validated: dict[str, int] = {}
+    for field in (
+        "representative_processing_time_ms",
+        "max_upload_bytes",
+        "timeout_ms",
+    ):
+        value = limits.get(field)
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise EvaluationCaseError(
+                f"MVP acceptance_limits.{field} must be a positive integer"
+            )
+        validated[field] = value
+    if (
+        validated["representative_processing_time_ms"]
+        > validated["timeout_ms"]
+    ):
+        raise EvaluationCaseError(
+            "MVP representative processing-time limit must not exceed timeout_ms"
+        )
+    return validated
 
 
 def mvp_evaluation_cases(
@@ -5113,12 +5142,65 @@ def mvp_evaluation_cases(
     return evaluation_cases
 
 
-def mvp_processing_time_evaluation(processing_time_ms: float) -> dict[str, object]:
+def mvp_input_size_evaluation(
+    input_size_bytes: int | None,
+    *,
+    limit_bytes: int,
+) -> dict[str, object]:
+    if input_size_bytes is None:
+        return {
+            "status": "unknown",
+            "input_size_bytes": None,
+            "limit_bytes": limit_bytes,
+            "reason": "input size is unavailable because the fixture could not be read",
+        }
+    exceeded = input_size_bytes > limit_bytes
     return {
-        "status": "unknown",
+        "status": "fail" if exceeded else "pass",
+        "input_size_bytes": input_size_bytes,
+        "limit_bytes": limit_bytes,
+        "reason": (
+            f"input size exceeded the {limit_bytes} byte MVP limit"
+            if exceeded
+            else None
+        ),
+    }
+
+
+def mvp_processing_time_evaluation(
+    processing_time_ms: float,
+    *,
+    threshold_ms: int,
+) -> dict[str, object]:
+    exceeded = processing_time_ms > threshold_ms
+    return {
+        "status": "fail" if exceeded else "pass",
         "processing_time_ms": round(processing_time_ms, 3),
-        "threshold_ms": None,
-        "reason": "processing-time acceptance threshold is not defined in the MVP manifest",
+        "threshold_ms": threshold_ms,
+        "reason": (
+            f"processing time exceeded the {threshold_ms} ms MVP limit"
+            if exceeded
+            else None
+        ),
+    }
+
+
+def mvp_timeout_evaluation(
+    processing_time_ms: float,
+    *,
+    timeout_ms: int,
+) -> dict[str, object]:
+    timed_out = processing_time_ms > timeout_ms
+    return {
+        "status": "fail" if timed_out else "pass",
+        "processing_time_ms": round(processing_time_ms, 3),
+        "timeout_ms": timeout_ms,
+        "error": "processing_timeout" if timed_out else None,
+        "reason": (
+            f"processing timed out after the {timeout_ms} ms MVP limit"
+            if timed_out
+            else None
+        ),
     }
 
 
@@ -5127,6 +5209,8 @@ def mvp_conversion_failure_result(
     *,
     failure_reason: str,
     processing_time_ms: float,
+    acceptance_limits: dict[str, int],
+    input_size_bytes: int | None = None,
 ) -> dict[str, object]:
     evaluations = {
         "artifact": {
@@ -5149,7 +5233,18 @@ def mvp_conversion_failure_result(
             "present": False,
             "reason": "conversion audit missing",
         },
-        "processing_time": mvp_processing_time_evaluation(processing_time_ms),
+        "input_size": mvp_input_size_evaluation(
+            input_size_bytes,
+            limit_bytes=acceptance_limits["max_upload_bytes"],
+        ),
+        "processing_time": mvp_processing_time_evaluation(
+            processing_time_ms,
+            threshold_ms=acceptance_limits["representative_processing_time_ms"],
+        ),
+        "timeout": mvp_timeout_evaluation(
+            processing_time_ms,
+            timeout_ms=acceptance_limits["timeout_ms"],
+        ),
     }
     return {
         "case_id": case["case_id"],
@@ -5274,6 +5369,7 @@ def mvp_conversion_result(
     case: dict[str, Any],
     *,
     fixture_path: Path,
+    acceptance_limits: dict[str, int],
 ) -> dict[str, object]:
     from services.api.poc_web import (
         CONVERSION_AUDIT_SCHEMA_VERSION,
@@ -5285,8 +5381,21 @@ def mvp_conversion_result(
     from core.ir.document_ir_v1 import SCHEMA_VERSION as DOCUMENT_IR_SCHEMA_VERSION
 
     started_at = time.perf_counter()
+    fixture_content: bytes | None = None
     try:
         fixture_content = fixture_path.read_bytes()
+        input_size_evaluation = mvp_input_size_evaluation(
+            len(fixture_content),
+            limit_bytes=acceptance_limits["max_upload_bytes"],
+        )
+        if input_size_evaluation["status"] == "fail":
+            return mvp_conversion_failure_result(
+                case,
+                failure_reason=str(input_size_evaluation["reason"]),
+                processing_time_ms=(time.perf_counter() - started_at) * 1000,
+                acceptance_limits=acceptance_limits,
+                input_size_bytes=len(fixture_content),
+            )
         converted = convert_uploaded_document(
             filename=fixture_path.name,
             content=fixture_content,
@@ -5298,6 +5407,10 @@ def mvp_conversion_result(
             case,
             failure_reason=f"{type(exc).__name__}: {exc}",
             processing_time_ms=elapsed_ms,
+            acceptance_limits=acceptance_limits,
+            input_size_bytes=(
+                len(fixture_content) if fixture_content is not None else None
+            ),
         )
 
     elapsed_ms = (time.perf_counter() - started_at) * 1000
@@ -5392,7 +5505,18 @@ def mvp_conversion_result(
             "present": audit_present,
             "reason": None if not audit_failures else "; ".join(audit_failures),
         },
-        "processing_time": mvp_processing_time_evaluation(elapsed_ms),
+        "input_size": mvp_input_size_evaluation(
+            len(fixture_content),
+            limit_bytes=acceptance_limits["max_upload_bytes"],
+        ),
+        "processing_time": mvp_processing_time_evaluation(
+            elapsed_ms,
+            threshold_ms=acceptance_limits["representative_processing_time_ms"],
+        ),
+        "timeout": mvp_timeout_evaluation(
+            elapsed_ms,
+            timeout_ms=acceptance_limits["timeout_ms"],
+        ),
     }
     acceptance_status = mvp_acceptance_status(
         str(evaluation["status"]) for evaluation in evaluations.values()
@@ -5429,6 +5553,7 @@ def evaluate_mvp_harness(
     repo_root = p9_manifest_repo_root(resolved_manifest)
     manifest = load_json(resolved_manifest)
     fixture_manifest_path = mvp_fixture_manifest_path(manifest, repo_root)
+    acceptance_limits = mvp_acceptance_limits(manifest)
     fixture_manifest = load_json(fixture_manifest_path)
     fixture_paths = fixture_paths_from_manifest(fixture_manifest, repo_root)
     cases = mvp_evaluation_cases(manifest, fixture_manifest)
@@ -5446,10 +5571,17 @@ def evaluate_mvp_harness(
                         "the authoritative fixture manifest"
                     ),
                     processing_time_ms=0.0,
+                    acceptance_limits=acceptance_limits,
                 )
             )
             continue
-        results.append(mvp_conversion_result(case, fixture_path=fixture_path))
+        results.append(
+            mvp_conversion_result(
+                case,
+                fixture_path=fixture_path,
+                acceptance_limits=acceptance_limits,
+            )
+        )
     return MVPHarnessReport(manifest=manifest_path, results=tuple(results))
 
 

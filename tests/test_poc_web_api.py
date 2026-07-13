@@ -12498,6 +12498,41 @@ def test_poc_http_api_rejects_unsupported_non_utf8_binary_upload() -> None:
     }
 
 
+def test_poc_http_api_reports_mvp_upload_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(poc_web, "MAX_UPLOAD_BYTES", 8)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = json.dumps(
+            {
+                "filename": "upload.txt",
+                "content_base64": base64.b64encode(b"123456789").decode("ascii"),
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/convert",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 413
+    assert body == {
+        "error": "upload_too_large",
+        "message": "Upload exceeds the 8 byte MVP limit.",
+        "max_upload_bytes": 8,
+    }
+
+
 def test_poc_http_api_rejects_unknown_conversion_mode() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     thread = Thread(target=server.serve_forever, daemon=True)
@@ -13526,6 +13561,20 @@ def test_web_upload_preserves_file_bytes() -> None:
     assert "file.arrayBuffer()" in html
     assert "content_base64" in html
     assert "file.text()" not in html
+
+
+def test_web_explains_mvp_limit_failures() -> None:
+    html = Path("apps/web/index.html").read_text(encoding="utf-8")
+    limits = json.loads(
+        Path("datasets/mvp_evaluation_manifest_v1.json").read_text(encoding="utf-8")
+    )["acceptance_limits"]
+
+    assert limits["max_upload_bytes"] == poc_web.MAX_UPLOAD_BYTES
+    assert limits["timeout_ms"] == 30_000
+    assert 'if (code === "upload_too_large")' in html
+    assert "Upload is over the 2 MiB limit" in html
+    assert 'if (code === "processing_timeout")' in html
+    assert "Conversion exceeded the 30 second MVP timeout" in html
 
 
 def test_web_direct_convert_selects_and_posts_conversion_mode() -> None:

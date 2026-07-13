@@ -6,6 +6,11 @@
   "fixture_manifest": "datasets/fixtures/manifest.json",
   "source_policy": "public_synthetic_or_anonymized_only",
   "confidential_source_documents_allowed": false,
+  "acceptance_limits": {
+    "representative_processing_time_ms": 10000,
+    "max_upload_bytes": 2097152,
+    "timeout_ms": 30000
+  },
   "required_categories": [
     "word",
     "excel",

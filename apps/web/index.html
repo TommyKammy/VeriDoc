@@ -2477,6 +2477,9 @@
         if (code === "upload_too_large") {
           return "Upload is over the 2 MiB limit. Choose a smaller file and try again.";
         }
+        if (code === "processing_timeout") {
+          return "Conversion exceeded the 30 second MVP timeout. Try a smaller file or simpler conversion.";
+        }
         if (code === "server_dependency_unavailable") {
           return "PDF parsing is unavailable in this local PoC environment. Install the PDF evaluation dependencies before converting PDF files.";
         }

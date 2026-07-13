@@ -248,6 +248,9 @@ class EvaluateDatasetTest(unittest.TestCase):
     def valid_mvp_manifest_data(self) -> dict[str, object]:
         return copy.deepcopy(evaluate_dataset.load_json(MVP_EVALUATION_MANIFEST_PATH))
 
+    def valid_mvp_acceptance_limits(self) -> dict[str, int]:
+        return evaluate_dataset.mvp_acceptance_limits(self.valid_mvp_manifest_data())
+
     def valid_mvp_case(self, index: int = 0) -> dict[str, object]:
         return evaluate_dataset.mvp_evaluation_cases(
             self.valid_mvp_manifest_data(),
@@ -968,6 +971,7 @@ class EvaluateDatasetTest(unittest.TestCase):
             payload["summary"]["case_count"],
             sum(payload["summary"]["acceptance_status_counts"].values()),
         )
+        limits = self.valid_mvp_manifest_data()["acceptance_limits"]
         self.assertTrue(payload["results"])
         for result in payload["results"]:
             with self.subTest(case=result["case_id"]):
@@ -975,7 +979,14 @@ class EvaluateDatasetTest(unittest.TestCase):
                 self.assertIsInstance(result["processing_time_ms"], float)
                 self.assertGreaterEqual(result["processing_time_ms"], 0.0)
                 self.assertEqual(
-                    {"artifact", "review", "audit", "processing_time"},
+                    {
+                        "artifact",
+                        "review",
+                        "audit",
+                        "input_size",
+                        "processing_time",
+                        "timeout",
+                    },
                     set(result["evaluations"]),
                 )
                 self.assertTrue(
@@ -984,6 +995,76 @@ class EvaluateDatasetTest(unittest.TestCase):
                         for evaluation in result["evaluations"].values()
                     )
                 )
+                self.assertEqual(
+                    limits["max_upload_bytes"],
+                    result["evaluations"]["input_size"]["limit_bytes"],
+                )
+                self.assertEqual(
+                    limits["representative_processing_time_ms"],
+                    result["evaluations"]["processing_time"]["threshold_ms"],
+                )
+                self.assertEqual(
+                    limits["timeout_ms"],
+                    result["evaluations"]["timeout"]["timeout_ms"],
+                )
+
+    def test_mvp_processing_time_evaluation_enforces_manifest_threshold(self) -> None:
+        self.assertEqual(
+            {
+                "status": "pass",
+                "processing_time_ms": 30_000.0,
+                "threshold_ms": 30_000,
+                "reason": None,
+            },
+            evaluate_dataset.mvp_processing_time_evaluation(
+                30_000.0,
+                threshold_ms=30_000,
+            ),
+        )
+        self.assertEqual(
+            {
+                "status": "fail",
+                "processing_time_ms": 30_000.001,
+                "threshold_ms": 30_000,
+                "reason": "processing time exceeded the 30000 ms MVP limit",
+            },
+            evaluate_dataset.mvp_processing_time_evaluation(
+                30_000.001,
+                threshold_ms=30_000,
+            ),
+        )
+
+    def test_mvp_size_and_timeout_evaluations_fail_above_limits(self) -> None:
+        self.assertEqual(
+            "pass",
+            evaluate_dataset.mvp_input_size_evaluation(
+                2_097_152,
+                limit_bytes=2_097_152,
+            )["status"],
+        )
+        oversized = evaluate_dataset.mvp_input_size_evaluation(
+            2_097_153,
+            limit_bytes=2_097_152,
+        )
+        self.assertEqual("fail", oversized["status"])
+        self.assertEqual(2_097_152, oversized["limit_bytes"])
+
+        timed_out = evaluate_dataset.mvp_timeout_evaluation(
+            30_000.001,
+            timeout_ms=30_000,
+        )
+        self.assertEqual("fail", timed_out["status"])
+        self.assertEqual("processing_timeout", timed_out["error"])
+
+    def test_mvp_manifest_rejects_missing_acceptance_limits(self) -> None:
+        manifest = self.valid_mvp_manifest_data()
+        del manifest["acceptance_limits"]
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError,
+            "must define acceptance_limits",
+        ):
+            evaluate_dataset.mvp_fixture_manifest_path(manifest, REPO_ROOT)
 
     def test_mvp_harness_rejects_case_fixture_path_drift(self) -> None:
         manifest = self.valid_mvp_manifest_data()
@@ -1082,6 +1163,7 @@ class EvaluateDatasetTest(unittest.TestCase):
                 result = evaluate_dataset.mvp_conversion_result(
                     case,
                     fixture_path=fixture_path,
+                    acceptance_limits=self.valid_mvp_acceptance_limits(),
                 )
 
         self.assertEqual(0, result["review_items_count"])
@@ -1118,6 +1200,7 @@ class EvaluateDatasetTest(unittest.TestCase):
                 result = evaluate_dataset.mvp_conversion_result(
                     case,
                     fixture_path=fixture_path,
+                    acceptance_limits=self.valid_mvp_acceptance_limits(),
                 )
 
         self.assertEqual(1, result["review_items_count"])
@@ -1152,6 +1235,7 @@ class EvaluateDatasetTest(unittest.TestCase):
                 result = evaluate_dataset.mvp_conversion_result(
                     case,
                     fixture_path=fixture_path,
+                    acceptance_limits=self.valid_mvp_acceptance_limits(),
                 )
 
         self.assertEqual(
@@ -1190,6 +1274,7 @@ class EvaluateDatasetTest(unittest.TestCase):
                     result = evaluate_dataset.mvp_conversion_result(
                         case,
                         fixture_path=fixture_path,
+                        acceptance_limits=self.valid_mvp_acceptance_limits(),
                     )
 
             self.assertEqual(
@@ -1294,6 +1379,7 @@ class EvaluateDatasetTest(unittest.TestCase):
                         result = evaluate_dataset.mvp_conversion_result(
                             case,
                             fixture_path=fixture_path,
+                            acceptance_limits=self.valid_mvp_acceptance_limits(),
                         )
 
                     self.assertEqual("fail", result["evaluations"]["audit"]["status"])
