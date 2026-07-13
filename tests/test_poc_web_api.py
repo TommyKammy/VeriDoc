@@ -12533,6 +12533,58 @@ def test_poc_http_api_reports_mvp_upload_limit(
     }
 
 
+def test_poc_http_api_reports_mvp_processing_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conversion_started = Event()
+    release_conversion = Event()
+    conversion_finished = Event()
+
+    def slow_conversion(**_: object) -> dict[str, object]:
+        conversion_started.set()
+        try:
+            release_conversion.wait(timeout=5)
+            return {}
+        finally:
+            conversion_finished.set()
+
+    monkeypatch.setattr(poc_web, "PROCESSING_TIMEOUT_MS", 10)
+    monkeypatch.setattr(poc_web, "convert_uploaded_document", slow_conversion)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = json.dumps(
+            {
+                "filename": "upload.txt",
+                "content": "A conversion that does not complete before the limit",
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=1)
+        connection.request(
+            "POST",
+            "/api/convert",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        release_conversion.set()
+        conversion_finished.wait(timeout=1)
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert conversion_started.is_set()
+    assert conversion_finished.is_set()
+    assert response.status == 504
+    assert body == {
+        "error": "processing_timeout",
+        "message": "Conversion exceeded the 10 ms MVP timeout.",
+        "timeout_ms": 10,
+    }
+
+
 def test_poc_http_api_rejects_unknown_conversion_mode() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     thread = Thread(target=server.serve_forever, daemon=True)

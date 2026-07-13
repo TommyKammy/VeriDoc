@@ -9,7 +9,7 @@ they are not an SLA or a production load-test result.
 | --- | ---: | --- |
 | Representative processing time | 10,000 ms per document | `--mvp-harness` measures wall-clock conversion time. A result above the limit fails `evaluations.processing_time`. |
 | Upload size | 2,097,152 bytes (2 MiB) | The PoC API rejects a larger decoded upload with HTTP 413, `upload_too_large`, and `max_upload_bytes`. The harness fails `evaluations.input_size` before conversion. |
-| Processing timeout | 30,000 ms per document | The harness marks a result above the boundary as failed in `evaluations.timeout` with `processing_timeout`. The web UI translates that code into an operator-facing timeout message. |
+| Processing timeout | 30,000 ms per document | The direct PoC API returns HTTP 504 with `processing_timeout` and `timeout_ms` when its request wait reaches the boundary. The harness marks a result above the boundary as failed in `evaluations.timeout`, and the web UI translates the error code into an operator-facing timeout message. |
 
 The boundary is inclusive: a document at exactly the configured limit is
 accepted; a value greater than the configured limit fails. Missing, malformed,

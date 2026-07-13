@@ -17,7 +17,7 @@ import secrets
 import sqlite3
 import sys
 from tempfile import TemporaryDirectory
-from threading import Lock
+from threading import Event, Lock, Thread
 from typing import Any, Callable
 from urllib.parse import parse_qs, unquote, urlparse, urlsplit
 from uuid import uuid4
@@ -70,6 +70,7 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8788
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024
 MAX_UPLOAD_REQUEST_BYTES = (MAX_UPLOAD_BYTES * 4 // 3) + 4096
+PROCESSING_TIMEOUT_MS = 30_000
 MAX_DOWNLOAD_FILENAME_BYTES = 255
 DOWNLOAD_FILENAME_FALLBACK = "veridoc-result.json"
 ARTIFACT_CONTENT_TYPES = {
@@ -181,6 +182,10 @@ AUDIT_INTEGRITY_ALGORITHM = "sha256-canonical-json-chain-v1"
 
 class PocServerDependencyError(RuntimeError):
     """Raised when the PoC server is missing an optional parser dependency."""
+
+
+class PocProcessingTimeoutError(TimeoutError):
+    """Raised when a direct PoC conversion exceeds the MVP processing limit."""
 
 
 class ReviewAuditEventStore:
@@ -1367,6 +1372,31 @@ def _llm_plan_unavailable_reason(exc: Exception) -> str:
     return "runtime_unavailable"
 
 
+def _convert_uploaded_document_with_timeout(**kwargs: Any) -> dict[str, Any]:
+    results: list[dict[str, Any]] = []
+    errors: list[Exception] = []
+    finished = Event()
+
+    def convert() -> None:
+        try:
+            results.append(convert_uploaded_document(**kwargs))
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            finished.set()
+
+    Thread(
+        target=convert,
+        name="veridoc-poc-direct-conversion",
+        daemon=True,
+    ).start()
+    if not finished.wait(PROCESSING_TIMEOUT_MS / 1000):
+        raise PocProcessingTimeoutError
+    if errors:
+        raise errors[0]
+    return results[0]
+
+
 def run(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> None:
     """Run the stdlib PoC API server."""
     database_path = default_database_path()
@@ -1541,7 +1571,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             if len(content) > MAX_UPLOAD_BYTES:
                 self._send_json(_upload_too_large_payload(), status=413)
                 return
-            result = convert_uploaded_document(
+            result = _convert_uploaded_document_with_timeout(
                 filename=filename,
                 content=content,
                 conversion_mode=conversion_mode,
@@ -1551,6 +1581,9 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 template_id=request.get("template_id"),
                 template_store=self._template_store(),
             )
+        except PocProcessingTimeoutError:
+            self._send_json(_processing_timeout_payload(), status=504)
+            return
         except PocServerDependencyError as exc:
             self._send_json(
                 {"error": "server_dependency_unavailable", "message": str(exc)},
@@ -4625,6 +4658,14 @@ def _upload_too_large_payload() -> dict[str, Any]:
         "error": "upload_too_large",
         "message": f"Upload exceeds the {MAX_UPLOAD_BYTES} byte MVP limit.",
         "max_upload_bytes": MAX_UPLOAD_BYTES,
+    }
+
+
+def _processing_timeout_payload() -> dict[str, Any]:
+    return {
+        "error": "processing_timeout",
+        "message": f"Conversion exceeded the {PROCESSING_TIMEOUT_MS} ms MVP timeout.",
+        "timeout_ms": PROCESSING_TIMEOUT_MS,
     }
 
 
