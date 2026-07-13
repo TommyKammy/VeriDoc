@@ -5047,6 +5047,10 @@ def mvp_evaluation_cases(
                 f"MVP case {case_id!r} category must match the authoritative "
                 "fixture source_type"
             )
+        if category in observed_categories:
+            raise EvaluationCaseError(
+                f"duplicate MVP case category {category!r}"
+            )
         observed_categories.add(category)
         fixture_path = case.get("fixture_path")
         if fixture_path != fixture.get("path"):
@@ -5085,8 +5089,8 @@ def mvp_evaluation_cases(
                     f"MVP case {case_id!r} must define a {field} string list"
                 )
 
-        merged = dict(fixture)
-        merged.update(case)
+        merged = dict(case)
+        merged.update(fixture)
         merged["case_id"] = case_id
         evaluation_cases.append(merged)
 
@@ -5347,6 +5351,8 @@ def mvp_conversion_result(
         review_failures.append("runtime warnings did not match manifest expectations")
     if case["expected_status"] == "requires_review" and review_items_count == 0:
         review_failures.append("requires_review conversion did not emit review items")
+    if case["expected_status"] == "converted" and review_items_count != 0:
+        review_failures.append("converted conversion unexpectedly emitted review items")
     review_status = "fail" if review_failures else "unknown"
     review_reason = (
         "; ".join(review_failures)

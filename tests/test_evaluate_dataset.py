@@ -1023,6 +1023,39 @@ class EvaluateDatasetTest(unittest.TestCase):
         ):
             evaluate_dataset.mvp_evaluation_cases(manifest, fixture_manifest)
 
+    def test_mvp_harness_rejects_duplicate_case_category(self) -> None:
+        manifest = self.valid_mvp_manifest_data()
+        fixture_manifest = evaluate_dataset.load_json(FIXTURE_MANIFEST_PATH)
+        duplicate_case = copy.deepcopy(manifest["cases"][0])
+        duplicate_case["id"] = f"{duplicate_case['id']}-duplicate"
+        manifest["cases"].append(duplicate_case)
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError,
+            "duplicate MVP case category",
+        ):
+            evaluate_dataset.mvp_evaluation_cases(manifest, fixture_manifest)
+
+    def test_mvp_harness_preserves_authoritative_fixture_expectations(self) -> None:
+        manifest = self.valid_mvp_manifest_data()
+        fixture_manifest = evaluate_dataset.load_json(FIXTURE_MANIFEST_PATH)
+        manifest["cases"][0]["word_to_excel_expectations"] = {"sheets": []}
+
+        case = evaluate_dataset.mvp_evaluation_cases(
+            manifest,
+            fixture_manifest,
+        )[0]
+        fixture = next(
+            item
+            for item in fixture_manifest["fixtures"]
+            if item["id"] == manifest["cases"][0]["fixture_id"]
+        )
+
+        self.assertEqual(
+            fixture["word_to_excel_expectations"],
+            case["word_to_excel_expectations"],
+        )
+
     def test_mvp_harness_fails_requires_review_without_review_items(self) -> None:
         case = self.valid_mvp_case()
         fixture_content = b"mvp review handoff fixture"
@@ -1055,6 +1088,42 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertEqual("fail", result["evaluations"]["review"]["status"])
         self.assertIn(
             "requires_review conversion did not emit review items",
+            result["evaluations"]["review"]["reason"],
+        )
+        self.assertEqual("fail", result["acceptance_status"])
+
+    def test_mvp_harness_fails_converted_with_review_items(self) -> None:
+        case = self.valid_mvp_case(2)
+        fixture_content = b"mvp converted review fixture"
+        with tempfile.NamedTemporaryFile(suffix=".pdf") as fixture_file:
+            fixture_file.write(fixture_content)
+            fixture_file.flush()
+            fixture_path = Path(fixture_file.name)
+            converted = self.valid_mvp_conversion_payload(
+                case,
+                fixture_path=fixture_path,
+                fixture_content=fixture_content,
+            )
+            converted["review_items"] = [{"id": "unexpected-review-item"}]
+            converted["audit"]["review_items"]["count"] = 1
+
+            with mock.patch(
+                "services.api.poc_web.convert_uploaded_document",
+                return_value=converted,
+            ), mock.patch.object(
+                evaluate_dataset,
+                "p9_validate_artifact_expectations",
+                return_value=[],
+            ):
+                result = evaluate_dataset.mvp_conversion_result(
+                    case,
+                    fixture_path=fixture_path,
+                )
+
+        self.assertEqual(1, result["review_items_count"])
+        self.assertEqual("fail", result["evaluations"]["review"]["status"])
+        self.assertIn(
+            "converted conversion unexpectedly emitted review items",
             result["evaluations"]["review"]["reason"],
         )
         self.assertEqual("fail", result["acceptance_status"])
