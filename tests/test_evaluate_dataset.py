@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -247,6 +248,9 @@ class EvaluateDatasetTest(unittest.TestCase):
 
     def valid_mvp_manifest_data(self) -> dict[str, object]:
         return copy.deepcopy(evaluate_dataset.load_json(MVP_EVALUATION_MANIFEST_PATH))
+
+    def valid_mvp_acceptance_limits(self) -> dict[str, int]:
+        return evaluate_dataset.mvp_acceptance_limits(self.valid_mvp_manifest_data())
 
     def valid_mvp_case(self, index: int = 0) -> dict[str, object]:
         return evaluate_dataset.mvp_evaluation_cases(
@@ -968,6 +972,7 @@ class EvaluateDatasetTest(unittest.TestCase):
             payload["summary"]["case_count"],
             sum(payload["summary"]["acceptance_status_counts"].values()),
         )
+        limits = self.valid_mvp_manifest_data()["acceptance_limits"]
         self.assertTrue(payload["results"])
         for result in payload["results"]:
             with self.subTest(case=result["case_id"]):
@@ -975,7 +980,14 @@ class EvaluateDatasetTest(unittest.TestCase):
                 self.assertIsInstance(result["processing_time_ms"], float)
                 self.assertGreaterEqual(result["processing_time_ms"], 0.0)
                 self.assertEqual(
-                    {"artifact", "review", "audit", "processing_time"},
+                    {
+                        "artifact",
+                        "review",
+                        "audit",
+                        "input_size",
+                        "processing_time",
+                        "timeout",
+                    },
                     set(result["evaluations"]),
                 )
                 self.assertTrue(
@@ -984,6 +996,132 @@ class EvaluateDatasetTest(unittest.TestCase):
                         for evaluation in result["evaluations"].values()
                     )
                 )
+                self.assertEqual(
+                    limits["max_upload_bytes"],
+                    result["evaluations"]["input_size"]["limit_bytes"],
+                )
+                self.assertEqual(
+                    limits["representative_processing_time_ms"],
+                    result["evaluations"]["processing_time"]["threshold_ms"],
+                )
+                self.assertEqual(
+                    limits["timeout_ms"],
+                    result["evaluations"]["timeout"]["timeout_ms"],
+                )
+
+    def test_mvp_processing_time_evaluation_enforces_manifest_threshold(self) -> None:
+        self.assertEqual(
+            {
+                "status": "pass",
+                "processing_time_ms": 30_000.0,
+                "threshold_ms": 30_000,
+                "reason": None,
+            },
+            evaluate_dataset.mvp_processing_time_evaluation(
+                30_000.0,
+                threshold_ms=30_000,
+            ),
+        )
+        self.assertEqual(
+            {
+                "status": "fail",
+                "processing_time_ms": 30_000.001,
+                "threshold_ms": 30_000,
+                "reason": "processing time exceeded the 30000 ms MVP limit",
+            },
+            evaluate_dataset.mvp_processing_time_evaluation(
+                30_000.001,
+                threshold_ms=30_000,
+            ),
+        )
+
+    def test_mvp_size_and_timeout_evaluations_fail_above_limits(self) -> None:
+        self.assertEqual(
+            "pass",
+            evaluate_dataset.mvp_input_size_evaluation(
+                2_097_152,
+                limit_bytes=2_097_152,
+            )["status"],
+        )
+        oversized = evaluate_dataset.mvp_input_size_evaluation(
+            2_097_153,
+            limit_bytes=2_097_152,
+        )
+        self.assertEqual("fail", oversized["status"])
+        self.assertEqual(2_097_152, oversized["limit_bytes"])
+
+        timed_out = evaluate_dataset.mvp_timeout_evaluation(
+            30_000.001,
+            timeout_ms=30_000,
+        )
+        self.assertEqual("fail", timed_out["status"])
+        self.assertEqual("processing_timeout", timed_out["error"])
+
+    def test_mvp_harness_stops_waiting_at_manifest_timeout(self) -> None:
+        case = self.valid_mvp_case()
+        acceptance_limits = self.valid_mvp_acceptance_limits()
+        acceptance_limits["timeout_ms"] = 10
+
+        with tempfile.NamedTemporaryFile(suffix=".docx") as fixture_file:
+            fixture_file.write(b"mvp timeout fixture")
+            fixture_file.flush()
+            fixture_path = Path(fixture_file.name)
+
+            def stalled_parser(_path: Path) -> object:
+                time.sleep(1)
+                raise AssertionError("parser should not complete after the deadline")
+
+            started_at = time.perf_counter()
+            with mock.patch(
+                "services.api.poc_web.extract_docx_structure",
+                side_effect=stalled_parser,
+            ):
+                result = evaluate_dataset.mvp_conversion_result(
+                    case,
+                    fixture_path=fixture_path,
+                    acceptance_limits=acceptance_limits,
+                )
+            elapsed_seconds = time.perf_counter() - started_at
+
+        self.assertLess(elapsed_seconds, 0.5)
+        self.assertEqual("fail", result["acceptance_status"])
+        self.assertEqual("fail", result["evaluations"]["timeout"]["status"])
+        self.assertEqual(
+            "processing_timeout",
+            result["evaluations"]["timeout"]["error"],
+        )
+        self.assertIn("processing_timeout", result["failure_reason"])
+        self.assertNotIn("DOCX parser failed", result["failure_reason"])
+
+    def test_mvp_timeout_bypasses_broad_conversion_exception_handler(self) -> None:
+        def conversion_with_fallback(**_: object) -> dict[str, object]:
+            try:
+                time.sleep(1)
+            except Exception:
+                return {"status": "fallback"}
+            raise AssertionError("conversion should not complete after the deadline")
+
+        with mock.patch(
+            "services.api.poc_web.convert_uploaded_document",
+            side_effect=conversion_with_fallback,
+        ):
+            with self.assertRaises(evaluate_dataset.MVPConversionTimeoutError):
+                evaluate_dataset.mvp_convert_uploaded_document(
+                    filename="representative.pdf",
+                    content=b"representative fixture",
+                    conversion_mode="auto",
+                    timeout_ms=10,
+                )
+
+    def test_mvp_manifest_rejects_missing_acceptance_limits(self) -> None:
+        manifest = self.valid_mvp_manifest_data()
+        del manifest["acceptance_limits"]
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError,
+            "must define acceptance_limits",
+        ):
+            evaluate_dataset.mvp_fixture_manifest_path(manifest, REPO_ROOT)
 
     def test_mvp_harness_rejects_case_fixture_path_drift(self) -> None:
         manifest = self.valid_mvp_manifest_data()
@@ -1082,6 +1220,7 @@ class EvaluateDatasetTest(unittest.TestCase):
                 result = evaluate_dataset.mvp_conversion_result(
                     case,
                     fixture_path=fixture_path,
+                    acceptance_limits=self.valid_mvp_acceptance_limits(),
                 )
 
         self.assertEqual(0, result["review_items_count"])
@@ -1118,6 +1257,7 @@ class EvaluateDatasetTest(unittest.TestCase):
                 result = evaluate_dataset.mvp_conversion_result(
                     case,
                     fixture_path=fixture_path,
+                    acceptance_limits=self.valid_mvp_acceptance_limits(),
                 )
 
         self.assertEqual(1, result["review_items_count"])
@@ -1152,6 +1292,7 @@ class EvaluateDatasetTest(unittest.TestCase):
                 result = evaluate_dataset.mvp_conversion_result(
                     case,
                     fixture_path=fixture_path,
+                    acceptance_limits=self.valid_mvp_acceptance_limits(),
                 )
 
         self.assertEqual(
@@ -1190,6 +1331,7 @@ class EvaluateDatasetTest(unittest.TestCase):
                     result = evaluate_dataset.mvp_conversion_result(
                         case,
                         fixture_path=fixture_path,
+                        acceptance_limits=self.valid_mvp_acceptance_limits(),
                     )
 
             self.assertEqual(
@@ -1294,6 +1436,7 @@ class EvaluateDatasetTest(unittest.TestCase):
                         result = evaluate_dataset.mvp_conversion_result(
                             case,
                             fixture_path=fixture_path,
+                            acceptance_limits=self.valid_mvp_acceptance_limits(),
                         )
 
                     self.assertEqual("fail", result["evaluations"]["audit"]["status"])

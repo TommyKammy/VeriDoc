@@ -10,6 +10,7 @@ import binascii
 import hashlib
 import json
 import math
+import multiprocessing
 import os
 from pathlib import Path
 import re
@@ -70,6 +71,7 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8788
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024
 MAX_UPLOAD_REQUEST_BYTES = (MAX_UPLOAD_BYTES * 4 // 3) + 4096
+PROCESSING_TIMEOUT_MS = 30_000
 MAX_DOWNLOAD_FILENAME_BYTES = 255
 DOWNLOAD_FILENAME_FALLBACK = "veridoc-result.json"
 ARTIFACT_CONTENT_TYPES = {
@@ -181,6 +183,10 @@ AUDIT_INTEGRITY_ALGORITHM = "sha256-canonical-json-chain-v1"
 
 class PocServerDependencyError(RuntimeError):
     """Raised when the PoC server is missing an optional parser dependency."""
+
+
+class PocProcessingTimeoutError(TimeoutError):
+    """Raised when a direct PoC conversion exceeds the MVP processing limit."""
 
 
 class ReviewAuditEventStore:
@@ -839,6 +845,7 @@ def convert_uploaded_document(
     template_id: str | None = None,
     template_store: TemplateStore | None = None,
     template_snapshot: dict[str, Any] | None = None,
+    _temporary_directory_root: Path | None = None,
 ) -> dict[str, Any]:
     """Convert one uploaded PoC document into IR, review details, and download bytes."""
     safe_filename = _safe_filename(filename)
@@ -860,6 +867,7 @@ def convert_uploaded_document(
         safe_filename,
         content,
         conversion_mode=selected_conversion_mode,
+        temporary_directory_root=_temporary_directory_root,
     )
     source_type = _source_type(safe_filename, parser_output)
     _validate_conversion_mode_source_type(selected_conversion_mode, source_type)
@@ -911,6 +919,7 @@ def convert_uploaded_document(
             source_filename=safe_filename,
             conversion_mode=selected_conversion_mode,
             artifact_format=primary_format,
+            temporary_directory_root=_temporary_directory_root,
         )
     elif primary_format is not None:
         primary_warning = "primary artifact generation skipped: document IR validation failed"
@@ -1367,6 +1376,98 @@ def _llm_plan_unavailable_reason(exc: Exception) -> str:
     return "runtime_unavailable"
 
 
+def _direct_conversion_worker(result_connection: Any, kwargs: dict[str, Any]) -> None:
+    try:
+        try:
+            message: tuple[str, object] = (
+                "result",
+                convert_uploaded_document(**kwargs),
+            )
+        except Exception as exc:
+            message = ("error", exc)
+        try:
+            result_connection.send(message)
+        except Exception:
+            if message[0] == "error":
+                exc = message[1]
+                result_connection.send(
+                    (
+                        "unserializable_error",
+                        f"{type(exc).__module__}.{type(exc).__qualname__}: {exc}",
+                    )
+                )
+            else:
+                raise
+    finally:
+        result_connection.close()
+
+
+def _direct_conversion_worker_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
+    worker_kwargs = dict(kwargs)
+    template_store = worker_kwargs.pop("template_store", None)
+    template_id = _validate_optional_template_id(worker_kwargs.get("template_id"))
+    worker_kwargs["template_snapshot"] = _direct_convert_template_snapshot(
+        template_id,
+        template_store=template_store,
+        template_snapshot=worker_kwargs.get("template_snapshot"),
+    )
+    return worker_kwargs
+
+
+def _reap_direct_conversion_process(process: Any, *, terminate: bool) -> None:
+    if terminate and process.is_alive():
+        process.terminate()
+    process.join(timeout=1)
+    if process.is_alive():
+        process.kill()
+        process.join()
+    process.close()
+
+
+def _convert_uploaded_document_with_timeout(**kwargs: Any) -> dict[str, Any]:
+    worker_kwargs = _direct_conversion_worker_kwargs(kwargs)
+    with TemporaryDirectory(prefix="veridoc-poc-direct-conversion-") as temp_dir:
+        worker_kwargs["_temporary_directory_root"] = Path(temp_dir)
+        context = multiprocessing.get_context("spawn")
+        result_connection, worker_connection = context.Pipe(duplex=False)
+        process = context.Process(
+            target=_direct_conversion_worker,
+            args=(worker_connection, worker_kwargs),
+            name="veridoc-poc-direct-conversion",
+        )
+        try:
+            process.start()
+        except Exception:
+            result_connection.close()
+            worker_connection.close()
+            process.close()
+            raise
+        worker_connection.close()
+        terminate = False
+        try:
+            if not result_connection.poll(PROCESSING_TIMEOUT_MS / 1000):
+                terminate = True
+                raise PocProcessingTimeoutError
+            try:
+                message = result_connection.recv()
+            except EOFError as exc:
+                raise RuntimeError("Direct conversion worker exited without a result") from exc
+        finally:
+            result_connection.close()
+            _reap_direct_conversion_process(process, terminate=terminate)
+
+    if not isinstance(message, tuple) or len(message) != 2:
+        raise RuntimeError("Direct conversion worker returned an invalid result")
+    message_type, payload = message
+    if message_type == "error" and isinstance(payload, Exception):
+        raise payload
+    if message_type == "unserializable_error":
+        raise RuntimeError(str(payload))
+    if message_type != "result" or not isinstance(payload, dict):
+        raise RuntimeError("Direct conversion worker returned an invalid result")
+    return payload
+
+
 def run(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> None:
     """Run the stdlib PoC API server."""
     database_path = default_database_path()
@@ -1539,9 +1640,9 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 return
             content = _decode_request_content(request)
             if len(content) > MAX_UPLOAD_BYTES:
-                self._send_json({"error": "upload_too_large"}, status=413)
+                self._send_json(_upload_too_large_payload(), status=413)
                 return
-            result = convert_uploaded_document(
+            result = _convert_uploaded_document_with_timeout(
                 filename=filename,
                 content=content,
                 conversion_mode=conversion_mode,
@@ -1551,9 +1652,18 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 template_id=request.get("template_id"),
                 template_store=self._template_store(),
             )
+        except PocProcessingTimeoutError:
+            self._send_json(_processing_timeout_payload(), status=504)
+            return
         except PocServerDependencyError as exc:
             self._send_json(
                 {"error": "server_dependency_unavailable", "message": str(exc)},
+                status=500,
+            )
+            return
+        except RuntimeError as exc:
+            self._send_json(
+                {"error": "conversion_failed", "message": str(exc)},
                 status=500,
             )
             return
@@ -1562,7 +1672,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "content_length_required"}, status=411)
                 return
             if str(exc) == "upload_too_large":
-                self._send_json({"error": "upload_too_large"}, status=413)
+                self._send_json(_upload_too_large_payload(), status=413)
                 return
             self._send_json({"error": "invalid_upload", "message": str(exc)}, status=400)
             return
@@ -1718,7 +1828,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "content_length_required"}, status=411)
                 return
             if str(exc) == "upload_too_large":
-                self._send_json({"error": "upload_too_large"}, status=413)
+                self._send_json(_upload_too_large_payload(), status=413)
                 return
             self._send_json({"error": "invalid_job_request", "message": str(exc)}, status=400)
             return
@@ -1727,7 +1837,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             conversion_mode, output_format, use_llm, use_ocr = conversion_settings
             try:
                 job_queue.start_job(job.job_id)
-                result = convert_uploaded_document(
+                result = _convert_uploaded_document_with_timeout(
                     filename=job.filename,
                     content=source["content"],
                     conversion_mode=conversion_mode,
@@ -1744,6 +1854,13 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 )
                 result = _persistable_artifact_manifest(job.job_id, result)
                 job = job_queue.mark_succeeded(job.job_id, result=result)
+            except PocProcessingTimeoutError:
+                if job_queue.get_job(job.job_id).status == "running":
+                    job = job_queue.mark_failed(
+                        job.job_id,
+                        error=str(_processing_timeout_payload()["message"]),
+                        retryable=False,
+                    )
             except PocServerDependencyError as exc:
                 if job_queue.get_job(job.job_id).status == "running":
                     job = job_queue.mark_failed(job.job_id, error=str(exc), retryable=False)
@@ -3259,6 +3376,7 @@ def _render_primary_artifact(
     source_filename: str,
     conversion_mode: str,
     artifact_format: str | None,
+    temporary_directory_root: Path | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     if artifact_format is None:
         return None, None
@@ -3269,7 +3387,10 @@ def _render_primary_artifact(
         role="primary",
     )
     try:
-        with TemporaryDirectory(prefix="veridoc-primary-artifact-") as temp_dir:
+        with TemporaryDirectory(
+            prefix="veridoc-primary-artifact-",
+            dir=temporary_directory_root,
+        ) as temp_dir:
             output_path = Path(temp_dir) / filename
             _render_primary_artifact_file(
                 document_ir,
@@ -3776,6 +3897,7 @@ def _parser_output_from_upload(
     content: bytes,
     *,
     conversion_mode: str = "auto",
+    temporary_directory_root: Path | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     warnings: list[str] = []
     source_type = _source_type_from_path(filename)
@@ -3785,6 +3907,7 @@ def _parser_output_from_upload(
             content,
             source_type,
             conversion_mode=conversion_mode,
+            temporary_directory_root=temporary_directory_root,
         )
         return parser_output, [*warnings, *parser_warnings]
 
@@ -3833,8 +3956,12 @@ def _parser_output_from_binary_upload_with_warnings(
     source_type: str,
     *,
     conversion_mode: str = "auto",
+    temporary_directory_root: Path | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
-    with TemporaryDirectory(prefix="veridoc-poc-upload-") as temp_dir:
+    with TemporaryDirectory(
+        prefix="veridoc-poc-upload-",
+        dir=temporary_directory_root,
+    ) as temp_dir:
         upload_path = Path(temp_dir) / filename
         try:
             upload_path.write_bytes(content)
@@ -4618,6 +4745,22 @@ def _decode_request_content(request: dict[str, Any]) -> bytes:
     if "content" in request:
         return _request_string_field(request, "content").encode("utf-8")
     raise ValueError("content or content_base64 is required")
+
+
+def _upload_too_large_payload() -> dict[str, Any]:
+    return {
+        "error": "upload_too_large",
+        "message": f"Upload exceeds the {MAX_UPLOAD_BYTES} byte MVP limit.",
+        "max_upload_bytes": MAX_UPLOAD_BYTES,
+    }
+
+
+def _processing_timeout_payload() -> dict[str, Any]:
+    return {
+        "error": "processing_timeout",
+        "message": f"Conversion exceeded the {PROCESSING_TIMEOUT_MS} ms MVP timeout.",
+        "timeout_ms": PROCESSING_TIMEOUT_MS,
+    }
 
 
 def _job_source_from_request(request: dict[str, Any], *, filename: str) -> dict[str, Any] | None:
