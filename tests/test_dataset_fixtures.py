@@ -48,6 +48,10 @@ OFFICE_DOCUMENT_RELATIONSHIP = (
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument"
 )
 PDF_EVAL_DEPS_AVAILABLE = importlib.util.find_spec("pymupdf") is not None
+PDF_TABLE_EVAL_DEPS_AVAILABLE = all(
+    importlib.util.find_spec(module_name) is not None
+    for module_name in ("camelot", "pdfplumber", "pymupdf")
+)
 
 
 class DatasetFixturesTest(unittest.TestCase):
@@ -105,14 +109,9 @@ class DatasetFixturesTest(unittest.TestCase):
             with self.subTest(case=case["id"]):
                 fixture = fixtures_by_id[case["fixture_id"]]
                 fixture_path = Path(case["fixture_path"])
-                expected_fixture_path = (
-                    fixture["report_path"]
-                    if case["conversion_mode"] == "pdf_to_excel"
-                    else fixture["path"]
-                )
 
                 self.assertFalse(fixture_path.is_absolute())
-                self.assertEqual(expected_fixture_path, case["fixture_path"])
+                self.assertEqual(fixture["path"], case["fixture_path"])
                 self.assertTrue((REPO_ROOT / fixture_path).is_file())
                 self.assertEqual(expected_source_types[case["category"]], fixture["source_type"])
                 self.assertIn(fixture["anonymization"], {"synthetic", "anonymized"})
@@ -160,13 +159,19 @@ class DatasetFixturesTest(unittest.TestCase):
             fixture_path = REPO_ROOT / case["fixture_path"]
 
             with self.subTest(case=case_id, boundary="emitted warnings"):
-                if (
-                    case["category"] in {"scanned_pdf", "record_pdf"}
-                    and not PDF_EVAL_DEPS_AVAILABLE
-                ):
+                pdf_dependencies_available = (
+                    PDF_TABLE_EVAL_DEPS_AVAILABLE
+                    if case["category"] == "text_pdf"
+                    else PDF_EVAL_DEPS_AVAILABLE
+                )
+                if case["category"] in {
+                    "text_pdf",
+                    "scanned_pdf",
+                    "record_pdf",
+                } and not pdf_dependencies_available:
                     if os.environ.get("VERIDOC_REQUIRE_PDF_EVAL_DEPS") == "1":
-                        self.fail("PyMuPDF eval dependency is required but not installed")
-                    self.skipTest("PyMuPDF eval dependency is not installed")
+                        self.fail("PDF eval dependencies are required but not installed")
+                    self.skipTest("PDF eval dependencies are not installed")
 
                 result = convert_uploaded_document(
                     filename=fixture_path.name,

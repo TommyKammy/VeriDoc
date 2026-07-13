@@ -77,10 +77,10 @@
       "id": "mvp-text-pdf-001",
       "category": "text_pdf",
       "fixture_id": "pdf-to-excel-table-report",
-      "fixture_path": "datasets/fixtures/pdf/pdf-to-excel-table-report.json",
+      "fixture_path": "datasets/fixtures/pdf/pdf-to-excel-ruled-table.pdf",
       "source_classification": "synthetic",
       "conversion_mode": "pdf_to_excel",
-      "expected_status": "requires_review",
+      "expected_status": "converted",
       "expected_artifacts": [
         {
           "type": "xlsx",
@@ -92,7 +92,6 @@
         }
       ],
       "expected_warnings": [
-        "PDF table extraction candidate unavailable: pdfplumber:table; xlsx artifact requires review",
         "conversion mode pdf_to_excel selected"
       ],
       "review_focus": [
