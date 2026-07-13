@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import ast
 from collections import Counter
+import hashlib
 import json
 import math
 import os
@@ -5023,13 +5024,22 @@ def mvp_evaluation_cases(
         category = case.get("category")
         if not isinstance(category, str) or not category:
             raise EvaluationCaseError(f"MVP case {case_id!r} needs a category")
-        observed_categories.add(category)
         fixture_id = case.get("fixture_id")
         fixture = fixtures_by_id.get(fixture_id) if isinstance(fixture_id, str) else None
         if fixture is None:
             raise EvaluationCaseError(
                 f"MVP case {case_id!r} must reference a fixture_manifest fixture"
             )
+        allowed_source_types = P9_FIXTURE_SOURCE_TYPES_BY_CATEGORY.get(category)
+        if (
+            allowed_source_types is None
+            or fixture.get("source_type") not in allowed_source_types
+        ):
+            raise EvaluationCaseError(
+                f"MVP case {case_id!r} category must match the authoritative "
+                "fixture source_type"
+            )
+        observed_categories.add(category)
         fixture_path = case.get("fixture_path")
         if fixture_path != fixture.get("path"):
             raise EvaluationCaseError(
@@ -5143,18 +5153,95 @@ def mvp_conversion_failure_result(
     }
 
 
+def mvp_audit_failures(
+    converted: dict[str, Any],
+    *,
+    fixture_path: Path,
+    fixture_content: bytes,
+    conversion_mode: str,
+    audit_schema_version: str,
+) -> list[str]:
+    audit = converted.get("audit")
+    if not isinstance(audit, dict):
+        return ["conversion audit missing"]
+
+    failures: list[str] = []
+    expected_sha256 = hashlib.sha256(fixture_content).hexdigest()
+    expected_conversion_id = converted.get("conversion_id")
+    if not isinstance(expected_conversion_id, str) or not expected_conversion_id:
+        failures.append("conversion result conversion_id missing")
+    elif audit.get("conversion_id") != expected_conversion_id:
+        failures.append("conversion audit conversion_id did not match conversion result")
+
+    if audit.get("schema_version") != audit_schema_version:
+        failures.append("conversion audit schema_version did not match the supported schema")
+    input_audit = audit.get("input")
+    if not isinstance(input_audit, dict):
+        failures.append("conversion audit input missing or malformed")
+    else:
+        expected_input = {
+            "filename": fixture_path.name,
+            "sha256": expected_sha256,
+            "conversion_mode": conversion_mode,
+        }
+        for field, expected in expected_input.items():
+            if input_audit.get(field) != expected:
+                failures.append(f"conversion audit input {field} did not match the case")
+        source_type = input_audit.get("source_type")
+        if not isinstance(source_type, str) or not source_type:
+            failures.append("conversion audit input source_type missing or malformed")
+        elif audit.get("source_type") != source_type:
+            failures.append("conversion audit source_type did not match audit input")
+
+    expected_top_level = {
+        "source_filename": fixture_path.name,
+        "source_sha256": expected_sha256,
+        "conversion_mode": conversion_mode,
+    }
+    for field, expected in expected_top_level.items():
+        if audit.get(field) != expected:
+            failures.append(f"conversion audit {field} did not match the case")
+
+    hashes = converted.get("hashes")
+    if not isinstance(hashes, dict) or hashes.get("source_sha256") != expected_sha256:
+        failures.append("conversion result source hash did not match the case input")
+
+    versions = audit.get("versions")
+    schemas = versions.get("schemas") if isinstance(versions, dict) else None
+    if (
+        not isinstance(schemas, dict)
+        or schemas.get("conversion_audit") != audit_schema_version
+    ):
+        failures.append("conversion audit schema lineage did not match the supported schema")
+
+    for field, result_field in (("warnings", "warnings"), ("review_items", "review_items")):
+        result_items = converted.get(result_field)
+        audit_count = audit.get(field)
+        if not isinstance(result_items, list):
+            failures.append(f"conversion result {result_field} missing or malformed")
+        elif not isinstance(audit_count, dict) or audit_count.get("count") != len(
+            result_items
+        ):
+            failures.append(f"conversion audit {field} count did not match conversion result")
+    return failures
+
+
 def mvp_conversion_result(
     case: dict[str, Any],
     *,
     fixture_path: Path,
 ) -> dict[str, object]:
-    from services.api.poc_web import convert_uploaded_document
+    from services.api.poc_web import (
+        CONVERSION_AUDIT_SCHEMA_VERSION,
+        convert_uploaded_document,
+    )
 
     started_at = time.perf_counter()
     try:
+        fixture_content = fixture_path.read_bytes()
         converted = convert_uploaded_document(
             filename=fixture_path.name,
-            content=fixture_path.read_bytes(),
+            content=fixture_content,
             conversion_mode=str(case["conversion_mode"]),
         )
     except Exception as exc:
@@ -5178,10 +5265,30 @@ def mvp_conversion_result(
     expected_formats = [
         str(artifact["type"]) for artifact in case["expected_artifacts"]
     ]
-    artifact_status = "pass" if actual_formats == expected_formats else "fail"
 
     warnings = converted.get("warnings")
     actual_warnings = warnings if isinstance(warnings, list) else []
+    representative_mode = (
+        "scanned_pdf_ocr"
+        if case["category"] == "scanned_pdf"
+        else str(case["conversion_mode"])
+    )
+    artifact_failures: list[str] = []
+    if actual_formats != expected_formats:
+        artifact_failures.append(
+            "primary artifact formats did not match manifest expectations"
+        )
+    artifact_failures.extend(
+        p9_validate_artifact_expectations(
+            fixture=case,
+            conversion_mode=str(case["conversion_mode"]),
+            representative_mode=representative_mode,
+            primary_artifact=p9_primary_artifact(artifact_list),
+            warnings=warnings,
+        )
+    )
+    artifact_status = "fail" if artifact_failures else "pass"
+
     observed_status = converted.get("status")
     review_failures: list[str] = []
     if observed_status != case["expected_status"]:
@@ -5198,18 +5305,20 @@ def mvp_conversion_result(
         else "no authoritative reviewer decision was recorded by the conversion run"
     )
 
-    audit = converted.get("audit")
-    audit_present = isinstance(audit, dict)
+    audit_present = isinstance(converted.get("audit"), dict)
+    audit_failures = mvp_audit_failures(
+        converted,
+        fixture_path=fixture_path,
+        fixture_content=fixture_content,
+        conversion_mode=str(case["conversion_mode"]),
+        audit_schema_version=CONVERSION_AUDIT_SCHEMA_VERSION,
+    )
     evaluations = {
         "artifact": {
             "status": artifact_status,
             "expected_formats": expected_formats,
             "actual_formats": actual_formats,
-            "reason": (
-                None
-                if artifact_status == "pass"
-                else "primary artifact formats did not match manifest expectations"
-            ),
+            "reason": None if not artifact_failures else "; ".join(artifact_failures),
         },
         "review": {
             "status": review_status,
@@ -5220,9 +5329,9 @@ def mvp_conversion_result(
             "reason": review_reason,
         },
         "audit": {
-            "status": "pass" if audit_present else "fail",
+            "status": "fail" if audit_failures else "pass",
             "present": audit_present,
-            "reason": None if audit_present else "conversion audit missing",
+            "reason": None if not audit_failures else "; ".join(audit_failures),
         },
         "processing_time": mvp_processing_time_evaluation(elapsed_ms),
     }
