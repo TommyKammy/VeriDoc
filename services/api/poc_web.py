@@ -4847,6 +4847,10 @@ def _redacted_endpoint_for_display(endpoint: str | None) -> str | None:
         parsed_endpoint = urlparse(endpoint)
         if parsed_endpoint.scheme not in {"http", "https"} or not parsed_endpoint.hostname:
             return None
+        # Complete authority validation before echoing any configured value.
+        # Accessing ``port`` rejects malformed authorities that ``hostname``
+        # alone accepts, including secret-like text in the port position.
+        _ = parsed_endpoint.port
         if has_unsafe_llm_endpoint_path(parsed_endpoint.path):
             return None
         netloc = parsed_endpoint.netloc.rsplit("@", 1)[-1]
