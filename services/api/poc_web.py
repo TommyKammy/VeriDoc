@@ -45,6 +45,7 @@ from core.llm.conversion_plan import (
     ConversionPlanValidationError,
     LocalLLMConfigurationError,
     LocalLLMConversionPlanAdapter,
+    has_unsafe_llm_endpoint_path,
     is_local_llm_base_url,
     validate_conversion_plan,
 )
@@ -4846,7 +4847,7 @@ def _redacted_endpoint_for_display(endpoint: str | None) -> str | None:
         parsed_endpoint = urlparse(endpoint)
         if parsed_endpoint.scheme not in {"http", "https"} or not parsed_endpoint.hostname:
             return None
-        if ";" in parsed_endpoint.path:
+        if has_unsafe_llm_endpoint_path(parsed_endpoint.path):
             return None
         netloc = parsed_endpoint.netloc.rsplit("@", 1)[-1]
         return parsed_endpoint._replace(netloc=netloc, params="", query="", fragment="").geturl()

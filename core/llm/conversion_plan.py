@@ -12,7 +12,7 @@ import urllib.request
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from core.llm.audit_parameters import sanitize_audit_parameters
 
@@ -529,7 +529,12 @@ def _local_base_url(base_url: str) -> _LocalBaseUrl | None:
         return None
     if parsed.scheme not in {"http", "https"} or not hostname:
         return None
-    if ";" in parsed.path or parsed.params or parsed.query or parsed.fragment:
+    if (
+        has_unsafe_llm_endpoint_path(parsed.path)
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+    ):
         return None
     try:
         port = parsed.port
@@ -555,6 +560,19 @@ def _local_base_url(base_url: str) -> _LocalBaseUrl | None:
 
 def is_local_llm_base_url(base_url: str) -> bool:
     return _local_base_url(base_url) is not None
+
+
+def has_unsafe_llm_endpoint_path(path: str) -> bool:
+    decoded_path = path
+    for _ in range(8):
+        if any(delimiter in decoded_path for delimiter in (";", "?", "#")):
+            return True
+        next_path = unquote(decoded_path)
+        if next_path == decoded_path:
+            return False
+        decoded_path = next_path
+    # Excessively nested encoding is not a trusted operational endpoint path.
+    return True
 
 
 def _local_base_url_for_dns_host(
