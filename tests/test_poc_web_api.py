@@ -1374,8 +1374,10 @@ def test_convert_uploaded_document_falls_back_when_local_llm_plan_raises_validat
         "warning_code": "llm_fallback_schema_invalid",
     }
     assert result["audit"]["llm"]["base_url_type"] == "local"
+    assert result["audit"]["versions"]["model"] == "fake-local-model"
     downloaded = json.loads(result["download"]["content"])
     assert downloaded["audit"]["conversion_plan"]["plan_hash"] is None
+    assert downloaded["audit"]["versions"]["model"] == "fake-local-model"
 
 
 def test_convert_uploaded_document_hashes_rejected_real_local_llm_plan(

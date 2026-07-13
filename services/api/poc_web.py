@@ -933,7 +933,7 @@ def convert_uploaded_document(
         "versions": {
             "model": (
                 conversion_plan_state["llm_audit"]["model"]
-                if conversion_plan_state["llm_audit"]["enabled"]
+                if conversion_plan_state["llm_audit"]["requested"]
                 else None
             ),
             "prompt": {
