@@ -12793,7 +12793,7 @@ def test_poc_http_api_redacts_endpoint_credentials(
     }
 
 
-def test_poc_http_api_redacts_endpoint_query_and_fragment(
+def test_poc_http_api_rejects_endpoint_query_and_fragment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv(
@@ -12814,10 +12814,16 @@ def test_poc_http_api_redacts_endpoint_query_and_fragment(
         thread.join(timeout=5)
 
     assert response.status == 200
-    assert body["llm_settings"]["endpoint"] == {
+    settings = body["llm_settings"]
+    assert settings["endpoint"] == {
         "configured": True,
         "value": "http://127.0.0.1:8000/v1",
-        "status": "available",
+        "status": "rejected",
+    }
+    assert settings["fallback"] == {
+        "active": False,
+        "reason": "non_local_endpoint",
+        "status": "rejected",
     }
 
 
@@ -12933,8 +12939,9 @@ def test_poc_web_exposes_local_llm_operational_settings_screen() -> None:
     clear_auth_handler = clear_auth_handler.split("});", 1)[0]
     credential_reset = html.split("function clearCredentialBoundState() {", 1)[1]
     credential_reset = credential_reset.split("\n      }", 1)[0]
-    settings_failure = html.split("async function loadLlmSettings() {", 1)[1]
-    settings_failure = settings_failure.split("} catch (error) {", 1)[1]
+    settings_loader = html.split("async function loadLlmSettings() {", 1)[1]
+    settings_loader = settings_loader.split("\n      }", 1)[0]
+    settings_failure = settings_loader.split("} catch (error) {", 1)[1]
     settings_failure = settings_failure.split("} finally {", 1)[0]
     fallback_renderer = html.split("const fallback = settings.fallback || {};", 1)[1]
     fallback_renderer = fallback_renderer.split("llmSettingsStatus.textContent", 1)[0]
@@ -12942,6 +12949,15 @@ def test_poc_web_exposes_local_llm_operational_settings_screen() -> None:
     assert "loadLlmSettings();" in clear_auth_handler
     assert "clearLlmSettings();" in credential_reset
     assert "clearLlmSettings();" in settings_failure
+    assert "const requestAuthToken = activeAuthToken();" in settings_loader
+    assert "const requestAuthGeneration = state.authGeneration;" in settings_loader
+    stale_guard = (
+        "if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;"
+    )
+    assert settings_loader.index("const body = await response.json()") < settings_loader.index(
+        stale_guard
+    ) < settings_loader.index("const settings = body.llm_settings")
+    assert stale_guard in settings_failure
     assert "= fallback.reason" in fallback_renderer
     assert "? `${fallbackStatus}" in fallback_renderer
     assert "(${fallback.reason})" in fallback_renderer

@@ -3421,12 +3421,15 @@
       }
 
       async function loadLlmSettings() {
+        const requestAuthToken = activeAuthToken();
+        const requestAuthGeneration = state.authGeneration;
         refreshLlmSettings.disabled = true;
         llmSettingsStatus.textContent = "Loading local LLM settings.";
         llmSettingsStatus.className = "page-status";
         try {
           const response = await apiFetch("/api/llm-settings");
           const body = await response.json().catch(() => ({}));
+          if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
           if (!response.ok || !body.llm_settings) {
             throw new Error(body.message || body.error || "Local LLM settings are unavailable.");
           }
@@ -3448,12 +3451,15 @@
             : fallbackStatus;
           llmSettingsStatus.textContent = "Local LLM settings are current.";
         } catch (error) {
+          if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
           clearLlmSettings();
           llmSettingsStatus.textContent =
             error instanceof Error && error.message ? error.message : "Local LLM settings are unavailable.";
           llmSettingsStatus.className = "page-status error";
         } finally {
-          refreshLlmSettings.disabled = false;
+          if (isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) {
+            refreshLlmSettings.disabled = false;
+          }
         }
       }
 
