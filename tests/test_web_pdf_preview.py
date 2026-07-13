@@ -55,6 +55,31 @@ def test_review_item_can_jump_to_preview_bbox() -> None:
     assert "state.previewPage = item.source_page" in html
 
 
+def test_primary_controls_have_visible_keyboard_focus() -> None:
+    html = _web_html()
+
+    assert ":where(button, a, input, select, textarea):focus-visible" in html
+    assert "outline: 3px solid var(--focus-ring);" in html
+    assert "outline-offset: 2px;" in html
+
+
+def test_primary_review_surfaces_have_accessible_names_and_list_semantics() -> None:
+    html = _web_html()
+
+    assert 'id="review-list" role="list" aria-labelledby="review-title"' in html
+    assert 'wrapper.setAttribute("role", "listitem");' in html
+    assert 'jump.setAttribute("aria-label", `Jump to ${blockId} source bbox`);' in html
+    assert 'approve.setAttribute("aria-label", `Approve ${blockId}`);' in html
+    assert 'requestEdit.setAttribute("aria-label", `Save edit for ${blockId}`);' in html
+    assert 'aria-label="Conversion warnings"' in html
+    assert 'badges.setAttribute("role", "list");' in html
+    assert 'badge.setAttribute("role", "listitem");' in html
+    assert 'aria-labelledby="artifact-downloads-title"' in html
+    assert 'aria-describedby="artifact-summary" download' in html
+    assert '<table aria-label="Audit events">' in html
+    assert html.count('<th scope="col">') == 5
+
+
 def test_direct_convert_activates_review_before_pdf_preview_render() -> None:
     html = _web_html()
     render_result = re.search(
