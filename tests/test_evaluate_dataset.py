@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -1055,6 +1056,41 @@ class EvaluateDatasetTest(unittest.TestCase):
         )
         self.assertEqual("fail", timed_out["status"])
         self.assertEqual("processing_timeout", timed_out["error"])
+
+    def test_mvp_harness_stops_waiting_at_manifest_timeout(self) -> None:
+        case = self.valid_mvp_case()
+        acceptance_limits = self.valid_mvp_acceptance_limits()
+        acceptance_limits["timeout_ms"] = 10
+
+        with tempfile.NamedTemporaryFile(suffix=".docx") as fixture_file:
+            fixture_file.write(b"mvp timeout fixture")
+            fixture_file.flush()
+            fixture_path = Path(fixture_file.name)
+
+            def stalled_conversion(**_kwargs: object) -> dict[str, object]:
+                time.sleep(1)
+                return {}
+
+            started_at = time.perf_counter()
+            with mock.patch(
+                "services.api.poc_web.convert_uploaded_document",
+                side_effect=stalled_conversion,
+            ):
+                result = evaluate_dataset.mvp_conversion_result(
+                    case,
+                    fixture_path=fixture_path,
+                    acceptance_limits=acceptance_limits,
+                )
+            elapsed_seconds = time.perf_counter() - started_at
+
+        self.assertLess(elapsed_seconds, 0.5)
+        self.assertEqual("fail", result["acceptance_status"])
+        self.assertEqual("fail", result["evaluations"]["timeout"]["status"])
+        self.assertEqual(
+            "processing_timeout",
+            result["evaluations"]["timeout"]["error"],
+        )
+        self.assertIn("processing_timeout", result["failure_reason"])
 
     def test_mvp_manifest_rejects_missing_acceptance_limits(self) -> None:
         manifest = self.valid_mvp_manifest_data()

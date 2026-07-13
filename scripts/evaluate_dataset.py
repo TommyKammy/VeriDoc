@@ -11,6 +11,7 @@ import json
 import math
 import os
 import platform
+import signal
 import shlex
 import subprocess
 import sys
@@ -5265,6 +5266,54 @@ def mvp_conversion_failure_result(
     }
 
 
+class MVPConversionTimeoutError(TimeoutError):
+    """Raised when one MVP fixture conversion reaches its manifest deadline."""
+
+
+def mvp_convert_uploaded_document(
+    *,
+    filename: str,
+    content: bytes,
+    conversion_mode: str,
+    timeout_ms: int,
+) -> dict[str, Any]:
+    from services.api.poc_web import convert_uploaded_document
+
+    if not all(
+        hasattr(signal, name) for name in ("SIGALRM", "ITIMER_REAL", "setitimer")
+    ):
+        raise RuntimeError("MVP timeout enforcement is unavailable on this platform")
+
+    previous_timer = signal.getitimer(signal.ITIMER_REAL)
+    if previous_timer != (0.0, 0.0):
+        raise RuntimeError("MVP timeout enforcement found an active process timer")
+
+    previous_handler = signal.getsignal(signal.SIGALRM)
+
+    def raise_timeout(_signum: int, _frame: object) -> None:
+        raise MVPConversionTimeoutError(
+            f"conversion exceeded the {timeout_ms} ms MVP timeout"
+        )
+
+    try:
+        signal.signal(signal.SIGALRM, raise_timeout)
+    except ValueError as exc:
+        raise RuntimeError(
+            "MVP timeout enforcement requires the main interpreter thread"
+        ) from exc
+
+    try:
+        signal.setitimer(signal.ITIMER_REAL, timeout_ms / 1000)
+        return convert_uploaded_document(
+            filename=filename,
+            content=content,
+            conversion_mode=conversion_mode,
+        )
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+
+
 def mvp_audit_failures(
     converted: dict[str, Any],
     *,
@@ -5376,7 +5425,6 @@ def mvp_conversion_result(
         CONVERSION_PLAN_PROMPT_ID,
         CONVERSION_PLAN_PROMPT_VERSION,
         CONVERSION_PLAN_SCHEMA_VERSION,
-        convert_uploaded_document,
     )
     from core.ir.document_ir_v1 import SCHEMA_VERSION as DOCUMENT_IR_SCHEMA_VERSION
 
@@ -5396,10 +5444,25 @@ def mvp_conversion_result(
                 acceptance_limits=acceptance_limits,
                 input_size_bytes=len(fixture_content),
             )
-        converted = convert_uploaded_document(
+        converted = mvp_convert_uploaded_document(
             filename=fixture_path.name,
             content=fixture_content,
             conversion_mode=str(case["conversion_mode"]),
+            timeout_ms=acceptance_limits["timeout_ms"],
+        )
+    except MVPConversionTimeoutError as exc:
+        elapsed_ms = (time.perf_counter() - started_at) * 1000
+        return mvp_conversion_failure_result(
+            case,
+            failure_reason=f"processing_timeout: {exc}",
+            processing_time_ms=max(
+                elapsed_ms,
+                acceptance_limits["timeout_ms"] + 0.001,
+            ),
+            acceptance_limits=acceptance_limits,
+            input_size_bytes=(
+                len(fixture_content) if fixture_content is not None else None
+            ),
         )
     except Exception as exc:
         elapsed_ms = (time.perf_counter() - started_at) * 1000
