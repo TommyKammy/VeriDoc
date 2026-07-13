@@ -24,6 +24,7 @@ from core.ir.template_fingerprint import (
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = REPO_ROOT / "datasets" / "fixtures" / "manifest.json"
 POC_EVALUATION_MANIFEST_PATH = REPO_ROOT / "datasets" / "poc_evaluation_manifest_v1.json"
+MVP_EVALUATION_MANIFEST_PATH = REPO_ROOT / "datasets" / "mvp_evaluation_manifest_v1.json"
 GOLD_LABELS_PATH = REPO_ROOT / "datasets" / "gold" / "high_risk_labels_v0.json"
 TEMPLATE_REGRESSION_PATH = REPO_ROOT / "datasets" / "gold" / "template_regression_v0.json"
 REQUIRED_DOCX_PACKAGE_PARTS = {
@@ -46,6 +47,79 @@ OFFICE_DOCUMENT_RELATIONSHIP = (
 
 
 class DatasetFixturesTest(unittest.TestCase):
+    def test_mvp_evaluation_manifest_fixes_representative_cases(self) -> None:
+        fixture_manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+        fixtures_by_id = {
+            fixture["id"]: fixture for fixture in fixture_manifest["fixtures"]
+        }
+        mvp_manifest = json.loads(
+            MVP_EVALUATION_MANIFEST_PATH.read_text(encoding="utf-8")
+        )
+
+        self.assertEqual(
+            "veridoc-mvp-evaluation-dataset/v1", mvp_manifest["schema_version"]
+        )
+        self.assertEqual("fixed_for_mvp", mvp_manifest["selection_status"])
+        self.assertEqual(
+            "datasets/fixtures/manifest.json", mvp_manifest["fixture_manifest"]
+        )
+        self.assertEqual(
+            "public_synthetic_or_anonymized_only", mvp_manifest["source_policy"]
+        )
+        self.assertFalse(mvp_manifest["confidential_source_documents_allowed"])
+
+        expected_categories = {
+            "word",
+            "excel",
+            "text_pdf",
+            "scanned_pdf",
+            "record_pdf",
+        }
+        cases = mvp_manifest["cases"]
+        self.assertEqual(expected_categories, set(mvp_manifest["required_categories"]))
+        self.assertEqual(expected_categories, {case["category"] for case in cases})
+        self.assertEqual(len(expected_categories), len(cases))
+        self.assertEqual(len(cases), len({case["id"] for case in cases}))
+
+        expected_source_types = {
+            "word": "word",
+            "excel": "excel",
+            "text_pdf": "text_pdf",
+            "scanned_pdf": "scanned_pdf",
+            "record_pdf": "record_excerpt",
+        }
+
+        for case in cases:
+            with self.subTest(case=case["id"]):
+                fixture = fixtures_by_id[case["fixture_id"]]
+                fixture_path = Path(case["fixture_path"])
+
+                self.assertFalse(fixture_path.is_absolute())
+                self.assertEqual(fixture["path"], case["fixture_path"])
+                self.assertTrue((REPO_ROOT / fixture_path).is_file())
+                self.assertEqual(expected_source_types[case["category"]], fixture["source_type"])
+                self.assertIn(fixture["anonymization"], {"synthetic", "anonymized"})
+                self.assertEqual("public", fixture["confidentiality"])
+                self.assertTrue(fixture["public_review_safe"])
+                self.assertIn(
+                    case["conversion_mode"],
+                    {"word_to_excel", "excel_to_word", "pdf_to_word", "pdf_to_excel"},
+                )
+                self.assertIsInstance(case["expected_artifacts"], list)
+                self.assertGreaterEqual(len(case["expected_artifacts"]), 1)
+                for artifact in case["expected_artifacts"]:
+                    self.assertIn(artifact["type"], {"docx", "xlsx"})
+                    self.assertIsInstance(artifact["expectations"], list)
+                    self.assertGreaterEqual(len(artifact["expectations"]), 1)
+                self.assertIsInstance(case["expected_warnings"], list)
+                self.assertIsInstance(case["review_focus"], list)
+                self.assertGreaterEqual(len(case["review_focus"]), 1)
+                if case["category"] == "scanned_pdf":
+                    self.assertTrue(fixture["scanned_pdf_representative"])
+                    scanned_pdf = (REPO_ROOT / fixture_path).read_bytes()
+                    self.assertIn(b"/Subtype /Image", scanned_pdf)
+                    self.assertNotIn(b"/Font", scanned_pdf)
+
     def test_poc_evaluation_manifest_defines_representative_safe_dataset(self) -> None:
         manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
         fixture_ids = {fixture["id"] for fixture in manifest["fixtures"]}

@@ -1,0 +1,141 @@
+{
+  "schema_version": "veridoc-mvp-evaluation-dataset/v1",
+  "title": "VeriDoc Phase 12 MVP representative evaluation dataset",
+  "selection_status": "fixed_for_mvp",
+  "selection_revision": "phase12-mvp-v1",
+  "fixture_manifest": "datasets/fixtures/manifest.json",
+  "source_policy": "public_synthetic_or_anonymized_only",
+  "confidential_source_documents_allowed": false,
+  "required_categories": [
+    "word",
+    "excel",
+    "text_pdf",
+    "scanned_pdf",
+    "record_pdf"
+  ],
+  "cases": [
+    {
+      "id": "mvp-word-001",
+      "category": "word",
+      "fixture_id": "word-to-excel-application",
+      "fixture_path": "datasets/fixtures/word/word-to-excel-application.docx",
+      "source_classification": "synthetic",
+      "conversion_mode": "word_to_excel",
+      "expected_artifacts": [
+        {
+          "type": "xlsx",
+          "expectations": [
+            "application table values remain editable",
+            "numeric and date values preserve their intended types",
+            "merged-cell handling is surfaced for review"
+          ]
+        }
+      ],
+      "expected_warnings": [
+        "DOCX table contains merged cells; xlsx artifact requires review"
+      ],
+      "review_focus": [
+        "confirm the merged application-summary cell",
+        "confirm blank optional cells remain blank"
+      ]
+    },
+    {
+      "id": "mvp-excel-001",
+      "category": "excel",
+      "fixture_id": "excel-to-word-representative",
+      "fixture_path": "datasets/fixtures/excel/excel-to-word-representative.xlsx",
+      "source_classification": "synthetic",
+      "conversion_mode": "excel_to_word",
+      "expected_artifacts": [
+        {
+          "type": "docx",
+          "expectations": [
+            "all representative worksheets are emitted in source order",
+            "typed values are rendered without dropping leading zeros",
+            "worksheet names remain visible as headings"
+          ]
+        }
+      ],
+      "expected_warnings": [
+        "source bounding boxes are unavailable and converted blocks require review"
+      ],
+      "review_focus": [
+        "confirm worksheet ordering and headings",
+        "confirm dates, decimals, booleans, and leading-zero identifiers"
+      ]
+    },
+    {
+      "id": "mvp-text-pdf-001",
+      "category": "text_pdf",
+      "fixture_id": "pdf-to-excel-table-report",
+      "fixture_path": "datasets/fixtures/pdf/pdf-to-excel-ruled-table.pdf",
+      "source_classification": "synthetic",
+      "conversion_mode": "pdf_to_excel",
+      "expected_artifacts": [
+        {
+          "type": "xlsx",
+          "expectations": [
+            "the ruled table is emitted as editable cells",
+            "numeric values remain numeric",
+            "source-page and bounding-box evidence remains attached"
+          ]
+        }
+      ],
+      "expected_warnings": [
+        "conversion mode pdf_to_excel selected"
+      ],
+      "review_focus": [
+        "confirm table boundaries and blank-cell preservation",
+        "confirm source evidence for the extracted table"
+      ]
+    },
+    {
+      "id": "mvp-scanned-pdf-001",
+      "category": "scanned_pdf",
+      "fixture_id": "scanned-pdf-representative",
+      "fixture_path": "datasets/fixtures/pdf/scanned-pdf-representative.pdf",
+      "source_classification": "synthetic",
+      "conversion_mode": "pdf_to_word",
+      "expected_artifacts": [
+        {
+          "type": "docx",
+          "expectations": [
+            "the image-only source is recognized as requiring OCR",
+            "any OCR-derived content remains explicitly review-required"
+          ]
+        }
+      ],
+      "expected_warnings": [
+        "image-only scanned PDF requires OCR and reviewer confirmation"
+      ],
+      "review_focus": [
+        "reject automatic confirmation without trusted OCR evidence",
+        "confirm orientation and completeness before accepting OCR-derived text"
+      ]
+    },
+    {
+      "id": "mvp-record-pdf-001",
+      "category": "record_pdf",
+      "fixture_id": "record-pdf-representative",
+      "fixture_path": "datasets/fixtures/pdf/record-pdf-representative.pdf",
+      "source_classification": "synthetic",
+      "conversion_mode": "pdf_to_word",
+      "expected_artifacts": [
+        {
+          "type": "docx",
+          "expectations": [
+            "record fields remain linked to source evidence",
+            "high-risk values remain review-required"
+          ]
+        }
+      ],
+      "expected_warnings": [
+        "high-risk record fields require reviewer confirmation"
+      ],
+      "review_focus": [
+        "confirm high-risk field evidence against the source page",
+        "confirm no signature or approval value is auto-confirmed"
+      ]
+    }
+  ]
+}

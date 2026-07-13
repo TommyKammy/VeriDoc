@@ -164,6 +164,18 @@
       "notes": "Placement rule reserved; add only synthetic or anonymized scans."
     },
     {
+      "id": "scanned-pdf-representative",
+      "title": "Synthetic scanned PDF representative fixture",
+      "path": "datasets/fixtures/pdf/scanned-pdf-representative.pdf",
+      "source_type": "scanned_pdf",
+      "format": "pdf",
+      "anonymization": "synthetic",
+      "confidentiality": "public",
+      "public_review_safe": true,
+      "scanned_pdf_representative": true,
+      "notes": "Synthetic image-only scan for Phase 12 MVP review-boundary evaluation; contains no text layer or confidential source data."
+    },
+    {
       "id": "word-to-excel-meeting-minutes",
       "title": "Synthetic meeting minutes Word-to-Excel fixture",
       "path": "datasets/fixtures/word/word-to-excel-meeting-minutes.docx",
