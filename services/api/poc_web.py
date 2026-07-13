@@ -19,7 +19,7 @@ import sys
 from tempfile import TemporaryDirectory
 from threading import Lock
 from typing import Any, Callable
-from urllib.parse import parse_qs, urlparse, urlsplit
+from urllib.parse import parse_qs, unquote, urlparse, urlsplit
 from uuid import uuid4
 from xml.etree.ElementTree import ParseError as XmlParseError
 from zipfile import BadZipFile
@@ -4854,6 +4854,16 @@ def _redacted_endpoint_for_display(endpoint: str | None) -> str | None:
         if has_unsafe_llm_endpoint_path(parsed_endpoint.path):
             return None
         netloc = parsed_endpoint.netloc.rsplit("@", 1)[-1]
+        decoded_netloc = netloc
+        for _ in range(8):
+            if "@" in decoded_netloc:
+                return None
+            next_netloc = unquote(decoded_netloc)
+            if next_netloc == decoded_netloc:
+                break
+            decoded_netloc = next_netloc
+        else:
+            return None
         return parsed_endpoint._replace(netloc=netloc, params="", query="", fragment="").geturl()
     except ValueError:
         return None
