@@ -4845,7 +4845,14 @@ def _llm_operational_settings() -> dict[str, Any]:
     if adapter is not None:
         endpoint = adapter.base_url
         model = adapter.model
+    if endpoint is not None:
+        parsed_endpoint = urlsplit(endpoint)
+        if parsed_endpoint.username is not None or parsed_endpoint.password is not None:
+            endpoint = parsed_endpoint._replace(
+                netloc=parsed_endpoint.netloc.rsplit("@", 1)[-1]
+            ).geturl()
     support_status = _llm_support_status(reason)
+    fallback_active = reason == "missing_configured_profile"
     return {
         "network_boundary": {
             "mode": "local-only",
@@ -4864,9 +4871,13 @@ def _llm_operational_settings() -> dict[str, Any]:
         },
         "schema": {"version": CONVERSION_PLAN_SCHEMA_VERSION},
         "fallback": {
-            "active": reason is not None,
+            "active": fallback_active,
             "reason": reason,
-            "status": "standby" if reason is None else "deterministic",
+            "status": (
+                "deterministic"
+                if fallback_active
+                else "standby" if reason is None else "rejected"
+            ),
         },
     }
 

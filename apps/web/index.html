@@ -1504,6 +1504,7 @@
         }
         loadJobs();
         loadTemplates();
+        loadLlmSettings();
       });
       clearAuthToken.addEventListener("click", () => {
         savedAuthToken = "";
@@ -1513,6 +1514,7 @@
         setPageStatus("API token cleared.");
         loadJobs();
         loadTemplates();
+        loadLlmSettings();
       });
       refreshJobs.addEventListener("click", () => loadJobs());
       statusFilter.addEventListener("change", () => loadJobs());
