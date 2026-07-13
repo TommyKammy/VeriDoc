@@ -4666,6 +4666,7 @@ def p9_validate_artifact_expectations(
     primary_artifact: dict[str, Any] | None,
     warnings: object,
     allowed_runtime_warning_prefixes: tuple[str, ...] = (),
+    require_content_validation: bool = False,
 ) -> list[str]:
     expectations = p9_expectations_for_mode(fixture, representative_mode)
     failures: list[str] = []
@@ -4691,6 +4692,10 @@ def p9_validate_artifact_expectations(
             f"{expected_artifact_format!r} for {conversion_mode}"
         )
     if expectations is None:
+        if require_content_validation:
+            failures.append(
+                f"artifact content validation is unavailable for {representative_mode}"
+            )
         return failures
     expected_warnings = expectations.get("warnings")
     if isinstance(expected_warnings, list):
@@ -5285,6 +5290,7 @@ def mvp_conversion_result(
             representative_mode=representative_mode,
             primary_artifact=p9_primary_artifact(artifact_list),
             warnings=warnings,
+            require_content_validation=True,
         )
     )
     artifact_status = "fail" if artifact_failures else "pass"

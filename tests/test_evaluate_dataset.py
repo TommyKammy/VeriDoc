@@ -1027,6 +1027,44 @@ class EvaluateDatasetTest(unittest.TestCase):
         )
         self.assertEqual("fail", result["acceptance_status"])
 
+    def test_mvp_harness_fails_when_artifact_content_validation_is_unavailable(
+        self,
+    ) -> None:
+        for case_index in (3, 4):
+            case = self.valid_mvp_case(case_index)
+            fixture_content = b"mvp unvalidated pdf fixture"
+            with self.subTest(case_id=case["case_id"]), tempfile.NamedTemporaryFile(
+                suffix=".pdf"
+            ) as fixture_file:
+                fixture_file.write(fixture_content)
+                fixture_file.flush()
+                fixture_path = Path(fixture_file.name)
+                converted = self.valid_mvp_conversion_payload(
+                    case,
+                    fixture_path=fixture_path,
+                    fixture_content=fixture_content,
+                )
+
+                with mock.patch(
+                    "services.api.poc_web.convert_uploaded_document",
+                    return_value=converted,
+                ):
+                    result = evaluate_dataset.mvp_conversion_result(
+                        case,
+                        fixture_path=fixture_path,
+                    )
+
+            self.assertEqual(
+                result["evaluations"]["artifact"]["expected_formats"],
+                result["evaluations"]["artifact"]["actual_formats"],
+            )
+            self.assertEqual("fail", result["evaluations"]["artifact"]["status"])
+            self.assertIn(
+                "artifact content validation is unavailable",
+                result["evaluations"]["artifact"]["reason"],
+            )
+            self.assertEqual("fail", result["acceptance_status"])
+
     def test_mvp_harness_fails_mismatched_audit_fields(self) -> None:
         case = self.valid_mvp_case()
         fixture_content = b"mvp audit review fixture"
