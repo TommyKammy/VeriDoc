@@ -1194,7 +1194,7 @@
               aria-label="Conversion warnings"
               hidden
             ></div>
-            <div id="review-list" role="list" aria-labelledby="review-title"></div>
+            <div id="review-list" aria-labelledby="review-title"></div>
             <div id="review-action-status" class="page-status" role="status" aria-live="polite"></div>
           </div>
 
@@ -2972,6 +2972,7 @@
 
       function renderReviewItems(items) {
         if (!items.length) {
+          reviewList.removeAttribute("role");
           const empty = document.createElement("p");
           empty.className = "review-empty";
           empty.textContent =
@@ -2979,6 +2980,7 @@
           reviewList.replaceChildren(empty);
           return;
         }
+        reviewList.setAttribute("role", "list");
         reviewList.replaceChildren(...items.map(renderReviewItem));
       }
 
@@ -3201,6 +3203,7 @@
         if (item.llm_involved === true) {
           const badge = document.createElement("span");
           badge.className = "llm-badge";
+          badge.setAttribute("role", "listitem");
           badge.textContent = "LLM";
           return badge;
         }

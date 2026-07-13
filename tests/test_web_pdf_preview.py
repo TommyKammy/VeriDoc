@@ -66,7 +66,9 @@ def test_primary_controls_have_visible_keyboard_focus() -> None:
 def test_primary_review_surfaces_have_accessible_names_and_list_semantics() -> None:
     html = _web_html()
 
-    assert 'id="review-list" role="list" aria-labelledby="review-title"' in html
+    assert 'id="review-list" aria-labelledby="review-title"' in html
+    assert 'reviewList.removeAttribute("role");' in html
+    assert 'reviewList.setAttribute("role", "list");' in html
     assert 'wrapper.setAttribute("role", "listitem");' in html
     assert 'jump.setAttribute("aria-label", `Jump to ${blockId} source bbox`);' in html
     assert 'approve.setAttribute("aria-label", `Approve ${blockId}`);' in html
@@ -382,7 +384,13 @@ def test_bbox_overlay_resets_button_sizing() -> None:
 
 def test_review_warning_badges_show_codes_levels_and_llm_involvement() -> None:
     html = _web_html()
+    llm_badge = re.search(
+        r"function llmInvolvementBadge\(item\) \{(?P<body>.*?)\n      \}",
+        html,
+        flags=re.S,
+    )
 
+    assert llm_badge is not None
     assert "function warningBadgeDescriptor(warning)" in html
     assert "descriptor.message" in html
     assert "descriptor.remediation" in html
@@ -405,4 +413,5 @@ def test_review_warning_badges_show_codes_levels_and_llm_involvement() -> None:
     assert "function llmInvolvementBadge(item)" in html
     assert "item.llm_involved === true" in html
     assert 'badge.className = "llm-badge";' in html
+    assert 'badge.setAttribute("role", "listitem");' in llm_badge.group("body")
     assert "wrapper.append(title, text, badges, edit, actions);" in html

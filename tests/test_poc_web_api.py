@@ -11891,6 +11891,8 @@ def test_bundled_web_ui_lists_review_items_with_operator_summary() -> None:
     assert "自動検証上の要確認なし" in render_items.group("body")
     assert "安全を確定するものではありません" in render_items.group("body")
     assert "review-empty" in render_items.group("body")
+    assert 'reviewList.removeAttribute("role")' in render_items.group("body")
+    assert 'reviewList.setAttribute("role", "list")' in render_items.group("body")
     assert "sourcePageLabel(item)" in render_item.group("body")
     assert "formatSourceBbox(item.source_bbox)" in render_item.group("body")
     assert "formatSourceConfidence(item.source_confidence)" in render_item.group("body")
