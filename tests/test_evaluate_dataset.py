@@ -22,6 +22,7 @@ POC_COMPARISON_PATH = REPO_ROOT / "datasets" / "gold" / "poc_mode_comparison_v1.
 GMP_ACCEPTANCE_PATH = REPO_ROOT / "datasets" / "gold" / "gmp_acceptance_v1.json"
 FIXTURE_MANIFEST_PATH = REPO_ROOT / "datasets" / "fixtures" / "manifest.json"
 POC_EVALUATION_MANIFEST_PATH = REPO_ROOT / "datasets" / "poc_evaluation_manifest_v1.json"
+MVP_EVALUATION_MANIFEST_PATH = REPO_ROOT / "datasets" / "mvp_evaluation_manifest_v1.json"
 
 
 spec = importlib.util.spec_from_file_location("evaluate_dataset", SCRIPT_PATH)
@@ -242,6 +243,9 @@ class EvaluateDatasetTest(unittest.TestCase):
 
     def valid_gmp_acceptance_data(self) -> dict[str, object]:
         return copy.deepcopy(evaluate_dataset.load_json(GMP_ACCEPTANCE_PATH))
+
+    def valid_mvp_manifest_data(self) -> dict[str, object]:
+        return copy.deepcopy(evaluate_dataset.load_json(MVP_EVALUATION_MANIFEST_PATH))
 
     def valid_high_risk_labels_data(self) -> dict[str, object]:
         return copy.deepcopy(evaluate_dataset.load_json(HIGH_RISK_LABELS_PATH))
@@ -862,6 +866,60 @@ class EvaluateDatasetTest(unittest.TestCase):
             str(evaluate_dataset.DEFAULT_P9_HARNESS_MANIFEST),
             payload["dataset_manifest"],
         )
+
+    def test_mvp_harness_cli_emits_acceptance_ready_evidence(self) -> None:
+        completed = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "--mvp-harness"],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        payload = json.loads(completed.stdout)
+
+        self.assertEqual(
+            "veridoc-mvp-evaluation-harness/v1",
+            payload["schema_version"],
+        )
+        self.assertEqual(
+            str(MVP_EVALUATION_MANIFEST_PATH.relative_to(REPO_ROOT)),
+            payload["dataset_manifest"],
+        )
+        self.assertEqual(5, payload["summary"]["case_count"])
+        self.assertEqual(
+            payload["summary"]["case_count"],
+            sum(payload["summary"]["acceptance_status_counts"].values()),
+        )
+        self.assertTrue(payload["results"])
+        for result in payload["results"]:
+            with self.subTest(case=result["case_id"]):
+                self.assertIn(result["acceptance_status"], {"pass", "fail", "unknown"})
+                self.assertIsInstance(result["processing_time_ms"], float)
+                self.assertGreaterEqual(result["processing_time_ms"], 0.0)
+                self.assertEqual(
+                    {"artifact", "review", "audit", "processing_time"},
+                    set(result["evaluations"]),
+                )
+                self.assertTrue(
+                    all(
+                        evaluation["status"] in {"pass", "fail", "unknown"}
+                        for evaluation in result["evaluations"].values()
+                    )
+                )
+
+    def test_mvp_harness_rejects_case_fixture_path_drift(self) -> None:
+        manifest = self.valid_mvp_manifest_data()
+        fixture_manifest = evaluate_dataset.load_json(FIXTURE_MANIFEST_PATH)
+        manifest["cases"][0]["fixture_path"] = (
+            "datasets/fixtures/word/another-public-fixture.docx"
+        )
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError,
+            "fixture_path must match the authoritative fixture manifest path",
+        ):
+            evaluate_dataset.mvp_evaluation_cases(manifest, fixture_manifest)
 
     def test_poc_acceptance_report_cli_maps_15_2_criteria(self) -> None:
         completed = subprocess.run(

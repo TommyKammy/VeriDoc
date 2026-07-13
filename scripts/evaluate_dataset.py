@@ -37,13 +37,16 @@ DEFAULT_LLM_STABILITY_RUNS = Path("datasets/gold/llm_stability_runs_v0.json")
 DEFAULT_POC_COMPARISON = Path("datasets/gold/poc_mode_comparison_v1.json")
 DEFAULT_GMP_ACCEPTANCE = Path("datasets/gold/gmp_acceptance_v1.json")
 DEFAULT_P9_HARNESS_MANIFEST = Path("datasets/poc_evaluation_manifest_v1.json")
+DEFAULT_MVP_HARNESS_MANIFEST = Path("datasets/mvp_evaluation_manifest_v1.json")
 EVALUATION_CASES_SCHEMA_VERSION = "veridoc-evaluation-cases/v0"
 LLM_STABILITY_RUNS_SCHEMA_VERSION = "veridoc-llm-stability-runs/v0"
 POC_MODE_COMPARISON_SCHEMA_VERSION = "veridoc-poc-mode-comparison/v1"
 GMP_ACCEPTANCE_SCHEMA_VERSION = "veridoc-gmp-acceptance/v1"
 P9_HARNESS_SCHEMA_VERSION = "veridoc-p9-poc-evaluation-harness/v0"
+MVP_HARNESS_SCHEMA_VERSION = "veridoc-mvp-evaluation-harness/v1"
 POC_ACCEPTANCE_REPORT_SCHEMA_VERSION = "veridoc-poc-acceptance-report/v0"
 P9_EVALUATION_MANIFEST_SCHEMA_VERSION = "veridoc-poc-evaluation-dataset/v1"
+MVP_EVALUATION_MANIFEST_SCHEMA_VERSION = "veridoc-mvp-evaluation-dataset/v1"
 HIGH_RISK_LABELS_SCHEMA_VERSION = "veridoc-high-risk-labels/v0"
 FIXTURE_MANIFEST_SCHEMA_VERSION = "veridoc-eval-fixtures/v0"
 FIXTURE_SCHEMA_VERSION = "veridoc-evaluation-fixture/v0"
@@ -3449,6 +3452,54 @@ class P9HarnessReport:
 
 
 @dataclass(frozen=True)
+class MVPHarnessReport:
+    manifest: Path
+    results: tuple[dict[str, object], ...]
+
+    @property
+    def acceptance_status(self) -> str:
+        return mvp_acceptance_status(
+            str(result["acceptance_status"]) for result in self.results
+        )
+
+    def as_dict(self) -> dict[str, object]:
+        status_counts = Counter(
+            str(result["acceptance_status"]) for result in self.results
+        )
+        acceptance_status_counts = {
+            status: status_counts.get(status, 0)
+            for status in ("pass", "fail", "unknown")
+        }
+        return {
+            "schema_version": MVP_HARNESS_SCHEMA_VERSION,
+            "dataset_manifest": str(self.manifest),
+            "summary": {
+                "case_count": len(self.results),
+                "acceptance_status": self.acceptance_status,
+                "acceptance_status_counts": acceptance_status_counts,
+                "conversion_modes": sorted(
+                    {str(result["conversion_mode"]) for result in self.results}
+                ),
+            },
+            "results": list(self.results),
+            "acceptance_handoff": {
+                "overall_status": self.acceptance_status,
+                "status_values": ["pass", "fail", "unknown"],
+                "failed_case_ids": [
+                    result["case_id"]
+                    for result in self.results
+                    if result["acceptance_status"] == "fail"
+                ],
+                "unknown_case_ids": [
+                    result["case_id"]
+                    for result in self.results
+                    if result["acceptance_status"] == "unknown"
+                ],
+            },
+        }
+
+
+@dataclass(frozen=True)
 class PoCAcceptanceReport:
     p9_harness: P9HarnessReport
     generated_at: str
@@ -4907,6 +4958,332 @@ def p9_conversion_result(
         "artifact_expectations_met": not artifact_expectation_failures,
         "artifact_expectation_failures": artifact_expectation_failures,
     }
+
+
+def mvp_acceptance_status(statuses: Iterable[str]) -> str:
+    observed = tuple(statuses)
+    if any(status == "fail" for status in observed):
+        return "fail"
+    if observed and all(status == "pass" for status in observed):
+        return "pass"
+    return "unknown"
+
+
+def mvp_fixture_manifest_path(manifest: dict[str, Any], repo_root: Path) -> Path:
+    if manifest.get("schema_version") != MVP_EVALUATION_MANIFEST_SCHEMA_VERSION:
+        raise EvaluationCaseError(
+            "unsupported MVP evaluation manifest schema_version "
+            f"{manifest.get('schema_version')!r}"
+        )
+    if manifest.get("fixture_manifest") != str(EXPECTED_DATASET_MANIFEST):
+        raise EvaluationCaseError(
+            "MVP evaluation manifest fixture_manifest must be "
+            "datasets/fixtures/manifest.json"
+        )
+    if manifest.get("source_policy") != "public_synthetic_or_anonymized_only":
+        raise EvaluationCaseError(
+            "MVP evaluation manifest must require public synthetic or anonymized sources"
+        )
+    if manifest.get("confidential_source_documents_allowed") is not False:
+        raise EvaluationCaseError(
+            "MVP evaluation manifest must disallow confidential source documents"
+        )
+    return repo_root / EXPECTED_DATASET_MANIFEST
+
+
+def mvp_evaluation_cases(
+    manifest: dict[str, Any],
+    fixture_manifest: dict[str, Any],
+) -> list[dict[str, Any]]:
+    cases = manifest.get("cases")
+    if not isinstance(cases, list) or not cases:
+        raise EvaluationCaseError("MVP evaluation manifest must define a cases list")
+    fixtures = fixture_manifest.get("fixtures")
+    if not isinstance(fixtures, list):
+        raise EvaluationCaseError("fixture manifest must define a fixtures list")
+    fixtures_by_id = {
+        fixture["id"]: fixture
+        for fixture in fixtures
+        if isinstance(fixture, dict) and isinstance(fixture.get("id"), str)
+    }
+
+    evaluation_cases: list[dict[str, Any]] = []
+    seen_case_ids: set[str] = set()
+    observed_categories: set[str] = set()
+    for case in cases:
+        if not isinstance(case, dict):
+            raise EvaluationCaseError("each MVP evaluation case needs an object")
+        case_id = case.get("id")
+        if not isinstance(case_id, str) or not case_id:
+            raise EvaluationCaseError("each MVP evaluation case needs a string id")
+        if case_id in seen_case_ids:
+            raise EvaluationCaseError(f"duplicate MVP case id {case_id!r}")
+        seen_case_ids.add(case_id)
+
+        category = case.get("category")
+        if not isinstance(category, str) or not category:
+            raise EvaluationCaseError(f"MVP case {case_id!r} needs a category")
+        observed_categories.add(category)
+        fixture_id = case.get("fixture_id")
+        fixture = fixtures_by_id.get(fixture_id) if isinstance(fixture_id, str) else None
+        if fixture is None:
+            raise EvaluationCaseError(
+                f"MVP case {case_id!r} must reference a fixture_manifest fixture"
+            )
+        fixture_path = case.get("fixture_path")
+        if fixture_path != fixture.get("path"):
+            raise EvaluationCaseError(
+                f"MVP case {case_id!r} fixture_path must match the authoritative "
+                "fixture manifest path"
+            )
+        conversion_mode = case.get("conversion_mode")
+        if conversion_mode not in set(P9_CONVERSION_MODE_BY_MODE.values()):
+            raise EvaluationCaseError(
+                f"MVP case {case_id!r} has unsupported conversion_mode "
+                f"{conversion_mode!r}"
+            )
+        expected_status = case.get("expected_status")
+        if expected_status not in {"converted", "requires_review"}:
+            raise EvaluationCaseError(
+                f"MVP case {case_id!r} has unsupported expected_status "
+                f"{expected_status!r}"
+            )
+        expected_artifacts = case.get("expected_artifacts")
+        if not isinstance(expected_artifacts, list) or not expected_artifacts or not all(
+            isinstance(artifact, dict)
+            and isinstance(artifact.get("type"), str)
+            and artifact["type"]
+            for artifact in expected_artifacts
+        ):
+            raise EvaluationCaseError(
+                f"MVP case {case_id!r} must define expected artifact types"
+            )
+        for field in ("expected_warnings", "review_focus"):
+            value = case.get(field)
+            if not isinstance(value, list) or not all(
+                isinstance(item, str) and item for item in value
+            ):
+                raise EvaluationCaseError(
+                    f"MVP case {case_id!r} must define a {field} string list"
+                )
+
+        merged = dict(fixture)
+        merged.update(case)
+        merged["case_id"] = case_id
+        evaluation_cases.append(merged)
+
+    required_categories = manifest.get("required_categories")
+    if not isinstance(required_categories, list) or not all(
+        isinstance(category, str) for category in required_categories
+    ):
+        raise EvaluationCaseError(
+            "MVP evaluation manifest must declare required_categories"
+        )
+    if set(required_categories) != observed_categories:
+        raise EvaluationCaseError(
+            "MVP evaluation manifest required_categories must match case categories"
+        )
+    return evaluation_cases
+
+
+def mvp_processing_time_evaluation(processing_time_ms: float) -> dict[str, object]:
+    return {
+        "status": "unknown",
+        "processing_time_ms": round(processing_time_ms, 3),
+        "threshold_ms": None,
+        "reason": "processing-time acceptance threshold is not defined in the MVP manifest",
+    }
+
+
+def mvp_conversion_failure_result(
+    case: dict[str, Any],
+    *,
+    failure_reason: str,
+    processing_time_ms: float,
+) -> dict[str, object]:
+    evaluations = {
+        "artifact": {
+            "status": "fail",
+            "expected_formats": [
+                artifact["type"] for artifact in case["expected_artifacts"]
+            ],
+            "actual_formats": [],
+            "reason": failure_reason,
+        },
+        "review": {
+            "status": "unknown",
+            "expected_status": case["expected_status"],
+            "observed_status": None,
+            "decision": None,
+            "reason": "conversion did not reach the review decision boundary",
+        },
+        "audit": {
+            "status": "fail",
+            "present": False,
+            "reason": "conversion audit missing",
+        },
+        "processing_time": mvp_processing_time_evaluation(processing_time_ms),
+    }
+    return {
+        "case_id": case["case_id"],
+        "fixture_id": case["fixture_id"],
+        "category": case["category"],
+        "conversion_mode": case["conversion_mode"],
+        "acceptance_status": mvp_acceptance_status(
+            str(evaluation["status"]) for evaluation in evaluations.values()
+        ),
+        "processing_time_ms": round(processing_time_ms, 3),
+        "artifact_formats": [],
+        "review_decision": None,
+        "review_items_count": 0,
+        "audit_present": False,
+        "warnings": [],
+        "failure_reason": failure_reason,
+        "evaluations": evaluations,
+    }
+
+
+def mvp_conversion_result(
+    case: dict[str, Any],
+    *,
+    fixture_path: Path,
+) -> dict[str, object]:
+    from services.api.poc_web import convert_uploaded_document
+
+    started_at = time.perf_counter()
+    try:
+        converted = convert_uploaded_document(
+            filename=fixture_path.name,
+            content=fixture_path.read_bytes(),
+            conversion_mode=str(case["conversion_mode"]),
+        )
+    except Exception as exc:
+        elapsed_ms = (time.perf_counter() - started_at) * 1000
+        return mvp_conversion_failure_result(
+            case,
+            failure_reason=f"{type(exc).__name__}: {exc}",
+            processing_time_ms=elapsed_ms,
+        )
+
+    elapsed_ms = (time.perf_counter() - started_at) * 1000
+    artifacts = converted.get("artifacts")
+    artifact_list = artifacts if isinstance(artifacts, list) else []
+    actual_formats = [
+        str(artifact["format"])
+        for artifact in artifact_list
+        if isinstance(artifact, dict)
+        and artifact.get("kind") == "primary"
+        and isinstance(artifact.get("format"), str)
+    ]
+    expected_formats = [
+        str(artifact["type"]) for artifact in case["expected_artifacts"]
+    ]
+    artifact_status = "pass" if actual_formats == expected_formats else "fail"
+
+    warnings = converted.get("warnings")
+    actual_warnings = warnings if isinstance(warnings, list) else []
+    observed_status = converted.get("status")
+    review_failures: list[str] = []
+    if observed_status != case["expected_status"]:
+        review_failures.append(
+            f"expected conversion status {case['expected_status']!r}, got "
+            f"{observed_status!r}"
+        )
+    if actual_warnings != case["expected_warnings"]:
+        review_failures.append("runtime warnings did not match manifest expectations")
+    review_status = "fail" if review_failures else "unknown"
+    review_reason = (
+        "; ".join(review_failures)
+        if review_failures
+        else "no authoritative reviewer decision was recorded by the conversion run"
+    )
+
+    audit = converted.get("audit")
+    audit_present = isinstance(audit, dict)
+    evaluations = {
+        "artifact": {
+            "status": artifact_status,
+            "expected_formats": expected_formats,
+            "actual_formats": actual_formats,
+            "reason": (
+                None
+                if artifact_status == "pass"
+                else "primary artifact formats did not match manifest expectations"
+            ),
+        },
+        "review": {
+            "status": review_status,
+            "expected_status": case["expected_status"],
+            "observed_status": observed_status,
+            "decision": None,
+            "review_focus": list(case["review_focus"]),
+            "reason": review_reason,
+        },
+        "audit": {
+            "status": "pass" if audit_present else "fail",
+            "present": audit_present,
+            "reason": None if audit_present else "conversion audit missing",
+        },
+        "processing_time": mvp_processing_time_evaluation(elapsed_ms),
+    }
+    acceptance_status = mvp_acceptance_status(
+        str(evaluation["status"]) for evaluation in evaluations.values()
+    )
+    review_items = converted.get("review_items")
+    return {
+        "case_id": case["case_id"],
+        "fixture_id": case["fixture_id"],
+        "category": case["category"],
+        "conversion_mode": case["conversion_mode"],
+        "acceptance_status": acceptance_status,
+        "processing_time_ms": round(elapsed_ms, 3),
+        "artifact_formats": actual_formats,
+        "review_decision": None,
+        "review_items_count": len(review_items) if isinstance(review_items, list) else 0,
+        "audit_present": audit_present,
+        "warnings": actual_warnings,
+        "failure_reason": (
+            None
+            if acceptance_status != "fail"
+            else "; ".join(
+                str(evaluation["reason"])
+                for evaluation in evaluations.values()
+                if evaluation["status"] == "fail"
+            )
+        ),
+        "evaluations": evaluations,
+    }
+
+
+def evaluate_mvp_harness(
+    manifest_path: Path = DEFAULT_MVP_HARNESS_MANIFEST,
+) -> MVPHarnessReport:
+    resolved_manifest = manifest_path.resolve()
+    repo_root = p9_manifest_repo_root(resolved_manifest)
+    manifest = load_json(resolved_manifest)
+    fixture_manifest_path = mvp_fixture_manifest_path(manifest, repo_root)
+    fixture_manifest = load_json(fixture_manifest_path)
+    fixture_paths = fixture_paths_from_manifest(fixture_manifest, repo_root)
+    cases = mvp_evaluation_cases(manifest, fixture_manifest)
+
+    results: list[dict[str, object]] = []
+    for case in cases:
+        fixture_id = str(case["fixture_id"])
+        fixture_path = fixture_paths.get(fixture_id)
+        if fixture_path is None:
+            results.append(
+                mvp_conversion_failure_result(
+                    case,
+                    failure_reason=(
+                        f"fixture {fixture_id!r} path is missing or invalid in "
+                        "the authoritative fixture manifest"
+                    ),
+                    processing_time_ms=0.0,
+                )
+            )
+            continue
+        results.append(mvp_conversion_result(case, fixture_path=fixture_path))
+    return MVPHarnessReport(manifest=manifest_path, results=tuple(results))
 
 
 def evaluate_p9_harness(
@@ -7440,6 +7817,16 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--mvp-harness",
+        type=Path,
+        nargs="?",
+        const=DEFAULT_MVP_HARNESS_MANIFEST,
+        help=(
+            "Run the Phase12 MVP evaluation harness and emit artifact, review, "
+            "audit, processing-time, and acceptance-handoff evidence."
+        ),
+    )
+    parser.add_argument(
         "--poc-acceptance-report",
         type=Path,
         nargs="?",
@@ -7452,6 +7839,7 @@ def main() -> int:
     args = parser.parse_args()
     selected_report_modes = [
         args.p9_harness is not None,
+        args.mvp_harness is not None,
         args.poc_acceptance_report is not None,
         args.gmp_acceptance is not None,
         args.llm_stability_report,
@@ -7460,8 +7848,8 @@ def main() -> int:
         parser.error("--p9-harness cannot be combined with --gmp-acceptance")
     if sum(1 for selected in selected_report_modes if selected) > 1:
         parser.error(
-            "--p9-harness, --poc-acceptance-report, --gmp-acceptance, and "
-            "--llm-stability-report cannot be combined"
+            "--p9-harness, --mvp-harness, --poc-acceptance-report, "
+            "--gmp-acceptance, and --llm-stability-report cannot be combined"
         )
 
     try:
@@ -7483,6 +7871,8 @@ def main() -> int:
                 or DEFAULT_LLM_STABILITY_RUNS,
                 poc_comparison_path=args.poc_comparison or DEFAULT_POC_COMPARISON,
             )
+        elif args.mvp_harness is not None:
+            metrics = evaluate_mvp_harness(args.mvp_harness)
         elif args.gmp_acceptance is not None:
             gmp_acceptance_path = args.gmp_acceptance.resolve()
             metrics = evaluate_gmp_acceptance(
