@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import importlib.util
 import json
 import os
@@ -22,6 +23,7 @@ POC_COMPARISON_PATH = REPO_ROOT / "datasets" / "gold" / "poc_mode_comparison_v1.
 GMP_ACCEPTANCE_PATH = REPO_ROOT / "datasets" / "gold" / "gmp_acceptance_v1.json"
 FIXTURE_MANIFEST_PATH = REPO_ROOT / "datasets" / "fixtures" / "manifest.json"
 POC_EVALUATION_MANIFEST_PATH = REPO_ROOT / "datasets" / "poc_evaluation_manifest_v1.json"
+MVP_EVALUATION_MANIFEST_PATH = REPO_ROOT / "datasets" / "mvp_evaluation_manifest_v1.json"
 
 
 spec = importlib.util.spec_from_file_location("evaluate_dataset", SCRIPT_PATH)
@@ -242,6 +244,85 @@ class EvaluateDatasetTest(unittest.TestCase):
 
     def valid_gmp_acceptance_data(self) -> dict[str, object]:
         return copy.deepcopy(evaluate_dataset.load_json(GMP_ACCEPTANCE_PATH))
+
+    def valid_mvp_manifest_data(self) -> dict[str, object]:
+        return copy.deepcopy(evaluate_dataset.load_json(MVP_EVALUATION_MANIFEST_PATH))
+
+    def valid_mvp_case(self, index: int = 0) -> dict[str, object]:
+        return evaluate_dataset.mvp_evaluation_cases(
+            self.valid_mvp_manifest_data(),
+            evaluate_dataset.load_json(FIXTURE_MANIFEST_PATH),
+        )[index]
+
+    def valid_mvp_conversion_payload(
+        self,
+        case: dict[str, object],
+        *,
+        fixture_path: Path,
+        fixture_content: bytes,
+    ) -> dict[str, object]:
+        from services.api.poc_web import (
+            CONVERSION_AUDIT_SCHEMA_VERSION,
+            CONVERSION_PLAN_PROMPT_ID,
+            CONVERSION_PLAN_PROMPT_VERSION,
+            CONVERSION_PLAN_SCHEMA_VERSION,
+        )
+        from core.ir.document_ir_v1 import SCHEMA_VERSION as DOCUMENT_IR_SCHEMA_VERSION
+
+        source_sha256 = hashlib.sha256(fixture_content).hexdigest()
+        conversion_id = "conversion-mvp-review-test"
+        source_type = str(case["source_type"])
+        conversion_mode = str(case["conversion_mode"])
+        warnings = copy.deepcopy(case["expected_warnings"])
+        review_items = (
+            [{"id": "review-item-mvp-test"}]
+            if case["expected_status"] == "requires_review"
+            else []
+        )
+        document_ir_schema_version = DOCUMENT_IR_SCHEMA_VERSION
+        return {
+            "status": case["expected_status"],
+            "conversion_id": conversion_id,
+            "hashes": {"source_sha256": source_sha256},
+            "artifacts": [
+                {
+                    "kind": "primary",
+                    "id": "primary-review-test",
+                    "format": case["expected_artifacts"][0]["type"],
+                    "content": b"artifact-review-test",
+                }
+            ],
+            "warnings": warnings,
+            "review_items": review_items,
+            "document_ir": {"schema_version": document_ir_schema_version},
+            "audit": {
+                "schema_version": CONVERSION_AUDIT_SCHEMA_VERSION,
+                "conversion_id": conversion_id,
+                "input": {
+                    "filename": fixture_path.name,
+                    "source_type": source_type,
+                    "sha256": source_sha256,
+                    "conversion_mode": conversion_mode,
+                },
+                "source_filename": fixture_path.name,
+                "source_type": source_type,
+                "source_sha256": source_sha256,
+                "conversion_mode": conversion_mode,
+                "versions": {
+                    "prompt": {
+                        "id": CONVERSION_PLAN_PROMPT_ID,
+                        "version": CONVERSION_PLAN_PROMPT_VERSION,
+                    },
+                    "schemas": {
+                        "conversion_audit": CONVERSION_AUDIT_SCHEMA_VERSION,
+                        "conversion_plan": CONVERSION_PLAN_SCHEMA_VERSION,
+                        "document_ir": document_ir_schema_version,
+                    }
+                },
+                "warnings": {"count": len(warnings)},
+                "review_items": {"count": len(review_items)},
+            },
+        }
 
     def valid_high_risk_labels_data(self) -> dict[str, object]:
         return copy.deepcopy(evaluate_dataset.load_json(HIGH_RISK_LABELS_PATH))
@@ -862,6 +943,365 @@ class EvaluateDatasetTest(unittest.TestCase):
             str(evaluate_dataset.DEFAULT_P9_HARNESS_MANIFEST),
             payload["dataset_manifest"],
         )
+
+    def test_mvp_harness_cli_emits_acceptance_ready_evidence(self) -> None:
+        completed = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "--mvp-harness"],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        payload = json.loads(completed.stdout)
+
+        self.assertEqual(
+            "veridoc-mvp-evaluation-harness/v1",
+            payload["schema_version"],
+        )
+        self.assertEqual(
+            str(MVP_EVALUATION_MANIFEST_PATH.relative_to(REPO_ROOT)),
+            payload["dataset_manifest"],
+        )
+        self.assertEqual(5, payload["summary"]["case_count"])
+        self.assertEqual(
+            payload["summary"]["case_count"],
+            sum(payload["summary"]["acceptance_status_counts"].values()),
+        )
+        self.assertTrue(payload["results"])
+        for result in payload["results"]:
+            with self.subTest(case=result["case_id"]):
+                self.assertIn(result["acceptance_status"], {"pass", "fail", "unknown"})
+                self.assertIsInstance(result["processing_time_ms"], float)
+                self.assertGreaterEqual(result["processing_time_ms"], 0.0)
+                self.assertEqual(
+                    {"artifact", "review", "audit", "processing_time"},
+                    set(result["evaluations"]),
+                )
+                self.assertTrue(
+                    all(
+                        evaluation["status"] in {"pass", "fail", "unknown"}
+                        for evaluation in result["evaluations"].values()
+                    )
+                )
+
+    def test_mvp_harness_rejects_case_fixture_path_drift(self) -> None:
+        manifest = self.valid_mvp_manifest_data()
+        fixture_manifest = evaluate_dataset.load_json(FIXTURE_MANIFEST_PATH)
+        manifest["cases"][0]["fixture_path"] = (
+            "datasets/fixtures/word/another-public-fixture.docx"
+        )
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError,
+            "fixture_path must match the authoritative fixture manifest path",
+        ):
+            evaluate_dataset.mvp_evaluation_cases(manifest, fixture_manifest)
+
+    def test_mvp_harness_rejects_case_category_drift(self) -> None:
+        manifest = self.valid_mvp_manifest_data()
+        fixture_manifest = evaluate_dataset.load_json(FIXTURE_MANIFEST_PATH)
+        manifest["cases"][0]["category"] = "excel"
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError,
+            "category must match the authoritative fixture source_type",
+        ):
+            evaluate_dataset.mvp_evaluation_cases(manifest, fixture_manifest)
+
+    def test_mvp_harness_rejects_reduced_fixed_category_set(self) -> None:
+        manifest = self.valid_mvp_manifest_data()
+        fixture_manifest = evaluate_dataset.load_json(FIXTURE_MANIFEST_PATH)
+        manifest["cases"] = [
+            case for case in manifest["cases"] if case["category"] != "scanned_pdf"
+        ]
+        manifest["required_categories"].remove("scanned_pdf")
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError,
+            "fixed MVP category set",
+        ):
+            evaluate_dataset.mvp_evaluation_cases(manifest, fixture_manifest)
+
+    def test_mvp_harness_rejects_duplicate_case_category(self) -> None:
+        manifest = self.valid_mvp_manifest_data()
+        fixture_manifest = evaluate_dataset.load_json(FIXTURE_MANIFEST_PATH)
+        duplicate_case = copy.deepcopy(manifest["cases"][0])
+        duplicate_case["id"] = f"{duplicate_case['id']}-duplicate"
+        manifest["cases"].append(duplicate_case)
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError,
+            "duplicate MVP case category",
+        ):
+            evaluate_dataset.mvp_evaluation_cases(manifest, fixture_manifest)
+
+    def test_mvp_harness_preserves_authoritative_fixture_expectations(self) -> None:
+        manifest = self.valid_mvp_manifest_data()
+        fixture_manifest = evaluate_dataset.load_json(FIXTURE_MANIFEST_PATH)
+        manifest["cases"][0]["word_to_excel_expectations"] = {"sheets": []}
+
+        case = evaluate_dataset.mvp_evaluation_cases(
+            manifest,
+            fixture_manifest,
+        )[0]
+        fixture = next(
+            item
+            for item in fixture_manifest["fixtures"]
+            if item["id"] == manifest["cases"][0]["fixture_id"]
+        )
+
+        self.assertEqual(
+            fixture["word_to_excel_expectations"],
+            case["word_to_excel_expectations"],
+        )
+
+    def test_mvp_harness_fails_requires_review_without_review_items(self) -> None:
+        case = self.valid_mvp_case()
+        fixture_content = b"mvp review handoff fixture"
+        with tempfile.NamedTemporaryFile(suffix=".docx") as fixture_file:
+            fixture_file.write(fixture_content)
+            fixture_file.flush()
+            fixture_path = Path(fixture_file.name)
+            converted = self.valid_mvp_conversion_payload(
+                case,
+                fixture_path=fixture_path,
+                fixture_content=fixture_content,
+            )
+            converted["review_items"] = []
+            converted["audit"]["review_items"]["count"] = 0
+
+            with mock.patch(
+                "services.api.poc_web.convert_uploaded_document",
+                return_value=converted,
+            ), mock.patch.object(
+                evaluate_dataset,
+                "p9_validate_artifact_expectations",
+                return_value=[],
+            ):
+                result = evaluate_dataset.mvp_conversion_result(
+                    case,
+                    fixture_path=fixture_path,
+                )
+
+        self.assertEqual(0, result["review_items_count"])
+        self.assertEqual("fail", result["evaluations"]["review"]["status"])
+        self.assertIn(
+            "requires_review conversion did not emit review items",
+            result["evaluations"]["review"]["reason"],
+        )
+        self.assertEqual("fail", result["acceptance_status"])
+
+    def test_mvp_harness_fails_converted_with_review_items(self) -> None:
+        case = self.valid_mvp_case(2)
+        fixture_content = b"mvp converted review fixture"
+        with tempfile.NamedTemporaryFile(suffix=".pdf") as fixture_file:
+            fixture_file.write(fixture_content)
+            fixture_file.flush()
+            fixture_path = Path(fixture_file.name)
+            converted = self.valid_mvp_conversion_payload(
+                case,
+                fixture_path=fixture_path,
+                fixture_content=fixture_content,
+            )
+            converted["review_items"] = [{"id": "unexpected-review-item"}]
+            converted["audit"]["review_items"]["count"] = 1
+
+            with mock.patch(
+                "services.api.poc_web.convert_uploaded_document",
+                return_value=converted,
+            ), mock.patch.object(
+                evaluate_dataset,
+                "p9_validate_artifact_expectations",
+                return_value=[],
+            ):
+                result = evaluate_dataset.mvp_conversion_result(
+                    case,
+                    fixture_path=fixture_path,
+                )
+
+        self.assertEqual(1, result["review_items_count"])
+        self.assertEqual("fail", result["evaluations"]["review"]["status"])
+        self.assertIn(
+            "converted conversion unexpectedly emitted review items",
+            result["evaluations"]["review"]["reason"],
+        )
+        self.assertEqual("fail", result["acceptance_status"])
+
+    def test_mvp_harness_fails_artifact_content_validation_mismatch(self) -> None:
+        case = self.valid_mvp_case()
+        fixture_content = b"mvp artifact review fixture"
+        with tempfile.NamedTemporaryFile(suffix=".docx") as fixture_file:
+            fixture_file.write(fixture_content)
+            fixture_file.flush()
+            fixture_path = Path(fixture_file.name)
+            converted = self.valid_mvp_conversion_payload(
+                case,
+                fixture_path=fixture_path,
+                fixture_content=fixture_content,
+            )
+
+            with mock.patch(
+                "services.api.poc_web.convert_uploaded_document",
+                return_value=converted,
+            ), mock.patch.object(
+                evaluate_dataset,
+                "p9_validate_artifact_expectations",
+                return_value=["xlsx cell values did not match fixture expectations"],
+            ):
+                result = evaluate_dataset.mvp_conversion_result(
+                    case,
+                    fixture_path=fixture_path,
+                )
+
+        self.assertEqual(
+            result["evaluations"]["artifact"]["expected_formats"],
+            result["evaluations"]["artifact"]["actual_formats"],
+        )
+        self.assertEqual("fail", result["evaluations"]["artifact"]["status"])
+        self.assertIn(
+            "xlsx cell values did not match fixture expectations",
+            result["evaluations"]["artifact"]["reason"],
+        )
+        self.assertEqual("fail", result["acceptance_status"])
+
+    def test_mvp_harness_fails_when_artifact_content_validation_is_unavailable(
+        self,
+    ) -> None:
+        for case_index in (3, 4):
+            case = self.valid_mvp_case(case_index)
+            fixture_content = b"mvp unvalidated pdf fixture"
+            with self.subTest(case_id=case["case_id"]), tempfile.NamedTemporaryFile(
+                suffix=".pdf"
+            ) as fixture_file:
+                fixture_file.write(fixture_content)
+                fixture_file.flush()
+                fixture_path = Path(fixture_file.name)
+                converted = self.valid_mvp_conversion_payload(
+                    case,
+                    fixture_path=fixture_path,
+                    fixture_content=fixture_content,
+                )
+
+                with mock.patch(
+                    "services.api.poc_web.convert_uploaded_document",
+                    return_value=converted,
+                ):
+                    result = evaluate_dataset.mvp_conversion_result(
+                        case,
+                        fixture_path=fixture_path,
+                    )
+
+            self.assertEqual(
+                result["evaluations"]["artifact"]["expected_formats"],
+                result["evaluations"]["artifact"]["actual_formats"],
+            )
+            self.assertEqual("fail", result["evaluations"]["artifact"]["status"])
+            self.assertIn(
+                "artifact content validation is unavailable",
+                result["evaluations"]["artifact"]["reason"],
+            )
+            self.assertEqual("fail", result["acceptance_status"])
+
+    def test_mvp_harness_fails_mismatched_audit_fields(self) -> None:
+        case = self.valid_mvp_case()
+        fixture_content = b"mvp audit review fixture"
+        with tempfile.NamedTemporaryFile(suffix=".docx") as fixture_file:
+            fixture_file.write(fixture_content)
+            fixture_file.flush()
+            fixture_path = Path(fixture_file.name)
+            mutations = (
+                (
+                    "schema",
+                    lambda payload: payload["audit"].__setitem__(
+                        "schema_version", "unsupported-audit-schema"
+                    ),
+                    "schema_version",
+                ),
+                (
+                    "input filename",
+                    lambda payload: payload["audit"]["input"].__setitem__(
+                        "filename", "different.docx"
+                    ),
+                    "input filename",
+                ),
+                (
+                    "conversion mode",
+                    lambda payload: payload["audit"]["input"].__setitem__(
+                        "conversion_mode", "excel_to_word"
+                    ),
+                    "input conversion_mode",
+                ),
+                (
+                    "input hash",
+                    lambda payload: payload["audit"]["input"].__setitem__(
+                        "sha256", "0" * 64
+                    ),
+                    "input sha256",
+                ),
+                (
+                    "warning count",
+                    lambda payload: payload["audit"]["warnings"].__setitem__(
+                        "count", 999
+                    ),
+                    "warnings count",
+                ),
+                (
+                    "review count",
+                    lambda payload: payload["audit"]["review_items"].__setitem__(
+                        "count", 999
+                    ),
+                    "review_items count",
+                ),
+                (
+                    "prompt version",
+                    lambda payload: payload["audit"]["versions"]["prompt"].pop(
+                        "version"
+                    ),
+                    "prompt lineage",
+                ),
+                (
+                    "conversion plan schema",
+                    lambda payload: payload["audit"]["versions"]["schemas"].pop(
+                        "conversion_plan"
+                    ),
+                    "conversion_plan schema lineage",
+                ),
+                (
+                    "document IR schema",
+                    lambda payload: payload["audit"]["versions"]["schemas"].pop(
+                        "document_ir"
+                    ),
+                    "document_ir schema lineage",
+                ),
+            )
+            for label, mutate, expected_reason in mutations:
+                with self.subTest(field=label):
+                    converted = self.valid_mvp_conversion_payload(
+                        case,
+                        fixture_path=fixture_path,
+                        fixture_content=fixture_content,
+                    )
+                    mutate(converted)
+                    with mock.patch(
+                        "services.api.poc_web.convert_uploaded_document",
+                        return_value=converted,
+                    ), mock.patch.object(
+                        evaluate_dataset,
+                        "p9_validate_artifact_expectations",
+                        return_value=[],
+                    ):
+                        result = evaluate_dataset.mvp_conversion_result(
+                            case,
+                            fixture_path=fixture_path,
+                        )
+
+                    self.assertEqual("fail", result["evaluations"]["audit"]["status"])
+                    self.assertIn(
+                        expected_reason,
+                        result["evaluations"]["audit"]["reason"],
+                    )
+                    self.assertEqual("fail", result["acceptance_status"])
 
     def test_poc_acceptance_report_cli_maps_15_2_criteria(self) -> None:
         completed = subprocess.run(
