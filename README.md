@@ -153,6 +153,11 @@ for the MVP: `use_ocr: true` is rejected with HTTP 400 and
 selected setting is not yet implemented in the local PoC API unless a supported
 local-only inference profile is configured.
 
+Each conversion result also records an immutable `audit.versions` snapshot with
+the selected model identifier, prompt ID/version, and conversion audit,
+conversion plan, and Document IR schema versions. The same snapshot is retained
+in the downloadable audit JSON so reruns can explain version differences.
+
 The artifact manifest is intentionally honest about current PoC limits. The
 debug JSON artifact remains available at `download` and in `artifacts[]` with
 id `debug-json`. Renderer-backed DOCX and XLSX primary artifacts are returned in

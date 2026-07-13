@@ -930,6 +930,22 @@ def convert_uploaded_document(
         "source_type": source_type,
         "source_sha256": source_sha256,
         "conversion_mode": selected_conversion_mode,
+        "versions": {
+            "model": (
+                conversion_plan_state["llm_audit"]["model"]
+                if conversion_plan_state["llm_audit"]["requested"]
+                else None
+            ),
+            "prompt": {
+                "id": CONVERSION_PLAN_PROMPT_ID,
+                "version": CONVERSION_PLAN_PROMPT_VERSION,
+            },
+            "schemas": {
+                "conversion_audit": CONVERSION_AUDIT_SCHEMA_VERSION,
+                "conversion_plan": CONVERSION_PLAN_SCHEMA_VERSION,
+                "document_ir": document_ir_dict["schema_version"],
+            },
+        },
         "conversion_settings": conversion_settings,
         "llm": conversion_plan_state["llm_audit"],
         "conversion_plan": conversion_plan_state["audit"],
