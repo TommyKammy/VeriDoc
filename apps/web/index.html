@@ -3442,9 +3442,10 @@
             ? "Unknown"
             : `v${settings.schema.version}`;
           const fallback = settings.fallback || {};
-          llmSettingsFields.fallback.textContent = fallback.active
-            ? `${fallback.status || "active"} (${fallback.reason || "unknown reason"})`
-            : fallback.status || "standby";
+          const fallbackStatus = fallback.status || (fallback.active ? "active" : "standby");
+          llmSettingsFields.fallback.textContent = fallback.reason
+            ? `${fallbackStatus} (${fallback.reason})`
+            : fallbackStatus;
           llmSettingsStatus.textContent = "Local LLM settings are current.";
         } catch (error) {
           clearLlmSettings();
