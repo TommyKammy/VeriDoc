@@ -46,6 +46,13 @@ python3 services/api/poc_web.py
 By default it listens on `http://127.0.0.1:8788` and serves the PoC web UI from
 `GET /`. Stop it with `Ctrl-C`.
 
+`GET /api/llm-settings` returns the read-only local LLM operating state used by
+the web UI: the local-only boundary, configured endpoint and model, prompt and
+schema versions, and deterministic fallback state. The endpoint never returns
+credentials. External AI endpoints remain blocked before conversion, and the
+UI states explicitly that document content must not be sent outside the local
+API boundary.
+
 With `VERIDOC_LOCAL_AUTH_TOKENS` unset, use this minimal HTTP smoke test from
 another terminal while the server is running:
 

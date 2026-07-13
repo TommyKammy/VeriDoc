@@ -1382,6 +1382,11 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
         if path in {"/", "/index.html"}:
             self._send_file(WEB_ROOT / "index.html", "text/html; charset=utf-8")
             return
+        if path == "/api/llm-settings":
+            if not self._require_permission("jobs:read"):
+                return
+            self._send_json({"llm_settings": _llm_operational_settings()})
+            return
         if path == "/api/jobs":
             authorized, auth_context = self._authorized_context_for_permission("jobs:read")
             if not authorized:
@@ -4832,6 +4837,66 @@ def _ocr_configuration_rejection(*, use_ocr: bool, use_llm: bool) -> dict[str, A
 def _configured_llm_rejection_reason() -> str | None:
     _adapter, reason = _configured_llm_conversion_plan_adapter()
     return reason
+
+
+def _llm_operational_settings() -> dict[str, Any]:
+    adapter, reason = _configured_llm_conversion_plan_adapter()
+    endpoint, model = _configured_llm_profile_values()
+    if adapter is not None:
+        endpoint = adapter.base_url
+        model = adapter.model
+    support_status = _llm_support_status(reason)
+    return {
+        "network_boundary": {
+            "mode": "local-only",
+            "external_transmission_allowed": False,
+            "message": "Document content is never sent to external AI endpoints.",
+        },
+        "endpoint": {
+            "configured": endpoint is not None,
+            "value": endpoint,
+            "status": support_status,
+        },
+        "model": {"configured": model is not None, "value": model},
+        "prompt": {
+            "id": CONVERSION_PLAN_PROMPT_ID,
+            "version": CONVERSION_PLAN_PROMPT_VERSION,
+        },
+        "schema": {"version": CONVERSION_PLAN_SCHEMA_VERSION},
+        "fallback": {
+            "active": reason is not None,
+            "reason": reason,
+            "status": "standby" if reason is None else "deterministic",
+        },
+    }
+
+
+def _configured_llm_profile_values() -> tuple[str | None, str | None]:
+    try:
+        profiles_config = json.loads(INFERENCE_PROFILES_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return None, None
+    profiles = profiles_config.get("profiles")
+    if not isinstance(profiles, list):
+        return None, None
+    for profile in profiles:
+        if not isinstance(profile, dict):
+            return None, None
+        base_url_env = profile.get("base_url_env")
+        model_env = profile.get("model_env")
+        if not isinstance(base_url_env, str) or not base_url_env.strip():
+            return None, None
+        raw_endpoint = os.environ.get(base_url_env)
+        if raw_endpoint is None or not raw_endpoint.strip():
+            continue
+        endpoint = raw_endpoint.strip()
+        model = None
+        if isinstance(model_env, str) and model_env.strip():
+            raw_model = os.environ.get(model_env)
+            if raw_model is not None and raw_model.strip():
+                model = raw_model.strip()
+        return endpoint, model
+    return None, None
 
 
 def _configured_llm_conversion_plan_adapter() -> tuple[LocalLLMConversionPlanAdapter | None, str | None]:

@@ -12684,6 +12684,100 @@ def test_poc_http_api_reflects_unavailable_llm_and_disabled_ocr_settings(
     }
 
 
+def test_poc_http_api_reports_local_llm_operational_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VERIDOC_STANDARD_OPENAI_BASE_URL", "http://127.0.0.1:8000/v1")
+    monkeypatch.setenv("VERIDOC_STANDARD_MODEL", "local-json-model")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request("GET", "/api/llm-settings")
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 200
+    assert body == {
+        "llm_settings": {
+            "network_boundary": {
+                "mode": "local-only",
+                "external_transmission_allowed": False,
+                "message": "Document content is never sent to external AI endpoints.",
+            },
+            "endpoint": {
+                "configured": True,
+                "value": "http://127.0.0.1:8000/v1",
+                "status": "available",
+            },
+            "model": {"configured": True, "value": "local-json-model"},
+            "prompt": {"id": "veridoc_conversion_plan", "version": "poc-08"},
+            "schema": {"version": 1},
+            "fallback": {"active": False, "reason": None, "status": "standby"},
+        }
+    }
+
+
+def test_poc_http_api_reports_deterministic_fallback_when_llm_is_unconfigured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in (
+        "VERIDOC_STANDARD_OPENAI_BASE_URL",
+        "VERIDOC_STANDARD_MODEL",
+        "VERIDOC_HIGH_QUALITY_OPENAI_BASE_URL",
+        "VERIDOC_HIGH_QUALITY_MODEL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request("GET", "/api/llm-settings")
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 200
+    settings = body["llm_settings"]
+    assert settings["endpoint"] == {
+        "configured": False,
+        "value": None,
+        "status": "not_configured",
+    }
+    assert settings["model"] == {"configured": False, "value": None}
+    assert settings["fallback"] == {
+        "active": True,
+        "reason": "missing_configured_profile",
+        "status": "deterministic",
+    }
+
+
+def test_poc_web_exposes_local_llm_operational_settings_screen() -> None:
+    html = Path("apps/web/index.html").read_text(encoding="utf-8")
+
+    assert 'data-nav-target="llm-settings"' in html
+    assert 'data-app-screen="llm-settings"' in html
+    assert 'data-poc-ui-region="llm-operational-settings"' in html
+    assert 'apiFetch("/api/llm-settings")' in html
+    assert "Document content is never sent to external AI endpoints." in html
+    for field_id in (
+        "llm-settings-boundary",
+        "llm-settings-endpoint",
+        "llm-settings-model",
+        "llm-settings-prompt",
+        "llm-settings-schema",
+        "llm-settings-fallback",
+    ):
+        assert f'id="{field_id}"' in html
+
+
 def test_poc_http_api_rejects_external_llm_endpoint_before_conversion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
