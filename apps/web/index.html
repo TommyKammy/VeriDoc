@@ -2270,6 +2270,13 @@
         clearAuditLog();
         clearSourcePreview();
         clearReviewResult();
+        clearLlmSettings();
+      }
+
+      function clearLlmSettings() {
+        for (const field of Object.values(llmSettingsFields)) {
+          field.textContent = "Unavailable";
+        }
       }
 
       function isActiveCredentialRequest(requestAuthToken, requestAuthGeneration) {
@@ -3440,6 +3447,7 @@
             : fallback.status || "standby";
           llmSettingsStatus.textContent = "Local LLM settings are current.";
         } catch (error) {
+          clearLlmSettings();
           llmSettingsStatus.textContent =
             error instanceof Error && error.message ? error.message : "Local LLM settings are unavailable.";
           llmSettingsStatus.className = "page-status error";

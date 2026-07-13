@@ -4839,18 +4839,25 @@ def _configured_llm_rejection_reason() -> str | None:
     return reason
 
 
+def _redacted_endpoint_for_display(endpoint: str | None) -> str | None:
+    if endpoint is None:
+        return None
+    try:
+        parsed_endpoint = urlsplit(endpoint)
+        netloc = parsed_endpoint.netloc.rsplit("@", 1)[-1]
+        return parsed_endpoint._replace(netloc=netloc, query="", fragment="").geturl()
+    except ValueError:
+        return None
+
+
 def _llm_operational_settings() -> dict[str, Any]:
     adapter, reason = _configured_llm_conversion_plan_adapter()
     endpoint, model = _configured_llm_profile_values()
     if adapter is not None:
         endpoint = adapter.base_url
         model = adapter.model
-    if endpoint is not None:
-        parsed_endpoint = urlsplit(endpoint)
-        if parsed_endpoint.username is not None or parsed_endpoint.password is not None:
-            endpoint = parsed_endpoint._replace(
-                netloc=parsed_endpoint.netloc.rsplit("@", 1)[-1]
-            ).geturl()
+    endpoint_configured = endpoint is not None
+    endpoint = _redacted_endpoint_for_display(endpoint)
     support_status = _llm_support_status(reason)
     fallback_active = reason == "missing_configured_profile"
     return {
@@ -4860,7 +4867,7 @@ def _llm_operational_settings() -> dict[str, Any]:
             "message": "Document content is never sent to external AI endpoints.",
         },
         "endpoint": {
-            "configured": endpoint is not None,
+            "configured": endpoint_configured,
             "value": endpoint,
             "status": support_status,
         },

@@ -12793,6 +12793,65 @@ def test_poc_http_api_redacts_endpoint_credentials(
     }
 
 
+def test_poc_http_api_redacts_endpoint_query_and_fragment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "VERIDOC_STANDARD_OPENAI_BASE_URL",
+        "http://127.0.0.1:8000/v1?api_key=secret#access_token",
+    )
+    monkeypatch.setenv("VERIDOC_STANDARD_MODEL", "local-json-model")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request("GET", "/api/llm-settings")
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 200
+    assert body["llm_settings"]["endpoint"] == {
+        "configured": True,
+        "value": "http://127.0.0.1:8000/v1",
+        "status": "available",
+    }
+
+
+def test_poc_http_api_handles_malformed_endpoint_in_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VERIDOC_STANDARD_OPENAI_BASE_URL", "http://[bad")
+    monkeypatch.setenv("VERIDOC_STANDARD_MODEL", "local-json-model")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request("GET", "/api/llm-settings")
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 200
+    settings = body["llm_settings"]
+    assert settings["endpoint"] == {
+        "configured": True,
+        "value": None,
+        "status": "rejected",
+    }
+    assert settings["fallback"] == {
+        "active": False,
+        "reason": "non_local_endpoint",
+        "status": "rejected",
+    }
+
+
 def test_poc_http_api_reports_rejected_state_when_config_blocks_conversion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -12832,8 +12891,15 @@ def test_poc_web_exposes_local_llm_operational_settings_screen() -> None:
     save_auth_handler = save_auth_handler.split("});", 1)[0]
     clear_auth_handler = html.split('clearAuthToken.addEventListener("click", () => {', 1)[1]
     clear_auth_handler = clear_auth_handler.split("});", 1)[0]
+    credential_reset = html.split("function clearCredentialBoundState() {", 1)[1]
+    credential_reset = credential_reset.split("\n      }", 1)[0]
+    settings_failure = html.split("async function loadLlmSettings() {", 1)[1]
+    settings_failure = settings_failure.split("} catch (error) {", 1)[1]
+    settings_failure = settings_failure.split("} finally {", 1)[0]
     assert "loadLlmSettings();" in save_auth_handler
     assert "loadLlmSettings();" in clear_auth_handler
+    assert "clearLlmSettings();" in credential_reset
+    assert "clearLlmSettings();" in settings_failure
     for field_id in (
         "llm-settings-boundary",
         "llm-settings-endpoint",
