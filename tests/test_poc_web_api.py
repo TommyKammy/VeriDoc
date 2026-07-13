@@ -8552,7 +8552,11 @@ def test_poc_http_api_marks_in_process_conversion_failure_terminal(
     def reject_conversion(**_: object) -> dict[str, object]:
         raise ValueError("conversion rejected")
 
-    monkeypatch.setattr(poc_web, "convert_uploaded_document", reject_conversion)
+    monkeypatch.setattr(
+        poc_web,
+        "_convert_uploaded_document_with_timeout",
+        reject_conversion,
+    )
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     server.job_queue = JobQueue(max_attempts=3)
     thread = Thread(target=server.serve_forever, daemon=True)
@@ -8599,7 +8603,11 @@ def test_poc_http_api_surfaces_dependency_conversion_failure_as_terminal(
     def reject_conversion(**_: object) -> dict[str, object]:
         raise poc_web.PocServerDependencyError("parser unavailable")
 
-    monkeypatch.setattr(poc_web, "convert_uploaded_document", reject_conversion)
+    monkeypatch.setattr(
+        poc_web,
+        "_convert_uploaded_document_with_timeout",
+        reject_conversion,
+    )
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     server.job_queue = JobQueue(max_attempts=3)
     thread = Thread(target=server.serve_forever, daemon=True)
@@ -12581,6 +12589,52 @@ def test_poc_http_api_reports_mvp_processing_timeout(
         "message": "Conversion exceeded the 10 ms MVP timeout.",
         "timeout_ms": 10,
     }
+
+
+def test_poc_http_api_reports_mvp_processing_timeout_for_uploaded_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def timeout_conversion(**_: object) -> dict[str, object]:
+        raise poc_web.PocProcessingTimeoutError
+
+    monkeypatch.setattr(poc_web, "PROCESSING_TIMEOUT_MS", 10)
+    monkeypatch.setattr(
+        poc_web,
+        "_convert_uploaded_document_with_timeout",
+        timeout_conversion,
+    )
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue()
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = json.dumps(
+            {
+                "idempotency_key": "uploaded-job-timeout",
+                "filename": "upload.txt",
+                "content": "A job conversion that does not complete before the limit",
+                "conversion_mode": "auto",
+                "use_llm": False,
+                "use_ocr": False,
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=1)
+        connection.request(
+            "POST",
+            "/api/jobs",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 202
+    assert body["job"]["status"] == "failed"
+    assert body["job"]["error"] == "Conversion exceeded the 10 ms MVP timeout."
+    assert body["job"]["attempts"] == 1
 
 
 def test_direct_conversion_timeout_does_not_leave_worker_running(

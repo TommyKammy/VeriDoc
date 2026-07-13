@@ -1831,7 +1831,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             conversion_mode, output_format, use_llm, use_ocr = conversion_settings
             try:
                 job_queue.start_job(job.job_id)
-                result = convert_uploaded_document(
+                result = _convert_uploaded_document_with_timeout(
                     filename=job.filename,
                     content=source["content"],
                     conversion_mode=conversion_mode,
@@ -1848,6 +1848,13 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 )
                 result = _persistable_artifact_manifest(job.job_id, result)
                 job = job_queue.mark_succeeded(job.job_id, result=result)
+            except PocProcessingTimeoutError:
+                if job_queue.get_job(job.job_id).status == "running":
+                    job = job_queue.mark_failed(
+                        job.job_id,
+                        error=str(_processing_timeout_payload()["message"]),
+                        retryable=False,
+                    )
             except PocServerDependencyError as exc:
                 if job_queue.get_job(job.job_id).status == "running":
                     job = job_queue.mark_failed(job.job_id, error=str(exc), retryable=False)
