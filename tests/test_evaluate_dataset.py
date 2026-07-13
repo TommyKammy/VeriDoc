@@ -1093,6 +1093,26 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertIn("processing_timeout", result["failure_reason"])
         self.assertNotIn("DOCX parser failed", result["failure_reason"])
 
+    def test_mvp_timeout_bypasses_broad_conversion_exception_handler(self) -> None:
+        def conversion_with_fallback(**_: object) -> dict[str, object]:
+            try:
+                time.sleep(1)
+            except Exception:
+                return {"status": "fallback"}
+            raise AssertionError("conversion should not complete after the deadline")
+
+        with mock.patch(
+            "services.api.poc_web.convert_uploaded_document",
+            side_effect=conversion_with_fallback,
+        ):
+            with self.assertRaises(evaluate_dataset.MVPConversionTimeoutError):
+                evaluate_dataset.mvp_convert_uploaded_document(
+                    filename="representative.pdf",
+                    content=b"representative fixture",
+                    conversion_mode="auto",
+                    timeout_ms=10,
+                )
+
     def test_mvp_manifest_rejects_missing_acceptance_limits(self) -> None:
         manifest = self.valid_mvp_manifest_data()
         del manifest["acceptance_limits"]

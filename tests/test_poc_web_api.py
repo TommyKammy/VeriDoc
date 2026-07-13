@@ -12591,6 +12591,47 @@ def test_poc_http_api_reports_mvp_processing_timeout(
     }
 
 
+def test_poc_http_api_returns_json_when_conversion_worker_exits_early(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def failed_conversion(**_: object) -> dict[str, object]:
+        raise RuntimeError("Direct conversion worker exited without a result")
+
+    monkeypatch.setattr(
+        poc_web,
+        "_convert_uploaded_document_with_timeout",
+        failed_conversion,
+    )
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = json.dumps(
+            {
+                "filename": "upload.txt",
+                "content": "A conversion whose worker exits before returning a result",
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=1)
+        connection.request(
+            "POST",
+            "/api/convert",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 500
+    assert body == {
+        "error": "conversion_failed",
+        "message": "Direct conversion worker exited without a result",
+    }
+
+
 def test_poc_http_api_reports_mvp_processing_timeout_for_uploaded_job(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

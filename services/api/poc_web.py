@@ -1661,6 +1661,12 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 status=500,
             )
             return
+        except RuntimeError as exc:
+            self._send_json(
+                {"error": "conversion_failed", "message": str(exc)},
+                status=500,
+            )
+            return
         except (json.JSONDecodeError, ValueError) as exc:
             if str(exc) == "content_length_required":
                 self._send_json({"error": "content_length_required"}, status=411)

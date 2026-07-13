@@ -5266,7 +5266,7 @@ def mvp_conversion_failure_result(
     }
 
 
-class MVPConversionTimeoutError(Exception):
+class MVPConversionTimeoutError(BaseException):
     """Raised when one MVP fixture conversion reaches its manifest deadline."""
 
 
