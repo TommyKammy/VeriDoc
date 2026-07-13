@@ -19,7 +19,7 @@ import sys
 from tempfile import TemporaryDirectory
 from threading import Lock
 from typing import Any, Callable
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlparse, urlsplit
 from uuid import uuid4
 from xml.etree.ElementTree import ParseError as XmlParseError
 from zipfile import BadZipFile
@@ -45,6 +45,7 @@ from core.llm.conversion_plan import (
     ConversionPlanValidationError,
     LocalLLMConfigurationError,
     LocalLLMConversionPlanAdapter,
+    has_unsafe_llm_endpoint_path,
     is_local_llm_base_url,
     validate_conversion_plan,
 )
@@ -1381,6 +1382,11 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
         path = parsed_url.path
         if path in {"/", "/index.html"}:
             self._send_file(WEB_ROOT / "index.html", "text/html; charset=utf-8")
+            return
+        if path == "/api/llm-settings":
+            if not self._require_permission("jobs:read"):
+                return
+            self._send_json({"llm_settings": _llm_operational_settings()})
             return
         if path == "/api/jobs":
             authorized, auth_context = self._authorized_context_for_permission("jobs:read")
@@ -4834,31 +4840,108 @@ def _configured_llm_rejection_reason() -> str | None:
     return reason
 
 
-def _configured_llm_conversion_plan_adapter() -> tuple[LocalLLMConversionPlanAdapter | None, str | None]:
+def _redacted_endpoint_for_display(endpoint: str | None) -> str | None:
+    if endpoint is None:
+        return None
+    try:
+        parsed_endpoint = urlparse(endpoint)
+        if parsed_endpoint.scheme not in {"http", "https"} or not parsed_endpoint.hostname:
+            return None
+        # Complete authority validation before echoing any configured value.
+        # Accessing ``port`` rejects malformed authorities that ``hostname``
+        # alone accepts, including secret-like text in the port position.
+        _ = parsed_endpoint.port
+        if has_unsafe_llm_endpoint_path(parsed_endpoint.path):
+            return None
+        netloc = parsed_endpoint.netloc.rsplit("@", 1)[-1]
+        decoded_netloc = netloc
+        for _ in range(8):
+            next_netloc = unquote(decoded_netloc)
+            if next_netloc == decoded_netloc:
+                break
+            # Reject any reserved URI delimiter introduced by decoding. Such
+            # delimiters can change the authority boundary while remaining
+            # hidden from ``urlparse()`` in the configured value.
+            if any(
+                next_netloc.count(delimiter) > decoded_netloc.count(delimiter)
+                for delimiter in ":/?#[]@!$&'()*+,;="
+            ):
+                return None
+            decoded_netloc = next_netloc
+        else:
+            return None
+        return parsed_endpoint._replace(netloc=netloc, params="", query="", fragment="").geturl()
+    except ValueError:
+        return None
+
+
+def _llm_operational_settings() -> dict[str, Any]:
+    _adapter, reason, endpoint, model = _configured_llm_conversion_plan_selection()
+    endpoint_configured = endpoint is not None
+    endpoint = _redacted_endpoint_for_display(endpoint)
+    support_status = _llm_support_status(reason)
+    fallback_active = reason == "missing_configured_profile"
+    return {
+        "network_boundary": {
+            "mode": "local-only",
+            "external_transmission_allowed": False,
+            "message": "Document content is never sent to external AI endpoints.",
+        },
+        "endpoint": {
+            "configured": endpoint_configured,
+            "value": endpoint,
+            "status": support_status,
+        },
+        "model": {"configured": model is not None, "value": model},
+        "prompt": {
+            "id": CONVERSION_PLAN_PROMPT_ID,
+            "version": CONVERSION_PLAN_PROMPT_VERSION,
+        },
+        "schema": {"version": CONVERSION_PLAN_SCHEMA_VERSION},
+        "fallback": {
+            "active": fallback_active,
+            "reason": reason,
+            "status": (
+                "deterministic"
+                if fallback_active
+                else "standby" if reason is None else "rejected"
+            ),
+        },
+    }
+
+
+def _configured_llm_conversion_plan_selection() -> tuple[
+    LocalLLMConversionPlanAdapter | None,
+    str | None,
+    str | None,
+    str | None,
+]:
     try:
         profiles_config = json.loads(INFERENCE_PROFILES_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, TypeError):
-        return None, "invalid_configuration"
+        return None, "invalid_configuration", None, None
     profiles = profiles_config.get("profiles")
     if not isinstance(profiles, list):
-        return None, "invalid_configuration"
+        return None, "invalid_configuration", None, None
     selected_adapter: LocalLLMConversionPlanAdapter | None = None
     for profile in profiles:
         if not isinstance(profile, dict):
-            return None, "invalid_configuration"
+            return None, "invalid_configuration", None, None
         base_url_env = profile.get("base_url_env")
         model_env = profile.get("model_env")
         api_key_env = profile.get("api_key_env")
         if not isinstance(base_url_env, str) or not base_url_env.strip():
-            return None, "invalid_configuration"
+            return None, "invalid_configuration", None, None
         base_url = os.environ.get(base_url_env)
         if base_url is None or not base_url.strip():
             continue
+        endpoint = base_url.strip()
         if not isinstance(model_env, str) or not model_env.strip():
-            return None, "invalid_configuration"
+            return None, "invalid_configuration", endpoint, None
         model = os.environ.get(model_env)
         if model is None or not model.strip():
-            return None, "missing_required_model"
+            return None, "missing_required_model", endpoint, None
+        configured_model = model.strip()
         api_key = os.environ.get(api_key_env) if isinstance(api_key_env, str) else None
         try:
             timeout_seconds = _llm_float_env(profile.get("optional_env"), "TIMEOUT_SECONDS", default=30)
@@ -4871,12 +4954,17 @@ def _configured_llm_conversion_plan_adapter() -> tuple[LocalLLMConversionPlanAda
                 max_tokens=max_tokens,
             )
         except LocalLLMConfigurationError as exc:
-            return None, _llm_rejection_reason_from_error(exc)
+            return None, _llm_rejection_reason_from_error(exc), endpoint, configured_model
         if selected_adapter is None:
             selected_adapter = adapter
     if selected_adapter is not None:
-        return selected_adapter, None
-    return None, "missing_configured_profile"
+        return selected_adapter, None, selected_adapter.base_url, selected_adapter.model
+    return None, "missing_configured_profile", None, None
+
+
+def _configured_llm_conversion_plan_adapter() -> tuple[LocalLLMConversionPlanAdapter | None, str | None]:
+    adapter, reason, _endpoint, _model = _configured_llm_conversion_plan_selection()
+    return adapter, reason
 
 
 def _llm_float_env(optional_env: Any, suffix: str, *, default: float) -> float:

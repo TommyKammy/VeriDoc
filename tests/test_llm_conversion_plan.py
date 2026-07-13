@@ -2154,6 +2154,28 @@ def test_adapter_rejects_ipv6_ec2_metadata_base_url_before_transport_call() -> N
 @pytest.mark.parametrize(
     "base_url",
     [
+        "http://127.0.0.1:8000/v1;api_key=secret",
+        "http://127.0.0.1:8000/v1;api_key=secret/chat",
+        "http://127.0.0.1:8000/v1%3Bapi_key=secret",
+        "http://127.0.0.1:8000/v1/api_key=secret",
+        "http://127.0.0.1:8000/v1/%2561pi%255Fkey%253Dsecret",
+        "http://127.0.0.1:8000/v1?api_key=secret",
+        "http://127.0.0.1:8000/v1#access_token=secret",
+    ],
+)
+def test_adapter_rejects_local_base_url_components_that_can_contain_secrets(
+    base_url: str,
+) -> None:
+    with pytest.raises(LocalLLMConfigurationError, match="local-only"):
+        LocalLLMConversionPlanAdapter(
+            base_url=base_url,
+            model="local-json-model",
+        )
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
         "http://127.0.0.1:70000/v1",
         "http://127.0.0.1:0/v1",
         "http://localhost:not-a-port/v1",

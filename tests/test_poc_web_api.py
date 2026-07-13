@@ -12684,6 +12684,327 @@ def test_poc_http_api_reflects_unavailable_llm_and_disabled_ocr_settings(
     }
 
 
+def test_poc_http_api_reports_local_llm_operational_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VERIDOC_STANDARD_OPENAI_BASE_URL", "http://127.0.0.1:8000/v1")
+    monkeypatch.setenv("VERIDOC_STANDARD_MODEL", "local-json-model")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request("GET", "/api/llm-settings")
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 200
+    assert body == {
+        "llm_settings": {
+            "network_boundary": {
+                "mode": "local-only",
+                "external_transmission_allowed": False,
+                "message": "Document content is never sent to external AI endpoints.",
+            },
+            "endpoint": {
+                "configured": True,
+                "value": "http://127.0.0.1:8000/v1",
+                "status": "available",
+            },
+            "model": {"configured": True, "value": "local-json-model"},
+            "prompt": {"id": "veridoc_conversion_plan", "version": "poc-08"},
+            "schema": {"version": 1},
+            "fallback": {"active": False, "reason": None, "status": "standby"},
+        }
+    }
+
+
+def test_poc_http_api_reports_deterministic_fallback_when_llm_is_unconfigured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in (
+        "VERIDOC_STANDARD_OPENAI_BASE_URL",
+        "VERIDOC_STANDARD_MODEL",
+        "VERIDOC_HIGH_QUALITY_OPENAI_BASE_URL",
+        "VERIDOC_HIGH_QUALITY_MODEL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request("GET", "/api/llm-settings")
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 200
+    settings = body["llm_settings"]
+    assert settings["endpoint"] == {
+        "configured": False,
+        "value": None,
+        "status": "not_configured",
+    }
+    assert settings["model"] == {"configured": False, "value": None}
+    assert settings["fallback"] == {
+        "active": True,
+        "reason": "missing_configured_profile",
+        "status": "deterministic",
+    }
+
+
+def test_poc_http_api_redacts_endpoint_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "VERIDOC_STANDARD_OPENAI_BASE_URL",
+        "http://operator:secret@127.0.0.1:8000/v1",
+    )
+    monkeypatch.setenv("VERIDOC_STANDARD_MODEL", "local-json-model")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request("GET", "/api/llm-settings")
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 200
+    settings = body["llm_settings"]
+    assert settings["endpoint"] == {
+        "configured": True,
+        "value": "http://127.0.0.1:8000/v1",
+        "status": "available",
+    }
+    assert settings["fallback"] == {
+        "active": False,
+        "reason": None,
+        "status": "standby",
+    }
+
+
+@pytest.mark.parametrize(
+    ("configured_endpoint", "expected_endpoint"),
+    [
+        (
+            "http://127.0.0.1:8000/v1?api_key=secret#access_token",
+            "http://127.0.0.1:8000/v1",
+        ),
+        (
+            "http://127.0.0.1:8000/v1;api_key=secret",
+            "http://127.0.0.1:8000/v1",
+        ),
+        ("http://127.0.0.1:8000/v1;api_key=secret/chat", None),
+        ("http://127.0.0.1:8000/v1%3Bapi_key=secret", None),
+        ("http://127.0.0.1:8000/v1/api_key=secret", None),
+        ("http://127.0.0.1:8000/v1/%2561pi%255Fkey%253Dsecret", None),
+    ],
+)
+def test_poc_http_api_rejects_endpoint_url_components_that_can_contain_secrets(
+    monkeypatch: pytest.MonkeyPatch,
+    configured_endpoint: str,
+    expected_endpoint: str | None,
+) -> None:
+    monkeypatch.setenv(
+        "VERIDOC_STANDARD_OPENAI_BASE_URL",
+        configured_endpoint,
+    )
+    monkeypatch.setenv("VERIDOC_STANDARD_MODEL", "local-json-model")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request("GET", "/api/llm-settings")
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 200
+    settings = body["llm_settings"]
+    assert settings["endpoint"] == {
+        "configured": True,
+        "value": expected_endpoint,
+        "status": "rejected",
+    }
+    assert settings["fallback"] == {
+        "active": False,
+        "reason": "non_local_endpoint",
+        "status": "rejected",
+    }
+
+
+@pytest.mark.parametrize(
+    "configured_endpoint",
+    [
+        "http://[bad",
+        "http://127.0.0.1:api_key=secret/v1",
+        "http://127.0.0.1%40api_key=secret:8000/v1",
+        "http://127.0.0.1%3Fapi_key=secret:8000/v1",
+        "http://127.0.0.1%23api_key=secret:8000/v1",
+        "http://127.0.0.1%3Bapi_key=secret:8000/v1",
+        "http://127.0.0.1%253Fapi_key=secret:8000/v1",
+        "user:pass@127.0.0.1:8000/v1",
+    ],
+)
+def test_poc_http_api_handles_malformed_endpoint_in_settings(
+    monkeypatch: pytest.MonkeyPatch,
+    configured_endpoint: str,
+) -> None:
+    monkeypatch.setenv("VERIDOC_STANDARD_OPENAI_BASE_URL", configured_endpoint)
+    monkeypatch.setenv("VERIDOC_STANDARD_MODEL", "local-json-model")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request("GET", "/api/llm-settings")
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 200
+    settings = body["llm_settings"]
+    assert settings["endpoint"] == {
+        "configured": True,
+        "value": None,
+        "status": "rejected",
+    }
+    assert settings["fallback"] == {
+        "active": False,
+        "reason": "non_local_endpoint",
+        "status": "rejected",
+    }
+
+
+def test_poc_http_api_reports_rejected_state_when_config_blocks_conversion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VERIDOC_STANDARD_OPENAI_BASE_URL", "https://api.openai.com/v1")
+    monkeypatch.setenv("VERIDOC_STANDARD_MODEL", "cloud-model")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request("GET", "/api/llm-settings")
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 200
+    settings = body["llm_settings"]
+    assert settings["endpoint"]["status"] == "rejected"
+    assert settings["fallback"] == {
+        "active": False,
+        "reason": "non_local_endpoint",
+        "status": "rejected",
+    }
+
+
+def test_poc_http_api_reports_profile_that_caused_llm_rejection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "VERIDOC_STANDARD_OPENAI_BASE_URL",
+        "http://127.0.0.1:8000/v1",
+    )
+    monkeypatch.setenv("VERIDOC_STANDARD_MODEL", "local-json-model")
+    monkeypatch.setenv(
+        "VERIDOC_HIGH_QUALITY_OPENAI_BASE_URL",
+        "http://127.0.0.1:9000/v1",
+    )
+    monkeypatch.delenv("VERIDOC_HIGH_QUALITY_MODEL", raising=False)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request("GET", "/api/llm-settings")
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 200
+    settings = body["llm_settings"]
+    assert settings["endpoint"] == {
+        "configured": True,
+        "value": "http://127.0.0.1:9000/v1",
+        "status": "not_configured",
+    }
+    assert settings["model"] == {"configured": False, "value": None}
+    assert settings["fallback"] == {
+        "active": False,
+        "reason": "missing_required_model",
+        "status": "rejected",
+    }
+
+
+def test_poc_web_exposes_local_llm_operational_settings_screen() -> None:
+    html = Path("apps/web/index.html").read_text(encoding="utf-8")
+
+    assert 'data-nav-target="llm-settings"' in html
+    assert 'data-app-screen="llm-settings"' in html
+    assert 'data-poc-ui-region="llm-operational-settings"' in html
+    assert 'apiFetch("/api/llm-settings")' in html
+    assert "Document content is never sent to external AI endpoints." in html
+    save_auth_handler = html.split('saveAuthToken.addEventListener("click", () => {', 1)[1]
+    save_auth_handler = save_auth_handler.split("});", 1)[0]
+    clear_auth_handler = html.split('clearAuthToken.addEventListener("click", () => {', 1)[1]
+    clear_auth_handler = clear_auth_handler.split("});", 1)[0]
+    credential_reset = html.split("function clearCredentialBoundState() {", 1)[1]
+    credential_reset = credential_reset.split("\n      }", 1)[0]
+    settings_loader = html.split("async function loadLlmSettings() {", 1)[1]
+    settings_loader = settings_loader.split("\n      }", 1)[0]
+    settings_failure = settings_loader.split("} catch (error) {", 1)[1]
+    settings_failure = settings_failure.split("} finally {", 1)[0]
+    fallback_renderer = html.split("const fallback = settings.fallback || {};", 1)[1]
+    fallback_renderer = fallback_renderer.split("llmSettingsStatus.textContent", 1)[0]
+    assert "loadLlmSettings();" in save_auth_handler
+    assert "loadLlmSettings();" in clear_auth_handler
+    assert "clearLlmSettings();" in credential_reset
+    assert "clearLlmSettings();" in settings_failure
+    assert "const requestAuthToken = activeAuthToken();" in settings_loader
+    assert "const requestAuthGeneration = state.authGeneration;" in settings_loader
+    stale_guard = (
+        "if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;"
+    )
+    assert settings_loader.index("const body = await response.json()") < settings_loader.index(
+        stale_guard
+    ) < settings_loader.index("const settings = body.llm_settings")
+    assert stale_guard in settings_failure
+    assert "= fallback.reason" in fallback_renderer
+    assert "? `${fallbackStatus}" in fallback_renderer
+    assert "(${fallback.reason})" in fallback_renderer
+    for field_id in (
+        "llm-settings-boundary",
+        "llm-settings-endpoint",
+        "llm-settings-model",
+        "llm-settings-prompt",
+        "llm-settings-schema",
+        "llm-settings-fallback",
+    ):
+        assert f'id="{field_id}"' in html
+
+
 def test_poc_http_api_rejects_external_llm_endpoint_before_conversion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

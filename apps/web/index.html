@@ -237,6 +237,59 @@
         font-size: 13px;
       }
 
+      .llm-settings-layout {
+        display: grid;
+        grid-template-columns: minmax(0, 1.45fr) minmax(240px, 0.55fr);
+        gap: 16px;
+        align-items: start;
+      }
+
+      .llm-settings-list {
+        display: grid;
+        margin: 0;
+        border-top: 1px solid var(--border);
+      }
+
+      .llm-settings-row {
+        display: grid;
+        grid-template-columns: minmax(130px, 0.4fr) minmax(0, 1fr);
+        gap: 12px;
+        padding: 13px 0;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .llm-settings-row dt {
+        color: var(--muted);
+        font-size: 13px;
+        font-weight: 650;
+      }
+
+      .llm-settings-row dd {
+        margin: 0;
+        overflow-wrap: anywhere;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 13px;
+      }
+
+      .boundary-notice {
+        padding: 14px;
+        border: 1px solid #a9cfba;
+        border-radius: 8px;
+        background: #edf8f1;
+        color: #205c3d;
+      }
+
+      .boundary-notice strong {
+        display: block;
+        margin-bottom: 6px;
+      }
+
+      .boundary-notice p {
+        max-width: 65ch;
+        font-size: 14px;
+        line-height: 1.5;
+      }
+
       .layout {
         display: grid;
         grid-template-columns: minmax(0, 1.25fr) minmax(320px, 0.75fr);
@@ -723,7 +776,8 @@
       @media (max-width: 860px) {
         header,
         .shell-body,
-        .layout {
+        .layout,
+        .llm-settings-layout {
           display: block;
         }
 
@@ -735,6 +789,15 @@
 
         .layout > section + section {
           margin-top: 16px;
+        }
+
+        .boundary-notice {
+          margin-top: 16px;
+        }
+
+        .llm-settings-row {
+          grid-template-columns: 1fr;
+          gap: 4px;
         }
 
         .page-status {
@@ -769,6 +832,7 @@
           <button type="button" data-nav-target="review">Review</button>
           <button type="button" data-nav-target="templates">Templates</button>
           <button type="button" data-nav-target="audit">Audit</button>
+          <button type="button" data-nav-target="llm-settings">LLM settings</button>
           <button type="button" data-nav-target="admin">Admin</button>
         </nav>
 
@@ -1218,6 +1282,59 @@
         <div id="audit-empty" class="empty" hidden>No audit events match the current filters.</div>
       </section>
 
+          <section
+            id="screen-llm-settings"
+            class="app-screen panel"
+            data-app-screen="llm-settings"
+            aria-labelledby="llm-settings-title"
+            hidden
+          >
+            <div class="screen-heading">
+              <div>
+                <h2 id="llm-settings-title">Local LLM settings</h2>
+                <p>Read-only operational configuration for the conversion plan adapter.</p>
+              </div>
+              <button id="refresh-llm-settings" class="secondary" type="button">Refresh settings</button>
+            </div>
+            <div
+              class="llm-settings-layout"
+              data-poc-ui-region="llm-operational-settings"
+              data-api-fields="llm_settings network_boundary endpoint model prompt schema fallback"
+            >
+              <dl class="llm-settings-list">
+                <div class="llm-settings-row">
+                  <dt>Network boundary</dt>
+                  <dd id="llm-settings-boundary">Loading</dd>
+                </div>
+                <div class="llm-settings-row">
+                  <dt>Endpoint</dt>
+                  <dd id="llm-settings-endpoint">Loading</dd>
+                </div>
+                <div class="llm-settings-row">
+                  <dt>Model</dt>
+                  <dd id="llm-settings-model">Loading</dd>
+                </div>
+                <div class="llm-settings-row">
+                  <dt>Prompt</dt>
+                  <dd id="llm-settings-prompt">Loading</dd>
+                </div>
+                <div class="llm-settings-row">
+                  <dt>Schema</dt>
+                  <dd id="llm-settings-schema">Loading</dd>
+                </div>
+                <div class="llm-settings-row">
+                  <dt>Fallback</dt>
+                  <dd id="llm-settings-fallback">Loading</dd>
+                </div>
+              </dl>
+              <aside class="boundary-notice" aria-labelledby="llm-boundary-title">
+                <strong id="llm-boundary-title">External transmission is prohibited</strong>
+                <p>Document content is never sent to external AI endpoints. Non-local endpoints are rejected before conversion.</p>
+              </aside>
+            </div>
+            <div id="llm-settings-status" class="page-status" role="status" aria-live="polite"></div>
+          </section>
+
           <section id="screen-admin" class="app-screen panel" data-app-screen="admin" aria-labelledby="admin-title" hidden>
             <div class="screen-heading">
               <div>
@@ -1342,6 +1459,16 @@
       const auditAction = document.querySelector("#audit-action");
       const auditBody = document.querySelector("#audit-body");
       const auditEmpty = document.querySelector("#audit-empty");
+      const refreshLlmSettings = document.querySelector("#refresh-llm-settings");
+      const llmSettingsStatus = document.querySelector("#llm-settings-status");
+      const llmSettingsFields = {
+        boundary: document.querySelector("#llm-settings-boundary"),
+        endpoint: document.querySelector("#llm-settings-endpoint"),
+        model: document.querySelector("#llm-settings-model"),
+        prompt: document.querySelector("#llm-settings-prompt"),
+        schema: document.querySelector("#llm-settings-schema"),
+        fallback: document.querySelector("#llm-settings-fallback"),
+      };
       const pdfPreviewPanel = document.querySelector("#pdf-preview-panel");
       const pdfPreviewStatus = document.querySelector("#pdf-preview-status");
       const previewPageSelect = document.querySelector("#preview-page-select");
@@ -1377,6 +1504,7 @@
         }
         loadJobs();
         loadTemplates();
+        loadLlmSettings();
       });
       clearAuthToken.addEventListener("click", () => {
         savedAuthToken = "";
@@ -1386,6 +1514,7 @@
         setPageStatus("API token cleared.");
         loadJobs();
         loadTemplates();
+        loadLlmSettings();
       });
       refreshJobs.addEventListener("click", () => loadJobs());
       statusFilter.addEventListener("change", () => loadJobs());
@@ -1398,6 +1527,7 @@
       detailRetry.addEventListener("click", () => retrySelectedConversion());
       refreshAudit.addEventListener("click", () => refreshAuditLog());
       exportAudit.addEventListener("click", () => exportAuditLog());
+      refreshLlmSettings.addEventListener("click", () => loadLlmSettings());
       input.addEventListener("change", () => {
         state.directConversionToken += 1;
         button.disabled = false;
@@ -2140,6 +2270,13 @@
         clearAuditLog();
         clearSourcePreview();
         clearReviewResult();
+        clearLlmSettings();
+      }
+
+      function clearLlmSettings() {
+        for (const field of Object.values(llmSettingsFields)) {
+          field.textContent = "Unavailable";
+        }
       }
 
       function isActiveCredentialRequest(requestAuthToken, requestAuthGeneration) {
@@ -3283,9 +3420,53 @@
         return response;
       }
 
+      async function loadLlmSettings() {
+        const requestAuthToken = activeAuthToken();
+        const requestAuthGeneration = state.authGeneration;
+        refreshLlmSettings.disabled = true;
+        llmSettingsStatus.textContent = "Loading local LLM settings.";
+        llmSettingsStatus.className = "page-status";
+        try {
+          const response = await apiFetch("/api/llm-settings");
+          const body = await response.json().catch(() => ({}));
+          if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
+          if (!response.ok || !body.llm_settings) {
+            throw new Error(body.message || body.error || "Local LLM settings are unavailable.");
+          }
+          const settings = body.llm_settings;
+          llmSettingsFields.boundary.textContent = settings.network_boundary?.mode || "unknown";
+          llmSettingsFields.endpoint.textContent = settings.endpoint?.value || "Not configured";
+          llmSettingsFields.model.textContent = settings.model?.value || "Not configured";
+          llmSettingsFields.prompt.textContent = [
+            settings.prompt?.id,
+            settings.prompt?.version,
+          ].filter(Boolean).join(" / ") || "Unknown";
+          llmSettingsFields.schema.textContent = settings.schema?.version == null
+            ? "Unknown"
+            : `v${settings.schema.version}`;
+          const fallback = settings.fallback || {};
+          const fallbackStatus = fallback.status || (fallback.active ? "active" : "standby");
+          llmSettingsFields.fallback.textContent = fallback.reason
+            ? `${fallbackStatus} (${fallback.reason})`
+            : fallbackStatus;
+          llmSettingsStatus.textContent = "Local LLM settings are current.";
+        } catch (error) {
+          if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
+          clearLlmSettings();
+          llmSettingsStatus.textContent =
+            error instanceof Error && error.message ? error.message : "Local LLM settings are unavailable.";
+          llmSettingsStatus.className = "page-status error";
+        } finally {
+          if (isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) {
+            refreshLlmSettings.disabled = false;
+          }
+        }
+      }
+
       routeFromHash();
       loadJobs();
       loadTemplates();
+      loadLlmSettings();
     </script>
   </body>
 </html>
