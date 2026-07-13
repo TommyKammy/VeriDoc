@@ -761,6 +761,15 @@ def test_convert_uploaded_document_returns_artifact_manifest_contract(
         "source_type": "unknown",
         "source_sha256": result["hashes"]["source_sha256"],
         "conversion_mode": "auto",
+        "versions": {
+            "model": None,
+            "prompt": {"id": "veridoc_conversion_plan", "version": "poc-08"},
+            "schemas": {
+                "conversion_audit": "veridoc-poc-conversion-audit/v1",
+                "conversion_plan": 1,
+                "document_ir": "document-ir/v1",
+            },
+        },
         "conversion_settings": {
             "use_llm": {
                 "requested": False,
@@ -830,6 +839,78 @@ def test_convert_uploaded_document_returns_artifact_manifest_contract(
             },
         }
     ]
+
+
+def test_conversion_audit_versions_explain_model_change_between_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parser_output = {
+        "pages": [
+            {
+                "page_number": 1,
+                "width": 320,
+                "height": 240,
+                "unit": "pt",
+                "fragments": [{"text": "Lot: SAMPLE-001", "confidence": 0.91}],
+            }
+        ]
+    }
+    content = json.dumps(parser_output).encode("utf-8")
+    plan = {
+        "schema_version": 1,
+        "source_kind": "synthetic_text",
+        "operations": [
+            {
+                "id": "extract-lot",
+                "action": "extract_field",
+                "inputs": ["Lot: SAMPLE-001"],
+                "output": "lot_number",
+                "rationale": "The lot value is explicitly present in the source text.",
+            }
+        ],
+        "constraints": {"external_transmission": False},
+    }
+    selected_model = "local-model-v1"
+
+    class FakeLocalLLMAdapter:
+        base_url = "http://127.0.0.1:1234/v1"
+        timeout_seconds = 30
+        max_tokens = 1024
+
+        def __init__(self, model: str) -> None:
+            self.model = model
+
+        def create_conversion_plan(self, synthetic_text: str) -> dict[str, object]:
+            return plan
+
+    monkeypatch.setattr(
+        poc_web,
+        "_configured_llm_conversion_plan_adapter",
+        lambda: (FakeLocalLLMAdapter(selected_model), None),
+    )
+
+    first_result = convert_uploaded_document(
+        filename="phase0-output.json", content=content, use_llm=True
+    )
+    selected_model = "local-model-v2"
+    rerun_result = convert_uploaded_document(
+        filename="phase0-output.json", content=content, use_llm=True
+    )
+
+    first_versions = first_result["audit"]["versions"]
+    rerun_versions = rerun_result["audit"]["versions"]
+    assert first_versions == {
+        "model": "local-model-v1",
+        "prompt": {"id": "veridoc_conversion_plan", "version": "poc-08"},
+        "schemas": {
+            "conversion_audit": "veridoc-poc-conversion-audit/v1",
+            "conversion_plan": 1,
+            "document_ir": "document-ir/v1",
+        },
+    }
+    assert rerun_versions == {**first_versions, "model": "local-model-v2"}
+    assert json.loads(first_result["download"]["content"])["audit"]["versions"] == first_versions
+    assert json.loads(rerun_result["download"]["content"])["audit"]["versions"] == rerun_versions
 
 
 def test_convert_uploaded_document_records_requested_upload_settings_metadata() -> None:
@@ -1076,6 +1157,7 @@ def test_convert_uploaded_document_adopts_schema_valid_local_llm_plan(monkeypatc
     assert disabled_result["audit"]["llm"]["support_status"] == "available"
     assert disabled_result["audit"]["llm"]["model"] == "fake-local-model"
     assert disabled_result["audit"]["llm"]["base_url_type"] == "local"
+    assert disabled_result["audit"]["versions"]["model"] is None
     assert synthetic_inputs
     assert "Lot: SAMPLE-001" in synthetic_inputs[0]
     assert result["warnings"] == []
@@ -1108,6 +1190,7 @@ def test_convert_uploaded_document_adopts_schema_valid_local_llm_plan(monkeypatc
         "parameters": {"max_tokens": 1024, "timeout_seconds": 30},
         "support_status": "available",
     }
+    assert result["audit"]["versions"]["model"] == "fake-local-model"
     assert result["document_ir"]["blocks"][0]["text"] == "Lot: SAMPLE-001"
     downloaded = json.loads(result["download"]["content"])
     assert downloaded["audit"]["conversion_plan"]["status"] == "adopted"
