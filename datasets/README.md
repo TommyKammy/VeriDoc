@@ -10,6 +10,8 @@ Allowed tracked areas:
 - `datasets/fixtures/manifest.json`: fixture inventory and placement rules.
 - `datasets/poc_evaluation_manifest_v1.json`: Phase 9 representative PoC
   evaluation input set and placeholder slots for missing safe fixtures.
+- `datasets/mvp_evaluation_manifest_v1.json`: Phase 12 fixed MVP representative
+  set covering Word, Excel, text PDF, scanned PDF, and record PDF review cases.
 - `datasets/gold/`: hand-authored answer data for evaluation.
 
 Blocked areas are enforced by repository hygiene and `.gitignore`:
@@ -29,6 +31,10 @@ Fixture placement rules:
   `datasets/poc_evaluation_manifest_v1.json` with source category, conversion
   mode, evaluation focus, public/synthetic/anonymized classification, fixture
   linkage when available, and expected warning or reviewer focus.
+- Phase 12 MVP evaluation cases must be listed in
+  `datasets/mvp_evaluation_manifest_v1.json` with an explicit fixture id and
+  repo-relative path, conversion mode, expected artifacts and warnings, and
+  reviewer focus. Placeholder fixture slots are not valid MVP cases.
 - Evaluation cases may only reference manifest entries with an explicit
   repo-relative fixture path under `datasets/fixtures/`.
 - Placeholder slots document required future source types, but they are not

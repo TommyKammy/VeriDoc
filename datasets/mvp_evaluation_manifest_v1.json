@@ -1,0 +1,156 @@
+{
+  "schema_version": "veridoc-mvp-evaluation-dataset/v1",
+  "title": "VeriDoc Phase 12 MVP representative evaluation dataset",
+  "selection_status": "fixed_for_mvp",
+  "selection_revision": "phase12-mvp-v1",
+  "fixture_manifest": "datasets/fixtures/manifest.json",
+  "source_policy": "public_synthetic_or_anonymized_only",
+  "confidential_source_documents_allowed": false,
+  "required_categories": [
+    "word",
+    "excel",
+    "text_pdf",
+    "scanned_pdf",
+    "record_pdf"
+  ],
+  "cases": [
+    {
+      "id": "mvp-word-001",
+      "category": "word",
+      "fixture_id": "word-to-excel-application",
+      "fixture_path": "datasets/fixtures/word/word-to-excel-application.docx",
+      "source_classification": "synthetic",
+      "conversion_mode": "word_to_excel",
+      "expected_status": "requires_review",
+      "expected_artifacts": [
+        {
+          "type": "xlsx",
+          "expectations": [
+            "application table values remain editable",
+            "numeric and date values preserve their intended types",
+            "merged-cell handling is surfaced for review"
+          ]
+        }
+      ],
+      "expected_warnings": [
+        "conversion mode word_to_excel selected",
+        "blocks[0].bbox missing; block marked requires_review",
+        "blocks[1].bbox missing; block marked requires_review",
+        "blocks[1].parser marked block requires_review",
+        "DOCX table contains merged cells; xlsx artifact requires review"
+      ],
+      "review_focus": [
+        "confirm the merged application-summary cell",
+        "confirm blank optional cells remain blank"
+      ]
+    },
+    {
+      "id": "mvp-excel-001",
+      "category": "excel",
+      "fixture_id": "excel-to-word-representative",
+      "fixture_path": "datasets/fixtures/excel/excel-to-word-representative.xlsx",
+      "source_classification": "synthetic",
+      "conversion_mode": "excel_to_word",
+      "expected_status": "requires_review",
+      "expected_artifacts": [
+        {
+          "type": "docx",
+          "expectations": [
+            "all representative worksheets are emitted in source order",
+            "typed values are rendered without dropping leading zeros",
+            "worksheet names remain visible as headings"
+          ]
+        }
+      ],
+      "expected_warnings": [
+        "conversion mode excel_to_word selected",
+        "blocks[0].bbox missing; block marked requires_review",
+        "blocks[1].bbox missing; block marked requires_review",
+        "blocks[2].bbox missing; block marked requires_review"
+      ],
+      "review_focus": [
+        "confirm worksheet ordering and headings",
+        "confirm dates, decimals, booleans, and leading-zero identifiers"
+      ]
+    },
+    {
+      "id": "mvp-text-pdf-001",
+      "category": "text_pdf",
+      "fixture_id": "pdf-to-excel-table-report",
+      "fixture_path": "datasets/fixtures/pdf/pdf-to-excel-ruled-table.pdf",
+      "source_classification": "synthetic",
+      "conversion_mode": "pdf_to_excel",
+      "expected_status": "converted",
+      "expected_artifacts": [
+        {
+          "type": "xlsx",
+          "expectations": [
+            "the ruled table is emitted as editable cells",
+            "numeric values remain numeric",
+            "source-page and bounding-box evidence remains attached"
+          ]
+        }
+      ],
+      "expected_warnings": [
+        "conversion mode pdf_to_excel selected"
+      ],
+      "review_focus": [
+        "confirm table boundaries and blank-cell preservation",
+        "confirm source evidence for the extracted table"
+      ]
+    },
+    {
+      "id": "mvp-scanned-pdf-001",
+      "category": "scanned_pdf",
+      "fixture_id": "scanned-pdf-representative",
+      "fixture_path": "datasets/fixtures/pdf/scanned-pdf-representative.pdf",
+      "source_classification": "synthetic",
+      "conversion_mode": "pdf_to_word",
+      "expected_status": "requires_review",
+      "expected_artifacts": [
+        {
+          "type": "docx",
+          "expectations": [
+            "the image-only page is represented without inventing extracted text",
+            "the empty-page placeholder remains explicitly review-required"
+          ]
+        }
+      ],
+      "expected_warnings": [
+        "conversion mode pdf_to_word selected",
+        "pdf_to_word reconstruction preserves editable text structure for review; exact PDF layout, fonts, coordinates, columns, footnotes, and OCR fidelity are not guaranteed",
+        "blocks[0].parser marked block requires_review"
+      ],
+      "review_focus": [
+        "confirm unsupported OCR is not treated as successful text extraction",
+        "route the scan through a separate trusted OCR workflow before accepting text"
+      ]
+    },
+    {
+      "id": "mvp-record-pdf-001",
+      "category": "record_pdf",
+      "fixture_id": "record-pdf-neutral-representative",
+      "fixture_path": "datasets/fixtures/pdf/record-pdf-neutral-representative.pdf",
+      "source_classification": "synthetic",
+      "conversion_mode": "pdf_to_word",
+      "expected_status": "converted",
+      "expected_artifacts": [
+        {
+          "type": "docx",
+          "expectations": [
+            "record text remains editable",
+            "record sections remain complete and in source order"
+          ]
+        }
+      ],
+      "expected_warnings": [
+        "conversion mode pdf_to_word selected",
+        "pdf_to_word reconstruction preserves editable text structure for review; exact PDF layout, fonts, coordinates, columns, footnotes, and OCR fidelity are not guaranteed"
+      ],
+      "review_focus": [
+        "confirm the converted record text is complete",
+        "confirm section ordering against the source pages"
+      ]
+    }
+  ]
+}
