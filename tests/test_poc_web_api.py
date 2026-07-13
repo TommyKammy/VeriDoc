@@ -12806,6 +12806,8 @@ def test_poc_http_api_redacts_endpoint_credentials(
         ),
         ("http://127.0.0.1:8000/v1;api_key=secret/chat", None),
         ("http://127.0.0.1:8000/v1%3Bapi_key=secret", None),
+        ("http://127.0.0.1:8000/v1/api_key=secret", None),
+        ("http://127.0.0.1:8000/v1/%2561pi%255Fkey%253Dsecret", None),
     ],
 )
 def test_poc_http_api_rejects_endpoint_url_components_that_can_contain_secrets(

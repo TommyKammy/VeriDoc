@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import unquote, urlparse
 
-from core.llm.audit_parameters import sanitize_audit_parameters
+from core.llm.audit_parameters import _is_secret_parameter_key, sanitize_audit_parameters
 
 
 CONVERSION_PLAN_SCHEMA: dict[str, Any] = {
@@ -566,6 +566,12 @@ def has_unsafe_llm_endpoint_path(path: str) -> bool:
     decoded_path = path
     for _ in range(8):
         if any(delimiter in decoded_path for delimiter in (";", "?", "#")):
+            return True
+        if any(
+            separator and _is_secret_parameter_key(key)
+            for segment in decoded_path.split("/")
+            for key, separator, _value in (segment.partition("="),)
+        ):
             return True
         next_path = unquote(decoded_path)
         if next_path == decoded_path:
