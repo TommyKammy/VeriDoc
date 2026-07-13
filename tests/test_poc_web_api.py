@@ -7983,6 +7983,42 @@ def test_poc_http_api_creates_idempotent_conversion_job() -> None:
     assert status["job"]["mode"] == "standard"
 
 
+def test_poc_http_api_rejects_source_less_ocr_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("VERIDOC_STANDARD_OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("VERIDOC_HIGH_QUALITY_OPENAI_BASE_URL", raising=False)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue()
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = json.dumps(
+            {
+                "filename": "pending.pdf",
+                "use_ocr": True,
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/jobs",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 400
+    assert body["error"] == "ocr_not_supported"
+    assert body["audit"]["conversion_settings"]["use_llm"]["status"] == "disabled"
+    assert body["audit"]["conversion_settings"]["use_ocr"]["status"] == "unsupported"
+    assert server.job_queue.list_jobs() == []
+
+
 def test_poc_http_api_stores_uploaded_job_source_before_returning_reference() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     server.job_queue = JobQueue()
@@ -8509,7 +8545,7 @@ def test_poc_http_api_surfaces_dependency_conversion_failure_as_terminal(
     assert server.job_queue.get_job(body["job"]["job_id"]).retryable is False
 
 
-def test_poc_http_api_preserves_job_llm_configuration_rejection(
+def test_poc_http_api_rejects_job_ocr_before_llm_configuration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("VERIDOC_STANDARD_OPENAI_BASE_URL", "https://api.openai.com/v1")
@@ -8546,20 +8582,11 @@ def test_poc_http_api_preserves_job_llm_configuration_rejection(
         thread.join(timeout=5)
 
     assert response.status == 400
-    assert body["error"] == "llm_configuration_rejected"
+    assert body["error"] == "ocr_not_supported"
     assert body["audit"]["conversion_settings"]["use_llm"]["reason"] == "non_local_endpoint"
     assert body["audit"]["conversion_settings"]["use_ocr"]["reason"] == "not_implemented"
-    assert body["warnings"] == [
-        "LLM conversion blocked: configured endpoint must be local-only"
-    ]
-    assert body["warning_details"] == [
-        {
-            "code": "LLM_CONFIGURATION_ENDPOINT_REJECTED",
-            "severity": "error",
-            "message": body["warnings"][0],
-            "remediation": "Configure a local-only LLM endpoint before retrying.",
-        }
-    ]
+    assert "warnings" not in body
+    assert "warning_details" not in body
     assert "api.openai.com" not in body_text
     assert server.job_queue.list_jobs() == []
 
@@ -12522,7 +12549,64 @@ def test_poc_http_api_rejects_conflicting_direct_convert_output_format() -> None
     }
 
 
-def test_poc_http_api_reflects_unavailable_llm_and_unsupported_ocr_settings(
+def test_poc_http_api_rejects_unsupported_ocr_before_conversion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("VERIDOC_STANDARD_OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("VERIDOC_HIGH_QUALITY_OPENAI_BASE_URL", raising=False)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = json.dumps(
+            {
+                "filename": "phase0-output.json",
+                "content": json.dumps({"pages": []}),
+                "conversion_mode": "auto",
+                "use_ocr": True,
+            }
+        ).encode("utf-8")
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/convert",
+            body=payload,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 400
+    assert body == {
+        "error": "ocr_not_supported",
+        "message": "OCR conversion is not supported in the MVP",
+        "audit": {
+            "conversion_settings": {
+                "use_llm": {
+                    "requested": False,
+                    "enabled": False,
+                    "status": "disabled",
+                    "support_status": "not_configured",
+                    "reason": "missing_configured_profile",
+                    "message": "LLM conversion plan unavailable: no configured local LLM profile",
+                },
+                "use_ocr": {
+                    "requested": True,
+                    "enabled": False,
+                    "status": "unsupported",
+                    "support_status": "unsupported",
+                    "reason": "not_implemented",
+                    "message": "OCR conversion setting is not implemented in the local PoC API",
+                }
+            }
+        },
+    }
+
+
+def test_poc_http_api_reflects_unavailable_llm_and_disabled_ocr_settings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("VERIDOC_STANDARD_OPENAI_BASE_URL", raising=False)
@@ -12549,7 +12633,7 @@ def test_poc_http_api_reflects_unavailable_llm_and_unsupported_ocr_settings(
                 ),
                 "conversion_mode": "auto",
                 "use_llm": True,
-                "use_ocr": True,
+                "use_ocr": False,
             }
         ).encode("utf-8")
         connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
@@ -12576,9 +12660,9 @@ def test_poc_http_api_reflects_unavailable_llm_and_unsupported_ocr_settings(
             "message": "LLM conversion plan unavailable: no configured local LLM profile",
         },
         "use_ocr": {
-            "requested": True,
+            "requested": False,
             "enabled": False,
-            "status": "unsupported",
+            "status": "disabled",
             "support_status": "unsupported",
             "reason": "not_implemented",
             "message": "OCR conversion setting is not implemented in the local PoC API",
@@ -12589,7 +12673,6 @@ def test_poc_http_api_reflects_unavailable_llm_and_unsupported_ocr_settings(
         "LLM conversion plan unavailable: no configured local LLM profile; "
         "deterministic conversion used; requires review"
     ) in body["warnings"]
-    assert "OCR conversion setting is not implemented in the local PoC API" in body["warnings"]
     assert body["audit"]["conversion_plan"] == {
         "requested": True,
         "status": "fallback",
@@ -12651,14 +12734,14 @@ def test_poc_http_api_rejects_external_llm_endpoint_before_conversion(
         thread.join(timeout=5)
 
     assert response.status == 400
-    assert body["error"] == "llm_configuration_rejected"
+    assert body["error"] == "ocr_not_supported"
     assert body["audit"]["conversion_settings"]["use_llm"] == {
         "requested": True,
         "enabled": False,
-        "status": "blocked",
+        "status": "requested",
         "reason": "non_local_endpoint",
         "support_status": "rejected",
-        "message": "LLM conversion blocked: configured endpoint must be local-only",
+        "message": "LLM conversion plan unavailable: configured endpoint must be local-only",
     }
     assert body["audit"]["conversion_settings"]["use_ocr"] == {
         "requested": True,
@@ -12668,10 +12751,8 @@ def test_poc_http_api_rejects_external_llm_endpoint_before_conversion(
         "reason": "not_implemented",
         "message": "OCR conversion setting is not implemented in the local PoC API",
     }
-    assert body["warnings"] == [
-        "LLM conversion blocked: configured endpoint must be local-only"
-    ]
-    assert body["warning_details"][0]["code"] == "LLM_CONFIGURATION_ENDPOINT_REJECTED"
+    assert "warnings" not in body
+    assert "warning_details" not in body
     assert "api.openai.com" not in body_text
     assert "DO-NOT-SEND-DOCUMENT-BODY" not in body_text
 
@@ -13097,6 +13178,8 @@ def test_web_direct_convert_selects_and_posts_llm_ocr_settings() -> None:
 
     assert 'id="direct-use-llm"' in html
     assert 'id="direct-use-ocr"' in html
+    assert 'id="direct-use-ocr" type="checkbox" disabled' in html
+    assert "OCR is not supported in the MVP. OCR requests are rejected by the API." in html
     assert "const directUseLlm = document.querySelector(\"#direct-use-llm\")" in html
     assert "const directUseOcr = document.querySelector(\"#direct-use-ocr\")" in html
     assert "use_llm: directUseLlm.checked" in html
@@ -13164,7 +13247,7 @@ def test_web_upload_settings_distinguishes_unsupported_and_blocked_states() -> N
     parser = _PocUiRegionParser()
     parser.feed(html)
 
-    assert "OCR is not implemented in this local PoC; enabling it records an unsupported request." in html
+    assert "OCR is not supported in the MVP. OCR requests are rejected by the API." in html
     assert "LLM unset, local LLM unavailable, and external endpoint rejection are shown separately after conversion." in html
     assert "External AI endpoints are rejected; document content stays on the local API boundary." in html
     assert "GMP review is always required before operational use; local-only conversion does not certify GMP suitability." in html

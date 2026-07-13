@@ -1,5 +1,14 @@
 ### OCR extraction spike
 
+## MVP policy
+
+OCR is explicitly unsupported for the MVP. The local extraction adapters in
+this spike remain available for focused technical evaluation, but they are not
+wired into the conversion API. Requests with `use_ocr: true` are rejected with
+HTTP 400 and `ocr_not_supported`; the web UI disables the OCR control and names
+the same limitation. Enabling OCR requires a later acceptance decision covering
+representative scanned-PDF fixtures, extraction warnings, and review flow.
+
 Issue #5 evaluates whether Phase0 can extract text, page-local region
 coordinates, and confidence values from a scanned PDF without sending document
 content to an external service.

@@ -1502,8 +1502,15 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             request = self._read_json_request()
             filename = str(request.get("filename") or "upload.txt")
             conversion_mode = _validate_conversion_mode(request.get("conversion_mode"))
-            use_llm = _validate_conversion_setting_boolean(request, "use_llm")
             use_ocr = _validate_conversion_setting_boolean(request, "use_ocr")
+            use_llm = _validate_conversion_setting_boolean(request, "use_llm")
+            ocr_rejection = _ocr_configuration_rejection(
+                use_ocr=use_ocr,
+                use_llm=use_llm,
+            )
+            if ocr_rejection is not None:
+                self._send_json(ocr_rejection, status=400)
+                return
             llm_rejection = _llm_configuration_rejection(use_llm=use_llm, use_ocr=use_ocr)
             if llm_rejection is not None:
                 self._send_json(llm_rejection, status=400)
@@ -1559,6 +1566,14 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             desktop_upload_audit = _desktop_upload_audit_requested(request)
             conversion_settings = None
             request_parameters = None
+            use_ocr = _validate_conversion_setting_boolean(request, "use_ocr")
+            if source is None and use_ocr:
+                use_llm = _validate_conversion_setting_boolean(request, "use_llm")
+                self._send_json(
+                    _ocr_configuration_rejection(use_ocr=True, use_llm=use_llm),
+                    status=400,
+                )
+                return
             if source is not None:
                 conversion_mode = _validate_conversion_mode(request.get("conversion_mode"))
                 output_format = _validate_direct_output_format_for_conversion_mode(
@@ -1566,13 +1581,19 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                     output_format=_validate_direct_output_format(request.get("output_format")),
                 )
                 use_llm = _validate_conversion_setting_boolean(request, "use_llm")
-                use_ocr = _validate_conversion_setting_boolean(request, "use_ocr")
                 request_parameters = {
                     "conversion_mode": conversion_mode,
                     "output_format": output_format,
                     "use_llm": use_llm,
                     "use_ocr": use_ocr,
                 }
+                ocr_rejection = _ocr_configuration_rejection(
+                    use_ocr=use_ocr,
+                    use_llm=use_llm,
+                )
+                if ocr_rejection is not None:
+                    self._send_json(ocr_rejection, status=400)
+                    return
                 if not desktop_upload_audit:
                     llm_rejection = _llm_configuration_rejection(
                         use_llm=use_llm,
@@ -4785,6 +4806,24 @@ def _llm_configuration_rejection(*, use_llm: bool, use_ocr: bool) -> dict[str, A
                     support_status=_llm_support_status(reason),
                 ),
                 "use_ocr": _unsupported_conversion_setting(use_ocr),
+            }
+        },
+    }
+
+
+def _ocr_configuration_rejection(*, use_ocr: bool, use_llm: bool) -> dict[str, Any] | None:
+    if not use_ocr:
+        return None
+    return {
+        "error": "ocr_not_supported",
+        "message": "OCR conversion is not supported in the MVP",
+        "audit": {
+            "conversion_settings": {
+                "use_llm": _llm_conversion_setting(
+                    use_llm,
+                    _configured_llm_rejection_reason(),
+                ),
+                "use_ocr": _unsupported_conversion_setting(True),
             }
         },
     }
