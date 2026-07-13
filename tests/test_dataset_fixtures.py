@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import importlib.util
 import json
+import os
 import unittest
 from pathlib import Path
 from xml.etree import ElementTree
@@ -45,6 +47,7 @@ PACKAGE_REL_NS = "{http://schemas.openxmlformats.org/package/2006/relationships}
 OFFICE_DOCUMENT_RELATIONSHIP = (
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument"
 )
+PDF_EVAL_DEPS_AVAILABLE = importlib.util.find_spec("pymupdf") is not None
 
 
 class DatasetFixturesTest(unittest.TestCase):
@@ -94,9 +97,14 @@ class DatasetFixturesTest(unittest.TestCase):
             with self.subTest(case=case["id"]):
                 fixture = fixtures_by_id[case["fixture_id"]]
                 fixture_path = Path(case["fixture_path"])
+                expected_fixture_path = (
+                    fixture["report_path"]
+                    if case["conversion_mode"] == "pdf_to_excel"
+                    else fixture["path"]
+                )
 
                 self.assertFalse(fixture_path.is_absolute())
-                self.assertEqual(fixture["path"], case["fixture_path"])
+                self.assertEqual(expected_fixture_path, case["fixture_path"])
                 self.assertTrue((REPO_ROOT / fixture_path).is_file())
                 self.assertEqual(expected_source_types[case["category"]], fixture["source_type"])
                 self.assertIn(fixture["anonymization"], {"synthetic", "anonymized"})
@@ -122,20 +130,29 @@ class DatasetFixturesTest(unittest.TestCase):
                     self.assertNotIn(b"/Font", scanned_pdf)
 
         cases_by_id = {case["id"]: case for case in cases}
-        for case_id in {
+        for case_id in (
             "mvp-excel-001",
+            "mvp-text-pdf-001",
             "mvp-scanned-pdf-001",
             "mvp-record-pdf-001",
-        }:
+        ):
             case = cases_by_id[case_id]
             fixture_path = REPO_ROOT / case["fixture_path"]
-            result = convert_uploaded_document(
-                filename=fixture_path.name,
-                content=fixture_path.read_bytes(),
-                conversion_mode=case["conversion_mode"],
-            )
 
             with self.subTest(case=case_id, boundary="emitted warnings"):
+                if (
+                    case["category"] in {"scanned_pdf", "record_pdf"}
+                    and not PDF_EVAL_DEPS_AVAILABLE
+                ):
+                    if os.environ.get("VERIDOC_REQUIRE_PDF_EVAL_DEPS") == "1":
+                        self.fail("PyMuPDF eval dependency is required but not installed")
+                    self.skipTest("PyMuPDF eval dependency is not installed")
+
+                result = convert_uploaded_document(
+                    filename=fixture_path.name,
+                    content=fixture_path.read_bytes(),
+                    conversion_mode=case["conversion_mode"],
+                )
                 self.assertLessEqual(
                     set(case["expected_warnings"]),
                     set(result["warnings"]),
