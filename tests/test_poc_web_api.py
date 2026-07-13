@@ -12850,6 +12850,10 @@ def test_poc_http_api_rejects_endpoint_url_components_that_can_contain_secrets(
         "http://[bad",
         "http://127.0.0.1:api_key=secret/v1",
         "http://127.0.0.1%40api_key=secret:8000/v1",
+        "http://127.0.0.1%3Fapi_key=secret:8000/v1",
+        "http://127.0.0.1%23api_key=secret:8000/v1",
+        "http://127.0.0.1%3Bapi_key=secret:8000/v1",
+        "http://127.0.0.1%253Fapi_key=secret:8000/v1",
         "user:pass@127.0.0.1:8000/v1",
     ],
 )

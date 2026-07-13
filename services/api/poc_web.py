@@ -4856,11 +4856,17 @@ def _redacted_endpoint_for_display(endpoint: str | None) -> str | None:
         netloc = parsed_endpoint.netloc.rsplit("@", 1)[-1]
         decoded_netloc = netloc
         for _ in range(8):
-            if "@" in decoded_netloc:
-                return None
             next_netloc = unquote(decoded_netloc)
             if next_netloc == decoded_netloc:
                 break
+            # Reject any reserved URI delimiter introduced by decoding. Such
+            # delimiters can change the authority boundary while remaining
+            # hidden from ``urlparse()`` in the configured value.
+            if any(
+                next_netloc.count(delimiter) > decoded_netloc.count(delimiter)
+                for delimiter in ":/?#[]@!$&'()*+,;="
+            ):
+                return None
             decoded_netloc = next_netloc
         else:
             return None
