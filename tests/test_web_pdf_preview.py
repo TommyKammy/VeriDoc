@@ -20,6 +20,17 @@ def _web_html() -> str:
     return Path("apps/web/index.html").read_text(encoding="utf-8")
 
 
+def _javascript_function_body(html: str, function_name: str) -> str:
+    function = re.search(
+        rf"function {re.escape(function_name)}\([^)]*\) \{{(?P<body>.*?)\n      \}}",
+        html,
+        flags=re.S,
+    )
+
+    assert function is not None
+    return function.group("body")
+
+
 def test_pdf_preview_surface_and_bbox_controls_are_present() -> None:
     parser = _ElementIdParser()
     parser.feed(_web_html())
@@ -71,11 +82,11 @@ def test_primary_review_surfaces_have_accessible_names_and_list_semantics() -> N
     assert 'reviewList.setAttribute("role", "list");' in html
     assert 'wrapper.setAttribute("role", "listitem");' in html
     for function_name in ("renderDirectConvertError", "clearReviewResult"):
+        function_body = _javascript_function_body(html, function_name)
         assert re.search(
-            rf"function {function_name}\([^)]*\) \{{.*?"
             r'reviewList\.removeAttribute\("role"\);\s+'
             r"reviewList\.replaceChildren\(\);",
-            html,
+            function_body,
             flags=re.S,
         )
     assert 'jump.setAttribute("aria-label", `Jump to bbox for ${blockId}`);' in html
@@ -84,13 +95,8 @@ def test_primary_review_surfaces_have_accessible_names_and_list_semantics() -> N
     assert 'aria-label="Conversion warnings"' in html
     assert 'badges.setAttribute("role", "list");' in html
     assert 'badge.setAttribute("role", "listitem");' in html
-    assert re.search(
-        r"function llmInvolvementBadge\(item\) \{.*?"
-        r'badge\.setAttribute\("role", "listitem"\);.*?'
-        r"return badge;\s+\}\s+return null;\s+\}",
-        html,
-        flags=re.S,
-    )
+    llm_badge_body = _javascript_function_body(html, "llmInvolvementBadge")
+    assert 'badge.setAttribute("role", "listitem");' in llm_badge_body
     assert 'aria-labelledby="artifact-downloads-title"' in html
     assert 'aria-describedby="artifact-summary" download' in html
     assert '<table aria-label="Audit events">' in html
