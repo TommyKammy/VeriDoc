@@ -529,7 +529,7 @@ def _local_base_url(base_url: str) -> _LocalBaseUrl | None:
         return None
     if parsed.scheme not in {"http", "https"} or not hostname:
         return None
-    if parsed.query or parsed.fragment:
+    if parsed.params or parsed.query or parsed.fragment:
         return None
     try:
         port = parsed.port

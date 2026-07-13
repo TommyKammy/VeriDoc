@@ -19,7 +19,7 @@ import sys
 from tempfile import TemporaryDirectory
 from threading import Lock
 from typing import Any, Callable
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlparse, urlsplit
 from uuid import uuid4
 from xml.etree.ElementTree import ParseError as XmlParseError
 from zipfile import BadZipFile
@@ -4843,9 +4843,9 @@ def _redacted_endpoint_for_display(endpoint: str | None) -> str | None:
     if endpoint is None:
         return None
     try:
-        parsed_endpoint = urlsplit(endpoint)
+        parsed_endpoint = urlparse(endpoint)
         netloc = parsed_endpoint.netloc.rsplit("@", 1)[-1]
-        return parsed_endpoint._replace(netloc=netloc, query="", fragment="").geturl()
+        return parsed_endpoint._replace(netloc=netloc, params="", query="", fragment="").geturl()
     except ValueError:
         return None
 

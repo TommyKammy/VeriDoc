@@ -12793,12 +12793,20 @@ def test_poc_http_api_redacts_endpoint_credentials(
     }
 
 
-def test_poc_http_api_rejects_endpoint_query_and_fragment(
+@pytest.mark.parametrize(
+    "configured_endpoint",
+    [
+        "http://127.0.0.1:8000/v1?api_key=secret#access_token",
+        "http://127.0.0.1:8000/v1;api_key=secret",
+    ],
+)
+def test_poc_http_api_rejects_endpoint_url_components_that_can_contain_secrets(
     monkeypatch: pytest.MonkeyPatch,
+    configured_endpoint: str,
 ) -> None:
     monkeypatch.setenv(
         "VERIDOC_STANDARD_OPENAI_BASE_URL",
-        "http://127.0.0.1:8000/v1?api_key=secret#access_token",
+        configured_endpoint,
     )
     monkeypatch.setenv("VERIDOC_STANDARD_MODEL", "local-json-model")
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
