@@ -128,9 +128,13 @@ class DatasetFixturesTest(unittest.TestCase):
                     scanned_pdf = (REPO_ROOT / fixture_path).read_bytes()
                     self.assertIn(b"/Subtype /Image", scanned_pdf)
                     self.assertNotIn(b"/Font", scanned_pdf)
+                if case["category"] == "record_pdf":
+                    record_pdf = (REPO_ROOT / fixture_path).read_bytes()
+                    self.assertNotIn(b"High-risk field", record_pdf)
 
         cases_by_id = {case["id"]: case for case in cases}
         for case_id in (
+            "mvp-word-001",
             "mvp-excel-001",
             "mvp-text-pdf-001",
             "mvp-scanned-pdf-001",

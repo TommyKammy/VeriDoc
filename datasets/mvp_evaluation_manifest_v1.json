@@ -21,6 +21,7 @@
       "fixture_path": "datasets/fixtures/word/word-to-excel-application.docx",
       "source_classification": "synthetic",
       "conversion_mode": "word_to_excel",
+      "expected_status": "requires_review",
       "expected_artifacts": [
         {
           "type": "xlsx",
@@ -32,6 +33,9 @@
         }
       ],
       "expected_warnings": [
+        "blocks[0].bbox missing; block marked requires_review",
+        "blocks[1].bbox missing; block marked requires_review",
+        "blocks[1].parser marked block requires_review",
         "DOCX table contains merged cells; xlsx artifact requires review"
       ],
       "review_focus": [
@@ -86,6 +90,7 @@
         }
       ],
       "expected_warnings": [
+        "PDF table extraction candidate unavailable: pdfplumber:table; xlsx artifact requires review",
         "conversion mode pdf_to_excel selected"
       ],
       "review_focus": [
