@@ -2471,6 +2471,7 @@
           errorPayload.audit?.llm
         );
         renderTopLevelWarnings(warnings);
+        reviewList.removeAttribute("role");
         reviewList.replaceChildren();
         reviewActionStatus.textContent = "";
         clearDownload();
@@ -2669,6 +2670,7 @@
         clearDirectConvertError();
         clearConversionSettingStatus();
         clearTopLevelWarnings();
+        reviewList.removeAttribute("role");
         reviewList.replaceChildren();
         state.reviewAuditEvents = [];
         state.pendingReviewActions.clear();

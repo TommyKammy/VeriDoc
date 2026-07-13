@@ -70,6 +70,14 @@ def test_primary_review_surfaces_have_accessible_names_and_list_semantics() -> N
     assert 'reviewList.removeAttribute("role");' in html
     assert 'reviewList.setAttribute("role", "list");' in html
     assert 'wrapper.setAttribute("role", "listitem");' in html
+    for function_name in ("renderDirectConvertError", "clearReviewResult"):
+        assert re.search(
+            rf"function {function_name}\([^)]*\) \{{.*?"
+            r'reviewList\.removeAttribute\("role"\);\s+'
+            r"reviewList\.replaceChildren\(\);",
+            html,
+            flags=re.S,
+        )
     assert 'jump.setAttribute("aria-label", `Jump to ${blockId} source bbox`);' in html
     assert 'approve.setAttribute("aria-label", `Approve ${blockId}`);' in html
     assert 'requestEdit.setAttribute("aria-label", `Save edit for ${blockId}`);' in html
