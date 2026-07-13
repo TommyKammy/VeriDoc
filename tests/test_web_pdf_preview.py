@@ -84,6 +84,13 @@ def test_primary_review_surfaces_have_accessible_names_and_list_semantics() -> N
     assert 'aria-label="Conversion warnings"' in html
     assert 'badges.setAttribute("role", "list");' in html
     assert 'badge.setAttribute("role", "listitem");' in html
+    assert re.search(
+        r"function llmInvolvementBadge\(item\) \{.*?"
+        r'badge\.setAttribute\("role", "listitem"\);.*?'
+        r"return badge;\s+\}\s+return null;\s+\}",
+        html,
+        flags=re.S,
+    )
     assert 'aria-labelledby="artifact-downloads-title"' in html
     assert 'aria-describedby="artifact-summary" download' in html
     assert '<table aria-label="Audit events">' in html
