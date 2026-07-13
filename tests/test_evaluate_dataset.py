@@ -1067,14 +1067,14 @@ class EvaluateDatasetTest(unittest.TestCase):
             fixture_file.flush()
             fixture_path = Path(fixture_file.name)
 
-            def stalled_conversion(**_kwargs: object) -> dict[str, object]:
+            def stalled_parser(_path: Path) -> object:
                 time.sleep(1)
-                return {}
+                raise AssertionError("parser should not complete after the deadline")
 
             started_at = time.perf_counter()
             with mock.patch(
-                "services.api.poc_web.convert_uploaded_document",
-                side_effect=stalled_conversion,
+                "services.api.poc_web.extract_docx_structure",
+                side_effect=stalled_parser,
             ):
                 result = evaluate_dataset.mvp_conversion_result(
                     case,
@@ -1091,6 +1091,7 @@ class EvaluateDatasetTest(unittest.TestCase):
             result["evaluations"]["timeout"]["error"],
         )
         self.assertIn("processing_timeout", result["failure_reason"])
+        self.assertNotIn("DOCX parser failed", result["failure_reason"])
 
     def test_mvp_manifest_rejects_missing_acceptance_limits(self) -> None:
         manifest = self.valid_mvp_manifest_data()

@@ -12627,6 +12627,73 @@ def test_direct_conversion_timeout_does_not_leave_worker_running(
     assert new_child_processes == []
 
 
+def test_direct_conversion_timeout_removes_worker_temp_files(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker_temp_root: Path | None = None
+    worker_temp_file_created = False
+
+    class FakeConnection:
+        def close(self) -> None:
+            return None
+
+        def poll(self, _timeout: float) -> bool:
+            return False
+
+    class FakeProcess:
+        def __init__(self, *, args: tuple[object, dict[str, object]], **_: object) -> None:
+            self.worker_kwargs = args[1]
+            self.alive = True
+
+        def start(self) -> None:
+            nonlocal worker_temp_root, worker_temp_file_created
+            worker_temp_root = Path(self.worker_kwargs["_temporary_directory_root"])
+            upload_dir = worker_temp_root / "veridoc-poc-upload-incomplete"
+            upload_dir.mkdir()
+            upload_path = upload_dir / "upload.docx"
+            upload_path.write_bytes(b"retained upload")
+            worker_temp_file_created = upload_path.exists()
+
+        def is_alive(self) -> bool:
+            return self.alive
+
+        def terminate(self) -> None:
+            self.alive = False
+
+        def join(self, timeout: float | None = None) -> None:
+            del timeout
+
+        def kill(self) -> None:
+            self.alive = False
+
+        def close(self) -> None:
+            return None
+
+    class FakeContext:
+        def Pipe(self, *, duplex: bool) -> tuple[FakeConnection, FakeConnection]:
+            assert duplex is False
+            return FakeConnection(), FakeConnection()
+
+        def Process(self, **kwargs: object) -> FakeProcess:
+            return FakeProcess(**kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        poc_web.multiprocessing,
+        "get_context",
+        lambda method: FakeContext() if method == "spawn" else None,
+    )
+
+    with pytest.raises(poc_web.PocProcessingTimeoutError):
+        poc_web._convert_uploaded_document_with_timeout(
+            filename="upload.docx",
+            content=b"conversion timeout cleanup",
+        )
+
+    assert worker_temp_file_created
+    assert worker_temp_root is not None
+    assert not worker_temp_root.exists()
+
+
 def test_poc_http_api_rejects_unknown_conversion_mode() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     thread = Thread(target=server.serve_forever, daemon=True)

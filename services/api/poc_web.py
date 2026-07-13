@@ -845,6 +845,7 @@ def convert_uploaded_document(
     template_id: str | None = None,
     template_store: TemplateStore | None = None,
     template_snapshot: dict[str, Any] | None = None,
+    _temporary_directory_root: Path | None = None,
 ) -> dict[str, Any]:
     """Convert one uploaded PoC document into IR, review details, and download bytes."""
     safe_filename = _safe_filename(filename)
@@ -866,6 +867,7 @@ def convert_uploaded_document(
         safe_filename,
         content,
         conversion_mode=selected_conversion_mode,
+        temporary_directory_root=_temporary_directory_root,
     )
     source_type = _source_type(safe_filename, parser_output)
     _validate_conversion_mode_source_type(selected_conversion_mode, source_type)
@@ -917,6 +919,7 @@ def convert_uploaded_document(
             source_filename=safe_filename,
             conversion_mode=selected_conversion_mode,
             artifact_format=primary_format,
+            temporary_directory_root=_temporary_directory_root,
         )
     elif primary_format is not None:
         primary_warning = "primary artifact generation skipped: document IR validation failed"
@@ -1423,33 +1426,35 @@ def _reap_direct_conversion_process(process: Any, *, terminate: bool) -> None:
 
 def _convert_uploaded_document_with_timeout(**kwargs: Any) -> dict[str, Any]:
     worker_kwargs = _direct_conversion_worker_kwargs(kwargs)
-    context = multiprocessing.get_context("spawn")
-    result_connection, worker_connection = context.Pipe(duplex=False)
-    process = context.Process(
-        target=_direct_conversion_worker,
-        args=(worker_connection, worker_kwargs),
-        name="veridoc-poc-direct-conversion",
-    )
-    try:
-        process.start()
-    except Exception:
-        result_connection.close()
-        worker_connection.close()
-        process.close()
-        raise
-    worker_connection.close()
-    terminate = False
-    try:
-        if not result_connection.poll(PROCESSING_TIMEOUT_MS / 1000):
-            terminate = True
-            raise PocProcessingTimeoutError
+    with TemporaryDirectory(prefix="veridoc-poc-direct-conversion-") as temp_dir:
+        worker_kwargs["_temporary_directory_root"] = Path(temp_dir)
+        context = multiprocessing.get_context("spawn")
+        result_connection, worker_connection = context.Pipe(duplex=False)
+        process = context.Process(
+            target=_direct_conversion_worker,
+            args=(worker_connection, worker_kwargs),
+            name="veridoc-poc-direct-conversion",
+        )
         try:
-            message = result_connection.recv()
-        except EOFError as exc:
-            raise RuntimeError("Direct conversion worker exited without a result") from exc
-    finally:
-        result_connection.close()
-        _reap_direct_conversion_process(process, terminate=terminate)
+            process.start()
+        except Exception:
+            result_connection.close()
+            worker_connection.close()
+            process.close()
+            raise
+        worker_connection.close()
+        terminate = False
+        try:
+            if not result_connection.poll(PROCESSING_TIMEOUT_MS / 1000):
+                terminate = True
+                raise PocProcessingTimeoutError
+            try:
+                message = result_connection.recv()
+            except EOFError as exc:
+                raise RuntimeError("Direct conversion worker exited without a result") from exc
+        finally:
+            result_connection.close()
+            _reap_direct_conversion_process(process, terminate=terminate)
 
     if not isinstance(message, tuple) or len(message) != 2:
         raise RuntimeError("Direct conversion worker returned an invalid result")
@@ -3358,6 +3363,7 @@ def _render_primary_artifact(
     source_filename: str,
     conversion_mode: str,
     artifact_format: str | None,
+    temporary_directory_root: Path | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     if artifact_format is None:
         return None, None
@@ -3368,7 +3374,10 @@ def _render_primary_artifact(
         role="primary",
     )
     try:
-        with TemporaryDirectory(prefix="veridoc-primary-artifact-") as temp_dir:
+        with TemporaryDirectory(
+            prefix="veridoc-primary-artifact-",
+            dir=temporary_directory_root,
+        ) as temp_dir:
             output_path = Path(temp_dir) / filename
             _render_primary_artifact_file(
                 document_ir,
@@ -3875,6 +3884,7 @@ def _parser_output_from_upload(
     content: bytes,
     *,
     conversion_mode: str = "auto",
+    temporary_directory_root: Path | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     warnings: list[str] = []
     source_type = _source_type_from_path(filename)
@@ -3884,6 +3894,7 @@ def _parser_output_from_upload(
             content,
             source_type,
             conversion_mode=conversion_mode,
+            temporary_directory_root=temporary_directory_root,
         )
         return parser_output, [*warnings, *parser_warnings]
 
@@ -3932,8 +3943,12 @@ def _parser_output_from_binary_upload_with_warnings(
     source_type: str,
     *,
     conversion_mode: str = "auto",
+    temporary_directory_root: Path | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
-    with TemporaryDirectory(prefix="veridoc-poc-upload-") as temp_dir:
+    with TemporaryDirectory(
+        prefix="veridoc-poc-upload-",
+        dir=temporary_directory_root,
+    ) as temp_dir:
         upload_path = Path(temp_dir) / filename
         try:
             upload_path.write_bytes(content)
