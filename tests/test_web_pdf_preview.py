@@ -78,9 +78,15 @@ def test_primary_review_surfaces_have_accessible_names_and_list_semantics() -> N
     html = _web_html()
 
     assert 'id="review-list" aria-labelledby="review-title"' in html
-    assert 'reviewList.removeAttribute("role");' in html
-    assert 'reviewList.setAttribute("role", "list");' in html
-    assert 'wrapper.setAttribute("role", "listitem");' in html
+    render_review_items_body = _javascript_function_body(html, "renderReviewItems")
+    assert re.search(
+        r'if \(!items\.length\) \{\s+'
+        r'reviewList\.removeAttribute\("role"\);.*?'
+        r"reviewList\.replaceChildren\(empty\);\s+return;\s+\}",
+        render_review_items_body,
+        flags=re.S,
+    )
+    assert 'reviewList.setAttribute("role", "list");' in render_review_items_body
     for function_name in ("renderDirectConvertError", "clearReviewResult"):
         function_body = _javascript_function_body(html, function_name)
         assert re.search(
@@ -89,9 +95,20 @@ def test_primary_review_surfaces_have_accessible_names_and_list_semantics() -> N
             function_body,
             flags=re.S,
         )
-    assert 'jump.setAttribute("aria-label", `Jump to bbox for ${blockId}`);' in html
-    assert 'approve.setAttribute("aria-label", `Approve ${blockId}`);' in html
-    assert 'requestEdit.setAttribute("aria-label", `Save edit for ${blockId}`);' in html
+    render_review_item_body = _javascript_function_body(html, "renderReviewItem")
+    assert 'wrapper.setAttribute("role", "listitem");' in render_review_item_body
+    assert (
+        'jump.setAttribute("aria-label", `Jump to bbox for ${blockId}`);'
+        in render_review_item_body
+    )
+    assert (
+        'approve.setAttribute("aria-label", `Approve ${blockId}`);'
+        in render_review_item_body
+    )
+    assert (
+        'requestEdit.setAttribute("aria-label", `Save edit for ${blockId}`);'
+        in render_review_item_body
+    )
     assert 'aria-label="Conversion warnings"' in html
     assert 'badges.setAttribute("role", "list");' in html
     assert 'badge.setAttribute("role", "listitem");' in html
