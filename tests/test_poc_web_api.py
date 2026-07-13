@@ -5,10 +5,12 @@ import hashlib
 from html.parser import HTMLParser
 from io import BytesIO
 import json
+import multiprocessing
 import os
 import re
 import sqlite3
 import tempfile
+import threading
 from http.client import HTTPConnection
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -6036,6 +6038,11 @@ def test_poc_http_api_blocks_primary_render_failures(
         poc_web,
         "render_editable_docx_from_pdf_ir",
         failing_docx_renderer,
+    )
+    monkeypatch.setattr(
+        poc_web,
+        "_convert_uploaded_document_with_timeout",
+        poc_web.convert_uploaded_document,
     )
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     thread = Thread(target=server.serve_forever, daemon=True)
@@ -12536,20 +12543,15 @@ def test_poc_http_api_reports_mvp_upload_limit(
 def test_poc_http_api_reports_mvp_processing_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    conversion_started = Event()
-    release_conversion = Event()
-    conversion_finished = Event()
-
-    def slow_conversion(**_: object) -> dict[str, object]:
-        conversion_started.set()
-        try:
-            release_conversion.wait(timeout=5)
-            return {}
-        finally:
-            conversion_finished.set()
+    def timeout_conversion(**_: object) -> dict[str, object]:
+        raise poc_web.PocProcessingTimeoutError
 
     monkeypatch.setattr(poc_web, "PROCESSING_TIMEOUT_MS", 10)
-    monkeypatch.setattr(poc_web, "convert_uploaded_document", slow_conversion)
+    monkeypatch.setattr(
+        poc_web,
+        "_convert_uploaded_document_with_timeout",
+        timeout_conversion,
+    )
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -12570,19 +12572,59 @@ def test_poc_http_api_reports_mvp_processing_timeout(
         response = connection.getresponse()
         body = json.loads(response.read().decode("utf-8"))
     finally:
-        release_conversion.set()
-        conversion_finished.wait(timeout=1)
         server.shutdown()
         thread.join(timeout=5)
 
-    assert conversion_started.is_set()
-    assert conversion_finished.is_set()
     assert response.status == 504
     assert body == {
         "error": "processing_timeout",
         "message": "Conversion exceeded the 10 ms MVP timeout.",
         "timeout_ms": 10,
     }
+
+
+def test_direct_conversion_timeout_does_not_leave_worker_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release_conversion = Event()
+
+    def slow_conversion(**_: object) -> dict[str, object]:
+        release_conversion.wait(timeout=5)
+        return {}
+
+    monkeypatch.setattr(poc_web, "PROCESSING_TIMEOUT_MS", 1)
+    monkeypatch.setattr(poc_web, "convert_uploaded_document", slow_conversion)
+    existing_child_pids = {
+        process.pid for process in multiprocessing.active_children()
+    }
+    leaked_threads: list[Thread] = []
+    new_child_processes: list[multiprocessing.Process] = []
+    try:
+        with pytest.raises(poc_web.PocProcessingTimeoutError):
+            poc_web._convert_uploaded_document_with_timeout(
+                filename="upload.txt",
+                content=b"conversion timeout cleanup",
+            )
+        leaked_threads = [
+            thread
+            for thread in threading.enumerate()
+            if thread.name == "veridoc-poc-direct-conversion" and thread.is_alive()
+        ]
+        new_child_processes = [
+            process
+            for process in multiprocessing.active_children()
+            if process.pid not in existing_child_pids
+        ]
+    finally:
+        release_conversion.set()
+        for thread in leaked_threads:
+            thread.join(timeout=1)
+        for process in new_child_processes:
+            process.terminate()
+            process.join(timeout=1)
+
+    assert leaked_threads == []
+    assert new_child_processes == []
 
 
 def test_poc_http_api_rejects_unknown_conversion_mode() -> None:
@@ -13340,6 +13382,11 @@ def test_poc_http_api_allows_configured_local_llm_endpoint(
         "_configured_llm_conversion_plan_adapter",
         lambda: (FakeLocalLLMAdapter(), None),
     )
+    monkeypatch.setattr(
+        poc_web,
+        "_convert_uploaded_document_with_timeout",
+        poc_web.convert_uploaded_document,
+    )
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -13453,6 +13500,11 @@ def test_poc_http_api_surfaces_missing_pdf_dependency(monkeypatch) -> None:
         raise poc_web.MissingPdfExtractorDependency("pymupdf unavailable")
 
     monkeypatch.setattr(poc_web, "parse_text_pdf_to_document_ir", missing_pdf_parser)
+    monkeypatch.setattr(
+        poc_web,
+        "_convert_uploaded_document_with_timeout",
+        poc_web.convert_uploaded_document,
+    )
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()

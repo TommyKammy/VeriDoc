@@ -10,6 +10,7 @@ import binascii
 import hashlib
 import json
 import math
+import multiprocessing
 import os
 from pathlib import Path
 import re
@@ -17,7 +18,7 @@ import secrets
 import sqlite3
 import sys
 from tempfile import TemporaryDirectory
-from threading import Event, Lock, Thread
+from threading import Lock
 from typing import Any, Callable
 from urllib.parse import parse_qs, unquote, urlparse, urlsplit
 from uuid import uuid4
@@ -1372,29 +1373,94 @@ def _llm_plan_unavailable_reason(exc: Exception) -> str:
     return "runtime_unavailable"
 
 
-def _convert_uploaded_document_with_timeout(**kwargs: Any) -> dict[str, Any]:
-    results: list[dict[str, Any]] = []
-    errors: list[Exception] = []
-    finished = Event()
-
-    def convert() -> None:
+def _direct_conversion_worker(result_connection: Any, kwargs: dict[str, Any]) -> None:
+    try:
         try:
-            results.append(convert_uploaded_document(**kwargs))
+            message: tuple[str, object] = (
+                "result",
+                convert_uploaded_document(**kwargs),
+            )
         except Exception as exc:
-            errors.append(exc)
-        finally:
-            finished.set()
+            message = ("error", exc)
+        try:
+            result_connection.send(message)
+        except Exception:
+            if message[0] == "error":
+                exc = message[1]
+                result_connection.send(
+                    (
+                        "unserializable_error",
+                        f"{type(exc).__module__}.{type(exc).__qualname__}: {exc}",
+                    )
+                )
+            else:
+                raise
+    finally:
+        result_connection.close()
 
-    Thread(
-        target=convert,
+
+def _direct_conversion_worker_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
+    worker_kwargs = dict(kwargs)
+    template_store = worker_kwargs.pop("template_store", None)
+    template_id = _validate_optional_template_id(worker_kwargs.get("template_id"))
+    worker_kwargs["template_snapshot"] = _direct_convert_template_snapshot(
+        template_id,
+        template_store=template_store,
+        template_snapshot=worker_kwargs.get("template_snapshot"),
+    )
+    return worker_kwargs
+
+
+def _reap_direct_conversion_process(process: Any, *, terminate: bool) -> None:
+    if terminate and process.is_alive():
+        process.terminate()
+    process.join(timeout=1)
+    if process.is_alive():
+        process.kill()
+        process.join()
+    process.close()
+
+
+def _convert_uploaded_document_with_timeout(**kwargs: Any) -> dict[str, Any]:
+    worker_kwargs = _direct_conversion_worker_kwargs(kwargs)
+    context = multiprocessing.get_context("spawn")
+    result_connection, worker_connection = context.Pipe(duplex=False)
+    process = context.Process(
+        target=_direct_conversion_worker,
+        args=(worker_connection, worker_kwargs),
         name="veridoc-poc-direct-conversion",
-        daemon=True,
-    ).start()
-    if not finished.wait(PROCESSING_TIMEOUT_MS / 1000):
-        raise PocProcessingTimeoutError
-    if errors:
-        raise errors[0]
-    return results[0]
+    )
+    try:
+        process.start()
+    except Exception:
+        result_connection.close()
+        worker_connection.close()
+        process.close()
+        raise
+    worker_connection.close()
+    terminate = False
+    try:
+        if not result_connection.poll(PROCESSING_TIMEOUT_MS / 1000):
+            terminate = True
+            raise PocProcessingTimeoutError
+        try:
+            message = result_connection.recv()
+        except EOFError as exc:
+            raise RuntimeError("Direct conversion worker exited without a result") from exc
+    finally:
+        result_connection.close()
+        _reap_direct_conversion_process(process, terminate=terminate)
+
+    if not isinstance(message, tuple) or len(message) != 2:
+        raise RuntimeError("Direct conversion worker returned an invalid result")
+    message_type, payload = message
+    if message_type == "error" and isinstance(payload, Exception):
+        raise payload
+    if message_type == "unserializable_error":
+        raise RuntimeError(str(payload))
+    if message_type != "result" or not isinstance(payload, dict):
+        raise RuntimeError("Direct conversion worker returned an invalid result")
+    return payload
 
 
 def run(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> None:
