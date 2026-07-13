@@ -4844,6 +4844,10 @@ def _redacted_endpoint_for_display(endpoint: str | None) -> str | None:
         return None
     try:
         parsed_endpoint = urlparse(endpoint)
+        if parsed_endpoint.scheme not in {"http", "https"} or not parsed_endpoint.hostname:
+            return None
+        if ";" in parsed_endpoint.path:
+            return None
         netloc = parsed_endpoint.netloc.rsplit("@", 1)[-1]
         return parsed_endpoint._replace(netloc=netloc, params="", query="", fragment="").geturl()
     except ValueError:

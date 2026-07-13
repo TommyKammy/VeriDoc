@@ -12794,15 +12794,23 @@ def test_poc_http_api_redacts_endpoint_credentials(
 
 
 @pytest.mark.parametrize(
-    "configured_endpoint",
+    ("configured_endpoint", "expected_endpoint"),
     [
-        "http://127.0.0.1:8000/v1?api_key=secret#access_token",
-        "http://127.0.0.1:8000/v1;api_key=secret",
+        (
+            "http://127.0.0.1:8000/v1?api_key=secret#access_token",
+            "http://127.0.0.1:8000/v1",
+        ),
+        (
+            "http://127.0.0.1:8000/v1;api_key=secret",
+            "http://127.0.0.1:8000/v1",
+        ),
+        ("http://127.0.0.1:8000/v1;api_key=secret/chat", None),
     ],
 )
 def test_poc_http_api_rejects_endpoint_url_components_that_can_contain_secrets(
     monkeypatch: pytest.MonkeyPatch,
     configured_endpoint: str,
+    expected_endpoint: str | None,
 ) -> None:
     monkeypatch.setenv(
         "VERIDOC_STANDARD_OPENAI_BASE_URL",
@@ -12825,7 +12833,7 @@ def test_poc_http_api_rejects_endpoint_url_components_that_can_contain_secrets(
     settings = body["llm_settings"]
     assert settings["endpoint"] == {
         "configured": True,
-        "value": "http://127.0.0.1:8000/v1",
+        "value": expected_endpoint,
         "status": "rejected",
     }
     assert settings["fallback"] == {
@@ -12835,10 +12843,18 @@ def test_poc_http_api_rejects_endpoint_url_components_that_can_contain_secrets(
     }
 
 
+@pytest.mark.parametrize(
+    "configured_endpoint",
+    [
+        "http://[bad",
+        "user:pass@127.0.0.1:8000/v1",
+    ],
+)
 def test_poc_http_api_handles_malformed_endpoint_in_settings(
     monkeypatch: pytest.MonkeyPatch,
+    configured_endpoint: str,
 ) -> None:
-    monkeypatch.setenv("VERIDOC_STANDARD_OPENAI_BASE_URL", "http://[bad")
+    monkeypatch.setenv("VERIDOC_STANDARD_OPENAI_BASE_URL", configured_endpoint)
     monkeypatch.setenv("VERIDOC_STANDARD_MODEL", "local-json-model")
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     thread = Thread(target=server.serve_forever, daemon=True)
