@@ -3030,7 +3030,7 @@
         jump.className = "secondary";
         jump.type = "button";
         jump.textContent = "Jump to bbox";
-        jump.setAttribute("aria-label", `Jump to ${blockId} source bbox`);
+        jump.setAttribute("aria-label", `Jump to bbox for ${blockId}`);
         jump.disabled = !reviewAuditSourceBbox(item);
         jump.addEventListener("click", () => jumpToReviewItem(item));
         const approve = document.createElement("button");

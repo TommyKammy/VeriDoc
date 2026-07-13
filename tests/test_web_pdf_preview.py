@@ -78,7 +78,7 @@ def test_primary_review_surfaces_have_accessible_names_and_list_semantics() -> N
             html,
             flags=re.S,
         )
-    assert 'jump.setAttribute("aria-label", `Jump to ${blockId} source bbox`);' in html
+    assert 'jump.setAttribute("aria-label", `Jump to bbox for ${blockId}`);' in html
     assert 'approve.setAttribute("aria-label", `Approve ${blockId}`);' in html
     assert 'requestEdit.setAttribute("aria-label", `Save edit for ${blockId}`);' in html
     assert 'aria-label="Conversion warnings"' in html
