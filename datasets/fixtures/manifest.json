@@ -109,6 +109,18 @@
       "notes": "Dedicated synthetic PDF record excerpt for Phase 9 record-PDF PoC evaluation; contains no confidential source data."
     },
     {
+      "id": "record-pdf-neutral-representative",
+      "title": "Synthetic neutral record PDF representative fixture",
+      "path": "datasets/fixtures/pdf/record-pdf-neutral-representative.pdf",
+      "source_type": "record_excerpt",
+      "format": "pdf",
+      "anonymization": "synthetic",
+      "confidentiality": "public",
+      "public_review_safe": true,
+      "mvp_record_pdf_representative": true,
+      "notes": "Dedicated neutral synthetic record excerpt for the Phase 12 MVP converted case; contains no high-risk fields or confidential source data."
+    },
+    {
       "id": "pdf-to-excel-table-report",
       "title": "Synthetic PDF-to-Excel table report fixture",
       "path": "datasets/fixtures/pdf/pdf-to-excel-ruled-table.pdf",

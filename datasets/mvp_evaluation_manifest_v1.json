@@ -33,6 +33,7 @@
         }
       ],
       "expected_warnings": [
+        "conversion mode word_to_excel selected",
         "blocks[0].bbox missing; block marked requires_review",
         "blocks[1].bbox missing; block marked requires_review",
         "blocks[1].parser marked block requires_review",
@@ -62,6 +63,7 @@
         }
       ],
       "expected_warnings": [
+        "conversion mode excel_to_word selected",
         "blocks[0].bbox missing; block marked requires_review",
         "blocks[1].bbox missing; block marked requires_review",
         "blocks[2].bbox missing; block marked requires_review"
@@ -116,6 +118,7 @@
         }
       ],
       "expected_warnings": [
+        "conversion mode pdf_to_word selected",
         "pdf_to_word reconstruction preserves editable text structure for review; exact PDF layout, fonts, coordinates, columns, footnotes, and OCR fidelity are not guaranteed",
         "blocks[0].parser marked block requires_review"
       ],
@@ -127,8 +130,8 @@
     {
       "id": "mvp-record-pdf-001",
       "category": "record_pdf",
-      "fixture_id": "record-pdf-representative",
-      "fixture_path": "datasets/fixtures/pdf/record-pdf-representative.pdf",
+      "fixture_id": "record-pdf-neutral-representative",
+      "fixture_path": "datasets/fixtures/pdf/record-pdf-neutral-representative.pdf",
       "source_classification": "synthetic",
       "conversion_mode": "pdf_to_word",
       "expected_status": "converted",
@@ -142,6 +145,7 @@
         }
       ],
       "expected_warnings": [
+        "conversion mode pdf_to_word selected",
         "pdf_to_word reconstruction preserves editable text structure for review; exact PDF layout, fonts, coordinates, columns, footnotes, and OCR fidelity are not guaranteed"
       ],
       "review_focus": [

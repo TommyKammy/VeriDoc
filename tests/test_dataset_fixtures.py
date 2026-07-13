@@ -59,6 +59,14 @@ class DatasetFixturesTest(unittest.TestCase):
         mvp_manifest = json.loads(
             MVP_EVALUATION_MANIFEST_PATH.read_text(encoding="utf-8")
         )
+        poc_manifest = json.loads(
+            POC_EVALUATION_MANIFEST_PATH.read_text(encoding="utf-8")
+        )
+        p9_record_case = next(
+            sample
+            for sample in poc_manifest["samples"]
+            if sample["id"] == "p9-record-pdf-001"
+        )
 
         self.assertEqual(
             "veridoc-mvp-evaluation-dataset/v1", mvp_manifest["schema_version"]
@@ -130,6 +138,14 @@ class DatasetFixturesTest(unittest.TestCase):
                     self.assertNotIn(b"/Font", scanned_pdf)
                 if case["category"] == "record_pdf":
                     record_pdf = (REPO_ROOT / fixture_path).read_bytes()
+                    p9_record_fixture = fixtures_by_id[p9_record_case["fixture_id"]]
+                    p9_record_pdf = (
+                        REPO_ROOT / p9_record_fixture["path"]
+                    ).read_bytes()
+                    self.assertNotEqual(
+                        p9_record_case["fixture_id"], case["fixture_id"]
+                    )
+                    self.assertIn(b"High-risk field", p9_record_pdf)
                     self.assertNotIn(b"High-risk field", record_pdf)
 
         cases_by_id = {case["id"]: case for case in cases}
@@ -157,11 +173,19 @@ class DatasetFixturesTest(unittest.TestCase):
                     content=fixture_path.read_bytes(),
                     conversion_mode=case["conversion_mode"],
                 )
-                self.assertLessEqual(
-                    set(case["expected_warnings"]),
-                    set(result["warnings"]),
+                self.assertEqual(
+                    case["expected_warnings"],
+                    result["warnings"],
                 )
                 self.assertEqual(case["expected_status"], result["status"])
+                self.assertEqual(
+                    [artifact["type"] for artifact in case["expected_artifacts"]],
+                    [
+                        artifact["format"]
+                        for artifact in result["artifacts"]
+                        if artifact["kind"] == "primary"
+                    ],
+                )
 
     def test_poc_evaluation_manifest_defines_representative_safe_dataset(self) -> None:
         manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
