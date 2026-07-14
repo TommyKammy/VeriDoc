@@ -20,6 +20,17 @@ def _web_html() -> str:
     return Path("apps/web/index.html").read_text(encoding="utf-8")
 
 
+def _javascript_function_body(html: str, function_name: str) -> str:
+    function = re.search(
+        rf"function {re.escape(function_name)}\([^)]*\) \{{(?P<body>.*?)\n      \}}",
+        html,
+        flags=re.S,
+    )
+
+    assert function is not None
+    return function.group("body")
+
+
 def test_pdf_preview_surface_and_bbox_controls_are_present() -> None:
     parser = _ElementIdParser()
     parser.feed(_web_html())
@@ -53,6 +64,60 @@ def test_review_item_can_jump_to_preview_bbox() -> None:
     assert "Jump to bbox" in html
     assert "await renderSourcePreview(state.latestResult)" in html
     assert "state.previewPage = item.source_page" in html
+
+
+def test_primary_controls_have_visible_keyboard_focus() -> None:
+    html = _web_html()
+
+    assert ":where(button, a, input, select, textarea):focus-visible" in html
+    assert "outline: 3px solid var(--focus-ring);" in html
+    assert "outline-offset: 2px;" in html
+
+
+def test_primary_review_surfaces_have_accessible_names_and_list_semantics() -> None:
+    html = _web_html()
+
+    assert 'id="review-list" aria-labelledby="review-title"' in html
+    render_review_items_body = _javascript_function_body(html, "renderReviewItems")
+    assert re.search(
+        r'if \(!items\.length\) \{\s+'
+        r'reviewList\.removeAttribute\("role"\);.*?'
+        r"reviewList\.replaceChildren\(empty\);\s+return;\s+\}",
+        render_review_items_body,
+        flags=re.S,
+    )
+    assert 'reviewList.setAttribute("role", "list");' in render_review_items_body
+    for function_name in ("renderDirectConvertError", "clearReviewResult"):
+        function_body = _javascript_function_body(html, function_name)
+        assert re.search(
+            r'reviewList\.removeAttribute\("role"\);\s+'
+            r"reviewList\.replaceChildren\(\);",
+            function_body,
+            flags=re.S,
+        )
+    render_review_item_body = _javascript_function_body(html, "renderReviewItem")
+    assert 'wrapper.setAttribute("role", "listitem");' in render_review_item_body
+    assert (
+        'jump.setAttribute("aria-label", `Jump to bbox for ${blockId}`);'
+        in render_review_item_body
+    )
+    assert (
+        'approve.setAttribute("aria-label", `Approve ${blockId}`);'
+        in render_review_item_body
+    )
+    assert (
+        'requestEdit.setAttribute("aria-label", `Save edit for ${blockId}`);'
+        in render_review_item_body
+    )
+    assert 'aria-label="Conversion warnings"' in html
+    assert 'badges.setAttribute("role", "list");' in html
+    assert 'badge.setAttribute("role", "listitem");' in html
+    llm_badge_body = _javascript_function_body(html, "llmInvolvementBadge")
+    assert 'badge.setAttribute("role", "listitem");' in llm_badge_body
+    assert 'aria-labelledby="artifact-downloads-title"' in html
+    assert 'aria-describedby="artifact-summary" download' in html
+    assert '<table aria-label="Audit events">' in html
+    assert html.count('<th scope="col">') == 5
 
 
 def test_direct_convert_activates_review_before_pdf_preview_render() -> None:
@@ -357,7 +422,13 @@ def test_bbox_overlay_resets_button_sizing() -> None:
 
 def test_review_warning_badges_show_codes_levels_and_llm_involvement() -> None:
     html = _web_html()
+    llm_badge = re.search(
+        r"function llmInvolvementBadge\(item\) \{(?P<body>.*?)\n      \}",
+        html,
+        flags=re.S,
+    )
 
+    assert llm_badge is not None
     assert "function warningBadgeDescriptor(warning)" in html
     assert "descriptor.message" in html
     assert "descriptor.remediation" in html
@@ -380,4 +451,5 @@ def test_review_warning_badges_show_codes_levels_and_llm_involvement() -> None:
     assert "function llmInvolvementBadge(item)" in html
     assert "item.llm_involved === true" in html
     assert 'badge.className = "llm-badge";' in html
+    assert 'badge.setAttribute("role", "listitem");' in llm_badge.group("body")
     assert "wrapper.append(title, text, badges, edit, actions);" in html

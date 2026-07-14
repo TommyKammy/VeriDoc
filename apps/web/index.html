@@ -16,6 +16,7 @@
         --surface-soft: #eef3f8;
         --brand: #235ea8;
         --brand-dark: #17467f;
+        --focus-ring: #17467f;
         --danger: #a33131;
         --ok: #28714a;
       }
@@ -85,6 +86,11 @@
       textarea,
       a[download] {
         font: inherit;
+      }
+
+      :where(button, a, input, select, textarea):focus-visible {
+        outline: 3px solid var(--focus-ring);
+        outline-offset: 2px;
       }
 
       button,
@@ -1179,9 +1185,17 @@
               data-api-fields="error message warnings artifacts[] download"
               hidden
             ></div>
-            <div id="top-level-warnings" class="top-level-warnings" data-api-fields="warnings" hidden></div>
-            <div id="review-list"></div>
-            <div id="review-action-status" class="page-status" role="status"></div>
+            <div
+              id="top-level-warnings"
+              class="top-level-warnings"
+              data-api-fields="warnings"
+              role="status"
+              aria-live="polite"
+              aria-label="Conversion warnings"
+              hidden
+            ></div>
+            <div id="review-list" aria-labelledby="review-title"></div>
+            <div id="review-action-status" class="page-status" role="status" aria-live="polite"></div>
           </div>
 
           <section id="pdf-preview-panel" class="panel" style="margin-top: 16px" aria-labelledby="pdf-preview-title" hidden>
@@ -1210,14 +1224,17 @@
           id="artifact-downloads-panel"
           data-poc-ui-region="artifact-downloads"
           data-api-fields="artifacts[] download audit"
+          role="region"
+          aria-labelledby="artifact-downloads-title"
           hidden
         >
-          <div id="artifact-summary" class="page-status"></div>
+          <h3 id="artifact-downloads-title">Artifact downloads</h3>
+          <div id="artifact-summary" class="page-status" role="status" aria-live="polite"></div>
           <div class="action-row" data-api-fields="artifacts[] download audit">
-            <a id="download-link" download hidden>Download primary DOCX/XLSX</a>
-            <a id="debug-download-link" download hidden>Download audit/debug JSON</a>
+            <a id="download-link" aria-describedby="artifact-summary" download hidden>Download primary DOCX/XLSX</a>
+            <a id="debug-download-link" aria-describedby="artifact-summary" download hidden>Download audit/debug JSON</a>
           </div>
-          <ul id="artifact-list" class="artifact-list"></ul>
+          <ul id="artifact-list" class="artifact-list" aria-labelledby="artifact-downloads-title"></ul>
         </div>
         <div
           id="raw-panel"
@@ -1266,20 +1283,20 @@
           </div>
         </div>
         <div class="table-wrap">
-          <table>
+          <table aria-label="Audit events">
             <thead>
               <tr>
-                <th>When</th>
-                <th>Type</th>
-                <th>Action</th>
-                <th>Subject</th>
-                <th>Actor</th>
+                <th scope="col">When</th>
+                <th scope="col">Type</th>
+                <th scope="col">Action</th>
+                <th scope="col">Subject</th>
+                <th scope="col">Actor</th>
               </tr>
             </thead>
             <tbody id="audit-body"></tbody>
           </table>
         </div>
-        <div id="audit-empty" class="empty" hidden>No audit events match the current filters.</div>
+        <div id="audit-empty" class="empty" role="status" hidden>No audit events match the current filters.</div>
       </section>
 
           <section
@@ -2454,6 +2471,7 @@
           errorPayload.audit?.llm
         );
         renderTopLevelWarnings(warnings);
+        reviewList.removeAttribute("role");
         reviewList.replaceChildren();
         reviewActionStatus.textContent = "";
         clearDownload();
@@ -2652,6 +2670,7 @@
         clearDirectConvertError();
         clearConversionSettingStatus();
         clearTopLevelWarnings();
+        reviewList.removeAttribute("role");
         reviewList.replaceChildren();
         state.reviewAuditEvents = [];
         state.pendingReviewActions.clear();
@@ -2734,10 +2753,13 @@
         title.textContent = "Top-level warnings";
         const badges = document.createElement("div");
         badges.className = "warning-badges";
+        badges.setAttribute("role", "list");
+        badges.setAttribute("aria-label", "Top-level warnings");
         for (const warning of warnings) {
           const descriptor = warningBadgeDescriptor(warning);
           const badge = document.createElement("span");
           badge.className = `warning-badge ${severityClass(descriptor.severity)}`;
+          badge.setAttribute("role", "listitem");
           const message = document.createElement("span");
           message.className = "warning-message";
           message.textContent = `${descriptor.code} ${descriptor.message}`;
@@ -2952,6 +2974,7 @@
 
       function renderReviewItems(items) {
         if (!items.length) {
+          reviewList.removeAttribute("role");
           const empty = document.createElement("p");
           empty.className = "review-empty";
           empty.textContent =
@@ -2959,6 +2982,7 @@
           reviewList.replaceChildren(empty);
           return;
         }
+        reviewList.setAttribute("role", "list");
         reviewList.replaceChildren(...items.map(renderReviewItem));
       }
 
@@ -2974,6 +2998,7 @@
         const reviewSeverities = descriptors.map((descriptor) => descriptor.severity).join(", ") || "unknown";
         const wrapper = document.createElement("div");
         wrapper.className = "review-item";
+        wrapper.setAttribute("role", "listitem");
         wrapper.dataset.blockId = blockId;
         wrapper.dataset.reviewCode = reviewCodes;
         wrapper.dataset.reviewSeverity = reviewSeverities;
@@ -3005,11 +3030,13 @@
         jump.className = "secondary";
         jump.type = "button";
         jump.textContent = "Jump to bbox";
+        jump.setAttribute("aria-label", `Jump to bbox for ${blockId}`);
         jump.disabled = !reviewAuditSourceBbox(item);
         jump.addEventListener("click", () => jumpToReviewItem(item));
         const approve = document.createElement("button");
         approve.type = "button";
         approve.textContent = "Approve";
+        approve.setAttribute("aria-label", `Approve ${blockId}`);
         approve.dataset.reviewActionKey = reviewActionKey(item);
         approve.dataset.reviewActionName = "approve";
         approve.disabled = !reviewActionAvailable(item, "approve");
@@ -3018,6 +3045,7 @@
         requestEdit.className = "secondary";
         requestEdit.type = "button";
         requestEdit.textContent = "Save edit";
+        requestEdit.setAttribute("aria-label", `Save edit for ${blockId}`);
         requestEdit.dataset.reviewActionKey = reviewActionKey(item);
         requestEdit.dataset.reviewActionName = "edit";
         requestEdit.disabled = !reviewActionAvailable(item, "edit");
@@ -3083,11 +3111,15 @@
 
       function renderWarningBadges(item) {
         const badges = document.createElement("div");
+        const blockId = item.block_id || "unknown block";
         badges.className = "warning-badges";
+        badges.setAttribute("role", "list");
+        badges.setAttribute("aria-label", `${blockId} warnings`);
         const descriptors = (item.warnings || []).map(warningBadgeDescriptor);
         for (const descriptor of descriptors) {
           const badge = document.createElement("span");
           badge.className = `warning-badge ${severityClass(descriptor.severity)}`;
+          badge.setAttribute("role", "listitem");
           badge.textContent = `${descriptor.code} ${descriptor.label}`;
           badges.append(badge);
         }
@@ -3173,6 +3205,7 @@
         if (item.llm_involved === true) {
           const badge = document.createElement("span");
           badge.className = "llm-badge";
+          badge.setAttribute("role", "listitem");
           badge.textContent = "LLM";
           return badge;
         }
