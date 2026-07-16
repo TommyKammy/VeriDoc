@@ -233,6 +233,7 @@ class ReviewAuditEventStore:
 
     def list_events(self, filters: dict[str, str] | None = None) -> list[dict[str, Any]]:
         with self._lock:
+            self._require_integrity_locked()
             if filters:
                 events = [
                     event
@@ -400,6 +401,7 @@ class JobAuditEventStore:
 
     def list_events(self, filters: dict[str, str] | None = None) -> list[dict[str, Any]]:
         with self._lock:
+            self._require_integrity_locked()
             if filters:
                 events = [
                     event

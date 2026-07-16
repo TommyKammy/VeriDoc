@@ -5979,18 +5979,33 @@ def test_poc_http_api_downloads_persisted_artifact_by_artifact_id(tmp_path) -> N
     }
 
 
-def test_poc_http_api_blocks_corrupt_audit_log_with_recovery_guidance() -> None:
-    class CorruptAuditStore:
-        def list_events(self, *, filters: dict[str, str]) -> list[dict[str, object]]:
-            raise ValueError("audit log integrity violation: event hash mismatch")
+@pytest.mark.parametrize(
+    ("store_class", "server_attribute", "endpoint"),
+    (
+        (JobAuditEventStore, "job_event_store", "/api/job-events"),
+        (ReviewAuditEventStore, "review_event_store", "/api/review-events"),
+    ),
+)
+def test_poc_http_api_blocks_corrupt_audit_log_with_recovery_guidance(
+    store_class, server_attribute: str, endpoint: str
+) -> None:
+    audit_store = store_class()
+    audit_store.record(
+        {
+            "event_type": "job.lifecycle",
+            "job_id": "job-corrupt",
+            "action": "conversion_completed",
+        }
+    )
+    audit_store._events[0]["action"] = "tampered"  # noqa: SLF001
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
-    server.job_event_store = CorruptAuditStore()
+    setattr(server, server_attribute, audit_store)
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
         connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
-        connection.request("GET", "/api/job-events")
+        connection.request("GET", endpoint)
         response = connection.getresponse()
         body = json.loads(response.read().decode("utf-8"))
     finally:
@@ -9569,7 +9584,9 @@ def test_poc_http_api_downloads_result_when_job_audit_log_is_tampered() -> None:
     assert event_response.status == 400
     assert event_body["error"] == "invalid_job_event"
     assert "audit log integrity violation" in event_body["message"]
-    assert [event["action"] for event in server.job_event_store.list_events()] == [
+    with pytest.raises(ValueError, match="audit log integrity violation"):
+        server.job_event_store.list_events()
+    assert [event["action"] for event in server.job_event_store._events] == [  # noqa: SLF001
         "desktop_upload"
     ]
     assert server.job_event_store.verify_integrity() == {
@@ -14610,6 +14627,15 @@ def test_web_explains_primary_failure_states_and_recovery_actions() -> None:
         "Clear the filters, or refresh after conversion or review activity.",
     ):
         assert guidance in html
+    assert (
+        "state.auditEvents = [];\n"
+        "          renderAuditLog();\n"
+        "          auditEmpty.hidden = true;"
+    ) in html
+    assert (
+        'if (job.status === "succeeded" && !job.has_result) {\n'
+        '          return "Download unavailable. Return to Upload and submit the source file again.";'
+    ) in html
 
 
 def test_web_job_detail_actions_perform_download_and_retry_side_effects() -> None:

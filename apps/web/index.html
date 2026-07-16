@@ -1970,6 +1970,7 @@
           if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
           state.auditEvents = [];
           renderAuditLog();
+          auditEmpty.hidden = true;
           auditUnavailable.textContent = `Audit unavailable. ${recoveryStatus(error)}`;
           auditUnavailable.hidden = false;
           setPageStatus(auditUnavailable.textContent, true);
@@ -2555,7 +2556,7 @@
           return "Conversion failed and retry is unavailable. Return to Upload and submit the source file again.";
         }
         if (job.status === "succeeded" && !job.has_result) {
-          return "Download unavailable. Retry the conversion or submit the source file again.";
+          return "Download unavailable. Return to Upload and submit the source file again.";
         }
         return "";
       }
