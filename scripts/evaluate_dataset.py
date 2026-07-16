@@ -3546,7 +3546,12 @@ class MVPAcceptanceReport:
             "summary": {
                 "overall_decision": (
                     "pass"
-                    if self.items and decisions.get("fail", 0) == 0
+                    if (
+                        self.items
+                        and decisions.get("fail", 0) == 0
+                        and harness_payload["acceptance_handoff"]["overall_status"]
+                        == "pass"
+                    )
                     else "fail"
                 ),
                 "item_count": len(self.items),
@@ -5781,22 +5786,50 @@ def mvp_acceptance_traceability_items(
     items: list[dict[str, object]] = []
     observed_ids: set[str] = set()
     for line in traceability_text.splitlines():
-        if line in MVP_ACCEPTANCE_SECTIONS:
-            section = MVP_ACCEPTANCE_SECTIONS[line]
+        if line.startswith("## "):
+            section = MVP_ACCEPTANCE_SECTIONS.get(line)
             continue
         if not line.startswith("| "):
             continue
         cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
         item_id = cells[0] if cells else ""
-        if item_id not in MVP_ACCEPTANCE_ITEM_IDS:
+        if section is None:
+            if item_id in MVP_ACCEPTANCE_ITEM_IDS:
+                raise EvaluationCaseError(
+                    f"MVP traceability row {item_id!r} must be in a known 5-column table"
+                )
             continue
-        if section is None or len(cells) != 5:
+        if not any(cells):
+            continue
+        if item_id in {"ID", "受入項目ID"} or all(
+            re.fullmatch(r":?-{3,}:?", cell) for cell in cells
+        ):
+            continue
+        if len(cells) != 5:
             raise EvaluationCaseError(
                 f"MVP traceability row {item_id!r} must be in a known 5-column table"
+            )
+        if item_id not in MVP_ACCEPTANCE_ITEM_IDS:
+            raise EvaluationCaseError(
+                f"unrecognized MVP traceability row {item_id!r}"
             )
         if item_id in observed_ids:
             raise EvaluationCaseError(f"duplicate MVP traceability row {item_id!r}")
         observed_ids.add(item_id)
+
+        missing_cells = [
+            name
+            for name, value in (
+                ("linked issue/scope", cells[2]),
+                ("evidence", cells[3]),
+            )
+            if not value
+        ]
+        if missing_cells:
+            raise EvaluationCaseError(
+                f"MVP traceability row {item_id!r} has empty required cells: "
+                + ", ".join(missing_cells)
+            )
 
         current_status = cells[4].replace("**", "").strip()
         status_label = next(
@@ -5823,6 +5856,12 @@ def mvp_acceptance_traceability_items(
             if status_label in {"達成", "非対応", "Phase13以降", "Phase14以降"}
             else "fail"
         )
+        if decision == "fail" and not current_status[len(status_label) :].lstrip(
+            " \t—–-:：.。"
+        ):
+            raise EvaluationCaseError(
+                f"MVP traceability row {item_id!r} has no explicit unmet boundary"
+            )
         row_text = " | ".join(cells)
         carryover_phases = [
             phase
@@ -5863,13 +5902,20 @@ def mvp_acceptance_traceability_items(
 def build_mvp_acceptance_report(
     manifest_path: Path = DEFAULT_MVP_HARNESS_MANIFEST,
     *,
-    traceability_path: Path = DEFAULT_MVP_ACCEPTANCE_TRACEABILITY,
+    traceability_path: Path | None = None,
 ) -> MVPAcceptanceReport:
-    traceability_text = traceability_path.read_text(encoding="utf-8")
+    repo_root = p9_manifest_repo_root(manifest_path.resolve())
+    traceability_source = traceability_path or DEFAULT_MVP_ACCEPTANCE_TRACEABILITY
+    resolved_traceability = (
+        repo_root / DEFAULT_MVP_ACCEPTANCE_TRACEABILITY
+        if traceability_path is None
+        else traceability_path.resolve()
+    )
+    traceability_text = resolved_traceability.read_text(encoding="utf-8")
     harness = evaluate_mvp_harness(manifest_path)
     return MVPAcceptanceReport(
         harness=harness,
-        traceability_source=traceability_path,
+        traceability_source=traceability_source,
         traceability_text=traceability_text,
         items=mvp_acceptance_traceability_items(traceability_text),
     )

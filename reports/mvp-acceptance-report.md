@@ -20,7 +20,8 @@ pinned in this sample.
 With the committed default inputs, the report contains 20 acceptance items and
 fails closed: all 20 are `fail` because the traceability baseline still marks
 each item `一部達成` or `未達`. A passing harness case does not promote a broader
-15.3 item whose required evidence remains incomplete.
+15.3 item whose required evidence remains incomplete. The overall decision also
+remains `fail` whenever the live harness overall status is `fail` or `unknown`.
 
 ```json
 {
