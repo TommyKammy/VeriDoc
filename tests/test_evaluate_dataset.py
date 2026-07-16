@@ -25,6 +25,9 @@ GMP_ACCEPTANCE_PATH = REPO_ROOT / "datasets" / "gold" / "gmp_acceptance_v1.json"
 FIXTURE_MANIFEST_PATH = REPO_ROOT / "datasets" / "fixtures" / "manifest.json"
 POC_EVALUATION_MANIFEST_PATH = REPO_ROOT / "datasets" / "poc_evaluation_manifest_v1.json"
 MVP_EVALUATION_MANIFEST_PATH = REPO_ROOT / "datasets" / "mvp_evaluation_manifest_v1.json"
+MVP_ACCEPTANCE_TRACEABILITY_PATH = (
+    REPO_ROOT / "docs" / "mvp-acceptance-traceability.md"
+)
 
 
 spec = importlib.util.spec_from_file_location("evaluate_dataset", SCRIPT_PATH)
@@ -1008,6 +1011,78 @@ class EvaluateDatasetTest(unittest.TestCase):
                     limits["timeout_ms"],
                     result["evaluations"]["timeout"]["timeout_ms"],
                 )
+
+    def test_mvp_acceptance_report_cli_maps_15_3_items_and_carryovers(self) -> None:
+        completed = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "--mvp-acceptance-report"],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        payload = json.loads(completed.stdout)
+
+        self.assertEqual(
+            "veridoc-mvp-acceptance-report/v1",
+            payload["schema_version"],
+        )
+        self.assertEqual(
+            "docs/mvp-acceptance-traceability.md",
+            payload["criteria_source"],
+        )
+        self.assertEqual(
+            "veridoc-mvp-evaluation-harness/v1",
+            payload["evidence_snapshot"]["harness_schema_version"],
+        )
+        self.assertRegex(payload["evidence_snapshot"]["sha256"], r"^[0-9a-f]{64}$")
+        expected_ids = {
+            "AC-UI",
+            "AC-TEMPLATE",
+            "AC-QUALITY",
+            "AC-PROVENANCE",
+            "AC-REVIEW",
+            "AC-EFFICIENCY",
+            "AC-PERFORMANCE",
+            "AC-AUDIT",
+            "AC-AUTH",
+            "AC-SECURITY",
+            "FC-HIGH-RISK",
+            "FC-EVIDENCE",
+            "FC-EXTERNAL-SEND",
+            "FC-REVIEW-UI",
+            "FC-REPRODUCIBILITY",
+            "EM-USER-REVIEW",
+            "EM-E2E",
+            "OD-TEMPLATES",
+            "OD-EFFICIENCY-SCOPE",
+            "OD-SEGREGATION",
+        }
+        self.assertEqual(expected_ids, {item["item_id"] for item in payload["items"]})
+        for item in payload["items"]:
+            with self.subTest(item=item["item_id"]):
+                self.assertIn(item["decision"], {"pass", "fail"})
+                self.assertTrue(item["evidence"])
+                if item["decision"] == "fail":
+                    self.assertTrue(item["unmet"])
+
+        self.assertIn("OD-SEGREGATION", payload["carryovers"]["phase13"])
+        self.assertEqual([], payload["carryovers"]["phase14"])
+        self.assertEqual("fail", payload["summary"]["overall_decision"])
+
+    def test_mvp_acceptance_report_rejects_missing_traceability_row(self) -> None:
+        traceability = MVP_ACCEPTANCE_TRACEABILITY_PATH.read_text(encoding="utf-8")
+        incomplete = "\n".join(
+            line
+            for line in traceability.splitlines()
+            if not line.startswith("| AC-QUALITY |")
+        )
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError,
+            "missing required rows: AC-QUALITY",
+        ):
+            evaluate_dataset.mvp_acceptance_traceability_items(incomplete)
 
     def test_mvp_processing_time_evaluation_enforces_manifest_threshold(self) -> None:
         self.assertEqual(
