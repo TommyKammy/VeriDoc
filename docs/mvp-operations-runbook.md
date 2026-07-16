@@ -96,10 +96,18 @@ role and clear it from the browser tab after the check.
 
 ## Stop
 
-1. Stop the foreground API with `Ctrl-C` and wait for the Python process to
+1. Before stopping, drain every outstanding desktop save proof while the
+   current API process still owns it. For each downloaded desktop result, post
+   the matching `desktop_result_download` event to `/api/job-events` with its
+   `X-VeriDoc-Desktop-Save-Proof` and confirm that the event was accepted. If a
+   download is intentionally abandoned instead, explicitly discard the saved
+   file and its proof; redownload the result after restart to obtain a new
+   proof before recording the event. Never carry an outstanding proof across a
+   process restart.
+2. Stop the foreground API with `Ctrl-C` and wait for the Python process to
    exit. Do not begin backup, restore, or deletion while a request or conversion
    worker is still running.
-2. Confirm that the listener is down:
+3. Confirm that the listener is down:
 
    ```bash
    python3 - <<'PY'
@@ -236,6 +244,11 @@ entire state set; it does not merge backup rows or artifacts with newer state.
    import hashlib
    import os
    from pathlib import Path
+   import shutil
+   from tempfile import TemporaryDirectory
+
+   from services.api.job_queue import JobQueue
+   from services.api.poc_web import JobAuditEventStore
 
    root = Path(os.environ["VERIDOC_RESTORE_DIR"])
    manifest = root / "SHA256SUMS"
@@ -284,20 +297,34 @@ entire state set; it does not merge backup rows or artifacts with newer state.
            or hashlib.sha256(path.read_bytes()).hexdigest() != expected
        ):
            raise SystemExit(f"backup verification failed: {relative}")
-   print("backup manifest verified")
+
+   with TemporaryDirectory(prefix="veridoc-restore-verify-") as validation_dir:
+       validation_root = Path(validation_dir)
+       validation_db = validation_root / "database.sqlite3"
+       validation_artifacts = validation_root / "artifacts"
+       shutil.copy2(database, validation_db)
+       shutil.copytree(artifacts, validation_artifacts)
+       JobQueue(database_path=validation_db, artifact_store_root=validation_artifacts)
+       JobAuditEventStore(database_path=validation_db)
+   print("backup manifest and semantics verified")
    PY
    ```
 
 2. Back up the current state using **Backup** as the rollback set. Stage the
    verified database and artifacts on the same filesystem as their destination.
    Treat the configured database plus `${VERIDOC_DB_PATH}-wal` and
-   `${VERIDOC_DB_PATH}-shm` as one old SQLite state set: before installing the
-   restored database, move the main database and every present sidecar into the
-   rollback location, then confirm no old sidecar remains at the configured
-   path. Move both staged components into their exact configured locations. Do
-   not restart between the two moves. The MVP has no cross-filesystem
-   transaction for this pair, so a failed move must keep reads blocked until
-   both old components are restored or both new components are in place.
+   `${VERIDOC_DB_PATH}-shm` and the configured artifact root as one old state
+   set: before installing the restored state, move the main database, every
+   present sidecar, and the entire existing artifact root into the rollback
+   location; then confirm no old sidecar remains at the configured database
+   path and no old artifact root remains at its configured path. Never
+   copy or sync the restored artifact tree over an existing tree; install the
+   staged artifact directory only after the old tree is quarantined. Move both
+   staged components into their exact configured locations. Do not restart
+   between the two moves. The MVP has no
+   cross-filesystem transaction for this pair, so a failed move must keep reads
+   blocked until both old components are restored or both new components are in
+   place.
 3. Run `PRAGMA integrity_check` against the restored database, verify the
    restored artifact tree against `SHA256SUMS`, and start the API. Startup and
    audit reads must remain fail closed if the stored audit hash chain is

@@ -64,6 +64,9 @@ class MvpOperationsRunbookDocsTest(unittest.TestCase):
             "backup target must be outside the artifact store",
             "artifact store root exists but is not a directory",
             "artifact store contains a symlink",
+            "never carry an outstanding proof across a process restart",
+            "backup manifest and semantics verified",
+            "never copy or sync the restored artifact tree over an existing tree",
             "target or parent is a symlink",
             "artifact root must not contain the repository checkout",
             "do not run reset-db by itself as a full deletion procedure",
@@ -82,6 +85,12 @@ class MvpOperationsRunbookDocsTest(unittest.TestCase):
             stop_section.index("except URLError as error:"),
         )
         self.assertIn("ConnectionRefusedError", stop_section)
+        self.assertIn("desktop_result_download", stop_section)
+        self.assertIn("X-VeriDoc-Desktop-Save-Proof", stop_section)
+        self.assertLess(
+            stop_section.index("drain every outstanding desktop save proof"),
+            stop_section.index("Ctrl-C"),
+        )
         backup_section = docs.split("## Backup", 1)[1].split("## Restore", 1)[0]
         self.assertLess(
             backup_section.index("source_artifacts.is_symlink()"),
@@ -126,6 +135,23 @@ class MvpOperationsRunbookDocsTest(unittest.TestCase):
         self.assertIn("${VERIDOC_DB_PATH}-wal", restore_section)
         self.assertIn("${VERIDOC_DB_PATH}-shm", restore_section)
         self.assertIn("confirm no old sidecar remains", restore_section)
+        self.assertLess(
+            restore_section.index("shutil.copy2(database, validation_db)"),
+            restore_section.index("JobQueue(database_path=validation_db"),
+        )
+        self.assertIn("artifact_store_root=validation_artifacts", restore_section)
+        self.assertLess(
+            restore_section.index("JobQueue(database_path=validation_db"),
+            restore_section.index('print("backup manifest and semantics verified")'),
+        )
+        self.assertLess(
+            restore_section.index("JobAuditEventStore(database_path=validation_db)"),
+            restore_section.index('print("backup manifest and semantics verified")'),
+        )
+        self.assertLess(
+            restore_section.index("entire existing artifact root into the rollback"),
+            restore_section.index("is quarantined"),
+        )
         evaluation_section = docs.split("## Evaluation", 1)[1].split(
             "## Troubleshooting", 1
         )[0]
