@@ -5749,6 +5749,7 @@ MVP_ACCEPTANCE_SECTIONS = {
     "## Evaluation Methods": "evaluation_method",
     "## Open Decisions": "open_decision",
 }
+MVP_ACCEPTANCE_STATUS_SEPARATORS = " \t—–-:：.。"
 MVP_ACCEPTANCE_HARNESS_REFS = {
     "AC-UI": (
         "evidence_snapshot.harness_results[*].evaluations.artifact",
@@ -5844,6 +5845,11 @@ def mvp_acceptance_traceability_items(
                     "非対応",
                 )
                 if current_status.startswith(candidate)
+                and (
+                    len(current_status) == len(candidate)
+                    or current_status[len(candidate)]
+                    in MVP_ACCEPTANCE_STATUS_SEPARATORS
+                )
             ),
             None,
         )
@@ -5857,7 +5863,7 @@ def mvp_acceptance_traceability_items(
             else "fail"
         )
         if decision == "fail" and not current_status[len(status_label) :].lstrip(
-            " \t—–-:：.。"
+            MVP_ACCEPTANCE_STATUS_SEPARATORS
         ):
             raise EvaluationCaseError(
                 f"MVP traceability row {item_id!r} has no explicit unmet boundary"

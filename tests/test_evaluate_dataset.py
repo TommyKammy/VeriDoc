@@ -1144,6 +1144,24 @@ class EvaluateDatasetTest(unittest.TestCase):
         ):
             evaluate_dataset.mvp_acceptance_traceability_items(malformed)
 
+    def test_mvp_acceptance_report_rejects_status_prefix_without_separator(
+        self,
+    ) -> None:
+        traceability = MVP_ACCEPTANCE_TRACEABILITY_PATH.read_text(encoding="utf-8")
+        for status in ("**達成予定** — pending", "Phase13以降ではない"):
+            with self.subTest(status=status):
+                malformed = self.traceability_with_cell(
+                    traceability,
+                    "AC-UI",
+                    4,
+                    status,
+                )
+                with self.assertRaisesRegex(
+                    evaluate_dataset.EvaluationCaseError,
+                    "row 'AC-UI' has no recognized status",
+                ):
+                    evaluate_dataset.mvp_acceptance_traceability_items(malformed)
+
     def test_mvp_acceptance_report_rejects_empty_scope_or_evidence(self) -> None:
         traceability = MVP_ACCEPTANCE_TRACEABILITY_PATH.read_text(encoding="utf-8")
         for cell_index, field_name in ((2, "linked issue/scope"), (3, "evidence")):
