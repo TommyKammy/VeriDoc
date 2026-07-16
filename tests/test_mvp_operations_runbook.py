@@ -40,6 +40,7 @@ class MvpOperationsRunbookDocsTest(unittest.TestCase):
             "python3 services/api/poc_web.py --check",
             "python3 services/api/poc_web.py",
             "Ctrl-C",
+            "python3 scripts/evaluate_dataset.py --mvp-harness",
             "python3 scripts/evaluate_dataset.py --poc-acceptance-report",
             "overall_status",
             "python3 scripts/ci/repo_hygiene.py",
@@ -70,11 +71,26 @@ class MvpOperationsRunbookDocsTest(unittest.TestCase):
             self.assertNotIn(fragment, docs)
 
         self.assertNotIn("SQLite metadata, job, review, and audit records", docs)
+        stop_section = docs.split("## Stop", 1)[1].split("## Backup", 1)[0]
+        self.assertLess(
+            stop_section.index("except HTTPError:"),
+            stop_section.index("except URLError as error:"),
+        )
+        self.assertIn("ConnectionRefusedError", stop_section)
         backup_section = docs.split("## Backup", 1)[1].split("## Restore", 1)[0]
         self.assertLess(
             backup_section.index("referenced_artifacts ="),
             backup_section.index("shutil.copytree"),
         )
+        self.assertLess(
+            backup_section.index("artifact.is_symlink()"),
+            backup_section.index("content = artifact.read_bytes()"),
+        )
+        self.assertLess(
+            backup_section.index("shutil.copytree(artifact_backup, validation_artifacts)"),
+            backup_section.index("JobQueue(database_path=validation_db"),
+        )
+        self.assertIn("artifact_store_root=validation_artifacts", backup_section)
         self.assertLess(
             backup_section.index("JobQueue(database_path=validation_db"),
             backup_section.index('(backup / "SHA256SUMS").write_text'),
@@ -86,6 +102,13 @@ class MvpOperationsRunbookDocsTest(unittest.TestCase):
         restore_section = docs.split("## Restore", 1)[1].split("## Evaluation", 1)[0]
         self.assertIn("if set(manifest_entries) != expected_files:", restore_section)
         self.assertIn("backup manifest does not cover the complete state set", restore_section)
+        self.assertIn("${VERIDOC_DB_PATH}-wal", restore_section)
+        self.assertIn("${VERIDOC_DB_PATH}-shm", restore_section)
+        self.assertIn("confirm no old sidecar remains", restore_section)
+        evaluation_section = docs.split("## Evaluation", 1)[1].split(
+            "## Troubleshooting", 1
+        )[0]
+        self.assertIn("acceptance_handoff.overall_status: pass", evaluation_section)
         deletion_section = docs.split("## Data Deletion", 1)[1]
         self.assertLess(
             deletion_section.index("path.is_symlink()"),

@@ -97,13 +97,17 @@ role and clear it from the browser tab after the check.
 
    ```bash
    python3 - <<'PY'
-   from urllib.error import URLError
+   from urllib.error import HTTPError, URLError
    from urllib.request import urlopen
 
    try:
        urlopen("http://127.0.0.1:8788/", timeout=2)
-   except URLError:
-       print("MVP API is stopped")
+   except HTTPError:
+       raise SystemExit("MVP API still accepts HTTP connections")
+   except URLError as error:
+       if not isinstance(error.reason, ConnectionRefusedError):
+           raise SystemExit(f"cannot prove that the MVP API is stopped: {error.reason}")
+       print("MVP API is stopped (connection refused)")
    else:
        raise SystemExit("MVP API still accepts connections")
    PY
@@ -161,8 +165,8 @@ for digest, size_bytes in referenced_artifacts:
     ):
         raise SystemExit("database contains an invalid artifact reference")
     artifact = source_artifacts / digest[:2] / f"{digest}.bin"
-    if not artifact.is_file():
-        raise SystemExit(f"referenced artifact is missing: {digest}")
+    if artifact.is_symlink() or not artifact.is_file():
+        raise SystemExit(f"referenced artifact is missing or symlinked: {digest}")
     content = artifact.read_bytes()
     if len(content) != size_bytes or hashlib.sha256(content).hexdigest() != digest:
         raise SystemExit(f"referenced artifact failed verification: {digest}")
@@ -174,9 +178,12 @@ else:
     artifact_backup.mkdir()
 
 with TemporaryDirectory(prefix="veridoc-backup-verify-") as validation_dir:
-    validation_db = Path(validation_dir) / "database.sqlite3"
+    validation_root = Path(validation_dir)
+    validation_db = validation_root / "database.sqlite3"
+    validation_artifacts = validation_root / "artifacts"
     shutil.copy2(database_backup, validation_db)
-    JobQueue(database_path=validation_db, artifact_store_root=artifact_backup)
+    shutil.copytree(artifact_backup, validation_artifacts)
+    JobQueue(database_path=validation_db, artifact_store_root=validation_artifacts)
     JobAuditEventStore(database_path=validation_db)
 
 entries = []
@@ -263,11 +270,14 @@ entire state set; it does not merge backup rows or artifacts with newer state.
 
 2. Back up the current state using **Backup** as the rollback set. Stage the
    verified database and artifacts on the same filesystem as their destination.
-   Move the old state aside, then move both staged components into their exact
-   configured locations. Do not restart between the two moves. The MVP has no
-   cross-filesystem transaction for this pair, so a failed move must keep reads
-   blocked until both old components are restored or both new components are in
-   place.
+   Treat the configured database plus `${VERIDOC_DB_PATH}-wal` and
+   `${VERIDOC_DB_PATH}-shm` as one old SQLite state set: before installing the
+   restored database, move the main database and every present sidecar into the
+   rollback location, then confirm no old sidecar remains at the configured
+   path. Move both staged components into their exact configured locations. Do
+   not restart between the two moves. The MVP has no cross-filesystem
+   transaction for this pair, so a failed move must keep reads blocked until
+   both old components are restored or both new components are in place.
 3. Run `PRAGMA integrity_check` against the restored database, verify the
    restored artifact tree against `SHA256SUMS`, and start the API. Startup and
    audit reads must remain fail closed if the stored audit hash chain is
@@ -279,17 +289,21 @@ entire state set; it does not merge backup rows or artifacts with newer state.
 
 ## Evaluation
 
-Run the narrow documentation regression first, then the MVP acceptance report
-and repository hygiene from the repository root:
+Run the narrow documentation regression first, then the Phase 12 representative
+MVP harness, the acceptance report, and repository hygiene from the repository
+root:
 
 ```bash
 python3 -m unittest tests.test_mvp_operations_runbook
+python3 scripts/evaluate_dataset.py --mvp-harness
 python3 scripts/evaluate_dataset.py --poc-acceptance-report
 python3 scripts/ci/repo_hygiene.py
 ```
 
-The acceptance report must finish with `overall_status: pass`. Treat a missing
-prerequisite, failed case, stale or mixed report input, non-zero
+The MVP harness must report `acceptance_handoff.overall_status: pass` with no
+failed or unknown representative cases, and the acceptance report must finish
+with `overall_status: pass`. Treat a missing prerequisite, failed case, stale or
+mixed report input, non-zero
 `high_risk_false_auto_confirmed_count`, or absent audit evidence as a failed
 gate. Do not replace a failed result with operator judgment. For broader
 dataset commands and metric definitions, see `datasets/README.md`; for the MVP
