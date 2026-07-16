@@ -75,6 +75,17 @@ class MvpOperationsRunbookDocsTest(unittest.TestCase):
             backup_section.index("referenced_artifacts ="),
             backup_section.index("shutil.copytree"),
         )
+        self.assertLess(
+            backup_section.index("JobQueue(database_path=validation_db"),
+            backup_section.index('(backup / "SHA256SUMS").write_text'),
+        )
+        self.assertLess(
+            backup_section.index("JobAuditEventStore(database_path=validation_db)"),
+            backup_section.index('(backup / "SHA256SUMS").write_text'),
+        )
+        restore_section = docs.split("## Restore", 1)[1].split("## Evaluation", 1)[0]
+        self.assertIn("if set(manifest_entries) != expected_files:", restore_section)
+        self.assertIn("backup manifest does not cover the complete state set", restore_section)
         deletion_section = docs.split("## Data Deletion", 1)[1]
         self.assertLess(
             deletion_section.index("path.is_symlink()"),

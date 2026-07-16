@@ -129,6 +129,10 @@ import os
 from pathlib import Path
 import shutil
 import sqlite3
+from tempfile import TemporaryDirectory
+
+from services.api.job_queue import JobQueue
+from services.api.poc_web import JobAuditEventStore
 
 source_db = Path(os.environ["VERIDOC_DB_PATH"])
 source_artifacts = Path(os.environ["VERIDOC_ARTIFACT_STORE_ROOT"])
@@ -137,7 +141,8 @@ if backup.exists() or not source_db.is_file():
     raise SystemExit("backup target must be new and the source database must exist")
 backup.mkdir(parents=True, mode=0o700)
 
-with sqlite3.connect(source_db) as source, sqlite3.connect(backup / "database.sqlite3") as target:
+database_backup = backup / "database.sqlite3"
+with sqlite3.connect(source_db) as source, sqlite3.connect(database_backup) as target:
     source.backup(target)
     result = target.execute("PRAGMA integrity_check").fetchone()
     if result != ("ok",):
@@ -167,6 +172,12 @@ if source_artifacts.is_dir():
     shutil.copytree(source_artifacts, artifact_backup)
 else:
     artifact_backup.mkdir()
+
+with TemporaryDirectory(prefix="veridoc-backup-verify-") as validation_dir:
+    validation_db = Path(validation_dir) / "database.sqlite3"
+    shutil.copy2(database_backup, validation_db)
+    JobQueue(database_path=validation_db, artifact_store_root=artifact_backup)
+    JobAuditEventStore(database_path=validation_db)
 
 entries = []
 for path in sorted(p for p in backup.rglob("*") if p.is_file()):
@@ -203,13 +214,49 @@ entire state set; it does not merge backup rows or artifacts with newer state.
    manifest = root / "SHA256SUMS"
    if not manifest.is_file():
        raise SystemExit("backup manifest is missing")
-   for line in manifest.read_text(encoding="utf-8").splitlines():
-       expected, relative = line.split("  ", 1)
-       path = root / relative
-       if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != expected:
-           raise SystemExit(f"backup verification failed: {relative}")
-   if not (root / "database.sqlite3").is_file() or not (root / "artifacts").is_dir():
+   database = root / "database.sqlite3"
+   artifacts = root / "artifacts"
+   if (
+       database.is_symlink()
+       or artifacts.is_symlink()
+       or not database.is_file()
+       or not artifacts.is_dir()
+       or any(path.is_symlink() for path in artifacts.rglob("*"))
+   ):
        raise SystemExit("backup state set is incomplete")
+
+   expected_files = {"database.sqlite3"}
+   expected_files.update(
+       path.relative_to(root).as_posix()
+       for path in artifacts.rglob("*")
+       if path.is_file()
+   )
+   manifest_entries = {}
+   for line in manifest.read_text(encoding="utf-8").splitlines():
+       if "  " not in line:
+           raise SystemExit("backup manifest contains an invalid entry")
+       expected, relative = line.split("  ", 1)
+       relative_path = Path(relative)
+       if (
+           len(expected) != 64
+           or any(character not in "0123456789abcdef" for character in expected)
+           or relative in manifest_entries
+           or relative_path.is_absolute()
+           or ".." in relative_path.parts
+       ):
+           raise SystemExit(f"backup manifest contains an invalid entry: {relative}")
+       manifest_entries[relative] = expected
+
+   if set(manifest_entries) != expected_files:
+       raise SystemExit("backup manifest does not cover the complete state set")
+   for relative, expected in manifest_entries.items():
+       path = root / relative
+       if (
+           path.is_symlink()
+           or not path.is_file()
+           or hashlib.sha256(path.read_bytes()).hexdigest() != expected
+       ):
+           raise SystemExit(f"backup verification failed: {relative}")
    print("backup manifest verified")
    PY
    ```
