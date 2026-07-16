@@ -151,6 +151,12 @@ if backup.exists() or not source_db.is_file():
     raise SystemExit("backup target must be new and the source database must exist")
 if source_artifacts.is_symlink():
     raise SystemExit("artifact store root must not be a symlink")
+if source_artifacts.exists() and not source_artifacts.is_dir():
+    raise SystemExit("artifact store root exists but is not a directory")
+if source_artifacts.exists():
+    for path in source_artifacts.rglob("*"):
+        if path.is_symlink():
+            raise SystemExit(f"artifact store contains a symlink: {path}")
 try:
     backup.resolve().relative_to(source_artifacts.resolve())
 except ValueError:
@@ -351,8 +357,9 @@ For an approved full local-state purge:
    outside the state being deleted. Complete **Stop**. If retention requires a
    final backup, complete and verify **Backup** first.
 2. Set both storage variables explicitly and require an exact confirmation. The
-   guard below rejects the filesystem root, home directory, repository root,
-   identical DB/artifact paths, and an artifact root that contains the DB:
+   guard below rejects the filesystem root, home directory, repository checkout,
+   identical DB/artifact paths, an artifact root that contains the DB, and an
+   artifact root that contains the repository checkout:
 
    ```bash
    export VERIDOC_DELETE_CONFIRM="delete-mvp-state"
@@ -377,11 +384,14 @@ For an approved full local-state purge:
    artifacts = resolve_non_symlink_target(
        os.environ["VERIDOC_ARTIFACT_STORE_ROOT"], "artifact"
    )
-   forbidden = {Path("/").resolve(), Path.home().resolve(), Path.cwd().resolve()}
+   checkout = Path.cwd().resolve()
+   forbidden = {Path("/").resolve(), Path.home().resolve(), checkout}
    if db in forbidden or artifacts in forbidden or db == artifacts:
        raise SystemExit("unsafe deletion target")
    if artifacts in db.parents:
        raise SystemExit("database must not be inside the artifact root")
+   if artifacts in checkout.parents:
+       raise SystemExit("artifact root must not contain the repository checkout")
 
    for suffix in ("", "-wal", "-shm"):
        Path(str(db) + suffix).unlink(missing_ok=True)

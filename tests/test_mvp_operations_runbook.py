@@ -62,7 +62,10 @@ class MvpOperationsRunbookDocsTest(unittest.TestCase):
             "database contains an invalid artifact reference",
             "referenced artifact failed verification",
             "backup target must be outside the artifact store",
+            "artifact store root exists but is not a directory",
+            "artifact store contains a symlink",
             "target or parent is a symlink",
+            "artifact root must not contain the repository checkout",
             "do not run reset-db by itself as a full deletion procedure",
             "verify that no database, WAL, SHM, or artifact data remains",
         ):
@@ -83,6 +86,14 @@ class MvpOperationsRunbookDocsTest(unittest.TestCase):
         self.assertLess(
             backup_section.index("source_artifacts.is_symlink()"),
             backup_section.index("backup.mkdir"),
+        )
+        self.assertLess(
+            backup_section.index("not source_artifacts.is_dir()"),
+            backup_section.index("backup.mkdir"),
+        )
+        self.assertLess(
+            backup_section.index('source_artifacts.rglob("*")'),
+            backup_section.index("shutil.copytree(source_artifacts"),
         )
         self.assertLess(
             backup_section.index("backup.resolve().relative_to(source_artifacts.resolve())"),
@@ -123,6 +134,10 @@ class MvpOperationsRunbookDocsTest(unittest.TestCase):
         self.assertLess(
             deletion_section.index("path.is_symlink()"),
             deletion_section.index("return candidate.resolve()"),
+        )
+        self.assertLess(
+            deletion_section.index("artifacts in checkout.parents"),
+            deletion_section.index("shutil.rmtree(artifacts)"),
         )
 
 
