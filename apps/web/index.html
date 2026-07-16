@@ -943,7 +943,7 @@
               <tbody id="jobs-body"></tbody>
             </table>
           </div>
-          <div id="jobs-empty" class="empty" hidden>No jobs match the current filter.</div>
+          <div id="jobs-empty" class="empty" hidden>No jobs match the current filter. Clear the filter or submit a document from Upload.</div>
         </section>
 
         <section class="panel" aria-labelledby="detail-title">
@@ -963,6 +963,7 @@
               <div class="detail-row"><strong>Retry</strong><span id="detail-retry-availability"></span></div>
               <div class="detail-row"><strong>Error</strong><span id="detail-error"></span></div>
             </div>
+            <div id="detail-recovery" class="page-status" role="status" aria-live="polite"></div>
             <div class="action-row" style="margin-top: 14px">
               <button id="detail-open" class="secondary" type="button">Open details</button>
               <button id="detail-download" class="secondary" type="button">Download result</button>
@@ -1185,6 +1186,7 @@
               data-api-fields="error message warnings artifacts[] download"
               hidden
             ></div>
+            <div id="direct-convert-recovery" class="page-status" role="status" aria-live="polite" hidden></div>
             <div
               id="top-level-warnings"
               class="top-level-warnings"
@@ -1296,7 +1298,8 @@
             <tbody id="audit-body"></tbody>
           </table>
         </div>
-        <div id="audit-empty" class="empty" role="status" hidden>No audit events match the current filters.</div>
+        <div id="audit-unavailable" class="error" role="alert" hidden></div>
+        <div id="audit-empty" class="empty" role="status" hidden>No audit events match the current filters. Clear the filters, or refresh after conversion or review activity.</div>
       </section>
 
           <section
@@ -1432,6 +1435,7 @@
       const detailOpen = document.querySelector("#detail-open");
       const detailDownload = document.querySelector("#detail-download");
       const detailRetry = document.querySelector("#detail-retry");
+      const detailRecovery = document.querySelector("#detail-recovery");
       const detailFields = {
         id: document.querySelector("#detail-id"),
         status: document.querySelector("#detail-status"),
@@ -1460,6 +1464,7 @@
       const rawPanel = document.querySelector("#raw-panel");
       const status = document.querySelector("#status");
       const directConvertError = document.querySelector("#direct-convert-error");
+      const directConvertRecovery = document.querySelector("#direct-convert-recovery");
       const topLevelWarnings = document.querySelector("#top-level-warnings");
       const reviewList = document.querySelector("#review-list");
       const reviewActionStatus = document.querySelector("#review-action-status");
@@ -1476,6 +1481,7 @@
       const auditAction = document.querySelector("#audit-action");
       const auditBody = document.querySelector("#audit-body");
       const auditEmpty = document.querySelector("#audit-empty");
+      const auditUnavailable = document.querySelector("#audit-unavailable");
       const refreshLlmSettings = document.querySelector("#refresh-llm-settings");
       const llmSettingsStatus = document.querySelector("#llm-settings-status");
       const llmSettingsFields = {
@@ -1832,7 +1838,7 @@
         });
         const body = await response.json();
         if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return null;
-        if (!response.ok) throw new Error(body.message || body.error || "job action failed");
+        if (!response.ok) throw recoveryError(body, "job action failed");
         return { job, action, body };
       }
 
@@ -1856,7 +1862,7 @@
           setPageStatus(`${accepted.action.label} event accepted and downloaded.`);
         } catch (error) {
           if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
-          setPageStatus(error.message, true);
+          setPageStatus(recoveryStatus(error), true);
         }
       }
 
@@ -1882,7 +1888,7 @@
           setPageStatus(`${accepted.action.label} event accepted for audit.`);
         } catch (error) {
           if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
-          setPageStatus(error.message, true);
+          setPageStatus(recoveryStatus(error), true);
         }
       }
 
@@ -1898,7 +1904,7 @@
         if (!response.ok) {
           const body = await response.json();
           if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return false;
-          throw new Error(body.message || body.error || "result download failed");
+          throw recoveryError(body, "result download failed");
         }
         const blob = await response.blob();
         if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return false;
@@ -1947,7 +1953,7 @@
           const events = [];
           for (const result of results) {
             if (!result.response.ok) {
-              throw new Error(result.body.message || result.body.error || "audit log failed");
+              throw recoveryError(result.body, "audit log failed");
             }
             const sourceEvents =
               result.kind === "job" ? result.body.job_events : result.body.review_events;
@@ -1957,10 +1963,16 @@
           }
           state.auditEvents = events.sort(compareAuditEvents);
           renderAuditLog();
+          auditUnavailable.textContent = "";
+          auditUnavailable.hidden = true;
           setPageStatus(`${state.auditEvents.length} audit event${state.auditEvents.length === 1 ? "" : "s"} loaded.`);
         } catch (error) {
           if (!isActiveCredentialRequest(requestAuthToken, requestAuthGeneration)) return;
-          setPageStatus(error.message, true);
+          state.auditEvents = [];
+          renderAuditLog();
+          auditUnavailable.textContent = `Audit unavailable. ${recoveryStatus(error)}`;
+          auditUnavailable.hidden = false;
+          setPageStatus(auditUnavailable.textContent, true);
         }
       }
 
@@ -2032,6 +2044,8 @@
         }
         state.auditEvents = [];
         auditBody.replaceChildren();
+        auditUnavailable.textContent = "";
+        auditUnavailable.hidden = true;
         auditEmpty.hidden = false;
       }
 
@@ -2240,11 +2254,13 @@
         detailOpen.disabled = !findAction(job, "open_detail");
         detailDownload.disabled = !findAction(job, "download_result");
         detailRetry.disabled = !findAction(job, "retry_conversion");
+        detailRecovery.textContent = jobRecoveryGuidance(job);
         renderJobs();
       }
 
       function clearDetail() {
         state.selectedJob = null;
+        detailRecovery.textContent = "";
         detailEmpty.hidden = false;
         detailContent.hidden = true;
         renderJobs();
@@ -2466,6 +2482,8 @@
         status.className = "status blocked";
         directConvertError.textContent = sanitizedUserMessage(errorPayload);
         directConvertError.hidden = false;
+        directConvertRecovery.textContent = recoveryGuidance(errorPayload);
+        directConvertRecovery.hidden = false;
         renderConversionSettingStatus(
           errorPayload.audit?.conversion_settings,
           errorPayload.audit?.llm
@@ -2484,6 +2502,62 @@
         resultPanel.hidden = false;
         rawPanel.hidden = true;
         navigateToScreen("review");
+      }
+
+      function recoveryGuidance(errorPayload) {
+        const serverGuidance = errorPayload?.recovery?.label;
+        if (typeof serverGuidance === "string" && serverGuidance.trim()) {
+          return serverGuidance.trim();
+        }
+        const code = typeof errorPayload?.error === "string" ? errorPayload.error : "";
+        if (code === "upload_too_large") {
+          return "Return to Upload and submit the source file again.";
+        }
+        if (code === "processing_timeout") {
+          return "Try a smaller file or simpler conversion, then retry.";
+        }
+        if (code === "server_dependency_unavailable") {
+          return "Check conversion settings, then retry the conversion.";
+        }
+        if (code === "auth_required" || code === "forbidden") {
+          return "Set a valid token or ask an administrator to confirm your role.";
+        }
+        if (
+          code === "artifact_not_found" ||
+          code === "artifact_unavailable" ||
+          code === "job_result_unavailable" ||
+          code === "job_result_integrity_mismatch"
+        ) {
+          return "Download unavailable. Retry the conversion or submit the source file again.";
+        }
+        if (code === "audit_unavailable") {
+          return "Audit unavailable. Check audit storage integrity, then refresh the audit log.";
+        }
+        return "Check conversion settings, then retry the conversion.";
+      }
+
+      function recoveryError(errorPayload, fallbackMessage) {
+        const error = new Error(errorPayload?.message || errorPayload?.error || fallbackMessage);
+        error.recovery = recoveryGuidance(errorPayload);
+        return error;
+      }
+
+      function recoveryStatus(error) {
+        const message = error instanceof Error && error.message ? error.message : "Operation failed.";
+        return error?.recovery ? `${message} ${error.recovery}` : message;
+      }
+
+      function jobRecoveryGuidance(job) {
+        if (job.status === "failed" && findAction(job, "retry_conversion")) {
+          return "Conversion failed. Retry conversion to create a new authoritative result.";
+        }
+        if (job.status === "failed") {
+          return "Conversion failed and retry is unavailable. Return to Upload and submit the source file again.";
+        }
+        if (job.status === "succeeded" && !job.has_result) {
+          return "Download unavailable. Retry the conversion or submit the source file again.";
+        }
+        return "";
       }
 
       function sanitizedUserMessage(errorPayload) {
@@ -2554,7 +2628,7 @@
       function renderArtifactList(artifacts) {
         if (!artifacts.length) {
           const item = document.createElement("li");
-          item.textContent = "No artifacts were returned. Check warnings and detail JSON for generation failure details.";
+          item.textContent = "Download unavailable. No artifacts were returned. Retry the conversion or submit the source file again.";
           artifactList.replaceChildren(item);
           return;
         }
@@ -2686,6 +2760,8 @@
       function clearDirectConvertError() {
         directConvertError.textContent = "";
         directConvertError.hidden = true;
+        directConvertRecovery.textContent = "";
+        directConvertRecovery.hidden = true;
       }
 
       function clearConversionSettingStatus() {
