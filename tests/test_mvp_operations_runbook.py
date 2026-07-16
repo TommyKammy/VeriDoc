@@ -56,6 +56,10 @@ class MvpOperationsRunbookDocsTest(unittest.TestCase):
             "stop the API before copying or restoring",
             "database and artifact store as one state set",
             "do not treat a partial copy as a valid backup",
+            "review events accepted by `/api/review-events` remain process-local",
+            "database contains an invalid artifact reference",
+            "referenced artifact failed verification",
+            "target or parent is a symlink",
             "do not run reset-db by itself as a full deletion procedure",
             "verify that no database, WAL, SHM, or artifact data remains",
         ):
@@ -64,6 +68,18 @@ class MvpOperationsRunbookDocsTest(unittest.TestCase):
         forbidden_fragments = ("/" + "Users" + "/", "C:" + "\\Users" + "\\")
         for fragment in forbidden_fragments:
             self.assertNotIn(fragment, docs)
+
+        self.assertNotIn("SQLite metadata, job, review, and audit records", docs)
+        backup_section = docs.split("## Backup", 1)[1].split("## Restore", 1)[0]
+        self.assertLess(
+            backup_section.index("referenced_artifacts ="),
+            backup_section.index("shutil.copytree"),
+        )
+        deletion_section = docs.split("## Data Deletion", 1)[1]
+        self.assertLess(
+            deletion_section.index("path.is_symlink()"),
+            deletion_section.index("return candidate.resolve()"),
+        )
 
 
 if __name__ == "__main__":

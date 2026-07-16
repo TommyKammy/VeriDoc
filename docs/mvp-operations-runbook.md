@@ -6,9 +6,9 @@ approved production SOP or a commercial distribution procedure.
 
 ## Scope And Safety Boundary
 
-The durable MVP state has two directly linked parts:
+The durable MVP state wired into the API has two directly linked parts:
 
-- SQLite metadata, job, review, and audit records at `VERIDOC_DB_PATH` (default:
+- SQLite job metadata and job audit records at `VERIDOC_DB_PATH` (default:
   `var/veridoc/dev.sqlite3`);
 - source, primary, debug JSON, and downloadable audit artifacts at
   `VERIDOC_ARTIFACT_STORE_ROOT` (default: `var/veridoc/artifacts`).
@@ -28,6 +28,12 @@ complete record. Stop the only writer before maintenance. Missing provenance,
 an unverified backup, a broken audit chain, an unexpected second writer, or a
 partially restored state is a blocking condition, not permission to infer that
 the operation succeeded.
+
+Review events accepted by `/api/review-events` remain process-local in this
+MVP. They are not SQLite review records, are discarded when the API stops, and
+are not included in the backup or restore procedure below. Record any review
+evidence that must survive a restart in an approved external system before
+stopping the API; never describe the SQLite backup as containing those events.
 
 Always stop the API before copying or restoring either part of the state set.
 
@@ -136,6 +142,25 @@ with sqlite3.connect(source_db) as source, sqlite3.connect(backup / "database.sq
     result = target.execute("PRAGMA integrity_check").fetchone()
     if result != ("ok",):
         raise SystemExit(f"backup database integrity check failed: {result!r}")
+    referenced_artifacts = target.execute(
+        "SELECT DISTINCT content_sha256, size_bytes FROM job_queue_artifacts"
+    ).fetchall()
+
+for digest, size_bytes in referenced_artifacts:
+    if (
+        not isinstance(digest, str)
+        or len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+        or not isinstance(size_bytes, int)
+        or size_bytes < 0
+    ):
+        raise SystemExit("database contains an invalid artifact reference")
+    artifact = source_artifacts / digest[:2] / f"{digest}.bin"
+    if not artifact.is_file():
+        raise SystemExit(f"referenced artifact is missing: {digest}")
+    content = artifact.read_bytes()
+    if len(content) != size_bytes or hashlib.sha256(content).hexdigest() != digest:
+        raise SystemExit(f"referenced artifact failed verification: {digest}")
 
 artifact_backup = backup / "artifacts"
 if source_artifacts.is_dir():
@@ -263,8 +288,20 @@ For an approved full local-state purge:
 
    if os.environ.get("VERIDOC_DELETE_CONFIRM") != "delete-mvp-state":
        raise SystemExit("deletion confirmation is missing")
-   db = Path(os.environ["VERIDOC_DB_PATH"]).expanduser().resolve()
-   artifacts = Path(os.environ["VERIDOC_ARTIFACT_STORE_ROOT"]).expanduser().resolve()
+
+   def resolve_non_symlink_target(configured: str, label: str) -> Path:
+       candidate = Path(configured).expanduser()
+       if not candidate.is_absolute():
+           candidate = Path.cwd() / candidate
+       for path in (candidate, *candidate.parents):
+           if path.is_symlink():
+               raise SystemExit(f"{label} target or parent is a symlink: {path}")
+       return candidate.resolve()
+
+   db = resolve_non_symlink_target(os.environ["VERIDOC_DB_PATH"], "database")
+   artifacts = resolve_non_symlink_target(
+       os.environ["VERIDOC_ARTIFACT_STORE_ROOT"], "artifact"
+   )
    forbidden = {Path("/").resolve(), Path.home().resolve(), Path.cwd().resolve()}
    if db in forbidden or artifacts in forbidden or db == artifacts:
        raise SystemExit("unsafe deletion target")
