@@ -60,8 +60,8 @@ from committed implementation, tests, and the latest acceptance record.
 
 | ID | 15.3 open item | Owner issue / phase | Evidence needed to close | Current status |
 | --- | --- | --- | --- | --- |
-| OD-TEMPLATES | 対象業務・テンプレートの確定 | [#283](https://github.com/TommyKammy/VeriDoc/issues/283) / Phase12 | Approved/versioned MVP dataset manifest naming the representative 3–5 templates | **未達**. |
-| OD-EFFICIENCY-SCOPE | 効率指標の測定対象業務 | [#284](https://github.com/TommyKammy/VeriDoc/issues/284), [#285](https://github.com/TommyKammy/VeriDoc/issues/285) / Phase12 | Baseline task, participant/cohort, timing boundaries, and comparison method | **未達**. |
+| OD-TEMPLATES | 対象業務・テンプレートの確定 | [#283](https://github.com/TommyKammy/VeriDoc/issues/283) / Phase12 | Approved/versioned MVP dataset manifest naming the representative 3–5 templates | **未達** — 代表3〜5テンプレートを明示した承認済み・版管理済みMVPデータセットmanifestが未確定。 |
+| OD-EFFICIENCY-SCOPE | 効率指標の測定対象業務 | [#284](https://github.com/TommyKammy/VeriDoc/issues/284), [#285](https://github.com/TommyKammy/VeriDoc/issues/285) / Phase12 | Baseline task, participant/cohort, timing boundaries, and comparison method | **未達** — ベースライン作業、参加者/コホート、計測境界、比較方法が未確定。 |
 | OD-SEGREGATION | 職務分掌をMVPでどこまで満たすか | [#276](https://github.com/TommyKammy/VeriDoc/issues/276) / Phase12; richer desktop workflow may be **Phase13以降** | Approved role matrix plus deny-path tests for missing/forbidden roles | **未達** — Phase13 deferral must be explicit; it cannot silently weaken the Phase12 API boundary. |
 
 ## Stable MVP Gate

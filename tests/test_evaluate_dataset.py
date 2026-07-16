@@ -25,6 +25,9 @@ GMP_ACCEPTANCE_PATH = REPO_ROOT / "datasets" / "gold" / "gmp_acceptance_v1.json"
 FIXTURE_MANIFEST_PATH = REPO_ROOT / "datasets" / "fixtures" / "manifest.json"
 POC_EVALUATION_MANIFEST_PATH = REPO_ROOT / "datasets" / "poc_evaluation_manifest_v1.json"
 MVP_EVALUATION_MANIFEST_PATH = REPO_ROOT / "datasets" / "mvp_evaluation_manifest_v1.json"
+MVP_ACCEPTANCE_TRACEABILITY_PATH = (
+    REPO_ROOT / "docs" / "mvp-acceptance-traceability.md"
+)
 
 
 spec = importlib.util.spec_from_file_location("evaluate_dataset", SCRIPT_PATH)
@@ -251,6 +254,23 @@ class EvaluateDatasetTest(unittest.TestCase):
 
     def valid_mvp_acceptance_limits(self) -> dict[str, int]:
         return evaluate_dataset.mvp_acceptance_limits(self.valid_mvp_manifest_data())
+
+    def traceability_with_cell(
+        self,
+        traceability: str,
+        item_id: str,
+        cell_index: int,
+        value: str,
+    ) -> str:
+        lines = traceability.splitlines()
+        for index, line in enumerate(lines):
+            if not line.startswith(f"| {item_id} |"):
+                continue
+            cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+            cells[cell_index] = value
+            lines[index] = "| " + " | ".join(cells) + " |"
+            return "\n".join(lines)
+        self.fail(f"traceability row {item_id!r} not found")
 
     def valid_mvp_case(self, index: int = 0) -> dict[str, object]:
         return evaluate_dataset.mvp_evaluation_cases(
@@ -1008,6 +1028,210 @@ class EvaluateDatasetTest(unittest.TestCase):
                     limits["timeout_ms"],
                     result["evaluations"]["timeout"]["timeout_ms"],
                 )
+
+    def test_mvp_acceptance_report_cli_maps_15_3_items_and_carryovers(self) -> None:
+        completed = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "--mvp-acceptance-report"],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        payload = json.loads(completed.stdout)
+
+        self.assertEqual(
+            "veridoc-mvp-acceptance-report/v1",
+            payload["schema_version"],
+        )
+        self.assertEqual(
+            "docs/mvp-acceptance-traceability.md",
+            payload["criteria_source"],
+        )
+        self.assertEqual(
+            "veridoc-mvp-evaluation-harness/v1",
+            payload["evidence_snapshot"]["harness_schema_version"],
+        )
+        self.assertRegex(payload["evidence_snapshot"]["sha256"], r"^[0-9a-f]{64}$")
+        expected_ids = {
+            "AC-UI",
+            "AC-TEMPLATE",
+            "AC-QUALITY",
+            "AC-PROVENANCE",
+            "AC-REVIEW",
+            "AC-EFFICIENCY",
+            "AC-PERFORMANCE",
+            "AC-AUDIT",
+            "AC-AUTH",
+            "AC-SECURITY",
+            "FC-HIGH-RISK",
+            "FC-EVIDENCE",
+            "FC-EXTERNAL-SEND",
+            "FC-REVIEW-UI",
+            "FC-REPRODUCIBILITY",
+            "EM-USER-REVIEW",
+            "EM-E2E",
+            "OD-TEMPLATES",
+            "OD-EFFICIENCY-SCOPE",
+            "OD-SEGREGATION",
+        }
+        self.assertEqual(expected_ids, {item["item_id"] for item in payload["items"]})
+        for item in payload["items"]:
+            with self.subTest(item=item["item_id"]):
+                self.assertIn(item["decision"], {"pass", "fail"})
+                self.assertTrue(item["evidence"])
+                if item["decision"] == "fail":
+                    self.assertTrue(item["unmet"])
+
+        self.assertIn("OD-SEGREGATION", payload["carryovers"]["phase13"])
+        self.assertEqual([], payload["carryovers"]["phase14"])
+        self.assertEqual("fail", payload["summary"]["overall_decision"])
+
+    def test_mvp_acceptance_report_rejects_missing_traceability_row(self) -> None:
+        traceability = MVP_ACCEPTANCE_TRACEABILITY_PATH.read_text(encoding="utf-8")
+        incomplete = "\n".join(
+            line
+            for line in traceability.splitlines()
+            if not line.startswith("| AC-QUALITY |")
+        )
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError,
+            "missing required rows: AC-QUALITY",
+        ):
+            evaluate_dataset.mvp_acceptance_traceability_items(incomplete)
+
+    def test_mvp_acceptance_report_fails_when_live_harness_fails(self) -> None:
+        traceability = MVP_ACCEPTANCE_TRACEABILITY_PATH.read_text(encoding="utf-8")
+        items = tuple(
+            {**item, "decision": "pass"}
+            for item in evaluate_dataset.mvp_acceptance_traceability_items(traceability)
+        )
+        harness = evaluate_dataset.MVPHarnessReport(
+            manifest=evaluate_dataset.DEFAULT_MVP_HARNESS_MANIFEST,
+            results=(
+                {
+                    "case_id": "failed-case",
+                    "acceptance_status": "fail",
+                    "conversion_mode": "deterministic",
+                },
+            ),
+        )
+
+        payload = evaluate_dataset.MVPAcceptanceReport(
+            harness=harness,
+            traceability_source=evaluate_dataset.DEFAULT_MVP_ACCEPTANCE_TRACEABILITY,
+            traceability_text=traceability,
+            items=items,
+        ).as_dict()
+
+        self.assertEqual("fail", payload["summary"]["overall_decision"])
+
+    def test_mvp_acceptance_report_rejects_unknown_traceability_row(self) -> None:
+        traceability = MVP_ACCEPTANCE_TRACEABILITY_PATH.read_text(encoding="utf-8")
+        unknown_row = (
+            "| AC-UNKNOWN | Unknown criterion | [#289](issue) | evidence | **達成** |"
+        )
+        malformed = traceability.replace(
+            "| AC-UI |",
+            f"{unknown_row}\n| AC-UI |",
+            1,
+        )
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError,
+            "unrecognized MVP traceability row 'AC-UNKNOWN'",
+        ):
+            evaluate_dataset.mvp_acceptance_traceability_items(malformed)
+
+    def test_mvp_acceptance_report_rejects_status_prefix_without_separator(
+        self,
+    ) -> None:
+        traceability = MVP_ACCEPTANCE_TRACEABILITY_PATH.read_text(encoding="utf-8")
+        for status in ("**達成予定** — pending", "Phase13以降ではない"):
+            with self.subTest(status=status):
+                malformed = self.traceability_with_cell(
+                    traceability,
+                    "AC-UI",
+                    4,
+                    status,
+                )
+                with self.assertRaisesRegex(
+                    evaluate_dataset.EvaluationCaseError,
+                    "row 'AC-UI' has no recognized status",
+                ):
+                    evaluate_dataset.mvp_acceptance_traceability_items(malformed)
+
+    def test_mvp_acceptance_report_rejects_empty_scope_or_evidence(self) -> None:
+        traceability = MVP_ACCEPTANCE_TRACEABILITY_PATH.read_text(encoding="utf-8")
+        for cell_index, field_name in ((2, "linked issue/scope"), (3, "evidence")):
+            with self.subTest(field_name=field_name):
+                malformed = self.traceability_with_cell(
+                    traceability,
+                    "AC-UI",
+                    cell_index,
+                    "",
+                )
+                with self.assertRaisesRegex(
+                    evaluate_dataset.EvaluationCaseError,
+                    f"empty required cells: {field_name}",
+                ):
+                    evaluate_dataset.mvp_acceptance_traceability_items(malformed)
+
+    def test_mvp_acceptance_report_rejects_failed_row_without_unmet_boundary(
+        self,
+    ) -> None:
+        traceability = MVP_ACCEPTANCE_TRACEABILITY_PATH.read_text(encoding="utf-8")
+        malformed = self.traceability_with_cell(
+            traceability,
+            "OD-TEMPLATES",
+            4,
+            "**未達**.",
+        )
+
+        with self.assertRaisesRegex(
+            evaluate_dataset.EvaluationCaseError,
+            "row 'OD-TEMPLATES' has no explicit unmet boundary",
+        ):
+            evaluate_dataset.mvp_acceptance_traceability_items(malformed)
+
+    def test_mvp_acceptance_report_reads_traceability_from_manifest_checkout(
+        self,
+    ) -> None:
+        traceability = MVP_ACCEPTANCE_TRACEABILITY_PATH.read_text(encoding="utf-8")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            checkout = Path(temp_dir)
+            manifest_path = checkout / evaluate_dataset.DEFAULT_MVP_HARNESS_MANIFEST
+            fixture_manifest_path = checkout / evaluate_dataset.EXPECTED_DATASET_MANIFEST
+            traceability_path = (
+                checkout / evaluate_dataset.DEFAULT_MVP_ACCEPTANCE_TRACEABILITY
+            )
+            manifest_path.parent.mkdir(parents=True)
+            fixture_manifest_path.parent.mkdir(parents=True)
+            traceability_path.parent.mkdir(parents=True)
+            manifest_path.write_text("{}\n", encoding="utf-8")
+            fixture_manifest_path.write_text("{}\n", encoding="utf-8")
+            traceability_path.write_text(
+                "<!-- alternate checkout -->\n" + traceability,
+                encoding="utf-8",
+            )
+            harness = evaluate_dataset.MVPHarnessReport(
+                manifest=manifest_path,
+                results=(),
+            )
+
+            with mock.patch.object(
+                evaluate_dataset,
+                "evaluate_mvp_harness",
+                return_value=harness,
+            ):
+                report = evaluate_dataset.build_mvp_acceptance_report(manifest_path)
+
+        self.assertTrue(report.traceability_text.startswith("<!-- alternate checkout -->"))
+        self.assertEqual(
+            evaluate_dataset.DEFAULT_MVP_ACCEPTANCE_TRACEABILITY,
+            report.traceability_source,
+        )
 
     def test_mvp_processing_time_evaluation_enforces_manifest_threshold(self) -> None:
         self.assertEqual(

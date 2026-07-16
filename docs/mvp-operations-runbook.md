@@ -343,14 +343,16 @@ root:
 ```bash
 python3 -m unittest tests.test_mvp_operations_runbook
 python3 scripts/evaluate_dataset.py --mvp-harness
-python3 scripts/evaluate_dataset.py --poc-acceptance-report
+python3 scripts/evaluate_dataset.py --mvp-acceptance-report
 python3 scripts/ci/repo_hygiene.py
 ```
 
 The MVP harness must report `acceptance_handoff.overall_status: pass` with no
 failed or unknown representative cases, and the acceptance report must finish
-with `overall_status: pass`. Treat a missing prerequisite, failed case, stale or
-mixed report input, non-zero
+with `summary.overall_decision: pass`. The report binds the harness results and
+the complete 15.3 traceability table to one `evidence_snapshot.sha256`; retain
+that value with the reviewed output. Treat a missing prerequisite, failed case,
+stale or mixed report input, non-zero
 `high_risk_false_auto_confirmed_count`, or absent audit evidence as a failed
 gate. Do not replace a failed result with operator judgment. For broader
 dataset commands and metric definitions, see `datasets/README.md`; for the MVP

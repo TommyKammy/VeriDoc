@@ -11,6 +11,7 @@ import json
 import math
 import os
 import platform
+import re
 import signal
 import shlex
 import subprocess
@@ -40,12 +41,14 @@ DEFAULT_POC_COMPARISON = Path("datasets/gold/poc_mode_comparison_v1.json")
 DEFAULT_GMP_ACCEPTANCE = Path("datasets/gold/gmp_acceptance_v1.json")
 DEFAULT_P9_HARNESS_MANIFEST = Path("datasets/poc_evaluation_manifest_v1.json")
 DEFAULT_MVP_HARNESS_MANIFEST = Path("datasets/mvp_evaluation_manifest_v1.json")
+DEFAULT_MVP_ACCEPTANCE_TRACEABILITY = Path("docs/mvp-acceptance-traceability.md")
 EVALUATION_CASES_SCHEMA_VERSION = "veridoc-evaluation-cases/v0"
 LLM_STABILITY_RUNS_SCHEMA_VERSION = "veridoc-llm-stability-runs/v0"
 POC_MODE_COMPARISON_SCHEMA_VERSION = "veridoc-poc-mode-comparison/v1"
 GMP_ACCEPTANCE_SCHEMA_VERSION = "veridoc-gmp-acceptance/v1"
 P9_HARNESS_SCHEMA_VERSION = "veridoc-p9-poc-evaluation-harness/v0"
 MVP_HARNESS_SCHEMA_VERSION = "veridoc-mvp-evaluation-harness/v1"
+MVP_ACCEPTANCE_REPORT_SCHEMA_VERSION = "veridoc-mvp-acceptance-report/v1"
 POC_ACCEPTANCE_REPORT_SCHEMA_VERSION = "veridoc-poc-acceptance-report/v0"
 P9_EVALUATION_MANIFEST_SCHEMA_VERSION = "veridoc-poc-evaluation-dataset/v1"
 MVP_EVALUATION_MANIFEST_SCHEMA_VERSION = "veridoc-mvp-evaluation-dataset/v1"
@@ -3505,6 +3508,74 @@ class MVPHarnessReport:
 
 
 @dataclass(frozen=True)
+class MVPAcceptanceReport:
+    harness: MVPHarnessReport
+    traceability_source: Path
+    traceability_text: str
+    items: tuple[dict[str, object], ...]
+
+    def as_dict(self) -> dict[str, object]:
+        harness_payload = self.harness.as_dict()
+        snapshot_payload = {
+            "harness": harness_payload,
+            "traceability_source": str(self.traceability_source),
+            "traceability_text": self.traceability_text,
+        }
+        snapshot_sha256 = hashlib.sha256(
+            json.dumps(
+                snapshot_payload,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()
+        decisions = Counter(str(item["decision"]) for item in self.items)
+        phase13 = [
+            item["item_id"]
+            for item in self.items
+            if "phase13" in item["carryover_phases"]
+        ]
+        phase14 = [
+            item["item_id"]
+            for item in self.items
+            if "phase14" in item["carryover_phases"]
+        ]
+        return {
+            "schema_version": MVP_ACCEPTANCE_REPORT_SCHEMA_VERSION,
+            "criteria_source": str(self.traceability_source),
+            "summary": {
+                "overall_decision": (
+                    "pass"
+                    if (
+                        self.items
+                        and decisions.get("fail", 0) == 0
+                        and harness_payload["acceptance_handoff"]["overall_status"]
+                        == "pass"
+                    )
+                    else "fail"
+                ),
+                "item_count": len(self.items),
+                "decision_counts": {
+                    "pass": decisions.get("pass", 0),
+                    "fail": decisions.get("fail", 0),
+                },
+            },
+            "evidence_snapshot": {
+                "sha256": snapshot_sha256,
+                "harness_schema_version": harness_payload["schema_version"],
+                "dataset_manifest": harness_payload["dataset_manifest"],
+                "harness_summary": harness_payload["summary"],
+                "harness_results": harness_payload["results"],
+            },
+            "items": list(self.items),
+            "carryovers": {
+                "phase13": phase13,
+                "phase14": phase14,
+            },
+        }
+
+
+@dataclass(frozen=True)
 class PoCAcceptanceReport:
     p9_harness: P9HarnessReport
     generated_at: str
@@ -5646,6 +5717,214 @@ def evaluate_mvp_harness(
             )
         )
     return MVPHarnessReport(manifest=manifest_path, results=tuple(results))
+
+
+MVP_ACCEPTANCE_ITEM_IDS = frozenset(
+    (
+        "AC-UI",
+        "AC-TEMPLATE",
+        "AC-QUALITY",
+        "AC-PROVENANCE",
+        "AC-REVIEW",
+        "AC-EFFICIENCY",
+        "AC-PERFORMANCE",
+        "AC-AUDIT",
+        "AC-AUTH",
+        "AC-SECURITY",
+        "FC-HIGH-RISK",
+        "FC-EVIDENCE",
+        "FC-EXTERNAL-SEND",
+        "FC-REVIEW-UI",
+        "FC-REPRODUCIBILITY",
+        "EM-USER-REVIEW",
+        "EM-E2E",
+        "OD-TEMPLATES",
+        "OD-EFFICIENCY-SCOPE",
+        "OD-SEGREGATION",
+    )
+)
+MVP_ACCEPTANCE_SECTIONS = {
+    "## Acceptance Criteria": "acceptance_criterion",
+    "## Failure Conditions": "failure_condition",
+    "## Evaluation Methods": "evaluation_method",
+    "## Open Decisions": "open_decision",
+}
+MVP_ACCEPTANCE_STATUS_SEPARATORS = " \t—–-:：.。"
+MVP_ACCEPTANCE_HARNESS_REFS = {
+    "AC-UI": (
+        "evidence_snapshot.harness_results[*].evaluations.artifact",
+        "evidence_snapshot.harness_results[*].evaluations.review",
+    ),
+    "AC-TEMPLATE": (
+        "evidence_snapshot.dataset_manifest",
+        "evidence_snapshot.harness_results[*].category",
+    ),
+    "AC-REVIEW": ("evidence_snapshot.harness_results[*].evaluations.review",),
+    "AC-PERFORMANCE": (
+        "evidence_snapshot.harness_results[*].evaluations.input_size",
+        "evidence_snapshot.harness_results[*].evaluations.processing_time",
+        "evidence_snapshot.harness_results[*].evaluations.timeout",
+    ),
+    "AC-AUDIT": ("evidence_snapshot.harness_results[*].evaluations.audit",),
+    "FC-HIGH-RISK": ("evidence_snapshot.harness_results[*].evaluations.review",),
+    "FC-EVIDENCE": (
+        "evidence_snapshot.harness_results[*].evaluations.artifact",
+        "evidence_snapshot.harness_results[*].evaluations.audit",
+    ),
+    "FC-REVIEW-UI": ("evidence_snapshot.harness_results[*].evaluations.review",),
+    "FC-REPRODUCIBILITY": (
+        "evidence_snapshot.sha256",
+        "evidence_snapshot.dataset_manifest",
+    ),
+    "EM-E2E": ("evidence_snapshot.harness_results",),
+}
+
+
+def mvp_acceptance_traceability_items(
+    traceability_text: str,
+) -> tuple[dict[str, object], ...]:
+    section: str | None = None
+    items: list[dict[str, object]] = []
+    observed_ids: set[str] = set()
+    for line in traceability_text.splitlines():
+        if line.startswith("## "):
+            section = MVP_ACCEPTANCE_SECTIONS.get(line)
+            continue
+        if not line.startswith("| "):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        item_id = cells[0] if cells else ""
+        if section is None:
+            if item_id in MVP_ACCEPTANCE_ITEM_IDS:
+                raise EvaluationCaseError(
+                    f"MVP traceability row {item_id!r} must be in a known 5-column table"
+                )
+            continue
+        if not any(cells):
+            continue
+        if item_id in {"ID", "受入項目ID"} or all(
+            re.fullmatch(r":?-{3,}:?", cell) for cell in cells
+        ):
+            continue
+        if len(cells) != 5:
+            raise EvaluationCaseError(
+                f"MVP traceability row {item_id!r} must be in a known 5-column table"
+            )
+        if item_id not in MVP_ACCEPTANCE_ITEM_IDS:
+            raise EvaluationCaseError(
+                f"unrecognized MVP traceability row {item_id!r}"
+            )
+        if item_id in observed_ids:
+            raise EvaluationCaseError(f"duplicate MVP traceability row {item_id!r}")
+        observed_ids.add(item_id)
+
+        missing_cells = [
+            name
+            for name, value in (
+                ("linked issue/scope", cells[2]),
+                ("evidence", cells[3]),
+            )
+            if not value
+        ]
+        if missing_cells:
+            raise EvaluationCaseError(
+                f"MVP traceability row {item_id!r} has empty required cells: "
+                + ", ".join(missing_cells)
+            )
+
+        current_status = cells[4].replace("**", "").strip()
+        status_label = next(
+            (
+                candidate
+                for candidate in (
+                    "一部達成",
+                    "Phase13以降",
+                    "Phase14以降",
+                    "達成",
+                    "未達",
+                    "非対応",
+                )
+                if current_status.startswith(candidate)
+                and (
+                    len(current_status) == len(candidate)
+                    or current_status[len(candidate)]
+                    in MVP_ACCEPTANCE_STATUS_SEPARATORS
+                )
+            ),
+            None,
+        )
+        if status_label is None:
+            raise EvaluationCaseError(
+                f"MVP traceability row {item_id!r} has no recognized status"
+            )
+        decision = (
+            "pass"
+            if status_label in {"達成", "非対応", "Phase13以降", "Phase14以降"}
+            else "fail"
+        )
+        if decision == "fail" and not current_status[len(status_label) :].lstrip(
+            MVP_ACCEPTANCE_STATUS_SEPARATORS
+        ):
+            raise EvaluationCaseError(
+                f"MVP traceability row {item_id!r} has no explicit unmet boundary"
+            )
+        row_text = " | ".join(cells)
+        carryover_phases = [
+            phase
+            for phase, pattern in (
+                ("phase13", r"\bPhase13(?:以降)?\b"),
+                ("phase14", r"\bPhase14(?:以降)?\b"),
+            )
+            if re.search(pattern, row_text)
+        ]
+        items.append(
+            {
+                "item_id": item_id,
+                "section": section,
+                "acceptance_item": cells[1],
+                "decision": decision,
+                "traceability_status": status_label,
+                "linked_scope": cells[2],
+                "evidence": {
+                    "traceability": cells[3],
+                    "harness_refs": list(
+                        MVP_ACCEPTANCE_HARNESS_REFS.get(item_id, ())
+                    ),
+                },
+                "unmet": None if status_label == "達成" else current_status,
+                "carryover_phases": carryover_phases,
+            }
+        )
+
+    missing_ids = MVP_ACCEPTANCE_ITEM_IDS - observed_ids
+    if missing_ids:
+        raise EvaluationCaseError(
+            "MVP traceability is missing required rows: "
+            + ", ".join(sorted(missing_ids))
+        )
+    return tuple(items)
+
+
+def build_mvp_acceptance_report(
+    manifest_path: Path = DEFAULT_MVP_HARNESS_MANIFEST,
+    *,
+    traceability_path: Path | None = None,
+) -> MVPAcceptanceReport:
+    repo_root = p9_manifest_repo_root(manifest_path.resolve())
+    traceability_source = traceability_path or DEFAULT_MVP_ACCEPTANCE_TRACEABILITY
+    resolved_traceability = (
+        repo_root / DEFAULT_MVP_ACCEPTANCE_TRACEABILITY
+        if traceability_path is None
+        else traceability_path.resolve()
+    )
+    traceability_text = resolved_traceability.read_text(encoding="utf-8")
+    harness = evaluate_mvp_harness(manifest_path)
+    return MVPAcceptanceReport(
+        harness=harness,
+        traceability_source=traceability_source,
+        traceability_text=traceability_text,
+        items=mvp_acceptance_traceability_items(traceability_text),
+    )
 
 
 def evaluate_p9_harness(
@@ -8189,6 +8468,16 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--mvp-acceptance-report",
+        type=Path,
+        nargs="?",
+        const=DEFAULT_MVP_HARNESS_MANIFEST,
+        help=(
+            "Emit the Phase12 MVP acceptance report that maps all 15.3 items "
+            "to pass/fail evidence, unmet work, and Phase13/14 carryovers."
+        ),
+    )
+    parser.add_argument(
         "--poc-acceptance-report",
         type=Path,
         nargs="?",
@@ -8202,6 +8491,7 @@ def main() -> int:
     selected_report_modes = [
         args.p9_harness is not None,
         args.mvp_harness is not None,
+        args.mvp_acceptance_report is not None,
         args.poc_acceptance_report is not None,
         args.gmp_acceptance is not None,
         args.llm_stability_report,
@@ -8210,12 +8500,15 @@ def main() -> int:
         parser.error("--p9-harness cannot be combined with --gmp-acceptance")
     if sum(1 for selected in selected_report_modes if selected) > 1:
         parser.error(
-            "--p9-harness, --mvp-harness, --poc-acceptance-report, "
-            "--gmp-acceptance, and --llm-stability-report cannot be combined"
+            "--p9-harness, --mvp-harness, --mvp-acceptance-report, "
+            "--poc-acceptance-report, --gmp-acceptance, and "
+            "--llm-stability-report cannot be combined"
         )
 
     try:
-        if args.poc_acceptance_report is not None:
+        if args.mvp_acceptance_report is not None:
+            metrics = build_mvp_acceptance_report(args.mvp_acceptance_report)
+        elif args.poc_acceptance_report is not None:
             metrics = build_poc_acceptance_report(
                 args.poc_acceptance_report,
                 llm_stability_runs_path=args.llm_stability_runs,

@@ -36,6 +36,7 @@ class MvpAcceptanceTraceabilityDocsTest(unittest.TestCase):
             "AC-PROVENANCE",
             "AC-REVIEW",
             "AC-EFFICIENCY",
+            "AC-PERFORMANCE",
             "AC-AUDIT",
             "AC-AUTH",
             "AC-SECURITY",
