@@ -58,8 +58,10 @@ class MvpOperationsRunbookDocsTest(unittest.TestCase):
             "database and artifact store as one state set",
             "do not treat a partial copy as a valid backup",
             "review events accepted by `/api/review-events` remain process-local",
+            "template registrations created or updated through `post /api/templates` are also process-local",
             "database contains an invalid artifact reference",
             "referenced artifact failed verification",
+            "backup target must be outside the artifact store",
             "target or parent is a symlink",
             "do not run reset-db by itself as a full deletion procedure",
             "verify that no database, WAL, SHM, or artifact data remains",
@@ -79,11 +81,19 @@ class MvpOperationsRunbookDocsTest(unittest.TestCase):
         self.assertIn("ConnectionRefusedError", stop_section)
         backup_section = docs.split("## Backup", 1)[1].split("## Restore", 1)[0]
         self.assertLess(
+            backup_section.index("source_artifacts.is_symlink()"),
+            backup_section.index("backup.mkdir"),
+        )
+        self.assertLess(
+            backup_section.index("backup.resolve().relative_to(source_artifacts.resolve())"),
+            backup_section.index("backup.mkdir"),
+        )
+        self.assertLess(
             backup_section.index("referenced_artifacts ="),
             backup_section.index("shutil.copytree"),
         )
         self.assertLess(
-            backup_section.index("artifact.is_symlink()"),
+            backup_section.index("artifact.parent.is_symlink()"),
             backup_section.index("content = artifact.read_bytes()"),
         )
         self.assertLess(

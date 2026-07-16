@@ -35,6 +35,12 @@ are not included in the backup or restore procedure below. Record any review
 evidence that must survive a restart in an approved external system before
 stopping the API; never describe the SQLite backup as containing those events.
 
+Template registrations created or updated through `POST /api/templates` are
+also process-local in this MVP. Custom template versions and their change
+history are discarded when the API stops and are not included in the backup or
+restore procedure below. Export any custom template definition and required
+change evidence to an approved external system before stopping the API.
+
 Always stop the API before copying or restoring either part of the state set.
 
 Use real locally issued credentials when authentication is enabled. Placeholder
@@ -143,6 +149,14 @@ source_artifacts = Path(os.environ["VERIDOC_ARTIFACT_STORE_ROOT"])
 backup = Path(os.environ["VERIDOC_BACKUP_DIR"])
 if backup.exists() or not source_db.is_file():
     raise SystemExit("backup target must be new and the source database must exist")
+if source_artifacts.is_symlink():
+    raise SystemExit("artifact store root must not be a symlink")
+try:
+    backup.resolve().relative_to(source_artifacts.resolve())
+except ValueError:
+    pass
+else:
+    raise SystemExit("backup target must be outside the artifact store")
 backup.mkdir(parents=True, mode=0o700)
 
 database_backup = backup / "database.sqlite3"
@@ -165,7 +179,7 @@ for digest, size_bytes in referenced_artifacts:
     ):
         raise SystemExit("database contains an invalid artifact reference")
     artifact = source_artifacts / digest[:2] / f"{digest}.bin"
-    if artifact.is_symlink() or not artifact.is_file():
+    if artifact.parent.is_symlink() or artifact.is_symlink() or not artifact.is_file():
         raise SystemExit(f"referenced artifact is missing or symlinked: {digest}")
     content = artifact.read_bytes()
     if len(content) != size_bytes or hashlib.sha256(content).hexdigest() != digest:
