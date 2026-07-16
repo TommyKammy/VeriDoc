@@ -233,6 +233,7 @@ class ReviewAuditEventStore:
 
     def list_events(self, filters: dict[str, str] | None = None) -> list[dict[str, Any]]:
         with self._lock:
+            self._require_integrity_locked()
             if filters:
                 events = [
                     event
@@ -400,6 +401,7 @@ class JobAuditEventStore:
 
     def list_events(self, filters: dict[str, str] | None = None) -> list[dict[str, Any]]:
         with self._lock:
+            self._require_integrity_locked()
             if filters:
                 events = [
                     event
@@ -1575,11 +1577,11 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             content_type = _download_content_type(artifact["content_type"])
             filename = _download_filename(artifact["filename"])
         except KeyError:
-            self._send_json({"error": "artifact_not_found"}, status=404)
+            self._send_json(_artifact_not_found_payload(), status=404)
             return
         except (RuntimeError, ValueError) as exc:
             self._send_json(
-                {"error": "artifact_unavailable", "message": str(exc)}, status=409
+                _artifact_unavailable_payload(str(exc)), status=409
             )
             return
         content = artifact["content"]
@@ -2063,7 +2065,11 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 status=400,
             )
             return
-        review_events = self._review_event_store().list_events(filters=filters)
+        try:
+            review_events = self._review_event_store().list_events(filters=filters)
+        except (RuntimeError, ValueError):
+            self._send_json(_audit_unavailable_payload(), status=409)
+            return
         self._send_json({"review_events": review_events})
 
     def _handle_list_job_events(self, query: str) -> None:
@@ -2075,7 +2081,11 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 status=400,
             )
             return
-        job_events = self._job_event_store().list_events(filters=filters)
+        try:
+            job_events = self._job_event_store().list_events(filters=filters)
+        except (RuntimeError, ValueError):
+            self._send_json(_audit_unavailable_payload(), status=409)
+            return
         self._send_json({"job_events": job_events})
 
     def _handle_job_result_download(
@@ -2102,12 +2112,18 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             return
         except RuntimeError as exc:
             self._send_json(
-                {"error": "job_result_integrity_mismatch", "message": str(exc)},
+                _job_result_unavailable_payload(
+                    "job_result_integrity_mismatch",
+                    str(exc),
+                ),
                 status=409,
             )
             return
         except ValueError as exc:
-            self._send_json({"error": "job_result_unavailable", "message": str(exc)}, status=400)
+            self._send_json(
+                _job_result_unavailable_payload("job_result_unavailable", str(exc)),
+                status=400,
+            )
             return
         self.send_response(200)
         self.send_header("Content-Type", content_type)
@@ -2132,12 +2148,18 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             return
         except RuntimeError as exc:
             self._send_json(
-                {"error": "job_result_integrity_mismatch", "message": str(exc)},
+                _job_result_unavailable_payload(
+                    "job_result_integrity_mismatch",
+                    str(exc),
+                ),
                 status=409,
             )
             return
         except ValueError as exc:
-            self._send_json({"error": "job_result_unavailable", "message": str(exc)}, status=400)
+            self._send_json(
+                _job_result_unavailable_payload("job_result_unavailable", str(exc)),
+                status=400,
+            )
             return
         self._send_json(_http_result(job.result, role=role))
 
@@ -4752,6 +4774,10 @@ def _upload_too_large_payload() -> dict[str, Any]:
         "error": "upload_too_large",
         "message": f"Upload exceeds the {MAX_UPLOAD_BYTES} byte MVP limit.",
         "max_upload_bytes": MAX_UPLOAD_BYTES,
+        "recovery": {
+            "action": "reupload",
+            "label": "Choose a smaller file and submit it again.",
+        },
     }
 
 
@@ -4760,6 +4786,54 @@ def _processing_timeout_payload() -> dict[str, Any]:
         "error": "processing_timeout",
         "message": f"Conversion exceeded the {PROCESSING_TIMEOUT_MS} ms MVP timeout.",
         "timeout_ms": PROCESSING_TIMEOUT_MS,
+        "recovery": {
+            "action": "retry",
+            "label": "Try a smaller file or simpler conversion, then retry.",
+        },
+    }
+
+
+def _artifact_not_found_payload() -> dict[str, Any]:
+    return {
+        "error": "artifact_not_found",
+        "message": "Artifact is missing and cannot be downloaded.",
+        "recovery": {
+            "action": "reupload",
+            "label": "Return to Upload and submit the source file again.",
+        },
+    }
+
+
+def _artifact_unavailable_payload(message: str) -> dict[str, Any]:
+    return {
+        "error": "artifact_unavailable",
+        "message": message,
+        "recovery": {
+            "action": "retry_conversion",
+            "label": "Retry the conversion to regenerate the artifact.",
+        },
+    }
+
+
+def _job_result_unavailable_payload(error: str, message: str) -> dict[str, Any]:
+    return {
+        "error": error,
+        "message": message,
+        "recovery": {
+            "action": "retry_conversion",
+            "label": "Retry the conversion to regenerate a verified result.",
+        },
+    }
+
+
+def _audit_unavailable_payload() -> dict[str, Any]:
+    return {
+        "error": "audit_unavailable",
+        "message": "Audit data failed integrity verification and is unavailable.",
+        "recovery": {
+            "action": "check_audit_storage",
+            "label": "Check audit storage integrity, then refresh the audit log.",
+        },
     }
 
 

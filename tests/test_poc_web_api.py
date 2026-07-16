@@ -5969,7 +5969,58 @@ def test_poc_http_api_downloads_persisted_artifact_by_artifact_id(tmp_path) -> N
     assert response.getheader("X-Content-SHA256") == hashlib.sha256(content).hexdigest()
     assert body == content
     assert missing_response.status == 404
-    assert missing_body == {"error": "artifact_not_found"}
+    assert missing_body == {
+        "error": "artifact_not_found",
+        "message": "Artifact is missing and cannot be downloaded.",
+        "recovery": {
+            "action": "reupload",
+            "label": "Return to Upload and submit the source file again.",
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    ("store_class", "server_attribute", "endpoint"),
+    (
+        (JobAuditEventStore, "job_event_store", "/api/job-events"),
+        (ReviewAuditEventStore, "review_event_store", "/api/review-events"),
+    ),
+)
+def test_poc_http_api_blocks_corrupt_audit_log_with_recovery_guidance(
+    store_class, server_attribute: str, endpoint: str
+) -> None:
+    audit_store = store_class()
+    audit_store.record(
+        {
+            "event_type": "job.lifecycle",
+            "job_id": "job-corrupt",
+            "action": "conversion_completed",
+        }
+    )
+    audit_store._events[0]["action"] = "tampered"  # noqa: SLF001
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    setattr(server, server_attribute, audit_store)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request("GET", endpoint)
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 409
+    assert body == {
+        "error": "audit_unavailable",
+        "message": "Audit data failed integrity verification and is unavailable.",
+        "recovery": {
+            "action": "check_audit_storage",
+            "label": "Check audit storage integrity, then refresh the audit log.",
+        },
+    }
 
 
 def test_poc_http_api_advertises_base64_artifact_payload_field() -> None:
@@ -9533,7 +9584,9 @@ def test_poc_http_api_downloads_result_when_job_audit_log_is_tampered() -> None:
     assert event_response.status == 400
     assert event_body["error"] == "invalid_job_event"
     assert "audit log integrity violation" in event_body["message"]
-    assert [event["action"] for event in server.job_event_store.list_events()] == [
+    with pytest.raises(ValueError, match="audit log integrity violation"):
+        server.job_event_store.list_events()
+    assert [event["action"] for event in server.job_event_store._events] == [  # noqa: SLF001
         "desktop_upload"
     ]
     assert server.job_event_store.verify_integrity() == {
@@ -12154,11 +12207,19 @@ def test_poc_http_api_detects_output_hash_mismatch_and_blocks_redownload() -> No
     assert download_body == {
         "error": "job_result_integrity_mismatch",
         "message": "job result output hash does not match stored content",
+        "recovery": {
+            "action": "retry_conversion",
+            "label": "Retry the conversion to regenerate a verified result.",
+        },
     }
     assert artifact_response.status == 409
     assert artifact_body == {
         "error": "artifact_unavailable",
         "message": "job result output hash does not match stored content",
+        "recovery": {
+            "action": "retry_conversion",
+            "label": "Retry the conversion to regenerate the artifact.",
+        },
     }
 
 
@@ -12237,6 +12298,10 @@ def test_poc_http_api_detects_source_hash_mismatch_and_blocks_redownload() -> No
     assert download_body == {
         "error": "job_result_integrity_mismatch",
         "message": "job result source hash does not match uploaded source",
+        "recovery": {
+            "action": "retry_conversion",
+            "label": "Retry the conversion to regenerate a verified result.",
+        },
     }
 
 
@@ -12547,6 +12612,10 @@ def test_poc_http_api_reports_mvp_upload_limit(
         "error": "upload_too_large",
         "message": "Upload exceeds the 8 byte MVP limit.",
         "max_upload_bytes": 8,
+        "recovery": {
+            "action": "reupload",
+            "label": "Choose a smaller file and submit it again.",
+        },
     }
 
 
@@ -12590,6 +12659,10 @@ def test_poc_http_api_reports_mvp_processing_timeout(
         "error": "processing_timeout",
         "message": "Conversion exceeded the 10 ms MVP timeout.",
         "timeout_ms": 10,
+        "recovery": {
+            "action": "retry",
+            "label": "Try a smaller file or simpler conversion, then retry.",
+        },
     }
 
 
@@ -14519,6 +14592,50 @@ def test_web_direct_convert_renders_sanitized_error_region() -> None:
     assert "/Users/" not in html
     assert r"\/Users\/" not in html
     assert r"\\/Users\\/" not in html
+
+
+def test_web_explains_primary_failure_states_and_recovery_actions() -> None:
+    html = Path("apps/web/index.html").read_text(encoding="utf-8")
+    parser = _PocUiRegionParser()
+    parser.feed(html)
+
+    assert "review" in parser.element_regions["direct-convert-recovery"]
+    assert 'id="direct-convert-recovery"' in html
+    assert 'id="detail-recovery"' in html
+    assert 'id="audit-unavailable"' in html
+    assert "function recoveryGuidance(errorPayload)" in html
+    for error_code in (
+        "upload_too_large",
+        "processing_timeout",
+        "server_dependency_unavailable",
+        "auth_required",
+        "forbidden",
+        "artifact_not_found",
+        "artifact_unavailable",
+        "job_result_unavailable",
+        "job_result_integrity_mismatch",
+        "audit_unavailable",
+    ):
+        assert error_code in html
+    for guidance in (
+        "Return to Upload and submit the source file again.",
+        "Check conversion settings, then retry the conversion.",
+        "Set a valid token or ask an administrator to confirm your role.",
+        "Download unavailable.",
+        "Audit unavailable.",
+        "Clear the filter or submit a document from Upload.",
+        "Clear the filters, or refresh after conversion or review activity.",
+    ):
+        assert guidance in html
+    assert (
+        "state.auditEvents = [];\n"
+        "          renderAuditLog();\n"
+        "          auditEmpty.hidden = true;"
+    ) in html
+    assert (
+        'if (job.status === "succeeded" && !job.has_result) {\n'
+        '          return "Download unavailable. Return to Upload and submit the source file again.";'
+    ) in html
 
 
 def test_web_job_detail_actions_perform_download_and_retry_side_effects() -> None:
