@@ -61,8 +61,10 @@ class MvpAcceptanceTraceabilityDocsTest(unittest.TestCase):
             "15.3_MVP受入基準",
             "#275",
             "#289",
-            "as its run input",
-            "predates and does not contain the gap register",
+            "reproducible criteria/register snapshot",
+            "8e9846828570cf89a062df3b4eb276e5ecc31647",
+            "product/harness baseline",
+            "not the report checkout target",
             "tests/test_poc_web_api.py",
             "docs/mvp-transition-decision.md",
             "python3 -m unittest tests.test_mvp_acceptance_traceability",
@@ -93,7 +95,10 @@ class MvpAcceptanceTraceabilityDocsTest(unittest.TestCase):
         self.assertEqual(list(EXPECTED_ITEM_IDS), register_ids)
 
         for required_text in (
+            "8e9846828570cf89a062df3b4eb276e5ecc31647",
             "9981ffb9f3e633faedf5bc5c2bd3d5a4845424b7",
+            "git checkout --detach",
+            "comparison anchor, not a",
             "datasets/mvp_evaluation_manifest_v1.json",
             "python3 -m pip install -r requirements-pdf-eval.txt",
             "Without the prerequisite, the PDF",

@@ -6,7 +6,12 @@ Missing authoritative decisions or run evidence remain fail-closed.
 
 ## Evidence snapshot
 
-- Base commit: `9981ffb9f3e633faedf5bc5c2bd3d5a4845424b7`
+- Criteria/register snapshot commit:
+  `8e9846828570cf89a062df3b4eb276e5ecc31647`
+- Product/harness base commit:
+  `9981ffb9f3e633faedf5bc5c2bd3d5a4845424b7`
+- Reproduction checkout:
+  `git checkout --detach 8e9846828570cf89a062df3b4eb276e5ecc31647`
 - Generated at: `2026-07-18` (Asia/Tokyo)
 - PDF evaluation prerequisite:
   `python3 -m pip install -r requirements-pdf-eval.txt`
@@ -20,12 +25,14 @@ Missing authoritative decisions or run evidence remain fail-closed.
 - Harness result: `case_count=5`, `acceptance_status=fail`
   (`pass=0`, `fail=3`, `unknown=2`)
 
-The PDF evaluation prerequisite was installed before the recorded command. The
-command emits JSON to standard output. The facts below were read from that
-single invocation, so the five cases share the commit, manifest, dependency
-set, limits, and criteria snapshot above. Without the prerequisite, the PDF
-cases fail at the dependency boundary and their failure reasons are not
-comparable to the extractor-level facts recorded below.
+The snapshot commit above was checked out and the PDF evaluation prerequisite
+was installed before the recorded command. The command emits JSON to standard
+output. The facts below were read from that single invocation, so the five
+cases share the snapshot commit, manifest, dependency set, limits, and criteria
+snapshot above. The product/harness base commit is a comparison anchor, not a
+checkout instruction. Without the prerequisite, the PDF cases fail at the
+dependency boundary and their failure reasons are not comparable to the
+extractor-level facts recorded below.
 
 ## Gap classes
 

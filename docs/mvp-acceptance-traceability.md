@@ -7,13 +7,15 @@ test as proof of MVP acceptance.
 
 Baseline owner: [#275](https://github.com/TommyKammy/VeriDoc/issues/275).
 
-The evidence run recorded by the current reconciliation used commit
-`9981ffb9f3e633faedf5bc5c2bd3d5a4845424b7` as its run input. That input
-predates and does not contain the gap register;
-`docs/mvp-acceptance-gap-register.md` in this repository revision is the
-reconciliation artifact. The recorded report contains all 20 unique items with
-`overall_decision=fail`, and its five-case harness contains three `fail`, two
-`unknown`, and zero `pass` results.
+The reproducible criteria/register snapshot is commit
+`8e9846828570cf89a062df3b4eb276e5ecc31647`. Check out that commit before
+running the report command; it contains this 20-item criteria table and
+`docs/mvp-acceptance-gap-register.md`. Commit
+`9981ffb9f3e633faedf5bc5c2bd3d5a4845424b7` is the product/harness baseline
+being reconciled, not the report checkout target; it predates the gap register
+and has older criteria statuses. The recorded report contains all 20 unique
+items with `overall_decision=fail`, and its five-case harness contains three
+`fail`, two `unknown`, and zero `pass` results.
 
 ## Status Rules
 
