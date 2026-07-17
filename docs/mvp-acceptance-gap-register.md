@@ -8,6 +8,8 @@ Missing authoritative decisions or run evidence remain fail-closed.
 
 - Base commit: `9981ffb9f3e633faedf5bc5c2bd3d5a4845424b7`
 - Generated at: `2026-07-18` (Asia/Tokyo)
+- PDF evaluation prerequisite:
+  `python3 -m pip install -r requirements-pdf-eval.txt`
 - Command: `python3 scripts/evaluate_dataset.py --mvp-acceptance-report`
 - Dataset manifest: `datasets/mvp_evaluation_manifest_v1.json`
 - Dataset manifest SHA-256:
@@ -18,9 +20,12 @@ Missing authoritative decisions or run evidence remain fail-closed.
 - Harness result: `case_count=5`, `acceptance_status=fail`
   (`pass=0`, `fail=3`, `unknown=2`)
 
-The command emits JSON to standard output. The facts below were read from that
-single invocation, so the five cases share the commit, manifest, limits, and
-criteria snapshot above.
+The PDF evaluation prerequisite was installed before the recorded command. The
+command emits JSON to standard output. The facts below were read from that
+single invocation, so the five cases share the commit, manifest, dependency
+set, limits, and criteria snapshot above. Without the prerequisite, the PDF
+cases fail at the dependency boundary and their failure reasons are not
+comparable to the extractor-level facts recorded below.
 
 ## Gap classes
 

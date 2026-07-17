@@ -61,6 +61,8 @@ class MvpAcceptanceTraceabilityDocsTest(unittest.TestCase):
             "15.3_MVP受入基準",
             "#275",
             "#289",
+            "as its run input",
+            "predates and does not contain the gap register",
             "tests/test_poc_web_api.py",
             "docs/mvp-transition-decision.md",
             "python3 -m unittest tests.test_mvp_acceptance_traceability",
@@ -93,6 +95,8 @@ class MvpAcceptanceTraceabilityDocsTest(unittest.TestCase):
         for required_text in (
             "9981ffb9f3e633faedf5bc5c2bd3d5a4845424b7",
             "datasets/mvp_evaluation_manifest_v1.json",
+            "python3 -m pip install -r requirements-pdf-eval.txt",
+            "Without the prerequisite, the PDF",
             "implementation_gap",
             "e2e_gap",
             "human_evidence_gap",
