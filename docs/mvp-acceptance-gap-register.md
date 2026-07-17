@@ -6,12 +6,17 @@ Missing authoritative decisions or run evidence remain fail-closed.
 
 ## Evidence snapshot
 
-- Criteria/register snapshot commit:
-  `8e9846828570cf89a062df3b4eb276e5ecc31647`
+- Reproduction revision:
+  the reachable commit that contains this register version; resolve it with
+  `git log -1 --format=%H -- docs/mvp-acceptance-gap-register.md`
 - Product/harness base commit:
   `9981ffb9f3e633faedf5bc5c2bd3d5a4845424b7`
 - Reproduction checkout:
-  `git checkout --detach 8e9846828570cf89a062df3b4eb276e5ecc31647`
+  `git checkout --detach "$(git log -1 --format=%H -- docs/mvp-acceptance-gap-register.md)"`
+- Criteria source Git blob:
+  `c9a7ba85cfe0f5dcd2d83cfbf67ff4e76b33f688`
+- Evaluator Git blob:
+  `fa2849e0427a0701a9e36a55f9c199d9ae13dc42`
 - Generated at: `2026-07-18` (Asia/Tokyo)
 - PDF evaluation prerequisite:
   `python3 -m pip install -r requirements-pdf-eval.txt`
@@ -25,14 +30,17 @@ Missing authoritative decisions or run evidence remain fail-closed.
 - Harness result: `case_count=5`, `acceptance_status=fail`
   (`pass=0`, `fail=3`, `unknown=2`)
 
-The snapshot commit above was checked out and the PDF evaluation prerequisite
-was installed before the recorded command. The command emits JSON to standard
-output. The facts below were read from that single invocation, so the five
-cases share the snapshot commit, manifest, dependency set, limits, and criteria
-snapshot above. The product/harness base commit is a comparison anchor, not a
-checkout instruction. Without the prerequisite, the PDF cases fail at the
-dependency boundary and their failure reasons are not comparable to the
-extractor-level facts recorded below.
+The containing revision above was checked out, the criteria and evaluator blob
+IDs were verified with `git rev-parse HEAD:<repo-relative-path>`, and the PDF
+evaluation prerequisite was installed before the recorded command. Resolving
+the containing revision from reachable history avoids relying on a PR-only
+commit that can disappear after squash merge. The command emits JSON to
+standard output. The facts below were read from that single invocation, so the
+five cases share the containing revision, manifest, dependency set, limits, and
+criteria snapshot above. The product/harness base commit is a comparison
+anchor, not a checkout instruction. Without the prerequisite, the PDF cases
+fail at the dependency boundary and their failure reasons are not comparable
+to the extractor-level facts recorded below.
 
 ## Gap classes
 

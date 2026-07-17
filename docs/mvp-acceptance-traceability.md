@@ -7,10 +7,12 @@ test as proof of MVP acceptance.
 
 Baseline owner: [#275](https://github.com/TommyKammy/VeriDoc/issues/275).
 
-The reproducible criteria/register snapshot is commit
-`8e9846828570cf89a062df3b4eb276e5ecc31647`. Check out that commit before
-running the report command; it contains this 20-item criteria table and
-`docs/mvp-acceptance-gap-register.md`. Commit
+The reproducible report revision is the reachable commit that contains the
+corresponding version of `docs/mvp-acceptance-gap-register.md`; resolve and
+check out that revision with the repo-relative command recorded in the
+register. The register also pins this criteria file and the evaluator by Git
+blob ID so a later revision cannot silently substitute different report
+inputs. Commit
 `9981ffb9f3e633faedf5bc5c2bd3d5a4845424b7` is the product/harness baseline
 being reconciled, not the report checkout target; it predates the gap register
 and has older criteria statuses. The recorded report contains all 20 unique
@@ -92,6 +94,7 @@ The Phase12 MVP gate is fail-closed and is evaluated from the table above:
 Minimum verification for changes to this baseline:
 
 ```bash
+python3 -m pip install -r requirements-pdf-eval.txt
 python3 -m unittest tests.test_mvp_acceptance_traceability
 python3 scripts/evaluate_dataset.py --mvp-acceptance-report
 python3 scripts/ci/repo_hygiene.py

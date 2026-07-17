@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 import unittest
 from pathlib import Path
@@ -33,6 +34,12 @@ EXPECTED_ITEM_IDS = (
 )
 
 
+def _git_blob_id(path: Path) -> str:
+    content = path.read_bytes()
+    header = f"blob {len(content)}\0".encode()
+    return hashlib.sha1(header + content).hexdigest()
+
+
 class MvpAcceptanceTraceabilityDocsTest(unittest.TestCase):
     def test_all_15_3_items_have_stable_traceability_rows(self) -> None:
         self.assertTrue(
@@ -61,12 +68,14 @@ class MvpAcceptanceTraceabilityDocsTest(unittest.TestCase):
             "15.3_MVP受入基準",
             "#275",
             "#289",
-            "reproducible criteria/register snapshot",
-            "8e9846828570cf89a062df3b4eb276e5ecc31647",
+            "reproducible report revision",
+            "reachable commit",
+            "later revision cannot silently substitute",
             "product/harness baseline",
             "not the report checkout target",
             "tests/test_poc_web_api.py",
             "docs/mvp-transition-decision.md",
+            "python3 -m pip install -r requirements-pdf-eval.txt",
             "python3 -m unittest tests.test_mvp_acceptance_traceability",
             "python3 scripts/ci/repo_hygiene.py",
             "未達",
@@ -78,6 +87,8 @@ class MvpAcceptanceTraceabilityDocsTest(unittest.TestCase):
         forbidden_fragments = ("/" + "Users" + "/", "C:" + "\\Users" + "\\")
         for fragment in forbidden_fragments:
             self.assertNotIn(fragment, docs)
+
+        self.assertNotIn("8e9846828570cf89a062df3b4eb276e5ecc31647", docs)
 
     def test_gap_register_matches_report_scope_and_records_current_failures(self) -> None:
         self.assertTrue(
@@ -95,10 +106,14 @@ class MvpAcceptanceTraceabilityDocsTest(unittest.TestCase):
         self.assertEqual(list(EXPECTED_ITEM_IDS), register_ids)
 
         for required_text in (
-            "8e9846828570cf89a062df3b4eb276e5ecc31647",
+            "git log -1 --format=%H -- docs/mvp-acceptance-gap-register.md",
+            "Criteria source Git blob",
+            "Evaluator Git blob",
+            "git rev-parse HEAD:<repo-relative-path>",
+            "disappear after squash merge",
             "9981ffb9f3e633faedf5bc5c2bd3d5a4845424b7",
             "git checkout --detach",
-            "comparison anchor, not a",
+            "anchor, not a checkout instruction",
             "datasets/mvp_evaluation_manifest_v1.json",
             "python3 -m pip install -r requirements-pdf-eval.txt",
             "Without the prerequisite, the PDF",
@@ -116,6 +131,24 @@ class MvpAcceptanceTraceabilityDocsTest(unittest.TestCase):
             "P12G-13",
         ):
             self.assertIn(required_text, register)
+
+        self.assertNotIn("8e9846828570cf89a062df3b4eb276e5ecc31647", register)
+
+        criteria_blob = re.search(
+            r"Criteria source Git blob:\n  `([0-9a-f]{40})`",
+            register,
+        )
+        evaluator_blob = re.search(
+            r"Evaluator Git blob:\n  `([0-9a-f]{40})`",
+            register,
+        )
+        self.assertIsNotNone(criteria_blob)
+        self.assertIsNotNone(evaluator_blob)
+        self.assertEqual(_git_blob_id(DOC_PATH), criteria_blob.group(1))
+        self.assertEqual(
+            _git_blob_id(REPO_ROOT / "scripts" / "evaluate_dataset.py"),
+            evaluator_blob.group(1),
+        )
 
         forbidden_fragments = ("/" + "Users" + "/", "C:" + "\\Users" + "\\")
         for fragment in forbidden_fragments:
