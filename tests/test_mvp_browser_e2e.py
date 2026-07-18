@@ -188,6 +188,32 @@ class MvpBrowserE2ETest(unittest.TestCase):
                 "approver",
             )
             self.assertTrue(evidence["correlation"]["review"]["actor"]["id"])
+            review_flow = evidence["review_flow"]
+            self.assertTrue(review_flow["keyboard_only"])
+            self.assertGreaterEqual(len(review_flow["focus_trace"]), 1)
+            self.assertTrue(
+                all(step["visible_focus"] for step in review_flow["focus_trace"])
+            )
+            self.assertEqual(
+                set(review_flow["actions"]),
+                {"edit", "approve", "reject", "needs_fix"},
+            )
+            self.assertEqual(review_flow["high_risk"]["auto_confirmed_count"], 0)
+            self.assertGreaterEqual(review_flow["high_risk"]["review_target_count"], 1)
+            self.assertEqual(
+                review_flow["source_jump"]["page"],
+                review_flow["source_jump"]["review_item_page"],
+            )
+            self.assertEqual(
+                review_flow["source_jump"]["bbox"],
+                review_flow["source_jump"]["review_item_bbox"],
+            )
+            self.assertTrue(review_flow["unresolved"]["blocked_before_approval"])
+            for warning in review_flow["warnings"]:
+                self.assertEqual(
+                    set(warning),
+                    {"code", "severity", "message", "remediation"},
+                )
 
             evidence_path = run_dir / "evidence.json"
             self.assertEqual(json.loads(evidence_path.read_text()), evidence)
