@@ -63,8 +63,13 @@ ENDPOINT_ENVIRONMENT_KEYS = (
     "VERIDOC_LLM_ENDPOINT",
 )
 NETWORK_OBSERVATION_SCHEMA_VERSION = "veridoc-network-observation/v1"
+BROWSER_EVIDENCE_SCHEMA_VERSION = "veridoc-mvp-browser-e2e/v1"
 RERUN_PACKAGE_SCHEMA_VERSION = "veridoc-mvp-rerun-package/v1"
 RERUN_PACKAGE_ENVELOPE_SCHEMA_VERSION = "veridoc-mvp-rerun-package-envelope/v1"
+RERUN_EQUIVALENCE_RULE = (
+    "decision-relevant fields must match; run identity, generated "
+    "identifiers, artifact bytes, timestamps, and processing time are excluded"
+)
 
 
 class NetworkBoundaryViolation(AssertionError):
@@ -94,13 +99,21 @@ def _url_origin(url: str) -> str | None:
 
 
 def _is_loopback_host(host: str) -> bool:
-    normalized = host.rstrip(".").lower()
+    normalized = _normalize_network_host(host)
     if normalized == "localhost":
         return True
     try:
         return ipaddress.ip_address(normalized).is_loopback
     except ValueError:
         return False
+
+
+def _normalize_network_host(host: str) -> str:
+    normalized = host.rstrip(".").lower()
+    try:
+        return ipaddress.ip_address(normalized).compressed
+    except ValueError:
+        return normalized
 
 
 def _safe_network_target(url: str) -> str:
@@ -119,6 +132,18 @@ class LocalNetworkBoundaryObserver:
         if not normalized or any(origin is None for origin in normalized):
             raise ValueError("allowed_origins must contain valid HTTP(S) origins")
         self.allowed_origins = tuple(str(origin) for origin in normalized)
+        self._allowed_hosts = {
+            _normalize_network_host(str(urlsplit(origin).hostname))
+            for origin in self.allowed_origins
+        }
+        self._allowed_socket_targets = {
+            (
+                _normalize_network_host(str(parsed.hostname)),
+                parsed.port or (443 if parsed.scheme in {"https", "wss"} else 80),
+            )
+            for origin in self.allowed_origins
+            for parsed in (urlsplit(origin),)
+        }
         self._attempts: list[dict[str, object]] = []
 
     def _record(
@@ -159,12 +184,8 @@ class LocalNetworkBoundaryObserver:
             )
 
     def observe_dns_attempt(self, host: str, *, source: str) -> None:
-        allowed_hosts = {
-            str(urlsplit(origin).hostname).rstrip(".").lower()
-            for origin in self.allowed_origins
-        }
-        normalized = str(host).rstrip(".").lower()
-        allowed = normalized in allowed_hosts or _is_loopback_host(normalized)
+        normalized = _normalize_network_host(str(host))
+        allowed = normalized in self._allowed_hosts or _is_loopback_host(normalized)
         self._record(
             kind="dns",
             target=normalized,
@@ -179,9 +200,13 @@ class LocalNetworkBoundaryObserver:
     def observe_socket_attempt(self, address: object, *, source: str) -> None:
         if not isinstance(address, tuple) or not address:
             return
-        host = str(address[0])
-        allowed = _is_loopback_host(host)
-        target = f"{host}:{address[1]}" if len(address) > 1 else host
+        host = _normalize_network_host(str(address[0]))
+        port = address[1] if len(address) > 1 else None
+        allowed = (
+            _is_loopback_host(host)
+            or (host, port) in self._allowed_socket_targets
+        )
+        target = f"{host}:{port}" if port is not None else host
         self._record(
             kind="socket",
             target=target,
@@ -690,6 +715,46 @@ def validate_rerun_runtime_dependencies(
         )
 
 
+def _rerun_package_configuration(
+    profiles: dict[str, Any],
+    *,
+    profiles_path: Path,
+    repo_root: Path,
+) -> dict[str, Any]:
+    return {
+        "path": _repo_relative(profiles_path, repo_root),
+        "sha256": _sha256(profiles_path),
+        "network_boundary": profiles.get("network_boundary"),
+        "profiles": profiles.get("profiles"),
+        "browser_channel": _browser_channel(),
+        "inference_environment": _inference_environment_snapshot(profiles),
+    }
+
+
+def _rerun_package_versions(profiles: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "model_profiles_schema": profiles.get("schema_version"),
+        "prompt": CONVERSION_PLAN_PROMPT_VERSION,
+        "schemas": {
+            "conversion_audit": CONVERSION_AUDIT_SCHEMA_VERSION,
+            "conversion_plan": CONVERSION_PLAN_SCHEMA_VERSION,
+            "document_ir": DOCUMENT_IR_SCHEMA_VERSION,
+            "browser_evidence": BROWSER_EVIDENCE_SCHEMA_VERSION,
+            "network_observation": NETWORK_OBSERVATION_SCHEMA_VERSION,
+        },
+    }
+
+
+def _rerun_package_commands() -> dict[str, str]:
+    return {
+        "initial": "python3 scripts/ci/mvp_browser_e2e.py",
+        "rerun": (
+            "python3 scripts/ci/mvp_browser_e2e.py "
+            "--rerun-package <rerun-package-path>"
+        ),
+    }
+
+
 def build_rerun_package(
     evidence: dict[str, Any],
     *,
@@ -704,6 +769,8 @@ def build_rerun_package(
     input_paths = _rerun_input_paths(repo_root)
     profiles_path = repo_root / "services" / "api" / "inference_profiles.json"
     profiles = json.loads(profiles_path.read_text(encoding="utf-8"))
+    if evidence.get("schema_version") != BROWSER_EVIDENCE_SCHEMA_VERSION:
+        raise ValueError("browser evidence schema version is unsupported")
     projection = _equivalence_projection(evidence)
     package = {
         "schema_version": RERUN_PACKAGE_SCHEMA_VERSION,
@@ -715,41 +782,19 @@ def build_rerun_package(
             }
             for path in input_paths
         ],
-        "configuration": {
-            "path": _repo_relative(profiles_path, repo_root),
-            "sha256": _sha256(profiles_path),
-            "network_boundary": profiles.get("network_boundary"),
-            "profiles": profiles.get("profiles"),
-            "browser_channel": _browser_channel(),
-            "inference_environment": _inference_environment_snapshot(profiles),
-        },
+        "configuration": _rerun_package_configuration(
+            profiles,
+            profiles_path=profiles_path,
+            repo_root=repo_root,
+        ),
         "dependencies": _dependency_snapshot(
             browser_version=browser_version,
             repo_root=repo_root,
         ),
-        "versions": {
-            "model_profiles_schema": profiles.get("schema_version"),
-            "prompt": CONVERSION_PLAN_PROMPT_VERSION,
-            "schemas": {
-                "conversion_audit": CONVERSION_AUDIT_SCHEMA_VERSION,
-                "conversion_plan": CONVERSION_PLAN_SCHEMA_VERSION,
-                "document_ir": DOCUMENT_IR_SCHEMA_VERSION,
-                "browser_evidence": evidence.get("schema_version"),
-                "network_observation": NETWORK_OBSERVATION_SCHEMA_VERSION,
-            },
-        },
-        "commands": {
-            "initial": "python3 scripts/ci/mvp_browser_e2e.py",
-            "rerun": (
-                "python3 scripts/ci/mvp_browser_e2e.py "
-                "--rerun-package <rerun-package-path>"
-            ),
-        },
+        "versions": _rerun_package_versions(profiles),
+        "commands": _rerun_package_commands(),
         "equivalence": {
-            "rule": (
-                "decision-relevant fields must match; run identity, generated "
-                "identifiers, artifact bytes, timestamps, and processing time are excluded"
-            ),
+            "rule": RERUN_EQUIVALENCE_RULE,
             "baseline": projection,
             "baseline_sha256": _canonical_json_sha256(projection),
         },
@@ -781,6 +826,29 @@ def validate_rerun_package_for_workspace(
         raise ValueError(
             "rerun package inference environment does not match the current environment"
         )
+    expected_configuration = _rerun_package_configuration(
+        profiles,
+        profiles_path=profiles_path,
+        repo_root=repo_root,
+    )
+    if configuration != expected_configuration:
+        raise ValueError(
+            "rerun package configuration metadata does not match the current checkout"
+        )
+    if package.get("versions") != _rerun_package_versions(profiles):
+        raise ValueError(
+            "rerun package version metadata does not match the current checkout"
+        )
+    if package.get("commands") != _rerun_package_commands():
+        raise ValueError(
+            "rerun package command metadata does not match the supported commands"
+        )
+    equivalence = package.get("equivalence")
+    if (
+        not isinstance(equivalence, dict)
+        or equivalence.get("rule") != RERUN_EQUIVALENCE_RULE
+    ):
+        raise ValueError("rerun package equivalence metadata is unsupported")
     records = package.get("inputs")
     if not isinstance(records, list) or not records:
         raise ValueError("rerun package inputs list is missing")
@@ -1036,11 +1104,17 @@ def _poc_server(
 def _acceptance_network_boundary(
     base_url: str,
 ) -> Iterator[LocalNetworkBoundaryObserver]:
-    observer = LocalNetworkBoundaryObserver(allowed_origins=(base_url,))
-    observer.configured_endpoints = validate_endpoint_configuration(
+    configured_endpoints = validate_endpoint_configuration(
         os.environ,
-        allowed_origins=observer.allowed_origins,
+        allowed_origins=(base_url,),
     )
+    observer = LocalNetworkBoundaryObserver(
+        allowed_origins=(
+            base_url,
+            *(endpoint["origin"] for endpoint in configured_endpoints),
+        )
+    )
+    observer.configured_endpoints = configured_endpoints
     with observer.observe_python_network():
         yield observer
     observer.assert_clean()
@@ -1709,7 +1783,7 @@ def run_browser_e2e(
                 review_actor = review_event["actor"]
                 network_boundary.assert_clean()
                 evidence = {
-                    "schema_version": "veridoc-mvp-browser-e2e/v1",
+                    "schema_version": BROWSER_EVIDENCE_SCHEMA_VERSION,
                     "run_id": run_id,
                     "network_observation": {
                         **network_boundary.result(),

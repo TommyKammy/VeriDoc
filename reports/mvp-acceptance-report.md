@@ -18,11 +18,11 @@ pinned in this sample.
 ## Current Sample Outcome
 
 With the committed default inputs, the report contains 20 acceptance items and
-fails closed: 3 directly evidenced P12G-11 items are `pass`, while the remaining
-17 are `fail` because their traceability rows still mark them `一部達成`, `未達`,
-or deferred. A passing harness case does not promote a broader 15.3 item whose
-required evidence remains incomplete. The overall decision also remains `fail`
-whenever the live harness overall status is `fail` or `unknown`.
+fails closed: all 20 are `fail` because their traceability rows still mark them
+`一部達成`, `未達`, or deferred. A passing harness case does not promote a
+broader 15.3 item whose required evidence remains incomplete. The overall
+decision also remains `fail` whenever the live harness overall status is `fail`
+or `unknown`.
 
 ```json
 {
@@ -31,7 +31,7 @@ whenever the live harness overall status is `fail` or `unknown`.
   "summary": {
     "overall_decision": "fail",
     "item_count": 20,
-    "decision_counts": {"pass": 3, "fail": 17}
+    "decision_counts": {"pass": 0, "fail": 20}
   },
   "carryovers": {
     "phase13": ["OD-SEGREGATION"],

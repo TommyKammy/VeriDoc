@@ -14,6 +14,7 @@ from scripts.ci.mvp_browser_e2e import (
     FIXTURE_PATH,
     LocalNetworkBoundaryObserver,
     NetworkBoundaryViolation,
+    _acceptance_network_boundary,
     _assert_clean_git_checkout,
     _launch_browser,
     _request_local_api_get,
@@ -302,6 +303,56 @@ class LocalNetworkBoundaryTest(unittest.TestCase):
             ],
         )
 
+    def test_configured_private_endpoint_is_allowed_by_runtime_guards(self) -> None:
+        endpoint_environment = {
+            "VERIDOC_STANDARD_OPENAI_BASE_URL": "http://192.168.1.10:8000/v1",
+            "VERIDOC_HIGH_QUALITY_OPENAI_BASE_URL": "http://[fd00::10]:8001/v1",
+        }
+        with patch.dict(os.environ, endpoint_environment, clear=True):
+            with _acceptance_network_boundary(
+                "http://127.0.0.1:8765"
+            ) as observer:
+                observer.observe_dns_attempt(
+                    "192.168.1.10",
+                    source="python_socket",
+                )
+                observer.observe_socket_attempt(
+                    ("192.168.1.10", 8000),
+                    source="python_socket",
+                )
+                observer.observe_dns_attempt(
+                    "fd00::10",
+                    source="python_socket",
+                )
+                observer.observe_socket_attempt(
+                    ("fd00::10", 8001, 0, 0),
+                    source="python_socket",
+                )
+
+        result = observer.result()
+        self.assertIn("http://192.168.1.10:8000", result["allowed_origins"])
+        self.assertIn("http://[fd00::10]:8001", result["allowed_origins"])
+        self.assertEqual(result["external_attempt_count"], 0)
+
+    def test_unconfigured_private_socket_target_is_rejected(self) -> None:
+        observer = LocalNetworkBoundaryObserver(
+            allowed_origins=(
+                "http://127.0.0.1:8765",
+                "http://192.168.1.10:8000",
+            )
+        )
+
+        with self.assertRaisesRegex(
+            NetworkBoundaryViolation,
+            "external socket attempt blocked",
+        ):
+            observer.observe_socket_attempt(
+                ("192.168.1.10", 8001),
+                source="python_socket",
+            )
+
+        self.assertEqual(observer.result()["external_attempt_count"], 1)
+
 
 class RerunPackageValidationTest(unittest.TestCase):
     def test_dirty_checkout_is_rejected_before_package_sealing(self) -> None:
@@ -392,6 +443,80 @@ class RerunPackageValidationTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "input hash mismatch"):
             with patch("scripts.ci.mvp_browser_e2e._assert_clean_git_checkout"):
                 validate_rerun_package_for_workspace(drifted_envelope)
+
+    def test_resealed_package_metadata_drift_is_rejected(self) -> None:
+        evidence = {
+            "schema_version": "veridoc-mvp-browser-e2e/v1",
+            "network_observation": {
+                "status": "pass",
+                "external_ai_api_send_count": 0,
+                "external_attempt_count": 0,
+            },
+        }
+        with patch("scripts.ci.mvp_browser_e2e._assert_clean_git_checkout"):
+            baseline = build_rerun_package(
+                evidence,
+                browser_version="test-browser",
+            )["package"]
+
+        mutations = (
+            (
+                "configuration sha256",
+                ("configuration", "sha256"),
+                "0" * 64,
+                "configuration metadata",
+            ),
+            (
+                "configuration profiles",
+                ("configuration", "profiles"),
+                [],
+                "configuration metadata",
+            ),
+            (
+                "configuration network boundary",
+                ("configuration", "network_boundary"),
+                {"mode": "tampered"},
+                "configuration metadata",
+            ),
+            (
+                "prompt version",
+                ("versions", "prompt"),
+                "tampered-prompt",
+                "version metadata",
+            ),
+            (
+                "schema version",
+                ("versions", "schemas", "conversion_plan"),
+                "tampered-schema",
+                "version metadata",
+            ),
+            (
+                "initial command",
+                ("commands", "initial"),
+                "python3 tampered.py",
+                "command metadata",
+            ),
+            (
+                "equivalence rule",
+                ("equivalence", "rule"),
+                "tampered rule",
+                "equivalence metadata",
+            ),
+        )
+        for label, path, replacement, error in mutations:
+            with self.subTest(label=label):
+                package = json.loads(json.dumps(baseline))
+                target = package
+                for key in path[:-1]:
+                    target = target[key]
+                target[path[-1]] = replacement
+                with self.assertRaisesRegex(ValueError, error):
+                    with patch(
+                        "scripts.ci.mvp_browser_e2e._assert_clean_git_checkout"
+                    ):
+                        validate_rerun_package_for_workspace(
+                            seal_rerun_package(package)
+                        )
 
     def test_package_missing_required_input_is_rejected(self) -> None:
         evidence = {
