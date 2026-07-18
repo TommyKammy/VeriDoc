@@ -45,8 +45,15 @@ class ExtractedTable:
     @property
     def has_cell_bboxes(self) -> bool:
         expected_cells = sum(len(row) for row in self.rows)
-        actual_cells = sum(1 for row in self.cell_bboxes for bbox in row if bbox is not None)
-        return expected_cells > 0 and actual_cells == expected_cells
+        return (
+            expected_cells > 0
+            and len(self.cell_bboxes) == len(self.rows)
+            and all(
+                len(bbox_row) == len(value_row)
+                and all(bbox is not None for bbox in bbox_row)
+                for value_row, bbox_row in zip(self.rows, self.cell_bboxes)
+            )
+        )
 
 
 @dataclass(frozen=True)
@@ -188,17 +195,19 @@ def build_table_extraction_report(
             )
     if require_cell_bboxes:
         for candidate in ok_candidates:
-            table = first_tables[candidate.name]
-            if table is None:
-                continue
-            if not table.has_cell_bboxes:
+            for table_index, table in enumerate(candidate.tables, start=1):
+                if table.has_cell_bboxes:
+                    continue
                 mismatches.append(
                     TableExtractionMismatch(
                         kind="cell-boundary",
                         candidate=candidate.name,
                         expected="all cells have bboxes",
                         actual="missing one or more cell bboxes",
-                        notes="The extraction cannot prove cell boundaries for the sample.",
+                        notes=(
+                            "The extraction cannot prove cell boundaries "
+                            f"for table {table_index}."
+                        ),
                     )
                 )
 
