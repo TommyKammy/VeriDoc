@@ -14,7 +14,7 @@ Missing authoritative decisions or run evidence remain fail-closed.
 - Reproduction checkout:
   `git checkout --detach "$(git log -1 --format=%H -- docs/mvp-acceptance-gap-register.md)"`
 - Criteria source Git blob:
-  `6804d6911edd0f16cdf0376d94f5a6ce4ae89aed`
+  `e048e94c823771238f94db89226994360720c310`
 - Evaluator Git blob:
   `113797aa7ffd7a615b6fdd5eb9c51d8e18536585`
 - Generated at: `2026-07-18` (Asia/Tokyo)
@@ -26,7 +26,7 @@ Missing authoritative decisions or run evidence remain fail-closed.
   `a9374c81d4ff83cfce405582affd1c001216680ee8c53fa4e6acd0ade04abbd4`
 - Criteria source: `docs/mvp-acceptance-traceability.md`
 - Report result: `item_count=20`, unique item IDs `20`,
-  `overall_decision=fail` (`pass=3`, `fail=17`)
+  `overall_decision=fail` (`pass=0`, `fail=20`)
 - Harness result: `case_count=5`, `acceptance_status=fail`
   (`pass=3`, `fail=2`, `unknown=0`)
 
@@ -65,12 +65,12 @@ to the extractor-level facts recorded below.
 | AC-PERFORMANCE | 一部達成 / fail | All five live results pass input-size, processing-time, and timeout evaluations, but no accepted five-case metrics rollup exists. | `e2e_gap` | codex | One committed rollup retaining the 10 s, 2 MiB, and 30 s limits for all accepted cases. | P12G-12 |
 | AC-AUDIT | 一部達成 / fail | `audit=pass` for all five harness results, and Word/Excel bind persisted approver identity, decision/item versions, hash-chain audit event, and artifact/acceptance snapshots. Browser correlation and equivalent proof for the remaining cases are incomplete. | `e2e_gap` | codex | Fail-closed full-flow audit assertions tied to browser run, harness result, and artifact. | P12G-09 |
 | AC-AUTH | 一部達成 / fail | Authenticated API component behavior exists; role deny paths, token lifecycle UX, and the approved segregation boundary lack E2E proof. | `e2e_gap`, `decision_gap` | manual/hybrid then codex | Approved role boundary plus allow/deny and token lifecycle E2E evidence. | P12G-02, P12G-10 |
-| AC-SECURITY | 達成 / pass | Browser HTTP and harness DNS/socket attempts are observed against the explicit loopback allowlist, and `evidence.json` records `external_ai_api_send_count=0`. | `closed` | codex | Retain the machine-readable network observation with each acceptance run. | P12G-11 |
+| AC-SECURITY | 一部達成 / fail | The harness and negative tests enforce the local-only boundary, but the clean checkout does not retain a concrete run `evidence.json` that the report can validate before claiming `external_ai_api_send_count=0`. | `e2e_gap` | codex | Retain and validate the machine-readable network observation for the reported acceptance run. | P12G-11 |
 | FC-HIGH-RISK | 一部達成 / fail | Component guards prevent auto-confirmation, but the five-case snapshot does not prove zero high-risk misses through the final review UI and gate. | `e2e_gap` | codex | Dataset-wide fail-closed gate plus browser review evidence for every high-risk item. | P12G-08, P12G-12 |
 | FC-EVIDENCE | 一部達成 / fail | Provenance/audit component tests exist; no E2E mutation proves missing or altered evidence rejects acceptance while leaving no accepted partial result. | `e2e_gap` | codex | Negative E2E cases for missing/tampered provenance and audit records. | P12G-09 |
-| FC-EXTERNAL-SEND | 達成 / pass | External endpoint configuration plus HTTP, DNS, and socket attempt negative cases fail closed and cannot yield passing evidence. | `closed` | codex | Keep the external-attempt negative cases in the focused browser boundary suite. | P12G-11 |
+| FC-EXTERNAL-SEND | 一部達成 / fail | External endpoint configuration plus HTTP, DNS, socket, and redirect cases fail closed in the harness, but no concrete retained run evidence is bound to this report snapshot. | `e2e_gap` | codex | Retain and validate the zero-attempt network observation together with the focused negative cases. | P12G-11 |
 | FC-REVIEW-UI | 一部達成 / fail | A browser trace records keyboard-only warning/remediation review, original bbox jump, visible focus, edit/needs-fix/reject transitions, and a fail-closed approval attempt for the committed high-risk fixture; the final accepted-scope rollup remains absent. | `e2e_gap` | codex | Carry the fixed keyboard/review-UI evidence into the final accepted-scope rollup. | P12G-12 |
-| FC-REPRODUCIBILITY | 達成 / pass | A sealed rerun package pins commit, manifest/fixture hashes, config, dependency set, model/prompt/schema versions, and commands; drift is rejected and decision-relevant output is equivalence-checked. | `closed` | codex | Retain the validated package and equivalence result with each acceptance run. | P12G-11 |
+| FC-REPRODUCIBILITY | 一部達成 / fail | The harness can seal and validate a package that pins commit, inputs, inference/browser configuration, dependencies, versions, and commands, but this report snapshot does not retain a concrete package plus successful equivalence result. | `e2e_gap` | codex | Retain and validate the sealed package and successful equivalence result for the reported run. | P12G-11 |
 | EM-USER-REVIEW | 未達 / fail | No representative cohort, task protocol, timing, miss/over-detection results, or reviewer record exists. | `human_evidence_gap`, `decision_gap` | manual/hybrid | Approved protocol and evidence schema ready for the later human execution. | P12G-02, P12G-13 |
 | EM-E2E | 一部達成 / fail | A repo-owned browser run emits screenshots, trace, API result, downloaded artifact, audit artifact, and correlation metadata for one representative case; the versioned five-case report is two `fail`, zero `unknown`, and three `pass`, with persisted review decisions for Word and Excel and structured record-PDF content evidence. | `implementation_gap`, `e2e_gap` | codex/hybrid | P12G-05 through P12G-12 evidence from one committed snapshot with all intended cases passing. | P12G-05–P12G-12 |
 | OD-TEMPLATES | 未達 / fail | The manifest is `fixed_for_mvp` with five categories, but no authoritative approval adopts those cases as the representative MVP scope. | `decision_gap` | manual/hybrid | Approval record naming the 3–5 templates and manifest revision. | P12G-02 |
