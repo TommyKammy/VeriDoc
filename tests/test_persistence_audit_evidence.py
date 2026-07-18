@@ -19,6 +19,7 @@ from services.api.persistence import (
     ReviewItem,
     SQLitePersistenceRepository,
     SourceArtifact,
+    record_authoritative_review_decision,
 )
 
 VALID_HASH = "a" * 64
@@ -31,6 +32,143 @@ from tests.persistence_support import (
     _create_job,
     _create_result,
 )
+
+
+def _create_review_decision_scope(
+    repository: SQLitePersistenceRepository,
+) -> tuple[ReviewItem, Artifact]:
+    document = _create_document(repository, "review-doc")
+    job = _create_job(repository, document, "review-job")
+    result = _create_result(repository, job, "review-result")
+    artifact = _create_artifact(repository, result, "review-artifact")
+    review_item = repository.create_review_item(
+        review_item_id="review-item",
+        document_id=document.document_id,
+        job_id=job.job_id,
+        target_path="blocks[0]",
+        status="open",
+        severity="high",
+    )
+    return review_item, artifact
+
+
+def test_authoritative_review_decision_persists_decision_and_audit_snapshot(
+    tmp_path,
+) -> None:
+    repository = SQLitePersistenceRepository(tmp_path / "veridoc.sqlite3")
+    repository.initialize()
+    review_item, artifact = _create_review_decision_scope(repository)
+
+    recorded = record_authoritative_review_decision(
+        repository,
+        decision_id="decision-authoritative",
+        decision_version=1,
+        review_item_id=review_item.review_item_id,
+        item_version="item-version-1",
+        artifact_id=artifact.artifact_id,
+        actor_id="approver-1",
+        actor_role="approver",
+        decision="approved",
+        reason="high-risk value verified against source",
+        high_risk=True,
+    )
+
+    persisted = repository.get_review_decision(recorded.decision_id)
+    audit = repository.get_audit_event(recorded.audit_event_id)
+    assert persisted is not None
+    assert audit is not None
+    assert persisted.actor == "approver-1"
+    assert persisted.role == "approver"
+    assert persisted.decision == "approved"
+    payload = json.loads(audit.payload_json)
+    assert payload["decided_at"] == recorded.decided_at
+    assert payload["decision_version"] == recorded.version
+    assert payload["item_version"] == recorded.item_version
+    assert payload["reason"] == recorded.reason
+    assert payload["review_item_id"] == review_item.review_item_id
+    assert payload["artifact_id"] == artifact.artifact_id
+
+
+@pytest.mark.parametrize(
+    ("actor_role", "decision", "high_risk", "error_type", "message"),
+    (
+        ("viewer", "approved", False, PermissionError, "cannot record decision"),
+        ("reviewer", "approved", False, PermissionError, "cannot record decision"),
+        (
+            "reviewer",
+            "edited",
+            True,
+            ValueError,
+            "high-risk review item requires approver approval",
+        ),
+    ),
+)
+def test_authoritative_review_decision_denials_leave_no_durable_state(
+    tmp_path,
+    actor_role,
+    decision,
+    high_risk,
+    error_type,
+    message,
+) -> None:
+    repository = SQLitePersistenceRepository(tmp_path / "veridoc.sqlite3")
+    repository.initialize()
+    review_item, artifact = _create_review_decision_scope(repository)
+
+    with pytest.raises(error_type, match=message):
+        record_authoritative_review_decision(
+            repository,
+            decision_id="decision-denied",
+            decision_version=1,
+            review_item_id=review_item.review_item_id,
+            item_version="item-version-1",
+            artifact_id=artifact.artifact_id,
+            actor_id="denied-actor",
+            actor_role=actor_role,
+            decision=decision,
+            reason="attempted synthetic review",
+            high_risk=high_risk,
+        )
+
+    assert repository.get_review_decision("decision-denied") is None
+    assert repository.get_audit_event("audit-decision-denied") is None
+
+
+def test_authoritative_review_decision_rolls_back_when_audit_append_fails(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    repository = SQLitePersistenceRepository(tmp_path / "veridoc.sqlite3")
+    repository.initialize()
+    review_item, artifact = _create_review_decision_scope(repository)
+
+    def fail_audit_append(*_args, **_kwargs):
+        raise RuntimeError("forced audit append failure")
+
+    monkeypatch.setattr(
+        SQLitePersistenceRepository,
+        "create_audit_event",
+        fail_audit_append,
+    )
+    with pytest.raises(RuntimeError, match="forced audit append failure"):
+        record_authoritative_review_decision(
+            repository,
+            decision_id="decision-rolled-back",
+            decision_version=1,
+            review_item_id=review_item.review_item_id,
+            item_version="item-version-1",
+            artifact_id=artifact.artifact_id,
+            actor_id="approver-1",
+            actor_role="approver",
+            decision="approved",
+            reason="review would otherwise be accepted",
+            high_risk=False,
+        )
+
+    assert repository.get_review_decision("decision-rolled-back") is None
+    assert repository.get_audit_event("audit-decision-rolled-back") is None
+
+
 def test_persistence_repository_rejects_caller_supplied_audit_chain_fields(tmp_path) -> None:
     repository = SQLitePersistenceRepository(tmp_path / "veridoc.sqlite3")
     repository.initialize()

@@ -5600,11 +5600,27 @@ def mvp_conversion_result(
         review_failures.append("requires_review conversion did not emit review items")
     if case["expected_status"] == "converted" and review_items_count != 0:
         review_failures.append("converted conversion unexpectedly emitted review items")
-    review_status = "fail" if review_failures else "unknown"
-    review_reason = (
-        "; ".join(review_failures)
-        if review_failures
-        else "no authoritative reviewer decision was recorded by the conversion run"
+    authoritative_decisions: list[dict[str, object]] = []
+    if not review_failures and review_items_count:
+        try:
+            authoritative_decisions = mvp_record_authoritative_review_decisions(
+                case,
+                converted=converted,
+                fixture_path=fixture_path,
+                fixture_content=fixture_content,
+                review_items=review_items,
+                artifacts=artifact_list,
+            )
+        except (PermissionError, RuntimeError, ValueError) as exc:
+            review_failures.append(str(exc))
+    if not review_failures and review_items_count != len(authoritative_decisions):
+        review_failures.append(
+            "authoritative decision missing for one or more review items"
+        )
+    review_status = "fail" if review_failures else "pass"
+    review_reason = "; ".join(review_failures) if review_failures else None
+    primary_review_decision = (
+        authoritative_decisions[0] if authoritative_decisions else None
     )
 
     audit_present = isinstance(converted.get("audit"), dict)
@@ -5624,19 +5640,24 @@ def mvp_conversion_result(
             "status": artifact_status,
             "expected_formats": expected_formats,
             "actual_formats": actual_formats,
+            "review_decision": primary_review_decision,
+            "review_decisions": authoritative_decisions,
             "reason": None if not artifact_failures else "; ".join(artifact_failures),
         },
         "review": {
             "status": review_status,
             "expected_status": case["expected_status"],
             "observed_status": observed_status,
-            "decision": None,
+            "decision": primary_review_decision,
+            "decisions": authoritative_decisions,
             "review_focus": list(case["review_focus"]),
             "reason": review_reason,
         },
         "audit": {
             "status": "fail" if audit_failures else "pass",
             "present": audit_present,
+            "review_decision": primary_review_decision,
+            "review_decisions": authoritative_decisions,
             "reason": None if not audit_failures else "; ".join(audit_failures),
         },
         "input_size": mvp_input_size_evaluation(
@@ -5663,7 +5684,8 @@ def mvp_conversion_result(
         "acceptance_status": acceptance_status,
         "processing_time_ms": round(elapsed_ms, 3),
         "artifact_formats": actual_formats,
-        "review_decision": None,
+        "review_decision": primary_review_decision,
+        "review_decisions": authoritative_decisions,
         "review_items_count": review_items_count,
         "audit_present": audit_present,
         "warnings": actual_warnings,
@@ -5678,6 +5700,189 @@ def mvp_conversion_result(
         ),
         "evaluations": evaluations,
     }
+
+
+def mvp_record_authoritative_review_decisions(
+    case: Mapping[str, Any],
+    *,
+    converted: dict[str, Any],
+    fixture_path: Path,
+    fixture_content: bytes,
+    review_items: object,
+    artifacts: list[Any],
+) -> list[dict[str, object]]:
+    from services.api.persistence import (
+        SQLitePersistenceRepository,
+        record_authoritative_review_decision,
+    )
+
+    decision_input = case.get("review_decision")
+    if not isinstance(decision_input, Mapping):
+        raise ValueError("authoritative review decision is required")
+    if case.get("source_classification") != "synthetic":
+        raise ValueError(
+            "manifest review decisions are only valid for synthetic fixtures"
+        )
+    required_fields = ("actor", "role", "decision", "reason")
+    if any(
+        not isinstance(decision_input.get(field), str)
+        or not str(decision_input[field]).strip()
+        for field in required_fields
+    ):
+        raise ValueError(
+            "authoritative review decision requires actor, role, decision, and reason"
+        )
+    if not isinstance(review_items, list) or not all(
+        isinstance(item, dict) for item in review_items
+    ):
+        raise ValueError("conversion review items are malformed")
+
+    primary_artifact = p9_primary_artifact(artifacts)
+    if primary_artifact is None:
+        raise ValueError("authoritative review decision requires a primary artifact")
+    artifact_content = primary_artifact.get("content")
+    if not isinstance(artifact_content, bytes):
+        raise ValueError(
+            "authoritative review decision requires durable primary artifact content"
+        )
+
+    conversion_id = converted.get("conversion_id")
+    if not isinstance(conversion_id, str) or not conversion_id:
+        raise ValueError("authoritative review decision requires conversion_id")
+    document_ir = converted.get("document_ir")
+    document = document_ir.get("document") if isinstance(document_ir, dict) else None
+    document_id = (
+        document.get("id")
+        if isinstance(document, dict) and isinstance(document.get("id"), str)
+        else review_items[0].get("document_id")
+        if review_items
+        else None
+    )
+    if not isinstance(document_id, str) or not document_id:
+        raise ValueError("authoritative review decision requires document_id")
+
+    source_hash = hashlib.sha256(fixture_content).hexdigest()
+    artifact_hash = hashlib.sha256(artifact_content).hexdigest()
+    identity = hashlib.sha256(
+        f"{case['case_id']}:{source_hash}".encode("utf-8")
+    ).hexdigest()[:20]
+    artifact_id = f"mvp-artifact-{identity}"
+    result_id = f"mvp-result-{identity}"
+    job_id = f"mvp-job-{identity}"
+
+    with tempfile.TemporaryDirectory(prefix="veridoc-mvp-review-") as temp_dir:
+        repository = SQLitePersistenceRepository(Path(temp_dir) / "review.sqlite3")
+        repository.initialize()
+        repository.create_document(
+            document_id=document_id,
+            source_type=str(case["source_type"]),
+            original_filename=fixture_path.name,
+            source_artifact_id=f"mvp-source-{identity}",
+            source_storage_key=f"mvp-evidence/source/{identity}",
+            content_hash=source_hash,
+            status="uploaded",
+            uploaded_by=str(decision_input["actor"]),
+        )
+        repository.create_conversion_job(
+            job_id=job_id,
+            document_id=document_id,
+            idempotency_key=f"mvp-review-{identity}",
+            mode=str(case["conversion_mode"]),
+            status="succeeded",
+        )
+        repository.create_conversion_result(
+            result_id=result_id,
+            job_id=job_id,
+            document_id=document_id,
+            status=str(converted.get("status")),
+            content_hash=artifact_hash,
+        )
+        repository.create_artifact(
+            artifact_id=artifact_id,
+            result_id=result_id,
+            job_id=job_id,
+            document_id=document_id,
+            category="primary",
+            format=str(primary_artifact.get("format")),
+            display_filename=str(
+                primary_artifact.get("filename")
+                or f"{case['case_id']}.{primary_artifact.get('format')}"
+            ),
+            storage_key=f"mvp-evidence/artifacts/{identity}",
+            content_hash=artifact_hash,
+        )
+
+        decisions: list[dict[str, object]] = []
+        for item_index, review_item in enumerate(review_items, start=1):
+            item_version = mvp_review_item_version(review_item)
+            review_item_id = f"mvp-review-item-{identity}-{item_index}"
+            high_risk = mvp_review_item_is_high_risk(review_item)
+            repository.create_review_item(
+                review_item_id=review_item_id,
+                document_id=document_id,
+                job_id=job_id,
+                target_path=str(
+                    review_item.get("source_id")
+                    or review_item.get("block_id")
+                    or f"review_items[{item_index - 1}]"
+                ),
+                status="open",
+                severity="high" if high_risk else "review",
+            )
+            decision = record_authoritative_review_decision(
+                repository,
+                decision_id=f"mvp-decision-{identity}-{item_index}",
+                decision_version=1,
+                review_item_id=review_item_id,
+                item_version=item_version,
+                artifact_id=artifact_id,
+                actor_id=str(decision_input["actor"]),
+                actor_role=str(decision_input["role"]),
+                decision=str(decision_input["decision"]),
+                reason=str(decision_input["reason"]),
+                high_risk=high_risk,
+            ).as_dict()
+            decisions.append(decision)
+            if decision["decision"] != "approved":
+                raise ValueError(
+                    "authoritative review decision did not approve the review item"
+                )
+
+    review_snapshot = {
+        "decision_ids": [decision["decision_id"] for decision in decisions],
+        "versions": [decision["version"] for decision in decisions],
+    }
+    primary_artifact["review_decisions"] = decisions
+    audit = converted.get("audit")
+    if isinstance(audit, dict):
+        audit["review_decisions"] = decisions
+        audit["review_snapshot"] = review_snapshot
+    return decisions
+
+
+def mvp_review_item_version(review_item: Mapping[str, Any]) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            review_item,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def mvp_review_item_is_high_risk(review_item: Mapping[str, Any]) -> bool:
+    if review_item.get("high_risk") is True:
+        return True
+    risk_level = review_item.get("risk_level")
+    if isinstance(risk_level, str) and risk_level.lower() in {"high", "critical"}:
+        return True
+    warnings = review_item.get("warnings")
+    return isinstance(warnings, list) and any(
+        isinstance(warning, str)
+        and re.search(r"\b(?:high[- ]risk|critical)\b", warning, re.IGNORECASE)
+        for warning in warnings
+    )
 
 
 def evaluate_mvp_harness(
