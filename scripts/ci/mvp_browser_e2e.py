@@ -75,6 +75,39 @@ def _events(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return [event for event in events if isinstance(event, dict)]
 
 
+def _require_matching_event(
+    events: list[dict[str, Any]],
+    *,
+    expected_fields: dict[str, Any],
+    description: str,
+) -> tuple[dict[str, Any], int]:
+    matching_events = [
+        event
+        for event in events
+        if all(event.get(field) == expected for field, expected in expected_fields.items())
+    ]
+    if not matching_events:
+        raise AssertionError(
+            f"{description} was not bound to the browser run: "
+            f"expected fields {expected_fields!r}"
+        )
+    return matching_events[-1], len(matching_events)
+
+
+def _require_audit_payload_matches_result(
+    audit_payload: dict[str, Any],
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    result_audit = result.get("audit")
+    if not isinstance(result_audit, dict):
+        raise AssertionError("completed browser result did not contain audit metadata")
+    if audit_payload != result_audit:
+        raise AssertionError(
+            "downloaded audit artifact did not match the current browser result audit"
+        )
+    return result_audit
+
+
 @contextmanager
 def _poc_server(
     state_root: Path, *, auth_token: str, approver_actor: str
@@ -132,6 +165,7 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
     api_result_path = run_dir / "api-result.json"
     auth_token = uuid.uuid4().hex
     approver_actor = f"e2e-{uuid.uuid4().hex}"
+    source_sha256 = _sha256(FIXTURE_PATH)
 
     with tempfile.TemporaryDirectory(prefix="veridoc-browser-e2e-") as state_dir:
         with _poc_server(
@@ -191,10 +225,26 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
                 )
 
                 result = json.loads(page.locator("#raw-result").inner_text())
+                if not isinstance(result, dict):
+                    raise AssertionError("completed browser result must be a JSON object")
                 api_result_path.write_text(
                     json.dumps(result, ensure_ascii=False, indent=2) + "\n",
                     encoding="utf-8",
                 )
+                result_audit = result.get("audit")
+                if not isinstance(result_audit, dict):
+                    raise AssertionError(
+                        "completed browser result did not contain audit metadata"
+                    )
+                conversion_id = result_audit.get("conversion_id")
+                if not isinstance(conversion_id, str) or not conversion_id:
+                    raise AssertionError(
+                        "completed browser result did not bind an audit conversion ID"
+                    )
+                if result_audit.get("source_sha256") != source_sha256:
+                    raise AssertionError(
+                        "completed browser result audit did not match the uploaded fixture"
+                    )
                 job_id = result.get("job_id")
                 if not isinstance(job_id, str) or not job_id:
                     page_status = page.locator("#page-status")
@@ -224,6 +274,37 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
                     '#review-list button[data-review-action-name="approve"]:not([disabled])'
                 ).first
                 expect(approve).to_be_visible(timeout=10_000)
+                review_action_key = approve.get_attribute("data-review-action-key")
+                review_items = result.get("review_items")
+                if not isinstance(review_items, list):
+                    raise AssertionError(
+                        "completed browser result did not contain review items"
+                    )
+                review_item = next(
+                    (
+                        item
+                        for item in review_items
+                        if isinstance(item, dict)
+                        and review_action_key
+                        == f"{item.get('document_id')}:{item.get('block_id')}"
+                    ),
+                    None,
+                )
+                if review_item is None:
+                    raise AssertionError(
+                        "browser approval target was not bound to a current result review item"
+                    )
+                review_document_id = review_item.get("document_id")
+                review_block_id = review_item.get("block_id")
+                if (
+                    not isinstance(review_document_id, str)
+                    or not review_document_id
+                    or not isinstance(review_block_id, str)
+                    or not review_block_id
+                ):
+                    raise AssertionError(
+                        "browser approval target did not expose authoritative review IDs"
+                    )
                 approve.click()
                 expect(page.locator("#review-action-status")).to_contain_text(
                     "queued for audit", timeout=10_000
@@ -323,6 +404,7 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
                     raise AssertionError(
                         "downloaded audit artifact must be a JSON object"
                     )
+                _require_audit_payload_matches_result(audit_payload, result)
                 audit_artifact_path = run_dir / "audit-artifact.json"
                 audit_artifact_path.write_bytes(audit_content)
 
@@ -338,33 +420,38 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
                 if not job_events_response.ok:
                     raise AssertionError("job audit event lookup failed")
                 job_events = _events(_json_response(job_events_response))
-                if not job_events:
-                    raise AssertionError("completed browser run did not record a job event")
+                _, upload_event_count = _require_matching_event(
+                    job_events,
+                    expected_fields={
+                        "action": "browser_upload",
+                        "job_id": job_id,
+                        "filename": FIXTURE_PATH.name,
+                        "source_sha256": source_sha256,
+                    },
+                    description="browser upload audit event",
+                )
                 review_events_response = context.request.get(
                     base_url + "/api/review-events", headers=auth_headers
                 )
                 if not review_events_response.ok:
                     raise AssertionError("review audit event lookup failed")
                 review_events = _events(_json_response(review_events_response))
-                if not review_events:
-                    raise AssertionError(
-                        "completed browser run did not record a review event"
-                    )
-                review_event = review_events[-1]
-                review_actor = review_event.get("actor")
                 expected_review_actor = {
                     "id": f"local-principal:{approver_actor}",
                     "role": "approver",
                 }
-                if review_event.get("action") != "approve":
-                    raise AssertionError(
-                        "completed browser run did not record an approval event"
-                    )
-                if review_actor != expected_review_actor:
-                    raise AssertionError(
-                        "approval event was not bound to the authenticated approver: "
-                        f"expected {expected_review_actor!r}, got {review_actor!r}"
-                    )
+                review_event, approval_event_count = _require_matching_event(
+                    review_events,
+                    expected_fields={
+                        "action": "approve",
+                        "conversion_id": conversion_id,
+                        "document_id": review_document_id,
+                        "block_id": review_block_id,
+                        "actor": expected_review_actor,
+                    },
+                    description="browser approval audit event",
+                )
+                review_actor = review_event["actor"]
                 evidence = {
                     "schema_version": "veridoc-mvp-browser-e2e/v1",
                     "run_id": run_id,
@@ -372,7 +459,7 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
                         "run_id": run_id,
                         "upload": {
                             "source_filename": FIXTURE_PATH.name,
-                            "source_sha256": _sha256(FIXTURE_PATH),
+                            "source_sha256": source_sha256,
                         },
                         "job": {
                             "job_id": job_id,
@@ -380,6 +467,7 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
                             "conversion_status": conversion_status,
                         },
                         "review": {
+                            "conversion_id": review_event.get("conversion_id"),
                             "document_id": review_event.get("document_id"),
                             "block_id": review_event.get("block_id"),
                             "action": review_event.get("action"),
@@ -393,8 +481,8 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
                         "audit": {
                             "artifact_sha256": artifact_audit_sha256,
                             "audit_artifact_sha256": audit_downloaded_sha256,
-                            "job_event_count": len(job_events),
-                            "review_event_count": len(review_events),
+                            "job_event_count": upload_event_count,
+                            "review_event_count": approval_event_count,
                         },
                     },
                     "recovery": {

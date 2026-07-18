@@ -10,7 +10,12 @@ from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts.ci.mvp_browser_e2e import _launch_browser, run_browser_e2e
+from scripts.ci.mvp_browser_e2e import (
+    _launch_browser,
+    _require_audit_payload_matches_result,
+    _require_matching_event,
+    run_browser_e2e,
+)
 
 
 def _browser_e2e_runtime_available() -> bool:
@@ -73,6 +78,67 @@ class BrowserLaunchSelectionTest(unittest.TestCase):
         )
 
 
+class EvidenceBoundaryValidationTest(unittest.TestCase):
+    def test_matching_event_requires_every_authoritative_field(self) -> None:
+        expected_fields = {
+            "action": "browser_upload",
+            "job_id": "job-current",
+            "source_sha256": "a" * 64,
+        }
+        current_event = {**expected_fields, "event_type": "web.job_operation"}
+        stale_event = {**current_event, "source_sha256": "b" * 64}
+
+        event, count = _require_matching_event(
+            [stale_event, current_event],
+            expected_fields=expected_fields,
+            description="browser upload audit event",
+        )
+
+        self.assertIs(event, current_event)
+        self.assertEqual(count, 1)
+
+    def test_matching_event_rejects_approval_for_another_block(self) -> None:
+        expected_fields = {
+            "action": "approve",
+            "conversion_id": "conversion-current",
+            "document_id": "document-current",
+            "block_id": "block-current",
+        }
+
+        with self.assertRaisesRegex(
+            AssertionError,
+            "browser approval audit event was not bound to the browser run",
+        ):
+            _require_matching_event(
+                [{**expected_fields, "block_id": "block-stale"}],
+                expected_fields=expected_fields,
+                description="browser approval audit event",
+            )
+
+    def test_audit_artifact_must_equal_current_result_audit(self) -> None:
+        current_audit = {
+            "conversion_id": "conversion-current",
+            "source_sha256": "a" * 64,
+            "schema_version": "veridoc-poc-conversion-audit/v1",
+        }
+        self.assertIs(
+            _require_audit_payload_matches_result(
+                current_audit,
+                {"audit": current_audit},
+            ),
+            current_audit,
+        )
+
+        with self.assertRaisesRegex(
+            AssertionError,
+            "did not match the current browser result audit",
+        ):
+            _require_audit_payload_matches_result(
+                {**current_audit, "conversion_id": "conversion-stale"},
+                {"audit": current_audit},
+            )
+
+
 class MvpBrowserE2ETest(unittest.TestCase):
     @unittest.skipUnless(
         BROWSER_E2E_RUNTIME_AVAILABLE,
@@ -111,6 +177,12 @@ class MvpBrowserE2ETest(unittest.TestCase):
             self.assertGreaterEqual(evidence["correlation"]["audit"]["review_event_count"], 1)
             self.assertGreaterEqual(evidence["correlation"]["audit"]["job_event_count"], 1)
             self.assertEqual(evidence["correlation"]["review"]["action"], "approve")
+            self.assertEqual(
+                evidence["correlation"]["review"]["conversion_id"],
+                json.loads(
+                    (run_dir / evidence["files"]["api_result"]).read_text()
+                )["audit"]["conversion_id"],
+            )
             self.assertEqual(
                 evidence["correlation"]["review"]["actor"]["role"],
                 "approver",
