@@ -70,6 +70,21 @@ RERUN_EQUIVALENCE_RULE = (
     "decision-relevant fields must match; run identity, generated "
     "identifiers, artifact bytes, timestamps, and processing time are excluded"
 )
+RETAINED_EVIDENCE_FILENAMES = frozenset(
+    {
+        "01-recovery.png",
+        "02-completed-review.png",
+        "03-audit.png",
+        "04-keyboard-high-risk-review.png",
+        "api-result.json",
+        "audit-artifact.json",
+        "evidence.json",
+        "high-risk-api-result.json",
+        "rerun-package.json",
+        "review-events.json",
+        "trace.zip",
+    }
+)
 
 
 class NetworkBoundaryViolation(AssertionError):
@@ -87,12 +102,16 @@ def _canonical_json_sha256(value: object) -> str:
 
 
 def _url_origin(url: str) -> str | None:
-    parsed = urlsplit(url)
-    if parsed.scheme not in {"http", "https", "ws", "wss"} or not parsed.hostname:
+    try:
+        parsed = urlsplit(url)
+        host = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        return None
+    if parsed.scheme not in {"http", "https", "ws", "wss"} or not host:
         return None
     default_port = 443 if parsed.scheme in {"https", "wss"} else 80
-    port = parsed.port or default_port
-    host = parsed.hostname
+    port = port or default_port
     if ":" in host:
         host = f"[{host}]"
     return f"{parsed.scheme}://{host}:{port}"
@@ -319,7 +338,10 @@ def validate_endpoint_configuration(
         if not raw_value:
             continue
         origin = _url_origin(raw_value)
-        host = urlsplit(raw_value).hostname
+        try:
+            host = urlsplit(raw_value).hostname
+        except ValueError:
+            host = None
         if origin is None or host is None:
             raise NetworkBoundaryViolation(
                 f"{key} contains a malformed endpoint configuration"
@@ -522,6 +544,38 @@ def _assert_clean_git_checkout(
         raise ValueError("rerun package rejected: dirty checkout")
 
 
+def _retained_evidence_paths(
+    rerun_package_path: Path | None,
+    *,
+    repo_root: Path,
+) -> tuple[Path, ...]:
+    if rerun_package_path is None:
+        return ()
+    resolved_package = rerun_package_path.resolve()
+    try:
+        resolved_package.relative_to(repo_root.resolve())
+    except ValueError:
+        return (resolved_package,)
+    run_dir = resolved_package.parent
+    if (
+        resolved_package.name != "rerun-package.json"
+        or re.fullmatch(r"p12g03-[0-9a-f]{32}", run_dir.name) is None
+        or not run_dir.is_dir()
+    ):
+        return (resolved_package,)
+    retained_paths = tuple(sorted(run_dir.iterdir(), key=lambda path: path.name))
+    if any(
+        not path.is_file()
+        or (
+            path.name not in RETAINED_EVIDENCE_FILENAMES
+            and not path.name.startswith("download-")
+        )
+        for path in retained_paths
+    ):
+        return (resolved_package,)
+    return retained_paths
+
+
 def _requirement_files(
     root_path: Path = DEPENDENCY_ROOT_PATH,
     *,
@@ -675,6 +729,21 @@ def _inference_environment_snapshot(
                 }
                 continue
             normalized_value = raw_value.strip() if raw_value is not None else None
+            if name == base_url_env and normalized_value is not None:
+                parsed = urlsplit(normalized_value)
+                userinfo, separator, endpoint_netloc = parsed.netloc.rpartition("@")
+                credential_fingerprints[name] = {
+                    "configured": bool(separator),
+                    "sha256": (
+                        hashlib.sha256(userinfo.encode("utf-8")).hexdigest()
+                        if separator
+                        else None
+                    ),
+                }
+                if separator:
+                    normalized_value = parsed._replace(
+                        netloc=endpoint_netloc
+                    ).geturl()
             values[name] = normalized_value or None
 
         if selected_profile is None and values.get(base_url_env) is not None:
@@ -763,10 +832,12 @@ def build_rerun_package(
     generated_evidence_dir: Path | None = None,
     retained_rerun_package_path: Path | None = None,
 ) -> dict[str, Any]:
-    excluded_paths = tuple(
-        path
-        for path in (generated_evidence_dir, retained_rerun_package_path)
-        if path is not None
+    excluded_paths = (
+        ((generated_evidence_dir,) if generated_evidence_dir is not None else ())
+        + _retained_evidence_paths(
+            retained_rerun_package_path,
+            repo_root=repo_root,
+        )
     )
     _assert_clean_git_checkout(repo_root, excluded_paths=excluded_paths)
     input_paths = _rerun_input_paths(repo_root)
@@ -811,8 +882,9 @@ def validate_rerun_package_for_workspace(
     repo_root: Path = REPO_ROOT,
     rerun_package_path: Path | None = None,
 ) -> dict[str, Any]:
-    excluded_paths = (
-        (rerun_package_path,) if rerun_package_path is not None else ()
+    excluded_paths = _retained_evidence_paths(
+        rerun_package_path,
+        repo_root=repo_root,
     )
     _assert_clean_git_checkout(repo_root, excluded_paths=excluded_paths)
     package = validate_rerun_package_envelope(envelope)

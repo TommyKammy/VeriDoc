@@ -284,6 +284,20 @@ class LocalNetworkBoundaryTest(unittest.TestCase):
                 allowed_origins=self.observer.allowed_origins,
             )
 
+    def test_malformed_endpoint_port_is_rejected_by_network_boundary(self) -> None:
+        with self.assertRaisesRegex(
+            NetworkBoundaryViolation,
+            "VERIDOC_STANDARD_OPENAI_BASE_URL.*malformed endpoint",
+        ):
+            validate_endpoint_configuration(
+                {
+                    "VERIDOC_STANDARD_OPENAI_BASE_URL": (
+                        "http://127.0.0.1:api_key=secret/v1"
+                    )
+                },
+                allowed_origins=self.observer.allowed_origins,
+            )
+
     def test_private_profile_endpoint_configuration_is_allowed(self) -> None:
         configured = validate_endpoint_configuration(
             {
@@ -419,6 +433,74 @@ class RerunPackageValidationTest(unittest.TestCase):
                 ".",
                 ":(exclude,top,literal)evidence/rerun-package.json",
             ],
+        )
+
+    def test_retained_evidence_bundle_is_excluded_from_rerun_clean_check(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_root = Path(temp_dir)
+            run_dir = repo_root / f"p12g03-{'a' * 32}"
+            run_dir.mkdir()
+            retained_names = (
+                "01-recovery.png",
+                "download-result.xlsx",
+                "evidence.json",
+                "rerun-package.json",
+                "trace.zip",
+            )
+            for name in retained_names:
+                (run_dir / name).write_text("retained\n", encoding="utf-8")
+            rerun_package_path = run_dir / "rerun-package.json"
+            with patch("scripts.ci.mvp_browser_e2e.subprocess.run") as run:
+                run.return_value.stdout = ""
+                with self.assertRaises(ValueError):
+                    validate_rerun_package_for_workspace(
+                        {},
+                        repo_root=repo_root,
+                        rerun_package_path=rerun_package_path,
+                    )
+
+        self.assertEqual(
+            run.call_args.args[0],
+            [
+                "git",
+                "status",
+                "--porcelain=v1",
+                "--untracked-files=all",
+                "--",
+                ".",
+                *[
+                    f":(exclude,top,literal){run_dir.name}/{name}"
+                    for name in retained_names
+                ],
+            ],
+        )
+
+    def test_unexpected_retained_evidence_file_remains_in_clean_check(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_root = Path(temp_dir)
+            run_dir = repo_root / f"p12g03-{'a' * 32}"
+            run_dir.mkdir()
+            rerun_package_path = run_dir / "rerun-package.json"
+            rerun_package_path.write_text("{}\n", encoding="utf-8")
+            (run_dir / "unexpected.txt").write_text("dirty\n", encoding="utf-8")
+            with patch("scripts.ci.mvp_browser_e2e.subprocess.run") as run:
+                run.return_value.stdout = (
+                    f"?? {run_dir.name}/unexpected.txt\n"
+                )
+                with self.assertRaisesRegex(ValueError, "dirty checkout"):
+                    validate_rerun_package_for_workspace(
+                        {},
+                        repo_root=repo_root,
+                        rerun_package_path=rerun_package_path,
+                    )
+
+        self.assertNotIn(
+            f":(exclude,top,literal){run_dir.name}/unexpected.txt",
+            run.call_args.args[0],
         )
 
     def test_retained_package_is_excluded_from_final_package_sealing(self) -> None:
@@ -698,6 +780,58 @@ class RerunPackageValidationTest(unittest.TestCase):
                 **baseline_environment,
                 "VERIDOC_STANDARD_MODEL": "rerun-model",
             },
+        ):
+            with self.assertRaisesRegex(ValueError, "inference environment"):
+                with patch(
+                    "scripts.ci.mvp_browser_e2e._assert_clean_git_checkout"
+                ):
+                    validate_rerun_package_for_workspace(envelope)
+
+    def test_package_redacts_url_userinfo_and_pins_credential_hash(self) -> None:
+        evidence = {
+            "schema_version": "veridoc-mvp-browser-e2e/v1",
+            "network_observation": {
+                "status": "pass",
+                "external_ai_api_send_count": 0,
+                "external_attempt_count": 0,
+            },
+        }
+        endpoint_name = "VERIDOC_STANDARD_OPENAI_BASE_URL"
+        endpoint = "http://operator:secret@127.0.0.1:8000/v1"
+        with patch.dict(os.environ, {endpoint_name: endpoint}):
+            with patch("scripts.ci.mvp_browser_e2e._assert_clean_git_checkout"):
+                envelope = build_rerun_package(
+                    evidence,
+                    browser_version="test-browser",
+                )
+
+        inference_environment = envelope["package"]["configuration"][
+            "inference_environment"
+        ]
+        serialized = json.dumps(inference_environment)
+        self.assertNotIn("operator", serialized)
+        self.assertNotIn("secret", serialized)
+        standard_profile = next(
+            profile
+            for profile in inference_environment["profiles"]
+            if profile["id"] == "standard"
+        )
+        self.assertEqual(
+            standard_profile["environment"][endpoint_name],
+            "http://127.0.0.1:8000/v1",
+        )
+        self.assertEqual(
+            standard_profile["credential_fingerprints"][endpoint_name],
+            {
+                "configured": True,
+                "sha256": hashlib.sha256(
+                    b"operator:secret"
+                ).hexdigest(),
+            },
+        )
+        with patch.dict(
+            os.environ,
+            {endpoint_name: "http://operator:changed@127.0.0.1:8000/v1"},
         ):
             with self.assertRaisesRegex(ValueError, "inference environment"):
                 with patch(
