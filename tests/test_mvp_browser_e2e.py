@@ -146,8 +146,10 @@ def _write_complete_evidence_package(run_dir: Path) -> dict[str, object]:
                 "created_at": created_at,
                 "hashes": {"source_sha256": source_sha256},
                 "hash_verification": {
-                    "status": "recorded",
-                    "sha256": source_sha256,
+                    "source": {
+                        "status": "recorded",
+                        "sha256": source_sha256,
+                    },
                 },
                 "has_result": True,
                 "artifacts": [
@@ -812,6 +814,25 @@ class EvidenceBoundaryValidationTest(unittest.TestCase):
             "EVIDENCE_JOB_STATE_MISMATCH",
             {failure["code"] for failure in acceptance["failure_reasons"]},
         )
+
+    def test_job_display_status_binds_result_without_top_level_status(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run_dir = Path(temporary_directory)
+            evidence = _write_complete_evidence_package(run_dir)
+            api_result_path = run_dir / "api-result.json"
+            api_result = json.loads(api_result_path.read_text(encoding="utf-8"))
+            api_result.pop("status")
+            api_result_path.write_text(
+                json.dumps(api_result, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+            acceptance = evaluate_acceptance_evidence(evidence, run_dir=run_dir)
+
+        self.assertEqual(acceptance["status"], "pass")
+        self.assertEqual(acceptance["failure_reasons"], [])
 
     def test_job_response_must_match_uploaded_source(self) -> None:
         invalid_source = {

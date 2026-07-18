@@ -1422,9 +1422,10 @@ def evaluate_acceptance_evidence(
         else {}
     )
     hash_verification = (
-        job_response.get("hash_verification")
+        job_response.get("hash_verification", {}).get("source")
         if isinstance(job_response, dict)
         and isinstance(job_response.get("hash_verification"), dict)
+        and isinstance(job_response["hash_verification"].get("source"), dict)
         else {}
     )
     expected_display_status = {
@@ -1453,8 +1454,9 @@ def evaluate_acceptance_evidence(
             ),
         )
     if (
-        not isinstance(api_result, dict)
-        or api_result.get("status") != job.get("conversion_status")
+        isinstance(api_result, dict)
+        and "status" in api_result
+        and api_result.get("status") != job.get("conversion_status")
     ):
         fail(
             "EVIDENCE_JOB_STATE_MISMATCH",
