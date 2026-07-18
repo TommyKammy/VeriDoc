@@ -29,6 +29,12 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Set up Node
+        if: ${{ hashFiles('package.json') != '' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
       - name: Run Python checks when present
         env:
           VERIDOC_REQUIRE_PDF_EVAL_DEPS: "1"
@@ -50,6 +56,10 @@ jobs:
             echo "No Python project metadata yet; skipping dependency install."
           fi
 
+          if [ -f package-lock.json ]; then
+            npm ci --omit=optional
+          fi
+
           if [ -d tests ]; then
             python -m pytest
           elif find . -name '*.py' -not -path './.git/*' -print -quit | grep -q .; then
@@ -66,22 +76,11 @@ jobs:
           path: artifacts/mvp-browser-e2e
           if-no-files-found: error
 
-      - name: Set up Node
-        if: ${{ hashFiles('package.json') != '' }}
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
       - name: Run Node checks when present
         run: |
           if [ ! -f package.json ]; then
             echo "No Node project metadata yet; skipping Node checks."
             exit 0
-          fi
-          if [ -f package-lock.json ]; then
-            npm ci
-          else
-            npm install
           fi
           npm run build --if-present
           npm test --if-present

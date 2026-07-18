@@ -66,6 +66,7 @@ from services.api.persistence_repository import default_database_path
 from services.api.warning_catalog import warning_details
 
 WEB_ROOT = REPO_ROOT / "apps" / "web"
+PDFJS_ROOT = REPO_ROOT / "node_modules" / "pdfjs-dist" / "build"
 INFERENCE_PROFILES_PATH = REPO_ROOT / "services" / "api" / "inference_profiles.json"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8788
@@ -1502,6 +1503,18 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
         if path in {"/", "/index.html"}:
             self._send_file(WEB_ROOT / "index.html", "text/html; charset=utf-8")
             return
+        if path == "/assets/pdfjs/pdf.min.mjs":
+            self._send_file(
+                PDFJS_ROOT / "pdf.min.mjs",
+                "text/javascript; charset=utf-8",
+            )
+            return
+        if path == "/assets/pdfjs/pdf.worker.min.mjs":
+            self._send_file(
+                PDFJS_ROOT / "pdf.worker.min.mjs",
+                "text/javascript; charset=utf-8",
+            )
+            return
         if path == "/api/llm-settings":
             if not self._require_permission("jobs:read"):
                 return
@@ -1749,10 +1762,10 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                     template=requested_template,
                     request_parameters=request_parameters,
                     create_template=lambda: self._job_template_snapshot(request.get("template_id")),
-                    enqueue=False,
-                    publish=False,
+                    enqueue=source is None,
+                    publish=source is None,
                 )
-                if created_job:
+                if created_job and source is not None:
                     job_event_store = self._job_event_store()
                     try:
                         upload_audit_event = _job_event_with_auth_context(

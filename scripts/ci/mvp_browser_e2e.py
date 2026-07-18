@@ -200,7 +200,12 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
                 )
                 job_id = result.get("job_id")
                 if not isinstance(job_id, str) or not job_id:
-                    status_text = page.locator("#page-status").inner_text()
+                    page_status = page.locator("#page-status")
+                    expect(page_status).to_contain_text(
+                        re.compile(r"Conversion job job-[a-zA-Z0-9_-]+ finished\."),
+                        timeout=30_000,
+                    )
+                    status_text = page_status.inner_text()
                     match = re.search(r"(job-[a-zA-Z0-9_-]+)", status_text)
                     if not match:
                         raise AssertionError("completed browser result did not expose a job ID")

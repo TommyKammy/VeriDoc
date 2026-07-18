@@ -46,6 +46,14 @@ def test_pdf_preview_surface_and_bbox_controls_are_present() -> None:
     }.issubset(parser.ids)
 
 
+def test_pdf_preview_uses_repo_installed_pdfjs_assets() -> None:
+    html = _web_html()
+
+    assert 'const PDFJS_MODULE_URL = "/assets/pdfjs/pdf.min.mjs";' in html
+    assert 'const PDFJS_WORKER_URL = "/assets/pdfjs/pdf.worker.min.mjs";' in html
+    assert "cdn.jsdelivr.net" not in html
+
+
 def test_bbox_overlay_guard_rejects_missing_or_invalid_source_coordinates() -> None:
     html = _web_html()
 
