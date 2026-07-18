@@ -23,8 +23,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from core.ir.document_ir_v1 import SCHEMA_VERSION as DOCUMENT_IR_SCHEMA_VERSION
 from services.api.job_queue import JobQueue
 from services.api.poc_web import (
+    CONVERSION_AUDIT_SCHEMA_VERSION,
+    CONVERSION_PLAN_SCHEMA_VERSION,
     JobAuditEventStore,
     PocWebRequestHandler,
     ReviewAuditEventStore,
@@ -292,11 +295,14 @@ def evaluate_acceptance_evidence(
     review = review if isinstance(review, dict) else {}
     job = correlation.get("job")
     job = job if isinstance(job, dict) else {}
+    audit_input = result_audit.get("input")
+    audit_input = audit_input if isinstance(audit_input, dict) else {}
 
     source_hashes = {
         upload.get("source_sha256"),
         provenance.get("source_sha256"),
         result_audit.get("source_sha256"),
+        audit_input.get("sha256"),
     }
     hashes = api_result.get("hashes") if isinstance(api_result, dict) else None
     if isinstance(hashes, dict):
@@ -311,7 +317,10 @@ def evaluate_acceptance_evidence(
         fail(
             "EVIDENCE_HASH_MISMATCH",
             "input_hash",
-            "The uploaded source hash must match provenance and conversion audit records.",
+            (
+                "The uploaded source hash must match provenance and all "
+                "conversion audit input records."
+            ),
         )
 
     download_name = files.get("download")
@@ -409,6 +418,11 @@ def evaluate_acceptance_evidence(
     versions = versions if isinstance(versions, dict) else {}
     prompt = versions.get("prompt")
     schemas = versions.get("schemas")
+    expected_schemas = {
+        "conversion_audit": CONVERSION_AUDIT_SCHEMA_VERSION,
+        "conversion_plan": CONVERSION_PLAN_SCHEMA_VERSION,
+        "document_ir": DOCUMENT_IR_SCHEMA_VERSION,
+    }
     llm_audit = result_audit.get("llm")
     explicit_no_model = (
         isinstance(llm_audit, dict)
@@ -431,9 +445,9 @@ def evaluate_acceptance_evidence(
             for field in ("id", "version")
         )
         or not isinstance(schemas, dict)
-        or not all(
-            schemas.get(field) is not None
-            for field in ("conversion_audit", "conversion_plan", "document_ir")
+        or any(
+            schemas.get(field) != expected
+            for field, expected in expected_schemas.items()
         )
         or not isinstance(llm_audit, dict)
         or "model" not in llm_audit
@@ -491,7 +505,7 @@ def evaluate_acceptance_evidence(
         review_matches = _matching_events(
             review_events,
             expected_fields={
-                "action": review.get("action"),
+                "action": "approve",
                 "conversion_id": review.get("conversion_id"),
                 "document_id": review.get("document_id"),
                 "block_id": review.get("block_id"),
@@ -500,16 +514,24 @@ def evaluate_acceptance_evidence(
                 "source_bbox": provenance.get("source_bbox"),
             },
         )
-        if len(upload_matches) != 1 or len(review_matches) != 1:
+        if (
+            review.get("action") != "approve"
+            or len(upload_matches) != 1
+            or len(review_matches) != 1
+        ):
             fail(
                 "EVIDENCE_AUDIT_EVENT_MISSING",
                 "audit",
-                "Exactly one upload event and one review decision must match the correlated run.",
+                (
+                    "Exactly one upload event and one approval decision must "
+                    "match the correlated run."
+                ),
             )
         elif (
             browser_surface.get("job_id") != job.get("job_id")
             or harness_surface.get("conversion_id")
             != review.get("conversion_id")
+            or result_audit.get("conversion_id") != review.get("conversion_id")
             or artifact_surface.get("artifact_id")
             != artifact.get("artifact_id")
             or audit_surface.get("job_event_hash")
@@ -525,6 +547,8 @@ def evaluate_acceptance_evidence(
 
     if (
         provenance.get("source_filename") != upload.get("source_filename")
+        or result_audit.get("source_filename") != upload.get("source_filename")
+        or audit_input.get("filename") != upload.get("source_filename")
         or provenance.get("document_id") != review.get("document_id")
         or provenance.get("block_id") != review.get("block_id")
     ):
