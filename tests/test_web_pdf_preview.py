@@ -119,7 +119,11 @@ def test_primary_review_surfaces_have_accessible_names_and_list_semantics() -> N
     )
     assert 'aria-label="Conversion warnings"' in html
     assert 'badges.setAttribute("role", "list");' in html
-    assert 'badge.setAttribute("role", "listitem");' in html
+    render_warning_badges_body = _javascript_function_body(
+        html, "renderWarningBadges"
+    )
+    assert 'listItem.setAttribute("role", "listitem");' in render_warning_badges_body
+    assert 'badge.setAttribute("role", "listitem");' not in render_warning_badges_body
     llm_badge_body = _javascript_function_body(html, "llmInvolvementBadge")
     assert 'badge.setAttribute("role", "listitem");' in llm_badge_body
     assert 'aria-labelledby="artifact-downloads-title"' in html
@@ -193,6 +197,10 @@ def test_review_item_exposes_edit_and_approve_audit_events() -> None:
     assert 'approve.disabled = !reviewActionAvailable(item, "approve")' in html
     assert 'requestEdit.dataset.reviewActionName = "edit"' in html
     assert 'requestEdit.disabled = !reviewActionAvailable(item, "edit")' in html
+    assert 'needsFix.dataset.reviewActionName = "needs_fix"' in html
+    assert 'reject.dataset.reviewActionName = "reject"' in html
+    assert 'requestReviewAction(item, "needs_fix")' in html
+    assert 'requestReviewAction(item, "reject")' in html
     assert "source_bbox: reviewAuditSourceBbox(item)" in html
     assert "function reviewAuditSourceBbox(item)" in html
     assert "if (!reviewAuditSourcePage(item)) return null;" in html
@@ -452,12 +460,23 @@ def test_review_warning_badges_show_codes_levels_and_llm_involvement() -> None:
     assert "function severityClass(severity)" in html
     assert 'return "gray";' in html
     assert "function renderWarningBadges(item)" in html
+    assert "item.warning_details || item.warnings || []" in html
+    assert "const sourceBbox = reviewAuditSourceBbox(item);" in html
+    assert "badge.disabled = !sourceBbox;" in html
+    assert re.search(
+        r"if \(sourceBbox\) \{\s+"
+        r'badge\.addEventListener\("click", \(\) => jumpToReviewItem\(item\)\);\s+'
+        r"\}",
+        html,
+    )
     assert 'badge.className = `warning-badge ${severityClass(descriptor.severity)}`;' in html
     assert "function reviewItemForDetail(item)" in html
-    assert "warning_badges: (item.warnings || []).map(warningBadgeDescriptor)" in html
+    assert "warning_badges: (" in html
     assert "review_items: result.review_items.map(reviewItemForDetail)" in html
     assert "function llmInvolvementBadge(item)" in html
     assert "item.llm_involved === true" in html
     assert 'badge.className = "llm-badge";' in html
     assert 'badge.setAttribute("role", "listitem");' in llm_badge.group("body")
     assert "wrapper.append(title, text, badges, edit, actions);" in html
+    assert 'wrapper.dataset.reviewRisk = item.risk_level || "unknown";' in html
+    assert 'wrapper.dataset.reviewState = "unresolved";' in html

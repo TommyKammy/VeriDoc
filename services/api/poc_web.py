@@ -901,7 +901,13 @@ def convert_uploaded_document(
     conversion_settings["use_llm"] = conversion_plan_state["setting"]
     review_items = _review_items(document_ir)
     if template_mapping is not None:
-        review_items.extend(_template_mapping_review_items(document_ir, template_mapping))
+        review_items.extend(
+            _template_mapping_review_items(
+                document_ir,
+                template_mapping,
+                template_definition=requested_template,
+            )
+        )
     review_items.extend(_llm_fallback_review_items(document_ir_dict, conversion_plan_state))
     warnings = [
         *input_warnings,
@@ -2055,7 +2061,8 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             raw_action = raw_audit_event.get("action") if isinstance(raw_audit_event, dict) else None
             permission = (
                 "review_events:approve"
-                if raw_action == "approve"
+                if isinstance(raw_action, str)
+                and raw_action in {"approve", "reject"}
                 else "review_events:edit"
             )
             if not self._role_has_permission(role, permission):
@@ -2994,7 +3001,12 @@ def _validate_review_event(audit_event: Any) -> dict[str, Any]:
     if audit_event.get("event_type") != "conversion_review.action_requested":
         raise ValueError("audit_event.event_type is unsupported")
     action = audit_event.get("action")
-    if not isinstance(action, str) or action not in {"edit", "approve"}:
+    if not isinstance(action, str) or action not in {
+        "edit",
+        "approve",
+        "reject",
+        "needs_fix",
+    }:
         raise ValueError("audit_event.action is unsupported")
     document_id = audit_event.get("document_id")
     if not isinstance(document_id, str) or not document_id.strip():
@@ -3020,7 +3032,7 @@ def _validate_review_event(audit_event: Any) -> dict[str, Any]:
         raise ValueError("audit_event.original_text is required")
     _validate_review_event_text("original_text", original_text)
     revised_text = audit_event.get("revised_text")
-    if action == "approve" and revised_text is None:
+    if action in {"approve", "reject", "needs_fix"} and revised_text is None:
         revised_text = original_text
     if not isinstance(revised_text, str):
         raise ValueError("audit_event.revised_text is required")
@@ -3076,10 +3088,20 @@ def _validate_review_workflow_event(
     for stored_event in reversed(stored_events):
         if not _same_review_workflow_target_base(stored_event, audit_event):
             continue
+        stored_action = stored_event.get("action")
+        if stored_action not in {"edit", "needs_fix"}:
+            continue
         if _has_conflicting_review_conversion_id(stored_event, audit_event):
             if matched_audit_conversion_edit:
                 continue
-            deferred_conflicting_conversion_events.append(stored_event)
+            if stored_action == "edit":
+                deferred_conflicting_conversion_events.append(stored_event)
+            continue
+        if stored_action == "needs_fix":
+            if latest_edit_revised_text is None:
+                raise RuntimeError(
+                    "review approval is blocked while needs-fix is unresolved"
+                )
             continue
         stored_conversion_id = stored_event.get("conversion_id")
         if audit_conversion_id and stored_conversion_id == audit_conversion_id:
@@ -3138,8 +3160,6 @@ def _same_review_workflow_target_base(
     stored_event: dict[str, Any],
     audit_event: dict[str, Any],
 ) -> bool:
-    if stored_event.get("action") != "edit":
-        return False
     if stored_event.get("document_id") != audit_event["document_id"]:
         return False
     if stored_event.get("block_id") != audit_event["block_id"]:
@@ -4568,6 +4588,8 @@ def _review_items(document_ir: DocumentIRV1) -> list[dict[str, Any]]:
 def _template_mapping_review_items(
     document_ir: DocumentIRV1,
     mapping: TemplateFieldMappingResult,
+    *,
+    template_definition: dict[str, Any] | None,
 ) -> list[dict[str, Any]]:
     blocks_by_id = {block.id: block for block in document_ir.blocks}
     pages_by_number = {page.page_number: page for page in document_ir.pages}
@@ -4601,7 +4623,13 @@ def _template_mapping_review_items(
             "source_confidence": field.confidence,
             "text": field.value or "",
             "warnings": warnings,
+            "risk_level": _template_field_risk_level(
+                template_definition,
+                field.field_id,
+            ),
+            "auto_confirmed": False,
         }
+        item["high_risk"] = item["risk_level"] in {"high", "critical"}
         if block is not None:
             item["evidence_block_id"] = block.id
             page = pages_by_number.get(block.source_page)
@@ -4614,6 +4642,7 @@ def _template_mapping_review_items(
                 *warnings,
                 f"template field '{field.field_id}' source metadata incomplete; original jump unavailable",
             ]
+        item["warning_details"] = warning_details(item["warnings"])
         items.append(item)
     if mapping.requires_review and not items:
         review_target_id = "template-mapping"
@@ -4630,6 +4659,23 @@ def _template_mapping_review_items(
             }
         )
     return items
+
+
+def _template_field_risk_level(
+    template_definition: dict[str, Any] | None,
+    field_id: str,
+) -> str:
+    fields = template_definition.get("fields") if isinstance(template_definition, dict) else None
+    if not isinstance(fields, list):
+        return "unknown"
+    for field in fields:
+        if not isinstance(field, dict) or field.get("field_id") != field_id:
+            continue
+        risk_level = field.get("risk_level")
+        if isinstance(risk_level, str) and risk_level.strip():
+            return risk_level.strip().lower()
+        return "unknown"
+    return "unknown"
 
 
 def _review_source_confidence(block: Any, block_index: int) -> float | None:
@@ -4727,9 +4773,9 @@ def _review_actions(role: str | None) -> list[str]:
     )
     actions: list[str] = []
     if "review_events:edit" in permissions:
-        actions.append("edit")
+        actions.extend(("edit", "needs_fix"))
     if "review_events:approve" in permissions:
-        actions.append("approve")
+        actions.extend(("approve", "reject"))
     return actions
 
 

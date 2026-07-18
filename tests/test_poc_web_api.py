@@ -645,6 +645,10 @@ def test_convert_uploaded_document_requires_review_for_high_risk_template_field(
         assert set(field_review_items) == {"batch_number", "release_status"}
         assert len({item["block_id"] for item in field_review_items.values()}) == 2
         assert all(item["source_page"] == 1 for item in field_review_items.values())
+        assert all(item["risk_level"] == "high" for item in field_review_items.values())
+        assert all(item["high_risk"] is True for item in field_review_items.values())
+        assert all(item["auto_confirmed"] is False for item in field_review_items.values())
+        assert all(item["warning_details"] for item in field_review_items.values())
 
 
 def test_convert_uploaded_document_emits_template_mapping_warning_review_item() -> None:
@@ -6195,9 +6199,14 @@ def test_poc_http_api_scopes_review_actions_by_conversion_role() -> None:
         thread.join(timeout=5)
 
     assert reviewer_response.status == 200
-    assert reviewer_body["available_review_actions"] == ["edit"]
+    assert reviewer_body["available_review_actions"] == ["edit", "needs_fix"]
     assert approver_response.status == 200
-    assert approver_body["available_review_actions"] == ["edit", "approve"]
+    assert approver_body["available_review_actions"] == [
+        "edit",
+        "needs_fix",
+        "approve",
+        "reject",
+    ]
 
 
 def test_role_permission_matrix_defines_all_mvp_roles_and_sensitive_boundaries() -> None:
@@ -6363,7 +6372,7 @@ def test_poc_http_api_excludes_no_auth_approval_action(
         thread.join(timeout=5)
 
     assert response.status == 200
-    assert body["available_review_actions"] == ["edit"]
+    assert body["available_review_actions"] == ["edit", "needs_fix"]
 
 
 def test_poc_http_api_accepts_review_action_audit_event() -> None:
@@ -6911,6 +6920,122 @@ def test_poc_http_api_rejects_same_actor_approving_prior_review_edit() -> None:
         "message": "review approval must be performed by a different actor",
     }
     assert [event["action"] for event in store.list_events()] == ["edit"]
+
+
+def test_poc_http_api_rejects_approval_while_needs_fix_is_unresolved() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    store = ReviewAuditEventStore()
+    server.review_event_store = store
+    server.local_auth_tokens = _local_auth_tokens()
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        edit_status, _edit_body = _post_review_event_on_connection(
+            connection,
+            _review_audit_event(
+                conversion_id="conversion-needs-fix",
+                revised_text="Lot: SAMPLE-001 corrected",
+            ),
+            role_token="reviewer-token",
+        )
+        needs_fix_status, _needs_fix_body = _post_review_event_on_connection(
+            connection,
+            _review_audit_event(
+                action="needs_fix",
+                conversion_id="conversion-needs-fix",
+                original_text="Lot: SAMPLE-001 corrected",
+                revised_text="Lot: SAMPLE-001 corrected",
+            ),
+            role_token="reviewer-token",
+        )
+        approve_status, approve_body = _post_review_event_on_connection(
+            connection,
+            _review_audit_event(
+                action="approve",
+                conversion_id="conversion-needs-fix",
+                original_text="Lot: SAMPLE-001 corrected",
+                revised_text="Lot: SAMPLE-001 corrected",
+            ),
+            role_token="approver-token",
+        )
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert edit_status == 202
+    assert needs_fix_status == 202
+    assert approve_status == 409
+    assert approve_body == {
+        "error": "review_conflict",
+        "message": "review approval is blocked while needs-fix is unresolved",
+    }
+    assert [event["action"] for event in store.list_events()] == [
+        "edit",
+        "needs_fix",
+    ]
+
+
+def test_poc_http_api_allows_approval_after_needs_fix_is_resolved_by_edit() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    store = ReviewAuditEventStore()
+    server.review_event_store = store
+    server.local_auth_tokens = _local_auth_tokens()
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        edit_status, _edit_body = _post_review_event_on_connection(
+            connection,
+            _review_audit_event(
+                conversion_id="conversion-needs-fix-resolved",
+                revised_text="Lot: SAMPLE-001 corrected",
+            ),
+            role_token="reviewer-token",
+        )
+        needs_fix_status, _needs_fix_body = _post_review_event_on_connection(
+            connection,
+            _review_audit_event(
+                action="needs_fix",
+                conversion_id="conversion-needs-fix-resolved",
+                original_text="Lot: SAMPLE-001 corrected",
+                revised_text="Lot: SAMPLE-001 corrected",
+            ),
+            role_token="reviewer-token",
+        )
+        resolution_status, _resolution_body = _post_review_event_on_connection(
+            connection,
+            _review_audit_event(
+                conversion_id="conversion-needs-fix-resolved",
+                original_text="Lot: SAMPLE-001 corrected",
+                revised_text="Lot: SAMPLE-001 resolved",
+            ),
+            role_token="reviewer-token",
+        )
+        approve_status, _approve_body = _post_review_event_on_connection(
+            connection,
+            _review_audit_event(
+                action="approve",
+                conversion_id="conversion-needs-fix-resolved",
+                original_text="Lot: SAMPLE-001 resolved",
+                revised_text="Lot: SAMPLE-001 resolved",
+            ),
+            role_token="approver-token",
+        )
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert edit_status == 202
+    assert needs_fix_status == 202
+    assert resolution_status == 202
+    assert approve_status == 202
+    assert [event["action"] for event in store.list_events()] == [
+        "edit",
+        "needs_fix",
+        "edit",
+        "approve",
+    ]
 
 
 def test_poc_http_api_scans_all_prior_review_edits_before_approval() -> None:

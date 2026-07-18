@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from scripts.ci.mvp_browser_e2e import (
+    FIXTURE_PATH,
     _launch_browser,
     _require_audit_payload_matches_result,
     _require_matching_event,
@@ -188,11 +189,111 @@ class MvpBrowserE2ETest(unittest.TestCase):
                 "approver",
             )
             self.assertTrue(evidence["correlation"]["review"]["actor"]["id"])
+            review_flow = evidence["review_flow"]
+            self.assertTrue(review_flow["keyboard_only"])
+            self.assertGreaterEqual(len(review_flow["focus_trace"]), 1)
+            self.assertTrue(
+                all(step["visible_focus"] for step in review_flow["focus_trace"])
+            )
+            self.assertEqual(
+                set(review_flow["actions"]),
+                {"edit", "approve", "reject", "needs_fix"},
+            )
+            self.assertEqual(
+                review_flow["actions"],
+                ["edit", "needs_fix", "approve", "reject"],
+            )
+            self.assertEqual(review_flow["high_risk"]["auto_confirmed_count"], 0)
+            self.assertGreaterEqual(review_flow["high_risk"]["review_target_count"], 1)
+            self.assertTrue(
+                review_flow["high_risk"]["approval_blocked_while_unresolved"]
+            )
+            self.assertIn(
+                "needs-fix is unresolved",
+                review_flow["high_risk"]["approval_block_reason"],
+            )
+            self.assertEqual(
+                review_flow["source_jump"]["source_filename"],
+                FIXTURE_PATH.name,
+            )
+            self.assertEqual(review_flow["source_jump"]["source_type"], "pdf")
+            self.assertEqual(
+                review_flow["source_jump"]["source_sha256"],
+                hashlib.sha256(FIXTURE_PATH.read_bytes()).hexdigest(),
+            )
+            self.assertEqual(
+                review_flow["source_jump"]["page"],
+                review_flow["source_jump"]["review_item_page"],
+            )
+            for coordinate in ("x", "y", "width", "height"):
+                self.assertAlmostEqual(
+                    review_flow["source_jump"]["bbox"][coordinate],
+                    review_flow["source_jump"]["review_item_bbox"][coordinate],
+                    places=3,
+                )
+            self.assertEqual(
+                review_flow["source_jump"]["bbox"]["unit"],
+                review_flow["source_jump"]["review_item_bbox"]["unit"],
+            )
+            self.assertEqual(
+                review_flow["source_jump"]["bbox"]["origin"],
+                review_flow["source_jump"]["review_item_bbox"]["origin"],
+            )
+            self.assertTrue(review_flow["unresolved"]["blocked_before_approval"])
+            for warning in review_flow["warnings"]:
+                self.assertEqual(
+                    set(warning),
+                    {"code", "severity", "message", "remediation"},
+                )
 
             evidence_path = run_dir / "evidence.json"
             self.assertEqual(json.loads(evidence_path.read_text()), evidence)
             self.assertTrue((run_dir / evidence["files"]["trace"]).is_file())
             self.assertTrue((run_dir / evidence["files"]["api_result"]).is_file())
+            high_risk_api_result = json.loads(
+                (run_dir / evidence["files"]["high_risk_api_result"]).read_text()
+            )
+            self.assertEqual(
+                high_risk_api_result["audit"]["conversion_id"],
+                review_flow["high_risk"]["conversion_id"],
+            )
+            high_risk_api_items = [
+                item
+                for item in high_risk_api_result["review_items"]
+                if item.get("high_risk") is True
+            ]
+            self.assertEqual(
+                len(high_risk_api_items),
+                review_flow["high_risk"]["review_target_count"],
+            )
+            self.assertEqual(
+                sum(item.get("auto_confirmed") is True for item in high_risk_api_items),
+                review_flow["high_risk"]["auto_confirmed_count"],
+            )
+            self.assertEqual(
+                high_risk_api_items[0]["warning_details"][0],
+                review_flow["warnings"][0],
+            )
+            review_events = json.loads(
+                (run_dir / evidence["files"]["review_events"]).read_text()
+            )
+            self.assertTrue(
+                {"edit", "approve", "reject", "needs_fix"}.issubset(
+                    {event["action"] for event in review_events}
+                )
+            )
+            high_risk_review_actions = {
+                event["action"]
+                for event in review_events
+                if event.get("conversion_id")
+                == review_flow["high_risk"]["conversion_id"]
+            }
+            self.assertNotIn("approve", high_risk_review_actions)
+            self.assertTrue(
+                {"edit", "needs_fix", "reject"}.issubset(
+                    high_risk_review_actions
+                )
+            )
             audit_artifact_path = run_dir / evidence["files"]["audit_artifact"]
             self.assertEqual(
                 hashlib.sha256(audit_artifact_path.read_bytes()).hexdigest(),

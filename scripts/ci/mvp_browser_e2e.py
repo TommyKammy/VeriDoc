@@ -12,6 +12,7 @@ import tempfile
 import threading
 import uuid
 from contextlib import contextmanager
+from copy import deepcopy
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Iterator
@@ -26,10 +27,18 @@ from services.api.poc_web import (
     JobAuditEventStore,
     PocWebRequestHandler,
     ReviewAuditEventStore,
+    TemplateStore,
 )
 
 FIXTURE_PATH = (
     REPO_ROOT / "datasets" / "fixtures" / "pdf" / "pdf-to-word-representative.pdf"
+)
+HIGH_RISK_FIXTURE_PATH = (
+    REPO_ROOT
+    / "datasets"
+    / "fixtures"
+    / "templates"
+    / "synthetic-batch-template-regression.json"
 )
 
 
@@ -108,6 +117,66 @@ def _require_audit_payload_matches_result(
     return result_audit
 
 
+def _high_risk_fixture() -> dict[str, Any]:
+    fixture = json.loads(HIGH_RISK_FIXTURE_PATH.read_text(encoding="utf-8"))
+    if not isinstance(fixture, dict):
+        raise AssertionError("high-risk browser fixture must be a JSON object")
+    return fixture
+
+
+def _high_risk_template_store() -> TemplateStore:
+    fixture = _high_risk_fixture()
+    definition = fixture.get("template_definition")
+    if not isinstance(definition, dict):
+        raise AssertionError("high-risk browser fixture is missing template_definition")
+    definition = deepcopy(definition)
+    anchors = definition.get("anchors")
+    fields = definition.get("fields")
+    validation_rules = definition.get("validation_rules")
+    output_mapping = definition.get("output_mapping")
+    field_map = (
+        output_mapping.get("field_map")
+        if isinstance(output_mapping, dict)
+        else None
+    )
+    if (
+        not isinstance(anchors, list)
+        or not anchors
+        or not isinstance(anchors[0], dict)
+        or not isinstance(fields, list)
+        or not fields
+        or not isinstance(fields[0], dict)
+        or not isinstance(validation_rules, list)
+        or not validation_rules
+        or not isinstance(output_mapping, dict)
+        or not isinstance(field_map, list)
+        or not field_map
+    ):
+        raise AssertionError("high-risk browser template fixture is malformed")
+    definition["anchors"] = [{**anchors[0], "text": "Manufacturing Summary"}]
+    definition["fields"] = [{**fields[0], "label": "Batch"}]
+    definition["tables"] = []
+    definition["validation_rules"] = validation_rules[:1]
+    output_mapping["field_map"] = field_map[:1]
+    output_mapping["table_map"] = []
+    registration = {
+        key: value
+        for key, value in definition.items()
+        if key not in {"version", "template_version", "status", "effective"}
+    }
+    registration.update(
+        {
+            "name": "Real PDF high-risk browser review",
+            "category": "manufacturing",
+            "change_reason": "Register committed high-risk browser review fixture",
+            "actor": {"principal_id": "e2e-template-admin", "role": "admin"},
+        }
+    )
+    store = TemplateStore()
+    store.register_template(registration)
+    return store
+
+
 @contextmanager
 def _poc_server(
     state_root: Path, *, auth_token: str, approver_actor: str
@@ -124,6 +193,7 @@ def _poc_server(
     )
     server.job_event_store = JobAuditEventStore(database_path=database_path)
     server.review_event_store = ReviewAuditEventStore()
+    server.template_store = _high_risk_template_store()
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -145,6 +215,61 @@ def _launch_browser(playwright: Any) -> Any:
     return playwright.chromium.launch(headless=True)
 
 
+def _record_active_focus(page: Any, focus_trace: list[dict[str, Any]]) -> dict[str, Any]:
+    focused = page.evaluate(
+        """() => {
+          const element = document.activeElement;
+          const style = element ? getComputedStyle(element) : null;
+          return {
+            tag: element?.tagName?.toLowerCase() || "",
+            id: element?.id || "",
+            aria_label: element?.getAttribute?.("aria-label") || "",
+            review_action: element?.dataset?.reviewActionName || "",
+            visible_focus: Boolean(
+              element &&
+              element.matches(":focus-visible") &&
+              style &&
+              style.outlineStyle !== "none" &&
+              parseFloat(style.outlineWidth) > 0
+            ),
+          };
+        }"""
+    )
+    if not isinstance(focused, dict):
+        raise AssertionError("keyboard focus inspection did not return an object")
+    if focused["tag"] in {"a", "button", "input", "select", "textarea"}:
+        focus_trace.append(focused)
+    return focused
+
+
+def _tab_to(
+    page: Any,
+    selector: str,
+    focus_trace: list[dict[str, Any]],
+    *,
+    limit: int = 120,
+) -> Any:
+    target = page.locator(selector).first
+    for _ in range(limit):
+        page.keyboard.press("Tab")
+        focused = _record_active_focus(page, focus_trace)
+        if target.evaluate("(target) => target === document.activeElement"):
+            if not focused["visible_focus"]:
+                raise AssertionError(f"keyboard target did not expose visible focus: {selector}")
+            return target
+    raise AssertionError(f"keyboard target was not reachable in tab order: {selector}")
+
+
+def _keyboard_activate(
+    page: Any,
+    selector: str,
+    focus_trace: list[dict[str, Any]],
+) -> Any:
+    target = _tab_to(page, selector, focus_trace)
+    page.keyboard.press("Enter")
+    return target
+
+
 def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
     """Exercise recovery and upload-to-download paths and return evidence metadata."""
     try:
@@ -162,12 +287,16 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
     recovery_screenshot = run_dir / "01-recovery.png"
     completed_screenshot = run_dir / "02-completed-review.png"
     audit_screenshot = run_dir / "03-audit.png"
+    keyboard_screenshot = run_dir / "04-keyboard-high-risk-review.png"
     api_result_path = run_dir / "api-result.json"
+    high_risk_api_result_path = run_dir / "high-risk-api-result.json"
+    review_events_path = run_dir / "review-events.json"
     auth_token = uuid.uuid4().hex
     approver_actor = f"e2e-{uuid.uuid4().hex}"
     source_sha256 = _sha256(FIXTURE_PATH)
 
     with tempfile.TemporaryDirectory(prefix="veridoc-browser-e2e-") as state_dir:
+        high_risk_fixture = _high_risk_fixture()
         with _poc_server(
             Path(state_dir),
             auth_token=auth_token,
@@ -176,6 +305,7 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
             browser = _launch_browser(playwright)
             context = browser.new_context(accept_downloads=True)
             page = context.new_page()
+            focus_trace: list[dict[str, Any]] = []
             tracing_started = False
             raw_trace_path = Path(state_dir) / "trace.zip"
             try:
@@ -305,7 +435,14 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
                     raise AssertionError(
                         "browser approval target did not expose authoritative review IDs"
                     )
-                approve.click()
+                _keyboard_activate(
+                    page,
+                    (
+                        '#review-list button[data-review-action-name="approve"]'
+                        ':not([disabled])'
+                    ),
+                    focus_trace,
+                )
                 expect(page.locator("#review-action-status")).to_contain_text(
                     "queued for audit", timeout=10_000
                 )
@@ -413,6 +550,207 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
                 expect(page.locator("#audit-body tr").first).to_be_visible(timeout=10_000)
                 page.screenshot(path=str(audit_screenshot), full_page=True)
 
+                page.locator('[data-nav-target="upload"]').click()
+                page.locator("#document-file").set_input_files(
+                    str(FIXTURE_PATH)
+                )
+                page.locator("#direct-conversion-mode").select_option("auto")
+                high_risk_template_id = high_risk_fixture["template_definition"][
+                    "template_id"
+                ]
+                page.locator("#direct-template").select_option(high_risk_template_id)
+                page.locator("#convert-button").click()
+                expect(page.locator("#status")).to_have_text(
+                    "requires_review",
+                    timeout=30_000,
+                )
+                high_risk_items = page.locator(
+                    '#review-list .review-item[data-review-risk="high"]'
+                )
+                expect(high_risk_items.first).to_be_visible(timeout=10_000)
+                if high_risk_items.count() < 1:
+                    raise AssertionError(
+                        "high-risk browser fixture did not expose a review target"
+                    )
+                high_risk_result = json.loads(page.locator("#raw-result").inner_text())
+                if not isinstance(high_risk_result, dict):
+                    raise AssertionError(
+                        "high-risk browser result must be a JSON object"
+                    )
+                high_risk_audit = high_risk_result.get("audit")
+                if not isinstance(high_risk_audit, dict) or (
+                    high_risk_audit.get("source_filename") != FIXTURE_PATH.name
+                    or high_risk_audit.get("source_type") != "pdf"
+                    or high_risk_audit.get("source_sha256") != source_sha256
+                ):
+                    raise AssertionError(
+                        "high-risk review evidence was not bound to the real PDF source"
+                    )
+                high_risk_api_result_path.write_text(
+                    json.dumps(high_risk_result, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+                high_risk_api_items = [
+                    item
+                    for item in high_risk_result.get("review_items", [])
+                    if isinstance(item, dict) and item.get("high_risk") is True
+                ]
+                if len(high_risk_api_items) != high_risk_items.count():
+                    raise AssertionError(
+                        "high-risk API targets did not match the review UI"
+                    )
+                auto_confirmed_count = sum(
+                    item.get("auto_confirmed") is True for item in high_risk_api_items
+                )
+                if auto_confirmed_count:
+                    raise AssertionError("high-risk review target was auto-confirmed")
+
+                first_high_risk_item = high_risk_api_items[0]
+                first_high_risk_block = first_high_risk_item["block_id"]
+                first_item_selector = (
+                    '#review-list .review-item[data-block-id="'
+                    + first_high_risk_block
+                    + '"]'
+                )
+                warning_button = _keyboard_activate(
+                    page,
+                    first_item_selector + " .warning-badge",
+                    focus_trace,
+                )
+                focused_overlay = page.locator(
+                    '#bbox-layer .bbox-overlay[data-block-id="'
+                    + first_high_risk_block
+                    + '"]'
+                )
+                expect(focused_overlay).to_be_focused(timeout=10_000)
+                _record_active_focus(page, focus_trace)
+                source_jump_page = int(
+                    page.locator("#preview-page-select").input_value()
+                )
+                overlay_percent = focused_overlay.evaluate(
+                    """(element) => ({
+                      x: parseFloat(element.style.left),
+                      y: parseFloat(element.style.top),
+                      width: parseFloat(element.style.width),
+                      height: parseFloat(element.style.height),
+                    })"""
+                )
+                source_geometry = first_high_risk_item["source_page_geometry"]
+                source_jump_bbox = {
+                    key: round(
+                        overlay_percent[key]
+                        * source_geometry[
+                            "width" if key in {"x", "width"} else "height"
+                        ]
+                        / 100,
+                        3,
+                    )
+                    for key in ("x", "y", "width", "height")
+                }
+                source_jump_bbox.update(
+                    {
+                        "unit": first_high_risk_item["source_bbox"]["unit"],
+                        "origin": first_high_risk_item["source_bbox"]["origin"],
+                    }
+                )
+                warning_details_payload = first_high_risk_item.get("warning_details")
+                if not isinstance(warning_details_payload, list) or not warning_details_payload:
+                    raise AssertionError(
+                        "high-risk review target did not expose warning details"
+                    )
+                warning_evidence = warning_details_payload[0]
+                warning_text = warning_button.inner_text()
+                for warning_field in ("code", "message", "remediation"):
+                    warning_value = warning_evidence.get(warning_field)
+                    if not isinstance(warning_value, str) or warning_value not in warning_text:
+                        raise AssertionError(
+                            f"warning UI did not match API {warning_field}"
+                        )
+
+                edit = _tab_to(
+                    page,
+                    first_item_selector + " .review-edit",
+                    focus_trace,
+                )
+                page.keyboard.press("ControlOrMeta+A")
+                revised_text = first_high_risk_item["text"] + " verified"
+                page.keyboard.type(revised_text)
+                expect(edit).to_have_value(revised_text)
+                _keyboard_activate(
+                    page,
+                    first_item_selector
+                    + ' button[data-review-action-name="edit"]:not([disabled])',
+                    focus_trace,
+                )
+                expect(page.locator("#review-action-status")).to_contain_text(
+                    "queued for audit",
+                    timeout=10_000,
+                )
+                _keyboard_activate(
+                    page,
+                    first_item_selector
+                    + ' button[data-review-action-name="needs_fix"]:not([disabled])',
+                    focus_trace,
+                )
+                expect(
+                    page.locator(
+                        first_item_selector + ' [data-review-state-for="'
+                        + first_high_risk_block
+                        + '"]'
+                    )
+                ).to_have_text("needs fix")
+                blocked_before_approval = (
+                    high_risk_items.first.get_attribute("data-review-state")
+                    == "needs_fix"
+                )
+                approval_selector = (
+                    first_item_selector
+                    + ' button[data-review-action-name="approve"]:not([disabled])'
+                )
+                approval_state = page.locator(
+                    first_item_selector + ' [data-review-state-for="'
+                    + first_high_risk_block
+                    + '"]'
+                )
+                _keyboard_activate(
+                    page,
+                    approval_selector,
+                    focus_trace,
+                )
+                approval_status = page.locator("#review-action-status")
+                expect(approval_status).to_contain_text(
+                    "review approval is blocked while needs-fix is unresolved",
+                    timeout=10_000,
+                )
+                expect(approval_state).to_have_text("needs fix")
+                approval_block_message = approval_status.inner_text().strip()
+                with page.expect_response(
+                    lambda response: (
+                        response.request.method == "POST"
+                        and response.url == base_url + "/api/review-events"
+                    )
+                ) as reject_response_info:
+                    _keyboard_activate(
+                        page,
+                        first_item_selector
+                        + ' button[data-review-action-name="reject"]:not([disabled])',
+                        focus_trace,
+                    )
+                reject_response = reject_response_info.value
+                reject_payload = _json_response(reject_response)
+                reject_event = reject_payload.get("audit_event")
+                if (
+                    not reject_response.ok
+                    or not isinstance(reject_event, dict)
+                    or reject_event.get("action") != "reject"
+                    or reject_event.get("block_id") != first_high_risk_block
+                ):
+                    raise AssertionError(
+                        "keyboard reject audit request was not accepted for the target"
+                    )
+
+                page.screenshot(path=str(keyboard_screenshot), full_page=True)
+
                 job_events_response = context.request.get(
                     base_url + f"/api/job-events?job_id={job_id}",
                     headers=auth_headers,
@@ -450,6 +788,27 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
                         "actor": expected_review_actor,
                     },
                     description="browser approval audit event",
+                )
+                high_risk_conversion_id = high_risk_result["audit"]["conversion_id"]
+                for action, target in (
+                    ("edit", first_high_risk_item),
+                    ("needs_fix", first_high_risk_item),
+                    ("reject", first_high_risk_item),
+                ):
+                    _require_matching_event(
+                        review_events,
+                        expected_fields={
+                            "action": action,
+                            "conversion_id": high_risk_conversion_id,
+                            "document_id": target["document_id"],
+                            "block_id": target["block_id"],
+                            "actor": expected_review_actor,
+                        },
+                        description=f"keyboard {action} audit event",
+                    )
+                review_events_path.write_text(
+                    json.dumps(review_events, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
                 )
                 review_actor = review_event["actor"]
                 evidence = {
@@ -490,14 +849,45 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
                         "retry_mode": "pdf_to_word",
                         "result": "completed",
                     },
+                    "review_flow": {
+                        "keyboard_only": True,
+                        "focus_trace": focus_trace,
+                        "actions": ["edit", "needs_fix", "approve", "reject"],
+                        "warnings": [warning_evidence],
+                        "high_risk": {
+                            "conversion_id": high_risk_conversion_id,
+                            "review_target_count": len(high_risk_api_items),
+                            "auto_confirmed_count": auto_confirmed_count,
+                            "approval_blocked_while_unresolved": True,
+                            "approval_block_reason": approval_block_message,
+                        },
+                        "source_jump": {
+                            "block_id": first_high_risk_block,
+                            "source_filename": high_risk_audit["source_filename"],
+                            "source_type": high_risk_audit["source_type"],
+                            "source_sha256": high_risk_audit["source_sha256"],
+                            "page": source_jump_page,
+                            "review_item_page": first_high_risk_item["source_page"],
+                            "bbox": source_jump_bbox,
+                            "review_item_bbox": first_high_risk_item["source_bbox"],
+                        },
+                        "unresolved": {
+                            "blocked_before_approval": blocked_before_approval,
+                            "block_id": first_high_risk_block,
+                            "state": "needs_fix",
+                        },
+                    },
                     "files": {
                         "trace": trace_path.name,
                         "screenshots": [
                             recovery_screenshot.name,
                             completed_screenshot.name,
                             audit_screenshot.name,
+                            keyboard_screenshot.name,
                         ],
                         "api_result": api_result_path.name,
+                        "high_risk_api_result": high_risk_api_result_path.name,
+                        "review_events": review_events_path.name,
                         "audit_artifact": audit_artifact_path.name,
                         "download": download_name,
                     },

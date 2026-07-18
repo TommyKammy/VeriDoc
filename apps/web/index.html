@@ -634,6 +634,20 @@
         font-weight: 680;
       }
 
+      button.warning-badge {
+        align-items: flex-start;
+        flex-direction: column;
+        border: 1px solid currentColor;
+        border-radius: 10px;
+        text-align: left;
+      }
+
+      .warning-message,
+      .warning-remediation {
+        display: block;
+        font-weight: 500;
+      }
+
       .warning-badge.green {
         background: #e5f4ec;
         color: var(--ok);
@@ -3064,7 +3078,9 @@
       }
 
       function renderReviewItem(item) {
-        const descriptors = (item.warnings || []).map(warningBadgeDescriptor);
+        const descriptors = (
+          item.warning_details || item.warnings || []
+        ).map(warningBadgeDescriptor);
         const blockId = item.block_id || "unknown block";
         const sourcePage = sourcePageLabel(item);
         const sourceId = item.source_id || "unknown source";
@@ -3079,6 +3095,8 @@
         wrapper.dataset.blockId = blockId;
         wrapper.dataset.reviewCode = reviewCodes;
         wrapper.dataset.reviewSeverity = reviewSeverities;
+        wrapper.dataset.reviewRisk = item.risk_level || "unknown";
+        wrapper.dataset.reviewState = "unresolved";
         wrapper.dataset.sourcePage = String(sourcePage);
         const title = document.createElement("strong");
         title.textContent = `${blockId} / page ${sourcePage}`;
@@ -3086,6 +3104,7 @@
         meta.className = "review-item-meta";
         appendReviewMeta(meta, "Code", reviewCodes);
         appendReviewMeta(meta, "Severity", reviewSeverities);
+        appendReviewMeta(meta, "Risk", item.risk_level || "unknown");
         appendReviewMeta(meta, "Source status", sourceStatus);
         appendReviewMeta(meta, "Source ID", sourceId);
         appendReviewMeta(meta, "Page", String(sourcePage));
@@ -3127,9 +3146,31 @@
         requestEdit.dataset.reviewActionName = "edit";
         requestEdit.disabled = !reviewActionAvailable(item, "edit");
         requestEdit.addEventListener("click", () => requestReviewAction(item, "edit"));
+        const needsFix = document.createElement("button");
+        needsFix.className = "secondary";
+        needsFix.type = "button";
+        needsFix.textContent = "Needs fix";
+        needsFix.setAttribute("aria-label", `Mark ${blockId} as needs fix`);
+        needsFix.dataset.reviewActionKey = reviewActionKey(item);
+        needsFix.dataset.reviewActionName = "needs_fix";
+        needsFix.disabled = !reviewActionAvailable(item, "needs_fix");
+        needsFix.addEventListener("click", () => requestReviewAction(item, "needs_fix"));
+        const reject = document.createElement("button");
+        reject.className = "secondary";
+        reject.type = "button";
+        reject.textContent = "Reject";
+        reject.setAttribute("aria-label", `Reject ${blockId}`);
+        reject.dataset.reviewActionKey = reviewActionKey(item);
+        reject.dataset.reviewActionName = "reject";
+        reject.disabled = !reviewActionAvailable(item, "reject");
+        reject.addEventListener("click", () => requestReviewAction(item, "reject"));
+        const reviewState = document.createElement("span");
+        reviewState.className = "page-status";
+        reviewState.dataset.reviewStateFor = blockId;
+        reviewState.textContent = "Unresolved";
         const actions = document.createElement("div");
         actions.className = "review-actions";
-        actions.append(jump, requestEdit, approve);
+        actions.append(jump, requestEdit, needsFix, reject, approve, reviewState);
         wrapper.append(title, text, badges, edit, actions);
         wrapper.insertBefore(meta, text);
         return wrapper;
@@ -3192,13 +3233,34 @@
         badges.className = "warning-badges";
         badges.setAttribute("role", "list");
         badges.setAttribute("aria-label", `${blockId} warnings`);
-        const descriptors = (item.warnings || []).map(warningBadgeDescriptor);
+        const descriptors = (
+          item.warning_details || item.warnings || []
+        ).map(warningBadgeDescriptor);
+        const sourceBbox = reviewAuditSourceBbox(item);
         for (const descriptor of descriptors) {
-          const badge = document.createElement("span");
+          const listItem = document.createElement("span");
+          listItem.setAttribute("role", "listitem");
+          const badge = document.createElement("button");
+          badge.type = "button";
           badge.className = `warning-badge ${severityClass(descriptor.severity)}`;
-          badge.setAttribute("role", "listitem");
+          badge.disabled = !sourceBbox;
           badge.textContent = `${descriptor.code} ${descriptor.label}`;
-          badges.append(badge);
+          badge.setAttribute(
+            "aria-label",
+            `${descriptor.code} ${descriptor.severity}: ${descriptor.message}. ${descriptor.remediation}`
+          );
+          const message = document.createElement("span");
+          message.className = "warning-message";
+          message.textContent = descriptor.message;
+          const details = document.createElement("span");
+          details.className = "warning-remediation";
+          details.textContent = descriptor.remediation;
+          badge.append(message, details);
+          if (sourceBbox) {
+            badge.addEventListener("click", () => jumpToReviewItem(item));
+          }
+          listItem.append(badge);
+          badges.append(listItem);
         }
         const llmBadge = llmInvolvementBadge(item);
         if (llmBadge) badges.append(llmBadge);
@@ -3208,7 +3270,9 @@
       function reviewItemForDetail(item) {
         return {
           ...item,
-          warning_badges: (item.warnings || []).map(warningBadgeDescriptor),
+          warning_badges: (
+            item.warning_details || item.warnings || []
+          ).map(warningBadgeDescriptor),
         };
       }
 
@@ -3336,6 +3400,8 @@
           if (savedEditText !== null) {
             event.revised_text = revisedText;
           }
+        } else if (action === "reject" || action === "needs_fix") {
+          event.revised_text = revisedText;
         }
         return event;
       }
@@ -3491,6 +3557,15 @@
             return;
           }
           state.reviewAuditEvents.push(body.audit_event);
+          const stateLabel = reviewList.querySelector(
+            `[data-review-state-for="${CSS.escape(item.block_id)}"]`
+          );
+          const wrapper = reviewList.querySelector(
+            `[data-block-id="${CSS.escape(item.block_id)}"]`
+          );
+          const reviewState = action === "approve" ? "approved" : action;
+          if (stateLabel) stateLabel.textContent = reviewState.replace("_", " ");
+          if (wrapper) wrapper.dataset.reviewState = reviewState;
           reviewActionStatus.textContent = "Review action event queued for audit.";
           reviewActionStatus.className = "page-status";
         } catch (error) {
