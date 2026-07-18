@@ -224,6 +224,26 @@ class LocalNetworkBoundaryTest(unittest.TestCase):
                 allowed_origins=self.observer.allowed_origins,
             )
 
+    def test_private_profile_endpoint_configuration_is_allowed(self) -> None:
+        configured = validate_endpoint_configuration(
+            {
+                "VERIDOC_STANDARD_OPENAI_BASE_URL": (
+                    "http://192.168.1.10:8000/v1"
+                )
+            },
+            allowed_origins=self.observer.allowed_origins,
+        )
+
+        self.assertEqual(
+            configured,
+            [
+                {
+                    "name": "VERIDOC_STANDARD_OPENAI_BASE_URL",
+                    "origin": "http://192.168.1.10:8000",
+                }
+            ],
+        )
+
 
 class RerunPackageValidationTest(unittest.TestCase):
     def test_dirty_checkout_is_rejected_before_package_sealing(self) -> None:
@@ -233,6 +253,38 @@ class RerunPackageValidationTest(unittest.TestCase):
         ):
             with self.assertRaisesRegex(ValueError, "dirty checkout"):
                 _assert_clean_git_checkout()
+
+    def test_generated_evidence_dir_is_excluded_from_clean_check(self) -> None:
+        repo_root = Path("repo").resolve()
+        generated_evidence_dir = repo_root / "evidence" / "run"
+        with patch("scripts.ci.mvp_browser_e2e.subprocess.run") as run:
+            run.return_value.stdout = ""
+
+            _assert_clean_git_checkout(
+                repo_root,
+                excluded_paths=(generated_evidence_dir,),
+            )
+
+        self.assertEqual(
+            run.call_args.args[0],
+            [
+                "git",
+                "status",
+                "--porcelain=v1",
+                "--untracked-files=all",
+                "--",
+                ".",
+                ":(exclude,top,literal)evidence/run",
+            ],
+        )
+
+    def test_dirty_checkout_is_rejected_before_rerun_validation(self) -> None:
+        with patch(
+            "scripts.ci.mvp_browser_e2e._git_status_porcelain",
+            return_value=" M services/api/poc_web.py\n",
+        ):
+            with self.assertRaisesRegex(ValueError, "dirty checkout"):
+                validate_rerun_package_for_workspace({})
 
     def test_package_payload_tampering_is_rejected(self) -> None:
         envelope = seal_rerun_package(
@@ -263,7 +315,8 @@ class RerunPackageValidationTest(unittest.TestCase):
                 evidence,
                 browser_version="test-browser",
             )
-        package = validate_rerun_package_for_workspace(envelope)
+        with patch("scripts.ci.mvp_browser_e2e._assert_clean_git_checkout"):
+            package = validate_rerun_package_for_workspace(envelope)
 
         self.assertRegex(package["commit"], r"^[0-9a-f]{40}$")
         self.assertGreaterEqual(len(package["inputs"]), 5)
@@ -275,7 +328,8 @@ class RerunPackageValidationTest(unittest.TestCase):
         package["inputs"][0]["sha256"] = "0" * 64
         drifted_envelope = seal_rerun_package(package)
         with self.assertRaisesRegex(ValueError, "input hash mismatch"):
-            validate_rerun_package_for_workspace(drifted_envelope)
+            with patch("scripts.ci.mvp_browser_e2e._assert_clean_git_checkout"):
+                validate_rerun_package_for_workspace(drifted_envelope)
 
     def test_package_missing_required_input_is_rejected(self) -> None:
         evidence = {
@@ -295,7 +349,8 @@ class RerunPackageValidationTest(unittest.TestCase):
         package["inputs"].pop()
 
         with self.assertRaisesRegex(ValueError, "required input set"):
-            validate_rerun_package_for_workspace(seal_rerun_package(package))
+            with patch("scripts.ci.mvp_browser_e2e._assert_clean_git_checkout"):
+                validate_rerun_package_for_workspace(seal_rerun_package(package))
 
     def test_package_runtime_dependency_drift_is_rejected(self) -> None:
         evidence = {
@@ -315,7 +370,8 @@ class RerunPackageValidationTest(unittest.TestCase):
         package["dependencies"]["runtime"]["python"] = "0.0.0"
 
         with self.assertRaisesRegex(ValueError, "runtime dependencies"):
-            validate_rerun_package_for_workspace(seal_rerun_package(package))
+            with patch("scripts.ci.mvp_browser_e2e._assert_clean_git_checkout"):
+                validate_rerun_package_for_workspace(seal_rerun_package(package))
 
     def test_package_browser_runtime_drift_is_rejected(self) -> None:
         evidence = {

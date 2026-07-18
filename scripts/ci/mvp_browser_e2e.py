@@ -40,6 +40,7 @@ from services.api.poc_web import (
     TemplateStore,
 )
 from core.ir.document_ir_v1 import SCHEMA_VERSION as DOCUMENT_IR_SCHEMA_VERSION
+from core.llm.conversion_plan import is_local_llm_base_url
 
 FIXTURE_PATH = (
     REPO_ROOT / "datasets" / "fixtures" / "pdf" / "pdf-to-word-representative.pdf"
@@ -298,7 +299,7 @@ def validate_endpoint_configuration(
             raise NetworkBoundaryViolation(
                 f"{key} contains a malformed endpoint configuration"
             )
-        if not _is_loopback_host(host):
+        if not is_local_llm_base_url(raw_value):
             raise NetworkBoundaryViolation(
                 f"{key} configures an external endpoint outside the local-only boundary"
             )
@@ -457,9 +458,28 @@ def _current_git_commit(repo_root: Path = REPO_ROOT) -> str:
     return commit
 
 
-def _git_status_porcelain(repo_root: Path = REPO_ROOT) -> str:
+def _git_status_porcelain(
+    repo_root: Path = REPO_ROOT,
+    *,
+    excluded_paths: tuple[Path, ...] = (),
+) -> str:
+    command = ["git", "status", "--porcelain=v1", "--untracked-files=all"]
+    exclusion_pathspecs: list[str] = []
+    resolved_root = repo_root.resolve()
+    for excluded_path in excluded_paths:
+        try:
+            relative_path = excluded_path.resolve().relative_to(resolved_root)
+        except ValueError:
+            continue
+        if not relative_path.parts:
+            raise ValueError("cannot exclude the repository root from the clean check")
+        exclusion_pathspecs.append(
+            f":(exclude,top,literal){relative_path.as_posix()}"
+        )
+    if exclusion_pathspecs:
+        command.extend(("--", ".", *exclusion_pathspecs))
     completed = subprocess.run(
-        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+        command,
         cwd=repo_root,
         check=True,
         capture_output=True,
@@ -468,9 +488,13 @@ def _git_status_porcelain(repo_root: Path = REPO_ROOT) -> str:
     return completed.stdout
 
 
-def _assert_clean_git_checkout(repo_root: Path = REPO_ROOT) -> None:
-    if _git_status_porcelain(repo_root).strip():
-        raise ValueError("cannot seal rerun package from a dirty checkout")
+def _assert_clean_git_checkout(
+    repo_root: Path = REPO_ROOT,
+    *,
+    excluded_paths: tuple[Path, ...] = (),
+) -> None:
+    if _git_status_porcelain(repo_root, excluded_paths=excluded_paths).strip():
+        raise ValueError("rerun package rejected: dirty checkout")
 
 
 def _requirement_files(
@@ -587,8 +611,12 @@ def build_rerun_package(
     *,
     browser_version: str,
     repo_root: Path = REPO_ROOT,
+    generated_evidence_dir: Path | None = None,
 ) -> dict[str, Any]:
-    _assert_clean_git_checkout(repo_root)
+    excluded_paths = (
+        (generated_evidence_dir,) if generated_evidence_dir is not None else ()
+    )
+    _assert_clean_git_checkout(repo_root, excluded_paths=excluded_paths)
     input_paths = _rerun_input_paths(repo_root)
     profiles_path = repo_root / "services" / "api" / "inference_profiles.json"
     profiles = json.loads(profiles_path.read_text(encoding="utf-8"))
@@ -652,6 +680,7 @@ def validate_rerun_package_for_workspace(
     *,
     repo_root: Path = REPO_ROOT,
 ) -> dict[str, Any]:
+    _assert_clean_git_checkout(repo_root)
     package = validate_rerun_package_envelope(envelope)
     if package.get("commit") != _current_git_commit(repo_root):
         raise ValueError("rerun package commit does not match the current checkout")
@@ -1657,6 +1686,7 @@ def run_browser_e2e(
                 rerun_package = build_rerun_package(
                     evidence,
                     browser_version=browser_version,
+                    generated_evidence_dir=run_dir,
                 )
                 rerun_package_path.write_text(
                     json.dumps(rerun_package, ensure_ascii=False, indent=2) + "\n",
