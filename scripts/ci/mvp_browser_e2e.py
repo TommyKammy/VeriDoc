@@ -25,6 +25,8 @@ from typing import Any, Iterator, Mapping
 from urllib.parse import urlsplit
 from zipfile import ZipFile
 
+from packaging.requirements import InvalidRequirement, Requirement
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -241,6 +243,7 @@ class LocalNetworkBoundaryObserver:
     def observe_python_network(self) -> Iterator[None]:
         original_getaddrinfo = socket.getaddrinfo
         original_connect = socket.socket.connect
+        original_connect_ex = socket.socket.connect_ex
         observer = self
 
         def guarded_getaddrinfo(host: object, *args: object, **kwargs: object) -> object:
@@ -251,13 +254,21 @@ class LocalNetworkBoundaryObserver:
             observer.observe_socket_attempt(address, source="python_socket")
             return original_connect(sock, address)
 
+        def guarded_connect_ex(sock: socket.socket, address: object) -> int:
+            observer.observe_socket_attempt(address, source="python_socket")
+            return original_connect_ex(sock, address)
+
         socket.getaddrinfo = guarded_getaddrinfo  # type: ignore[assignment]
         socket.socket.connect = guarded_connect  # type: ignore[method-assign]
+        socket.socket.connect_ex = guarded_connect_ex  # type: ignore[method-assign]
         try:
             yield
         finally:
             socket.getaddrinfo = original_getaddrinfo
             socket.socket.connect = original_connect  # type: ignore[method-assign]
+            socket.socket.connect_ex = (  # type: ignore[method-assign]
+                original_connect_ex
+            )
 
     def install_playwright_guard(self, context: Any) -> None:
         def guard(route: Any, request: Any) -> None:
@@ -630,18 +641,36 @@ def _dependency_snapshot(
             }
         )
     installed_versions: dict[str, str] = {}
-    for name in sorted(distribution_names):
+    pending = sorted(distribution_names)
+    while pending:
+        name = pending.pop(0)
+        normalized_name = re.sub(r"[-_.]+", "-", name).lower()
+        if normalized_name in installed_versions:
+            continue
         try:
-            installed_versions[name] = importlib.metadata.version(name)
+            distribution = importlib.metadata.distribution(name)
         except importlib.metadata.PackageNotFoundError:
-            installed_versions[name] = "not-installed"
+            installed_versions[normalized_name] = "not-installed"
+            continue
+        installed_versions[normalized_name] = distribution.version
+        for specification in distribution.requires or ():
+            try:
+                requirement = Requirement(specification)
+            except InvalidRequirement as exc:
+                raise ValueError(
+                    f"installed dependency metadata is invalid: {normalized_name}"
+                ) from exc
+            if requirement.marker is None or requirement.marker.evaluate():
+                dependency_name = re.sub(r"[-_.]+", "-", requirement.name).lower()
+                if dependency_name not in installed_versions:
+                    pending.append(requirement.name)
     return {
         "requirement_files": records,
         "specifications": specifications,
         "runtime": {
             "python": platform.python_version(),
             "browser": browser_version,
-            "distributions": installed_versions,
+            "distributions": dict(sorted(installed_versions.items())),
         },
     }
 
@@ -871,6 +900,10 @@ def build_rerun_package(
             "rule": RERUN_EQUIVALENCE_RULE,
             "baseline": projection,
             "baseline_sha256": _canonical_json_sha256(projection),
+            "baseline_evidence": {
+                "path": "evidence.json",
+                "sha256": _canonical_json_sha256(evidence),
+            },
         },
     }
     return seal_rerun_package(package)
@@ -928,6 +961,33 @@ def validate_rerun_package_for_workspace(
         or equivalence.get("rule") != RERUN_EQUIVALENCE_RULE
     ):
         raise ValueError("rerun package equivalence metadata is unsupported")
+    baseline = equivalence.get("baseline")
+    baseline_evidence = equivalence.get("baseline_evidence")
+    if (
+        not isinstance(baseline, dict)
+        or equivalence.get("baseline_sha256") != _canonical_json_sha256(baseline)
+        or not isinstance(baseline_evidence, dict)
+        or baseline_evidence.get("path") != "evidence.json"
+        or not isinstance(baseline_evidence.get("sha256"), str)
+    ):
+        raise ValueError("rerun package equivalence metadata is incomplete")
+    if rerun_package_path is not None:
+        evidence_path = rerun_package_path.resolve().parent / "evidence.json"
+        try:
+            retained_evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                "rerun package retained baseline evidence is unavailable"
+            ) from exc
+        if (
+            not isinstance(retained_evidence, dict)
+            or _canonical_json_sha256(retained_evidence)
+            != baseline_evidence["sha256"]
+            or _equivalence_projection(retained_evidence) != baseline
+        ):
+            raise ValueError(
+                "rerun package equivalence baseline does not match retained evidence"
+            )
     records = package.get("inputs")
     if not isinstance(records, list) or not records:
         raise ValueError("rerun package inputs list is missing")

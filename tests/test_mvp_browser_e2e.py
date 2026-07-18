@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import socket
 import tempfile
 import unittest
 from contextlib import ExitStack
@@ -368,6 +369,19 @@ class LocalNetworkBoundaryTest(unittest.TestCase):
 
         self.assertEqual(observer.result()["external_attempt_count"], 1)
 
+    def test_external_connect_ex_attempt_is_recorded_and_rejected(self) -> None:
+        with self.assertRaisesRegex(
+            NetworkBoundaryViolation,
+            "external socket attempt blocked",
+        ):
+            with self.observer.observe_python_network():
+                with socket.socket() as client:
+                    client.connect_ex(("192.0.2.10", 443))
+
+        result = self.observer.result()
+        self.assertEqual(result["external_attempt_count"], 1)
+        self.assertEqual(result["attempts"][0]["kind"], "socket")
+
 
 class RerunPackageValidationTest(unittest.TestCase):
     def test_dirty_checkout_is_rejected_before_package_sealing(self) -> None:
@@ -727,6 +741,70 @@ class RerunPackageValidationTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "runtime dependencies"):
             with patch("scripts.ci.mvp_browser_e2e._assert_clean_git_checkout"):
                 validate_rerun_package_for_workspace(seal_rerun_package(package))
+
+    def test_package_transitive_runtime_dependency_drift_is_rejected(self) -> None:
+        evidence = {
+            "schema_version": "veridoc-mvp-browser-e2e/v1",
+            "network_observation": {
+                "status": "pass",
+                "external_ai_api_send_count": 0,
+                "external_attempt_count": 0,
+            },
+        }
+        with patch("scripts.ci.mvp_browser_e2e._assert_clean_git_checkout"):
+            package = build_rerun_package(
+                evidence,
+                browser_version="test-browser",
+            )["package"]
+        distributions = package["dependencies"]["runtime"]["distributions"]
+        self.assertIn("pyee", distributions)
+        distributions["pyee"] = "0.0.0"
+
+        with self.assertRaisesRegex(ValueError, "runtime dependencies"):
+            with patch("scripts.ci.mvp_browser_e2e._assert_clean_git_checkout"):
+                validate_rerun_package_for_workspace(seal_rerun_package(package))
+
+    def test_resealed_baseline_must_match_retained_evidence(self) -> None:
+        evidence = {
+            "schema_version": "veridoc-mvp-browser-e2e/v1",
+            "network_observation": {
+                "status": "pass",
+                "external_ai_api_send_count": 0,
+                "external_attempt_count": 0,
+            },
+        }
+        with patch("scripts.ci.mvp_browser_e2e._assert_clean_git_checkout"):
+            package = build_rerun_package(
+                evidence,
+                browser_version="test-browser",
+            )["package"]
+        baseline = package["equivalence"]["baseline"]
+        baseline["network"]["external_attempt_count"] = 1
+        package["equivalence"]["baseline_sha256"] = hashlib.sha256(
+            json.dumps(
+                baseline,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = Path(temp_dir)
+            rerun_package_path = run_dir / "rerun-package.json"
+            (run_dir / "evidence.json").write_text(
+                json.dumps(evidence, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                ValueError,
+                "baseline does not match retained evidence",
+            ):
+                with patch("scripts.ci.mvp_browser_e2e._assert_clean_git_checkout"):
+                    validate_rerun_package_for_workspace(
+                        seal_rerun_package(package),
+                        rerun_package_path=rerun_package_path,
+                    )
 
     def test_package_browser_runtime_drift_is_rejected(self) -> None:
         evidence = {
