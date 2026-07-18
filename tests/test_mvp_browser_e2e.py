@@ -18,6 +18,8 @@ from scripts.ci.mvp_browser_e2e import (
     NetworkBoundaryViolation,
     _acceptance_network_boundary,
     _assert_clean_git_checkout,
+    _dependency_snapshot,
+    _inference_environment_snapshot,
     _launch_browser,
     _request_local_api_get,
     _require_audit_payload_matches_result,
@@ -385,6 +387,60 @@ class LocalNetworkBoundaryTest(unittest.TestCase):
 
 
 class RerunPackageValidationTest(unittest.TestCase):
+    def test_dependency_snapshot_uses_override_repo_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_root = Path(temp_dir)
+            requirements_path = repo_root / "requirements-browser-e2e.txt"
+            requirements_path.write_text("playwright==1.49.0\n", encoding="utf-8")
+            expected_hash = hashlib.sha256(requirements_path.read_bytes()).hexdigest()
+            distribution = type(
+                "Distribution",
+                (),
+                {"version": "1.49.0", "requires": []},
+            )()
+
+            with patch(
+                "scripts.ci.mvp_browser_e2e.importlib.metadata.distribution",
+                return_value=distribution,
+            ):
+                snapshot = _dependency_snapshot(
+                    browser_version="test-browser",
+                    repo_root=repo_root,
+                )
+
+        self.assertEqual(
+            snapshot["requirement_files"],
+            [
+                {
+                    "path": "requirements-browser-e2e.txt",
+                    "sha256": expected_hash,
+                }
+            ],
+        )
+
+    def test_inference_snapshot_requires_model_to_select_profile(self) -> None:
+        profiles = {
+            "profiles": [
+                {
+                    "id": "standard",
+                    "base_url_env": "VERIDOC_STANDARD_OPENAI_BASE_URL",
+                    "model_env": "VERIDOC_STANDARD_MODEL",
+                    "api_key_env": "VERIDOC_STANDARD_OPENAI_API_KEY",
+                    "optional_env": [],
+                }
+            ]
+        }
+
+        snapshot = _inference_environment_snapshot(
+            profiles,
+            environment={
+                "VERIDOC_STANDARD_OPENAI_BASE_URL": "http://127.0.0.1:8000/v1"
+            },
+        )
+
+        self.assertEqual(snapshot["mode"], "deterministic-fallback")
+        self.assertIsNone(snapshot["selected_profile"])
+
     def test_dirty_checkout_is_rejected_before_package_sealing(self) -> None:
         with patch(
             "scripts.ci.mvp_browser_e2e._git_status_porcelain",

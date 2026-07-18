@@ -617,7 +617,10 @@ def _dependency_snapshot(
     browser_version: str,
     repo_root: Path = REPO_ROOT,
 ) -> dict[str, object]:
-    requirement_files = _requirement_files(repo_root / "requirements-browser-e2e.txt")
+    requirement_files = _requirement_files(
+        repo_root / "requirements-browser-e2e.txt",
+        repo_root=repo_root,
+    )
     specifications: list[str] = []
     distribution_names: set[str] = {"playwright"}
     records: list[dict[str, str]] = []
@@ -775,7 +778,11 @@ def _inference_environment_snapshot(
                     ).geturl()
             values[name] = normalized_value or None
 
-        if selected_profile is None and values.get(base_url_env) is not None:
+        if (
+            selected_profile is None
+            and values.get(base_url_env) is not None
+            and values.get(model_env) is not None
+        ):
             selected_profile = profile_id
         records.append(
             {
