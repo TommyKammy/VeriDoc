@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import importlib.util
+from io import BytesIO
 import json
 import os
 import shutil
@@ -13,6 +14,7 @@ import time
 import unittest
 from pathlib import Path
 from unittest import mock
+from zipfile import ZIP_DEFLATED, ZipFile
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -36,6 +38,31 @@ evaluate_dataset = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
 sys.modules[spec.name] = evaluate_dataset
 spec.loader.exec_module(evaluate_dataset)
+
+
+def rewritten_docx(
+    content: bytes,
+    *,
+    replacements: dict[str, tuple[tuple[str, str], ...]] | None = None,
+    omitted_parts: frozenset[str] = frozenset(),
+) -> bytes:
+    output = BytesIO()
+    with ZipFile(BytesIO(content)) as source, ZipFile(
+        output,
+        "w",
+        compression=ZIP_DEFLATED,
+    ) as target:
+        for member in source.infolist():
+            if member.filename in omitted_parts:
+                continue
+            member_content = source.read(member.filename)
+            if replacements is not None and member.filename in replacements:
+                member_text = member_content.decode("utf-8")
+                for old, new in replacements[member.filename]:
+                    member_text = member_text.replace(old, new)
+                member_content = member_text.encode("utf-8")
+            target.writestr(member, member_content)
+    return output.getvalue()
 
 
 def valid_poc_auth_success_ref_source(
@@ -1718,44 +1745,202 @@ class EvaluateDatasetTest(unittest.TestCase):
         )
         self.assertEqual("fail", result["acceptance_status"])
 
-    def test_mvp_harness_fails_when_artifact_content_validation_is_unavailable(
+    def test_mvp_harness_validates_record_pdf_docx_content(self) -> None:
+        from services.api.poc_web import CONVERSION_AUDIT_SCHEMA_VERSION
+
+        case = self.valid_mvp_case(4)
+        fixture_path = REPO_ROOT / str(case["fixture_path"])
+
+        result = evaluate_dataset.mvp_conversion_result(
+            case,
+            fixture_path=fixture_path,
+            acceptance_limits=self.valid_mvp_acceptance_limits(),
+        )
+
+        artifact_evaluation = result["evaluations"]["artifact"]
+        self.assertEqual("pass", artifact_evaluation["status"])
+        self.assertNotIn(
+            "artifact content validation is unavailable",
+            artifact_evaluation["reason"] or "",
+        )
+        content_validation = artifact_evaluation["content_validation"]
+        self.assertEqual(
+            "record_pdf_docx_content_v1",
+            content_validation["validator"],
+        )
+        self.assertEqual("pass", content_validation["status"])
+        self.assertEqual(
+            {
+                "section_order": "pass",
+                "body_completeness": "pass",
+                "expected_content": "pass",
+                "source_linkage": "pass",
+            },
+            {
+                check["id"]: check["status"]
+                for check in content_validation["checks"]
+            },
+        )
+        self.assertEqual(
+            {
+                "section_order_match": 1.0,
+                "body_block_match_rate": 1.0,
+                "expected_phrase_match_rate": 1.0,
+                "source_linkage_rate": 1.0,
+            },
+            content_validation["metrics"],
+        )
+        self.assertEqual([1], content_validation["evidence"]["source_pages"])
+        self.assertTrue(content_validation["evidence"]["artifact_id"])
+        self.assertTrue(content_validation["evidence"]["conversion_id"])
+        self.assertRegex(
+            content_validation["evidence"]["source_sha256"],
+            r"^[0-9a-f]{64}$",
+        )
+        self.assertEqual(
+            CONVERSION_AUDIT_SCHEMA_VERSION,
+            content_validation["evidence"]["audit_schema_version"],
+        )
+
+    def test_mvp_harness_uses_separate_scanned_pdf_docx_validator(self) -> None:
+        case = self.valid_mvp_case(3)
+        fixture_path = REPO_ROOT / str(case["fixture_path"])
+
+        result = evaluate_dataset.mvp_conversion_result(
+            case,
+            fixture_path=fixture_path,
+            acceptance_limits=self.valid_mvp_acceptance_limits(),
+        )
+
+        content_validation = result["evaluations"]["artifact"]["content_validation"]
+        self.assertEqual(
+            "scanned_pdf_explicit_review_v1",
+            content_validation["validator"],
+        )
+        self.assertEqual("pass", content_validation["status"])
+        self.assertEqual(
+            {
+                "explicit_review_block": "pass",
+                "review_guard": "pass",
+                "source_linkage": "pass",
+            },
+            {
+                check["id"]: check["status"]
+                for check in content_validation["checks"]
+            },
+        )
+        self.assertNotIn(
+            "section_order",
+            {check["id"] for check in content_validation["checks"]},
+        )
+
+    def test_pdf_to_word_content_validation_fails_closed_without_expectations(
         self,
     ) -> None:
-        for case_index in (3, 4):
-            case = self.valid_mvp_case(case_index)
-            fixture_content = b"mvp unvalidated pdf fixture"
-            with self.subTest(case_id=case["case_id"]), tempfile.NamedTemporaryFile(
-                suffix=".pdf"
-            ) as fixture_file:
-                fixture_file.write(fixture_content)
-                fixture_file.flush()
-                fixture_path = Path(fixture_file.name)
-                converted = self.valid_mvp_conversion_payload(
-                    case,
-                    fixture_path=fixture_path,
-                    fixture_content=fixture_content,
+        case = self.valid_mvp_case(4)
+        del case["pdf_to_word_expectations"]
+        content_validation: dict[str, object] = {}
+
+        failures = evaluate_dataset.p9_validate_artifact_expectations(
+            fixture=case,
+            conversion_mode="pdf_to_word",
+            representative_mode="pdf_to_word",
+            primary_artifact={
+                "kind": "primary",
+                "format": "docx",
+                "content": b"untrusted docx without authoritative expectations",
+            },
+            warnings=case["expected_warnings"],
+            require_content_validation=True,
+            content_validation=content_validation,
+        )
+
+        self.assertEqual("unavailable", content_validation["status"])
+        self.assertIn(
+            "artifact content validation is unavailable for pdf_to_word",
+            failures,
+        )
+
+    def test_record_pdf_docx_validator_detects_negative_artifacts(self) -> None:
+        from services.api.poc_web import convert_uploaded_document
+
+        case = self.valid_mvp_case(4)
+        fixture_path = REPO_ROOT / str(case["fixture_path"])
+        converted = convert_uploaded_document(
+            filename=fixture_path.name,
+            content=fixture_path.read_bytes(),
+            conversion_mode="pdf_to_word",
+        )
+        artifact_content = converted["artifacts"][0]["content"]
+        first_section = "Batch: POC-REC-0001"
+        second_section = "Product: Sample sterile fill lot"
+        mutations = (
+            (
+                "missing body",
+                rewritten_docx(
+                    artifact_content,
+                    replacements={
+                        "word/document.xml": (
+                            (
+                                "Record field: release decision was documented in log.",
+                                "",
+                            ),
+                        )
+                    },
+                ),
+                "body_completeness",
+            ),
+            (
+                "reordered sections",
+                rewritten_docx(
+                    artifact_content,
+                    replacements={
+                        "word/document.xml": (
+                            (first_section, "__VERIDOC_SECTION_SWAP__"),
+                            (second_section, first_section),
+                            ("__VERIDOC_SECTION_SWAP__", second_section),
+                        )
+                    },
+                ),
+                "section_order",
+            ),
+            (
+                "missing source linkage",
+                rewritten_docx(
+                    artifact_content,
+                    omitted_parts=frozenset({"word/comments.xml"}),
+                ),
+                "source_linkage",
+            ),
+        )
+
+        for label, mutated_content, expected_failed_check in mutations:
+            with self.subTest(label=label):
+                content_validation: dict[str, object] = {}
+                failures = evaluate_dataset.p9_validate_artifact_expectations(
+                    fixture=case,
+                    conversion_mode="pdf_to_word",
+                    representative_mode="pdf_to_word",
+                    primary_artifact={
+                        "kind": "primary",
+                        "format": "docx",
+                        "content": mutated_content,
+                    },
+                    warnings=case["expected_warnings"],
+                    require_content_validation=True,
+                    content_validation=content_validation,
                 )
 
-                with mock.patch(
-                    "services.api.poc_web.convert_uploaded_document",
-                    return_value=converted,
-                ):
-                    result = evaluate_dataset.mvp_conversion_result(
-                        case,
-                        fixture_path=fixture_path,
-                        acceptance_limits=self.valid_mvp_acceptance_limits(),
-                    )
-
-            self.assertEqual(
-                result["evaluations"]["artifact"]["expected_formats"],
-                result["evaluations"]["artifact"]["actual_formats"],
-            )
-            self.assertEqual("fail", result["evaluations"]["artifact"]["status"])
-            self.assertIn(
-                "artifact content validation is unavailable",
-                result["evaluations"]["artifact"]["reason"],
-            )
-            self.assertEqual("fail", result["acceptance_status"])
+                self.assertEqual("fail", content_validation["status"])
+                self.assertEqual(
+                    "fail",
+                    next(
+                        check["status"]
+                        for check in content_validation["checks"]
+                        if check["id"] == expected_failed_check
+                    ),
+                )
+                self.assertTrue(failures)
 
     def test_mvp_harness_fails_mismatched_audit_fields(self) -> None:
         case = self.valid_mvp_case()
