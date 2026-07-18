@@ -545,6 +545,33 @@ class SQLitePersistenceRepository:
             (review_item_id,),
         )
 
+    def update_review_item_status(
+        self,
+        review_item_id: str,
+        *,
+        status: str,
+    ) -> ReviewItem:
+        _require_non_empty(review_item_id=review_item_id, status=status)
+        now = _utc_now()
+        with self._connection_scope(immediate=True) as connection:
+            updated = connection.execute(
+                """
+                UPDATE review_items
+                SET status = ?, updated_at = ?
+                WHERE review_item_id = ?
+                """,
+                (status, now, review_item_id),
+            )
+            if updated.rowcount != 1:
+                raise ValueError(f"review item {review_item_id!r} does not exist")
+            row = connection.execute(
+                "SELECT * FROM review_items WHERE review_item_id = ?",
+                (review_item_id,),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("review item status update was incomplete")
+        return _row_to_dataclass(ReviewItem, row)
+
     def create_review_decision(
         self,
         *,

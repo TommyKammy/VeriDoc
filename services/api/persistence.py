@@ -43,6 +43,10 @@ from services.api.persistence_schema import (
     _schema_definitions,
     _validate_managed_schema,
 )
+from services.api.review_decision_workflow import (
+    AuthoritativeReviewDecision,
+    record_authoritative_review_decision,
+)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -69,6 +73,7 @@ def main(argv: list[str] | None = None) -> int:
 
 __all__ = [
     "Artifact",
+    "AuthoritativeReviewDecision",
     "AuditEvent",
     "ConversionJob",
     "ConversionResult",
@@ -80,6 +85,7 @@ __all__ = [
     "SourceArtifact",
     "default_database_path",
     "initialize_database",
+    "record_authoritative_review_decision",
     "reset_database",
 ]
 

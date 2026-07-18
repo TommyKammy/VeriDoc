@@ -1455,6 +1455,194 @@ class EvaluateDatasetTest(unittest.TestCase):
         )
         self.assertEqual("fail", result["acceptance_status"])
 
+    def test_mvp_harness_records_authoritative_approver_decision(self) -> None:
+        case = self.valid_mvp_case()
+        case["review_decision"] = {
+            "decision": "approved",
+            "reason": "representative fixture review completed",
+            "actor": "mvp-fixture-approver",
+            "role": "approver",
+        }
+        fixture_content = b"mvp authoritative review fixture"
+        with tempfile.NamedTemporaryFile(suffix=".docx") as fixture_file:
+            fixture_file.write(fixture_content)
+            fixture_file.flush()
+            fixture_path = Path(fixture_file.name)
+            converted = self.valid_mvp_conversion_payload(
+                case,
+                fixture_path=fixture_path,
+                fixture_content=fixture_content,
+            )
+            converted["review_items"] = [
+                {
+                    "document_id": "document-mvp-review-test",
+                    "block_id": "review-block-mvp-test",
+                    "source_id": "document-mvp-review-test:review-block-mvp-test",
+                    "source_page": 1,
+                    "text": "Review this representative value",
+                    "warnings": ["representative value requires review"],
+                }
+            ]
+
+            with mock.patch(
+                "services.api.poc_web.convert_uploaded_document",
+                return_value=converted,
+            ), mock.patch.object(
+                evaluate_dataset,
+                "p9_validate_artifact_expectations",
+                return_value=[],
+            ):
+                result = evaluate_dataset.mvp_conversion_result(
+                    case,
+                    fixture_path=fixture_path,
+                    acceptance_limits=self.valid_mvp_acceptance_limits(),
+                )
+
+        decision = result["review_decision"]
+        expected_identity = hashlib.sha256(
+            (
+                f"{case['case_id']}:"
+                f"{hashlib.sha256(fixture_content).hexdigest()}"
+            ).encode("utf-8")
+        ).hexdigest()[:20]
+        self.assertEqual("pass", result["evaluations"]["review"]["status"])
+        self.assertEqual("approved", decision["decision"])
+        self.assertEqual("approver", decision["actor"]["role"])
+        self.assertEqual(
+            f"mvp-decision-{expected_identity}-1",
+            decision["decision_id"],
+        )
+        self.assertEqual(
+            evaluate_dataset.mvp_review_item_version(converted["review_items"][0]),
+            decision["item_version"],
+        )
+        self.assertEqual(
+            result["review_decisions"],
+            result["evaluations"]["artifact"]["review_decisions"],
+        )
+        self.assertEqual(
+            result["review_decisions"],
+            result["evaluations"]["audit"]["review_decisions"],
+        )
+        self.assertEqual(
+            decision["decision_id"],
+            result["evaluations"]["audit"]["review_decision"]["decision_id"],
+        )
+        self.assertEqual(
+            decision["version"],
+            result["evaluations"]["artifact"]["review_decision"]["version"],
+        )
+
+    def test_mvp_harness_fails_closed_without_authoritative_decision(self) -> None:
+        case = self.valid_mvp_case()
+        del case["review_decision"]
+        fixture_content = b"mvp missing review decision fixture"
+        with tempfile.NamedTemporaryFile(suffix=".docx") as fixture_file:
+            fixture_file.write(fixture_content)
+            fixture_file.flush()
+            fixture_path = Path(fixture_file.name)
+            converted = self.valid_mvp_conversion_payload(
+                case,
+                fixture_path=fixture_path,
+                fixture_content=fixture_content,
+            )
+
+            with mock.patch(
+                "services.api.poc_web.convert_uploaded_document",
+                return_value=converted,
+            ), mock.patch.object(
+                evaluate_dataset,
+                "p9_validate_artifact_expectations",
+                return_value=[],
+            ):
+                result = evaluate_dataset.mvp_conversion_result(
+                    case,
+                    fixture_path=fixture_path,
+                    acceptance_limits=self.valid_mvp_acceptance_limits(),
+                )
+
+        self.assertEqual("fail", result["evaluations"]["review"]["status"])
+        self.assertIn(
+            "authoritative review decision is required",
+            result["evaluations"]["review"]["reason"],
+        )
+        self.assertIsNone(result["review_decision"])
+
+    def test_mvp_harness_rejects_forbidden_or_unresolved_high_risk_decision(
+        self,
+    ) -> None:
+        scenarios = (
+            (
+                {"role": "reviewer", "decision": "approved"},
+                False,
+                "cannot record decision",
+            ),
+            (
+                {"role": "reviewer", "decision": "edited"},
+                True,
+                "high-risk review item requires approver approval",
+            ),
+            (
+                {"role": "reviewer", "decision": "edited"},
+                False,
+                "authoritative review decision did not approve the review item",
+            ),
+            (
+                {"role": "approver", "decision": "rejected"},
+                False,
+                "authoritative review decision did not approve the review item",
+            ),
+        )
+        for decision_overrides, high_risk, expected_error in scenarios:
+            with self.subTest(
+                role=decision_overrides["role"],
+                decision=decision_overrides["decision"],
+                high_risk=high_risk,
+            ):
+                case = self.valid_mvp_case()
+                case["review_decision"].update(decision_overrides)
+                fixture_content = b"mvp denied review decision fixture"
+                with tempfile.NamedTemporaryFile(suffix=".docx") as fixture_file:
+                    fixture_file.write(fixture_content)
+                    fixture_file.flush()
+                    fixture_path = Path(fixture_file.name)
+                    converted = self.valid_mvp_conversion_payload(
+                        case,
+                        fixture_path=fixture_path,
+                        fixture_content=fixture_content,
+                    )
+                    converted["review_items"][0].update(
+                        {
+                            "block_id": "review-block-mvp-test",
+                            "document_id": "document-mvp-review-test",
+                            "high_risk": high_risk,
+                            "source_id": (
+                                "document-mvp-review-test:review-block-mvp-test"
+                            ),
+                        }
+                    )
+
+                    with mock.patch(
+                        "services.api.poc_web.convert_uploaded_document",
+                        return_value=converted,
+                    ), mock.patch.object(
+                        evaluate_dataset,
+                        "p9_validate_artifact_expectations",
+                        return_value=[],
+                    ):
+                        result = evaluate_dataset.mvp_conversion_result(
+                            case,
+                            fixture_path=fixture_path,
+                            acceptance_limits=self.valid_mvp_acceptance_limits(),
+                        )
+
+                self.assertEqual("fail", result["evaluations"]["review"]["status"])
+                self.assertIn(
+                    expected_error,
+                    result["evaluations"]["review"]["reason"],
+                )
+                self.assertIsNone(result["review_decision"])
+
     def test_mvp_harness_fails_converted_with_review_items(self) -> None:
         case = self.valid_mvp_case(2)
         fixture_content = b"mvp converted review fixture"

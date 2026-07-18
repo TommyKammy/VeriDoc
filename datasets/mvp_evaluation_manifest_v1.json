@@ -47,7 +47,13 @@
       "review_focus": [
         "confirm the merged application-summary cell",
         "confirm blank optional cells remain blank"
-      ]
+      ],
+      "review_decision": {
+        "decision": "approved",
+        "reason": "synthetic Word representative review completed against the fixed fixture expectations",
+        "actor": "mvp-fixture-approver",
+        "role": "approver"
+      }
     },
     {
       "id": "mvp-excel-001",
@@ -76,7 +82,13 @@
       "review_focus": [
         "confirm worksheet ordering and headings",
         "confirm dates, decimals, booleans, and leading-zero identifiers"
-      ]
+      ],
+      "review_decision": {
+        "decision": "approved",
+        "reason": "synthetic Excel representative review completed against the fixed fixture expectations",
+        "actor": "mvp-fixture-approver",
+        "role": "approver"
+      }
     },
     {
       "id": "mvp-text-pdf-001",
