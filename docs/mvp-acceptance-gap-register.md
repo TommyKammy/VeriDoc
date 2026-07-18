@@ -16,7 +16,7 @@ Missing authoritative decisions or run evidence remain fail-closed.
 - Criteria source Git blob:
   `734b5ee9aeee86a0e99ea6574f62c45ab6e1b5e0`
 - Evaluator Git blob:
-  `1162bc57f8018365f1b627c22f755d0eb5b3e3ef`
+  `6ba4b9727546d9925abdba6f86313cc606d0639f`
 - Generated at: `2026-07-18` (Asia/Tokyo)
 - PDF evaluation prerequisite:
   `python3 -m pip install -r requirements-pdf-eval.txt`
@@ -28,7 +28,7 @@ Missing authoritative decisions or run evidence remain fail-closed.
 - Report result: `item_count=20`, unique item IDs `20`,
   `overall_decision=fail` (`pass=0`, `fail=20`)
 - Harness result: `case_count=5`, `acceptance_status=fail`
-  (`pass=2`, `fail=3`, `unknown=0`)
+  (`pass=3`, `fail=2`, `unknown=0`)
 
 The containing revision above was checked out, the criteria and evaluator blob
 IDs were verified with `git rev-parse HEAD:<repo-relative-path>`, and the PDF
@@ -57,8 +57,8 @@ to the extractor-level facts recorded below.
 | ID | Current status | Raw fact at the evidence snapshot | Gap class | Owner boundary | Evidence required | Follow-up P12G Issue |
 | --- | --- | --- | --- | --- | --- | --- |
 | AC-UI | 一部達成 / fail | API and component UI tests exist; no browser upload-to-download run links upload, review, approval, download, artifact hash, and audit. | `e2e_gap` | codex | One browser scenario and recovery path tied to one run/correlation ID. | P12G-03, P12G-08 |
-| AC-TEMPLATE | 一部達成 / fail | The versioned manifest fixes five categories and Word/Excel pass, but the remaining three cases fail and the representative scope is not authoritatively approved. | `e2e_gap`, `decision_gap` | manual/hybrid then codex | Approved 3–5-template scope plus passing results from that manifest revision. | P12G-02, P12G-12 |
-| AC-QUALITY | 未達 / fail | Word and Excel pass artifact/review/audit evaluation; text, scanned, and record PDF are `fail`; no per-template 80%+ metric can be claimed. | `implementation_gap`, `e2e_gap` | codex/hybrid | Fix or explicitly validate all three PDF boundaries, then publish per-template cell/content agreement. | P12G-05, P12G-06, P12G-07, P12G-12 |
+| AC-TEMPLATE | 一部達成 / fail | The versioned manifest fixes five categories and Word, Excel, and record PDF pass, but the remaining two cases fail and the representative scope is not authoritatively approved. | `e2e_gap`, `decision_gap` | manual/hybrid then codex | Approved 3–5-template scope plus passing results from that manifest revision. | P12G-02, P12G-12 |
+| AC-QUALITY | 未達 / fail | Word, Excel, and record PDF pass artifact/review/audit evaluation; text and scanned PDF remain `fail`, so no five-template 80%+ metric can be claimed. | `implementation_gap`, `e2e_gap` | codex/hybrid | Fix or explicitly validate the remaining text and scanned PDF boundaries, then publish per-template cell/content agreement. | P12G-05, P12G-06, P12G-12 |
 | AC-PROVENANCE | 一部達成 / fail | Source-coordinate components exist, but no five-case source-link coverage result proves 95%+ or the original-document jump. | `e2e_gap` | codex | Snapshot-consistent source-link metric and browser-to-artifact provenance trace. | P12G-09, P12G-12 |
 | AC-REVIEW | 一部達成 / fail | Word/Excel use persisted approver decisions and share decision/item versions across artifact, audit, and harness snapshots; missing/forbidden decisions and unresolved high-risk items are rejected. Browser evidence and dataset-wide zero misses remain absent. | `e2e_gap`, `human_evidence_gap` | codex then manual | Keyboard review flow and zero high-risk misses across the accepted dataset. | P12G-08, P12G-12 |
 | AC-EFFICIENCY | 未達 / fail | No approved baseline task/cohort/timing boundary and no measured 30%+ result exist. | `human_evidence_gap`, `decision_gap` | manual/hybrid | Approved protocol/schema followed by a real, reproducible manual-versus-VeriDoc comparison. | P12G-02, P12G-13 |
@@ -72,7 +72,7 @@ to the extractor-level facts recorded below.
 | FC-REVIEW-UI | 未達 / fail | No recorded keyboard-only warning, original jump, edit, approve/reject/needs-fix flow exists. | `e2e_gap` | codex | Browser trace covering warnings, remediation, keyboard flow, and API agreement. | P12G-08 |
 | FC-REPRODUCIBILITY | 一部達成 / fail | Commit and manifest are fixed, but no packaged rerun pins fixture/config/model/prompt/schema versions and demonstrates an equivalent result. | `e2e_gap` | codex | A pinned run package and an equivalence-checked rerun. | P12G-11 |
 | EM-USER-REVIEW | 未達 / fail | No representative cohort, task protocol, timing, miss/over-detection results, or reviewer record exists. | `human_evidence_gap`, `decision_gap` | manual/hybrid | Approved protocol and evidence schema ready for the later human execution. | P12G-02, P12G-13 |
-| EM-E2E | 一部達成 / fail | A versioned five-case manifest and live report now exist; the result is three `fail`, zero `unknown`, and two `pass`, with persisted review decisions for Word and Excel. | `implementation_gap`, `e2e_gap` | codex/hybrid | P12G-03 through P12G-12 evidence from one committed snapshot with all intended cases passing. | P12G-03–P12G-12 |
+| EM-E2E | 一部達成 / fail | A versioned five-case manifest and live report now exist; the result is two `fail`, zero `unknown`, and three `pass`, with persisted review decisions for Word and Excel and structured record-PDF content evidence. | `implementation_gap`, `e2e_gap` | codex/hybrid | P12G-03 through P12G-12 evidence from one committed snapshot with all intended cases passing. | P12G-03–P12G-12 |
 | OD-TEMPLATES | 未達 / fail | The manifest is `fixed_for_mvp` with five categories, but no authoritative approval adopts those cases as the representative MVP scope. | `decision_gap` | manual/hybrid | Approval record naming the 3–5 templates and manifest revision. | P12G-02 |
 | OD-EFFICIENCY-SCOPE | 未達 / fail | Baseline task, cohort, timing boundaries, and comparison method remain unapproved. | `decision_gap` | manual/hybrid | Authoritative efficiency-scope decision. | P12G-02 |
 | OD-SEGREGATION | 未達 / fail | API role checks do not decide which segregation controls are mandatory for MVP versus explicitly deferred to Phase13. | `decision_gap`, `e2e_gap` | manual/hybrid then codex | Approved role matrix/carryover plus deny-path E2E proof. | P12G-02, P12G-10 |
@@ -89,8 +89,8 @@ warnings, or review-item count.
 | mvp-word-001 | Word | `pass` | artifact/pass; audit/pass; input_size/pass; processing_time/pass; timeout/pass; review/pass | none | persisted approver decisions for 2 review items; artifact/audit/result share each decision ID and item/decision version |
 | mvp-excel-001 | Excel | `pass` | artifact/pass; audit/pass; input_size/pass; processing_time/pass; timeout/pass; review/pass | none | persisted approver decisions for 3 review items; artifact/audit/result share each decision ID and item/decision version |
 | mvp-text-pdf-001 | text PDF | `fail` | artifact/fail; audit/pass; input_size/pass; processing_time/pass; timeout/pass; review/fail | Expected `A1:D17`, got `A1:D14`; rows `A15:D17`, the expected 3x4 table, and source comment at `A15` are missing. Expected `converted`, got `requires_review`; warnings mismatch and unexpected review items were emitted. | absent (`null`) |
-| mvp-scanned-pdf-001 | scanned PDF | `fail` | artifact/fail; audit/pass; input_size/pass; processing_time/pass; timeout/pass; review/fail | `artifact content validation is unavailable for scanned_pdf_ocr`; authoritative review decision is required. | absent (`null`) |
-| mvp-record-pdf-001 | record PDF | `fail` | artifact/fail; audit/pass; input_size/pass; processing_time/pass; timeout/pass; review/pass | `artifact content validation is unavailable for pdf_to_word`. | not required because the conversion emitted no review item |
+| mvp-scanned-pdf-001 | scanned PDF | `fail` | artifact/pass; audit/pass; input_size/pass; processing_time/pass; timeout/pass; review/fail | Explicit-review block, review guard, and source linkage pass; authoritative review decision is required. | absent (`null`) |
+| mvp-record-pdf-001 | record PDF | `pass` | artifact/pass; audit/pass; input_size/pass; processing_time/pass; timeout/pass; review/pass | none; section order, body completeness, expected content, and per-block source linkage all pass. | not required because the conversion emitted no review item |
 
 ## P12G-02 through P12G-13 handoff
 

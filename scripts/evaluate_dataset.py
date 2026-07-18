@@ -4817,6 +4817,7 @@ def p9_validate_pdf_to_word_docx_content(
     expectations: dict[str, Any],
     *,
     docx: Any | None = None,
+    required: bool = False,
 ) -> dict[str, Any]:
     from core.parsers.docx_extraction import extract_docx_structure
 
@@ -4825,6 +4826,16 @@ def p9_validate_pdf_to_word_docx_content(
         "record_pdf_docx_content_v1",
         "scanned_pdf_explicit_review_v1",
     }:
+        if required:
+            failure = f"unsupported docx content validator {validator!r}"
+            return {
+                "validator": validator if isinstance(validator, str) else None,
+                "status": "fail",
+                "checks": [],
+                "metrics": {},
+                "evidence": {},
+                "failures": [failure],
+            }
         return {
             "validator": None,
             "status": "not_applicable",
@@ -4837,15 +4848,53 @@ def p9_validate_pdf_to_word_docx_content(
     parsed_docx = docx if docx is not None else extract_docx_structure(artifact_path)
     actual_blocks = [p9_docx_block_payload(block) for block in parsed_docx.blocks]
     expected_blocks_value = expectations.get("body_blocks")
-    expected_blocks = (
-        [
-            normalized
-            for value in expected_blocks_value
-            if (normalized := p9_expected_docx_block_payload(value)) is not None
-        ]
-        if isinstance(expected_blocks_value, list)
-        else []
-    )
+    if not isinstance(expected_blocks_value, list) or not expected_blocks_value:
+        failure = "docx body block expectations must be a non-empty list"
+        return {
+            "validator": validator,
+            "status": "fail",
+            "checks": [],
+            "metrics": {},
+            "evidence": {},
+            "failures": [failure],
+        }
+    expected_blocks: list[dict[str, object]] = []
+    expected_source_links: list[tuple[str, int]] = []
+    for index, value in enumerate(expected_blocks_value):
+        normalized = p9_expected_docx_block_payload(value)
+        if normalized is None:
+            failure = f"docx body block expectation at index {index} is malformed"
+            return {
+                "validator": validator,
+                "status": "fail",
+                "checks": [],
+                "metrics": {},
+                "evidence": {},
+                "failures": [failure],
+            }
+        block_id = value.get("block_id")
+        source_page = value.get("source_page")
+        if (
+            not isinstance(block_id, str)
+            or not block_id
+            or not isinstance(source_page, int)
+            or isinstance(source_page, bool)
+            or source_page < 1
+        ):
+            failure = (
+                f"docx body block expectation at index {index} has malformed "
+                "source linkage"
+            )
+            return {
+                "validator": validator,
+                "status": "fail",
+                "checks": [],
+                "metrics": {},
+                "evidence": {},
+                "failures": [failure],
+            }
+        expected_blocks.append(normalized)
+        expected_source_links.append((block_id, source_page))
     title = expectations.get("document_title")
     body_offset = (
         1
@@ -4862,21 +4911,15 @@ def p9_validate_pdf_to_word_docx_content(
 
     linkage = p9_docx_source_linkage(artifact_path)
     body_linkage = linkage[body_offset:]
-    expected_source_pages = [
-        value.get("source_page")
-        for value in expected_blocks_value
-        if isinstance(value, dict)
-    ] if isinstance(expected_blocks_value, list) else []
     linked_block_ids: list[str] = []
     source_pages: set[int] = set()
     linked_count = 0
-    for index, expected_page in enumerate(expected_source_pages):
+    for index, (expected_block_id, expected_page) in enumerate(expected_source_links):
         linked = body_linkage[index] if index < len(body_linkage) else {}
         block_id = linked.get("block_id")
         source_page = linked.get("source_page")
         if (
-            isinstance(block_id, str)
-            and block_id
+            block_id == expected_block_id
             and isinstance(source_page, int)
             and source_page >= 1
             and source_page == expected_page
@@ -4885,12 +4928,12 @@ def p9_validate_pdf_to_word_docx_content(
             linked_block_ids.append(block_id)
             source_pages.add(source_page)
     source_linkage_rate = (
-        linked_count / len(expected_source_pages) if expected_source_pages else 0.0
+        linked_count / len(expected_source_links) if expected_source_links else 0.0
     )
     source_linkage_matches = (
-        bool(expected_source_pages)
-        and linked_count == len(expected_source_pages)
-        and len(body_linkage) == len(expected_source_pages)
+        bool(expected_source_links)
+        and linked_count == len(expected_source_links)
+        and len(body_linkage) == len(expected_source_links)
     )
 
     checks: list[dict[str, object]] = []
@@ -4989,6 +5032,7 @@ def p9_validate_docx_artifact(
     expectations: dict[str, Any],
     *,
     content_validation: dict[str, Any] | None = None,
+    require_content_validation: bool = False,
 ) -> list[str]:
     from core.parsers.docx_extraction import extract_docx_structure
 
@@ -5012,6 +5056,7 @@ def p9_validate_docx_artifact(
         artifact_path,
         expectations,
         docx=docx,
+        required=require_content_validation,
     )
     if content_validation is not None:
         content_validation.update(structured_validation)
@@ -5115,6 +5160,11 @@ def p9_validate_artifact_expectations(
                     artifact_path,
                     expectations,
                     content_validation=content_validation,
+                    require_content_validation=(
+                        require_content_validation
+                        and representative_mode
+                        in {"pdf_to_word", "scanned_pdf_ocr"}
+                    ),
                 )
             )
     except Exception as exc:

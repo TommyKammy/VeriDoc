@@ -1791,6 +1791,16 @@ class EvaluateDatasetTest(unittest.TestCase):
             content_validation["metrics"],
         )
         self.assertEqual([1], content_validation["evidence"]["source_pages"])
+        self.assertEqual(
+            [
+                "block-0001",
+                "block-0002",
+                "block-0003",
+                "block-0004",
+                "block-0005",
+            ],
+            content_validation["evidence"]["linked_block_ids"],
+        )
         self.assertTrue(content_validation["evidence"]["artifact_id"])
         self.assertTrue(content_validation["evidence"]["conversion_id"])
         self.assertRegex(
@@ -1912,6 +1922,19 @@ class EvaluateDatasetTest(unittest.TestCase):
                 ),
                 "source_linkage",
             ),
+            (
+                "copied source block identity",
+                rewritten_docx(
+                    artifact_content,
+                    replacements={
+                        "word/comments.xml": tuple(
+                            (f"block-{index:04d}", "block-0001")
+                            for index in range(2, 6)
+                        )
+                    },
+                ),
+                "source_linkage",
+            ),
         )
 
         for label, mutated_content, expected_failed_check in mutations:
@@ -1941,6 +1964,77 @@ class EvaluateDatasetTest(unittest.TestCase):
                     ),
                 )
                 self.assertTrue(failures)
+
+    def test_pdf_to_word_content_validation_rejects_unsupported_validator(
+        self,
+    ) -> None:
+        from services.api.poc_web import convert_uploaded_document
+
+        case = self.valid_mvp_case(4)
+        case["pdf_to_word_expectations"]["validator"] = (
+            "record_pdf_docx_content_typo"
+        )
+        fixture_path = REPO_ROOT / str(case["fixture_path"])
+        converted = convert_uploaded_document(
+            filename=fixture_path.name,
+            content=fixture_path.read_bytes(),
+            conversion_mode="pdf_to_word",
+        )
+        content_validation: dict[str, object] = {}
+
+        failures = evaluate_dataset.p9_validate_artifact_expectations(
+            fixture=case,
+            conversion_mode="pdf_to_word",
+            representative_mode="pdf_to_word",
+            primary_artifact=converted["artifacts"][0],
+            warnings=case["expected_warnings"],
+            require_content_validation=True,
+            content_validation=content_validation,
+        )
+
+        self.assertEqual("fail", content_validation["status"])
+        self.assertEqual(
+            [
+                "unsupported docx content validator "
+                "'record_pdf_docx_content_typo'"
+            ],
+            content_validation["failures"],
+        )
+        self.assertIn(content_validation["failures"][0], failures)
+
+    def test_pdf_to_word_content_validation_rejects_malformed_body_block(
+        self,
+    ) -> None:
+        from services.api.poc_web import convert_uploaded_document
+
+        case = self.valid_mvp_case(4)
+        case["pdf_to_word_expectations"]["body_blocks"].append(
+            {"kind": "paragraph", "source_page": 1}
+        )
+        fixture_path = REPO_ROOT / str(case["fixture_path"])
+        converted = convert_uploaded_document(
+            filename=fixture_path.name,
+            content=fixture_path.read_bytes(),
+            conversion_mode="pdf_to_word",
+        )
+        content_validation: dict[str, object] = {}
+
+        failures = evaluate_dataset.p9_validate_artifact_expectations(
+            fixture=case,
+            conversion_mode="pdf_to_word",
+            representative_mode="pdf_to_word",
+            primary_artifact=converted["artifacts"][0],
+            warnings=case["expected_warnings"],
+            require_content_validation=True,
+            content_validation=content_validation,
+        )
+
+        self.assertEqual("fail", content_validation["status"])
+        self.assertEqual(
+            ["docx body block expectation at index 5 is malformed"],
+            content_validation["failures"],
+        )
+        self.assertIn(content_validation["failures"][0], failures)
 
     def test_mvp_harness_fails_mismatched_audit_fields(self) -> None:
         case = self.valid_mvp_case()

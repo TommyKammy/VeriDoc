@@ -128,7 +128,7 @@ class MvpAcceptanceTraceabilityDocsTest(unittest.TestCase):
             "mvp-scanned-pdf-001",
             "mvp-record-pdf-001",
             "authoritative review decision is required",
-            "three `fail`, zero `unknown`, and two `pass`",
+            "two `fail`, zero `unknown`, and three `pass`",
             "P12G-02",
             "P12G-13",
         ):

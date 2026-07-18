@@ -135,26 +135,31 @@
           {
             "kind": "paragraph",
             "text": "Synthetic Batch Record PDF",
+            "block_id": "block-0001",
             "source_page": 1
           },
           {
             "kind": "paragraph",
             "text": "Batch: POC-REC-0001",
+            "block_id": "block-0002",
             "source_page": 1
           },
           {
             "kind": "paragraph",
             "text": "Product: Sample sterile fill lot",
+            "block_id": "block-0003",
             "source_page": 1
           },
           {
             "kind": "paragraph",
             "text": "Record field: release decision was documented in log.",
+            "block_id": "block-0004",
             "source_page": 1
           },
           {
             "kind": "paragraph",
             "text": "Label anchor: FORM-REC-P9-001, no confidential source data.",
+            "block_id": "block-0005",
             "source_page": 1
           }
         ],
@@ -245,6 +250,7 @@
           {
             "kind": "paragraph",
             "text": "PDF text extraction produced no text blocks for this page.",
+            "block_id": "block-0001",
             "source_page": 1
           }
         ],
