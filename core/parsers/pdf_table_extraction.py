@@ -188,17 +188,19 @@ def build_table_extraction_report(
             )
     if require_cell_bboxes:
         for candidate in ok_candidates:
-            table = first_tables[candidate.name]
-            if table is None:
-                continue
-            if not table.has_cell_bboxes:
+            for table_index, table in enumerate(candidate.tables, start=1):
+                if table.has_cell_bboxes:
+                    continue
                 mismatches.append(
                     TableExtractionMismatch(
                         kind="cell-boundary",
                         candidate=candidate.name,
                         expected="all cells have bboxes",
                         actual="missing one or more cell bboxes",
-                        notes="The extraction cannot prove cell boundaries for the sample.",
+                        notes=(
+                            "The extraction cannot prove cell boundaries "
+                            f"for table {table_index}."
+                        ),
                     )
                 )
 
