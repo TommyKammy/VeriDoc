@@ -1969,6 +1969,7 @@ class EvaluateDatasetTest(unittest.TestCase):
                 )
                 self.assertTrue(failures)
 
+    @unittest.skipUnless(PYMUPDF_AVAILABLE, "PyMuPDF eval dependency is not installed")
     def test_pdf_to_word_content_validation_rejects_unsupported_validator(
         self,
     ) -> None:
@@ -2006,6 +2007,7 @@ class EvaluateDatasetTest(unittest.TestCase):
         )
         self.assertIn(content_validation["failures"][0], failures)
 
+    @unittest.skipUnless(PYMUPDF_AVAILABLE, "PyMuPDF eval dependency is not installed")
     def test_pdf_to_word_content_validation_rejects_malformed_body_block(
         self,
     ) -> None:
