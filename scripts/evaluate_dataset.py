@@ -11,6 +11,7 @@ import json
 import math
 import os
 import platform
+import posixpath
 import re
 import signal
 import shlex
@@ -4709,8 +4710,432 @@ def p9_validate_xlsx_artifact(
     return failures
 
 
+def p9_docx_bbox_is_usable(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    bbox_parts = value.strip().rsplit(maxsplit=1)
+    if len(bbox_parts) != 2 or bbox_parts[1] not in {"pt", "px", "mm"}:
+        return False
+    coordinate_parts = bbox_parts[0].split(",")
+    if len(coordinate_parts) != 4:
+        return False
+    try:
+        x, y, width, height = (float(part) for part in coordinate_parts)
+    except ValueError:
+        return False
+    return (
+        all(math.isfinite(coordinate) for coordinate in (x, y, width, height))
+        and x >= 0
+        and y >= 0
+        and width > 0
+        and height > 0
+    )
+
+
+def p9_docx_source_linkage(artifact_path: Path) -> list[dict[str, object]]:
+    namespace = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    relationship_namespace = (
+        "http://schemas.openxmlformats.org/package/2006/relationships"
+    )
+    comments_relationship_type = (
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments"
+    )
+    with ZipFile(artifact_path) as archive:
+        document_root = ElementTree.fromstring(archive.read("word/document.xml"))
+        try:
+            relationships_root = ElementTree.fromstring(
+                archive.read("word/_rels/document.xml.rels")
+            )
+        except (ElementTree.ParseError, KeyError):
+            relationships_root = None
+        comments_relationship_present = False
+        if relationships_root is not None:
+            for relationship in relationships_root.findall(
+                f"{{{relationship_namespace}}}Relationship"
+            ):
+                target = relationship.attrib.get("Target")
+                if not isinstance(target, str):
+                    continue
+                target_path = (
+                    posixpath.normpath(target).lstrip("/")
+                    if target.startswith("/")
+                    else posixpath.normpath(posixpath.join("word", target))
+                )
+                if (
+                    relationship.attrib.get("Type") == comments_relationship_type
+                    and relationship.attrib.get("TargetMode", "Internal") == "Internal"
+                    and target_path == "word/comments.xml"
+                ):
+                    comments_relationship_present = True
+                    break
+        try:
+            comments_root = (
+                ElementTree.fromstring(archive.read("word/comments.xml"))
+                if comments_relationship_present
+                else None
+            )
+        except (ElementTree.ParseError, KeyError):
+            comments_root = None
+
+    comments: dict[str, dict[str, str]] = {}
+    if comments_root is not None:
+        for comment in comments_root.findall(".//w:comment", namespace):
+            comment_id = comment.attrib.get(f"{{{namespace['w']}}}id")
+            if not isinstance(comment_id, str):
+                continue
+            fields: dict[str, str] = {}
+            for text_node in comment.findall(".//w:t", namespace):
+                value = text_node.text or ""
+                key, separator, field_value = value.partition("=")
+                if separator:
+                    fields[key] = field_value
+            comments[comment_id] = fields
+
+    body = document_root.find("w:body", namespace)
+    if body is None:
+        return []
+    linkage: list[dict[str, object]] = []
+    for child in body:
+        if child.tag not in {
+            f"{{{namespace['w']}}}p",
+            f"{{{namespace['w']}}}tbl",
+        }:
+            continue
+        text_parts: list[str] = []
+        for node in child.iter():
+            if node.tag == f"{{{namespace['w']}}}t":
+                text_parts.append(node.text or "")
+            elif node.tag == f"{{{namespace['w']}}}tab":
+                text_parts.append("\t")
+            elif node.tag in {
+                f"{{{namespace['w']}}}br",
+                f"{{{namespace['w']}}}cr",
+            }:
+                text_parts.append("\n")
+        text = "".join(text_parts)
+        if child.tag == f"{{{namespace['w']}}}p" and not text:
+            continue
+        references = child.findall(".//w:commentReference", namespace)
+        comment_id = (
+            references[-1].attrib.get(f"{{{namespace['w']}}}id")
+            if references
+            else None
+        )
+        fields = comments.get(comment_id, {}) if isinstance(comment_id, str) else {}
+        source_page_value = fields.get("source_page")
+        source_page = (
+            int(source_page_value)
+            if isinstance(source_page_value, str) and source_page_value.isdigit()
+            else None
+        )
+        linkage.append(
+            {
+                "text": text,
+                "comment_id": comment_id,
+                "block_id": fields.get("block_id"),
+                "source_page": source_page,
+                "bbox": fields.get("bbox"),
+                "requires_review": fields.get("requires_review") == "true",
+            }
+        )
+    return linkage
+
+
+def p9_docx_block_payload(block: Any) -> dict[str, object]:
+    payload: dict[str, object] = {"kind": block.kind}
+    if block.kind == "table":
+        payload["rows"] = block.rows
+    else:
+        payload["text"] = block.text
+    return payload
+
+
+def p9_expected_docx_block_payload(value: object) -> dict[str, object] | None:
+    if not isinstance(value, dict):
+        return None
+    kind = value.get("kind")
+    if not isinstance(kind, str):
+        return None
+    if kind == "table":
+        rows = value.get("rows")
+        return {"kind": kind, "rows": rows} if isinstance(rows, list) else None
+    text = value.get("text")
+    return {"kind": kind, "text": text} if isinstance(text, str) else None
+
+
+def p9_match_rate(expected: list[object], actual: list[object]) -> float:
+    if not expected:
+        return 1.0
+    matches = sum(
+        expected_value == actual[index]
+        for index, expected_value in enumerate(expected)
+        if index < len(actual)
+    )
+    return matches / len(expected)
+
+
+def p9_ordered_texts_present(expected: list[str], actual: list[str]) -> bool:
+    next_index = 0
+    for actual_text in actual:
+        if next_index < len(expected) and expected[next_index] == actual_text:
+            next_index += 1
+    return next_index == len(expected)
+
+
+def p9_validate_pdf_to_word_docx_content(
+    artifact_path: Path,
+    expectations: dict[str, Any],
+    *,
+    docx: Any | None = None,
+    required: bool = False,
+) -> dict[str, Any]:
+    from core.parsers.docx_extraction import extract_docx_structure
+
+    validator = expectations.get("validator")
+    if validator not in {
+        "record_pdf_docx_content_v1",
+        "scanned_pdf_explicit_review_v1",
+    }:
+        if required:
+            failure = f"unsupported docx content validator {validator!r}"
+            return {
+                "validator": validator if isinstance(validator, str) else None,
+                "status": "fail",
+                "checks": [],
+                "metrics": {},
+                "evidence": {},
+                "failures": [failure],
+            }
+        return {
+            "validator": None,
+            "status": "not_applicable",
+            "checks": [],
+            "metrics": {},
+            "evidence": {},
+            "failures": [],
+        }
+
+    parsed_docx = docx if docx is not None else extract_docx_structure(artifact_path)
+    actual_blocks = [p9_docx_block_payload(block) for block in parsed_docx.blocks]
+    expected_blocks_value = expectations.get("body_blocks")
+    if not isinstance(expected_blocks_value, list) or not expected_blocks_value:
+        failure = "docx body block expectations must be a non-empty list"
+        return {
+            "validator": validator,
+            "status": "fail",
+            "checks": [],
+            "metrics": {},
+            "evidence": {},
+            "failures": [failure],
+        }
+    expected_blocks: list[dict[str, object]] = []
+    expected_source_links: list[tuple[str, int]] = []
+    for index, value in enumerate(expected_blocks_value):
+        normalized = p9_expected_docx_block_payload(value)
+        if normalized is None:
+            failure = f"docx body block expectation at index {index} is malformed"
+            return {
+                "validator": validator,
+                "status": "fail",
+                "checks": [],
+                "metrics": {},
+                "evidence": {},
+                "failures": [failure],
+            }
+        block_id = value.get("block_id")
+        source_page = value.get("source_page")
+        if (
+            not isinstance(block_id, str)
+            or not block_id
+            or not isinstance(source_page, int)
+            or isinstance(source_page, bool)
+            or source_page < 1
+        ):
+            failure = (
+                f"docx body block expectation at index {index} has malformed "
+                "source linkage"
+            )
+            return {
+                "validator": validator,
+                "status": "fail",
+                "checks": [],
+                "metrics": {},
+                "evidence": {},
+                "failures": [failure],
+            }
+        expected_blocks.append(normalized)
+        expected_source_links.append((block_id, source_page))
+    title = expectations.get("document_title")
+    body_offset = (
+        1
+        if (
+            isinstance(title, str)
+            and actual_blocks
+            and actual_blocks[0] == {"kind": "heading", "text": title}
+        )
+        else 0
+    )
+    actual_body_blocks = actual_blocks[body_offset:]
+    body_match_rate = p9_match_rate(expected_blocks, actual_body_blocks)
+    body_matches = bool(expected_blocks) and actual_body_blocks == expected_blocks
+
+    linkage = p9_docx_source_linkage(artifact_path)
+    body_linkage = linkage[body_offset:]
+    linked_block_ids: list[str] = []
+    source_pages: set[int] = set()
+    linked_count = 0
+    for index, (expected_block_id, expected_page) in enumerate(expected_source_links):
+        linked = body_linkage[index] if index < len(body_linkage) else {}
+        block_id = linked.get("block_id")
+        source_page = linked.get("source_page")
+        if (
+            block_id == expected_block_id
+            and isinstance(source_page, int)
+            and source_page >= 1
+            and source_page == expected_page
+            and p9_docx_bbox_is_usable(linked.get("bbox"))
+        ):
+            linked_count += 1
+            linked_block_ids.append(block_id)
+            source_pages.add(source_page)
+    source_linkage_rate = (
+        linked_count / len(expected_source_links) if expected_source_links else 0.0
+    )
+    source_linkage_matches = (
+        bool(expected_source_links)
+        and linked_count == len(expected_source_links)
+        and len(body_linkage) == len(expected_source_links)
+    )
+
+    checks: list[dict[str, object]] = []
+    metrics: dict[str, float]
+    failures: list[str] = []
+    if validator == "record_pdf_docx_content_v1":
+        expected_sections_value = expectations.get("section_order")
+        if (
+            not isinstance(expected_sections_value, list)
+            or not expected_sections_value
+            or any(
+                not isinstance(value, str) or not value
+                for value in expected_sections_value
+            )
+        ):
+            failure = (
+                "docx section order expectations must be a non-empty list "
+                "of non-empty strings"
+            )
+            return {
+                "validator": validator,
+                "status": "fail",
+                "checks": [],
+                "metrics": {},
+                "evidence": {},
+                "failures": [failure],
+            }
+        expected_sections = expected_sections_value
+        actual_texts = [
+            str(block.get("text"))
+            for block in actual_body_blocks
+            if isinstance(block.get("text"), str)
+        ]
+        section_order_matches = bool(expected_sections) and p9_ordered_texts_present(
+            expected_sections,
+            actual_texts,
+        )
+        expected_phrases_value = expectations.get("expected_phrases")
+        if (
+            not isinstance(expected_phrases_value, list)
+            or not expected_phrases_value
+            or any(
+                not isinstance(value, str) or not value
+                for value in expected_phrases_value
+            )
+        ):
+            failure = (
+                "docx expected phrase expectations must be a non-empty list "
+                "of non-empty strings"
+            )
+            return {
+                "validator": validator,
+                "status": "fail",
+                "checks": [],
+                "metrics": {},
+                "evidence": {},
+                "failures": [failure],
+            }
+        expected_phrases = expected_phrases_value
+        artifact_text = "\n".join(actual_texts)
+        matched_phrases = [
+            phrase for phrase in expected_phrases if phrase in artifact_text
+        ]
+        expected_phrase_match_rate = (
+            len(matched_phrases) / len(expected_phrases)
+            if expected_phrases
+            else 0.0
+        )
+        expected_content_matches = (
+            bool(expected_phrases) and len(matched_phrases) == len(expected_phrases)
+        )
+        check_states = (
+            ("section_order", section_order_matches),
+            ("body_completeness", body_matches),
+            ("expected_content", expected_content_matches),
+            ("source_linkage", source_linkage_matches),
+        )
+        metrics = {
+            "section_order_match": 1.0 if section_order_matches else 0.0,
+            "body_block_match_rate": body_match_rate,
+            "expected_phrase_match_rate": expected_phrase_match_rate,
+            "source_linkage_rate": source_linkage_rate,
+        }
+    else:
+        review_guards = [
+            (
+                body_linkage[index].get("requires_review") is True
+                if index < len(body_linkage)
+                else False
+            )
+            for index in range(len(expected_blocks))
+        ]
+        review_guard_matches = bool(review_guards) and all(review_guards)
+        check_states = (
+            ("explicit_review_block", body_matches),
+            ("review_guard", review_guard_matches),
+            ("source_linkage", source_linkage_matches),
+        )
+        metrics = {
+            "explicit_review_block_match": 1.0 if body_matches else 0.0,
+            "review_guard_rate": (
+                sum(review_guards) / len(review_guards) if review_guards else 0.0
+            ),
+            "source_linkage_rate": source_linkage_rate,
+        }
+
+    for check_id, passed in check_states:
+        checks.append({"id": check_id, "status": "pass" if passed else "fail"})
+        if not passed:
+            failures.append(f"docx {check_id.replace('_', ' ')} validation failed")
+    return {
+        "validator": validator,
+        "status": "fail" if failures else "pass",
+        "checks": checks,
+        "metrics": metrics,
+        "evidence": {
+            "linked_block_ids": linked_block_ids,
+            "source_pages": sorted(source_pages),
+            "expected_body_block_count": len(expected_blocks),
+            "actual_body_block_count": len(actual_body_blocks),
+        },
+        "failures": failures,
+    }
+
+
 def p9_validate_docx_artifact(
-    artifact_path: Path, expectations: dict[str, Any]
+    artifact_path: Path,
+    expectations: dict[str, Any],
+    *,
+    content_validation: dict[str, Any] | None = None,
+    require_content_validation: bool = False,
 ) -> list[str]:
     from core.parsers.docx_extraction import extract_docx_structure
 
@@ -4730,6 +5155,17 @@ def p9_validate_docx_artifact(
         paragraphs = [block.text for block in docx.blocks if block.kind == "paragraph"]
         if paragraphs != expected_paragraphs:
             failures.append("docx paragraph texts did not match expectations")
+    structured_validation = p9_validate_pdf_to_word_docx_content(
+        artifact_path,
+        expectations,
+        docx=docx,
+        required=require_content_validation,
+    )
+    if content_validation is not None and (
+        require_content_validation or structured_validation["status"] != "not_applicable"
+    ):
+        content_validation.update(structured_validation)
+    failures.extend(structured_validation["failures"])
     return failures
 
 
@@ -4742,6 +5178,7 @@ def p9_validate_artifact_expectations(
     warnings: object,
     allowed_runtime_warning_prefixes: tuple[str, ...] = (),
     require_content_validation: bool = False,
+    content_validation: dict[str, Any] | None = None,
 ) -> list[str]:
     expectations = p9_expectations_for_mode(fixture, representative_mode)
     failures: list[str] = []
@@ -4768,9 +5205,21 @@ def p9_validate_artifact_expectations(
         )
     if expectations is None:
         if require_content_validation:
-            failures.append(
+            failure = (
                 f"artifact content validation is unavailable for {representative_mode}"
             )
+            failures.append(failure)
+            if content_validation is not None:
+                content_validation.update(
+                    {
+                        "validator": None,
+                        "status": "unavailable",
+                        "checks": [],
+                        "metrics": {},
+                        "evidence": {},
+                        "failures": [failure],
+                    }
+                )
         return failures
     expected_warnings = expectations.get("warnings")
     if isinstance(expected_warnings, list):
@@ -4811,7 +5260,18 @@ def p9_validate_artifact_expectations(
                 )
             )
         elif artifact_format == "docx":
-            failures.extend(p9_validate_docx_artifact(artifact_path, expectations))
+            failures.extend(
+                p9_validate_docx_artifact(
+                    artifact_path,
+                    expectations,
+                    content_validation=content_validation,
+                    require_content_validation=(
+                        require_content_validation
+                        and representative_mode
+                        in {"pdf_to_word", "scanned_pdf_ocr"}
+                    ),
+                )
+            )
     except Exception as exc:
         failures.append(f"artifact validation failed: {type(exc).__name__}: {exc}")
     finally:
@@ -5568,7 +6028,9 @@ def mvp_conversion_result(
         if case["category"] == "scanned_pdf"
         else str(case["conversion_mode"])
     )
+    primary_artifact = p9_primary_artifact(artifact_list)
     artifact_failures: list[str] = []
+    content_validation: dict[str, Any] = {}
     if actual_formats != expected_formats:
         artifact_failures.append(
             "primary artifact formats did not match manifest expectations"
@@ -5578,11 +6040,29 @@ def mvp_conversion_result(
             fixture=case,
             conversion_mode=str(case["conversion_mode"]),
             representative_mode=representative_mode,
-            primary_artifact=p9_primary_artifact(artifact_list),
+            primary_artifact=primary_artifact,
             warnings=warnings,
             require_content_validation=True,
+            content_validation=content_validation,
         )
     )
+    if content_validation:
+        evidence = content_validation.get("evidence")
+        if isinstance(evidence, dict):
+            audit = converted.get("audit")
+            hashes = converted.get("hashes")
+            evidence["artifact_id"] = (
+                primary_artifact.get("id")
+                if isinstance(primary_artifact, dict)
+                else None
+            )
+            evidence["conversion_id"] = converted.get("conversion_id")
+            evidence["source_sha256"] = (
+                hashes.get("source_sha256") if isinstance(hashes, dict) else None
+            )
+            evidence["audit_schema_version"] = (
+                audit.get("schema_version") if isinstance(audit, dict) else None
+            )
     artifact_status = "fail" if artifact_failures else "pass"
 
     observed_status = converted.get("status")
@@ -5642,6 +6122,7 @@ def mvp_conversion_result(
             "actual_formats": actual_formats,
             "review_decision": primary_review_decision,
             "review_decisions": authoritative_decisions,
+            "content_validation": content_validation or None,
             "reason": None if not artifact_failures else "; ".join(artifact_failures),
         },
         "review": {
