@@ -372,6 +372,19 @@ class LocalNetworkBoundaryTest(unittest.TestCase):
 
         self.assertEqual(observer.result()["external_attempt_count"], 1)
 
+    def test_unconfigured_loopback_socket_target_is_rejected(self) -> None:
+        with self.assertRaisesRegex(
+            NetworkBoundaryViolation,
+            "external socket attempt blocked",
+        ):
+            with self.observer.observe_python_network():
+                with socket.socket() as client:
+                    client.connect_ex(("127.0.0.1", 8766))
+
+        result = self.observer.result()
+        self.assertEqual(result["external_attempt_count"], 1)
+        self.assertEqual(result["attempts"][0]["target"], "127.0.0.1:8766")
+
     def test_external_connect_ex_attempt_is_recorded_and_rejected(self) -> None:
         with self.assertRaisesRegex(
             NetworkBoundaryViolation,
@@ -440,6 +453,34 @@ class RerunPackageValidationTest(unittest.TestCase):
 
         self.assertEqual(snapshot["mode"], "deterministic-fallback")
         self.assertIsNone(snapshot["selected_profile"])
+
+    def test_inference_snapshot_preserves_exact_runtime_values(self) -> None:
+        profiles = {
+            "profiles": [
+                {
+                    "id": "standard",
+                    "base_url_env": "VERIDOC_STANDARD_OPENAI_BASE_URL",
+                    "model_env": "VERIDOC_STANDARD_MODEL",
+                    "api_key_env": "VERIDOC_STANDARD_OPENAI_API_KEY",
+                    "optional_env": [],
+                }
+            ]
+        }
+        endpoint = " http://127.0.0.1:8000/v1 "
+        model = " qwen "
+
+        snapshot = _inference_environment_snapshot(
+            profiles,
+            environment={
+                "VERIDOC_STANDARD_OPENAI_BASE_URL": endpoint,
+                "VERIDOC_STANDARD_MODEL": model,
+            },
+        )
+
+        environment = snapshot["profiles"][0]["environment"]
+        self.assertEqual(environment["VERIDOC_STANDARD_OPENAI_BASE_URL"], endpoint)
+        self.assertEqual(environment["VERIDOC_STANDARD_MODEL"], model)
+        self.assertEqual(snapshot["mode"], "local-llm")
 
     def test_dirty_checkout_is_rejected_before_package_sealing(self) -> None:
         with patch(

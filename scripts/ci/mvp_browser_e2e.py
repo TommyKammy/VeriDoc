@@ -223,10 +223,7 @@ class LocalNetworkBoundaryObserver:
             return
         host = _normalize_network_host(str(address[0]))
         port = address[1] if len(address) > 1 else None
-        allowed = (
-            _is_loopback_host(host)
-            or (host, port) in self._allowed_socket_targets
-        )
+        allowed = (host, port) in self._allowed_socket_targets
         target = f"{host}:{port}" if port is not None else host
         self._record(
             kind="socket",
@@ -760,7 +757,7 @@ def _inference_environment_snapshot(
                     ),
                 }
                 continue
-            normalized_value = raw_value.strip() if raw_value is not None else None
+            normalized_value = raw_value
             if name == base_url_env and normalized_value is not None:
                 parsed = urlsplit(normalized_value)
                 userinfo, separator, endpoint_netloc = parsed.netloc.rpartition("@")
@@ -773,15 +770,23 @@ def _inference_environment_snapshot(
                     ),
                 }
                 if separator:
+                    leading_whitespace = normalized_value[
+                        : len(normalized_value) - len(normalized_value.lstrip())
+                    ]
                     normalized_value = parsed._replace(
                         netloc=endpoint_netloc
                     ).geturl()
-            values[name] = normalized_value or None
+                    normalized_value = f"{leading_whitespace}{normalized_value}"
+            values[name] = normalized_value
 
+        base_url_value = environment.get(base_url_env)
+        model_value = environment.get(model_env)
         if (
             selected_profile is None
-            and values.get(base_url_env) is not None
-            and values.get(model_env) is not None
+            and base_url_value is not None
+            and base_url_value.strip()
+            and model_value is not None
+            and model_value.strip()
         ):
             selected_profile = profile_id
         records.append(
