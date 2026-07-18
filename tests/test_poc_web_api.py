@@ -8210,7 +8210,12 @@ def test_poc_http_api_stores_uploaded_job_source_before_returning_reference() ->
         "sha256": source_sha256,
         "content": uploaded_content,
     }
-    assert server.job_event_store.list_events(filters={"job_id": job.job_id}) == []
+    events = server.job_event_store.list_events(filters={"job_id": job.job_id})
+    assert len(events) == 1
+    assert events[0]["event_type"] == "web.job_operation"
+    assert events[0]["action"] == "browser_upload"
+    assert events[0]["job_status"] == "queued"
+    assert events[0]["source_sha256"] == source_sha256
 
 
 def test_poc_http_api_job_submission_reaches_status_and_result() -> None:
@@ -9084,7 +9089,10 @@ def test_poc_http_api_rejects_late_idempotent_desktop_upload_audit_create() -> N
         "error": "invalid_job_request",
         "message": "desktop_upload audit cannot be added after idempotent job creation",
     }
-    assert events == []
+    assert len(events) == 1
+    assert events[0]["event_type"] == "web.job_operation"
+    assert events[0]["action"] == "browser_upload"
+    assert events[0]["job_id"] == initial_body["job"]["job_id"]
     assert len(jobs) == 1
     assert jobs[0].job_id == initial_body["job"]["job_id"]
     assert jobs[0].status == "failed"

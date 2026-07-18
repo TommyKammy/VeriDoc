@@ -76,10 +76,12 @@ def _events(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 @contextmanager
-def _poc_server(state_root: Path, *, auth_token: str) -> Iterator[str]:
+def _poc_server(
+    state_root: Path, *, auth_token: str, approver_actor: str
+) -> Iterator[str]:
     previous_auth = os.environ.get("VERIDOC_LOCAL_AUTH_TOKENS")
     os.environ["VERIDOC_LOCAL_AUTH_TOKENS"] = (
-        f"approver:e2e-{uuid.uuid4().hex}={auth_token}"
+        f"approver:{approver_actor}={auth_token}"
     )
     database_path = state_root / "veridoc.sqlite3"
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
@@ -132,10 +134,13 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
     audit_screenshot = run_dir / "03-audit.png"
     api_result_path = run_dir / "api-result.json"
     auth_token = uuid.uuid4().hex
+    approver_actor = f"e2e-{uuid.uuid4().hex}"
 
     with tempfile.TemporaryDirectory(prefix="veridoc-browser-e2e-") as state_dir:
         with _poc_server(
-            Path(state_dir), auth_token=auth_token
+            Path(state_dir),
+            auth_token=auth_token,
+            approver_actor=approver_actor,
         ) as base_url, sync_playwright() as playwright:
             browser = _launch_browser(playwright)
             context = browser.new_context(accept_downloads=True)
@@ -233,6 +238,29 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
                 )
                 if artifact is None:
                     raise AssertionError("completed browser result did not contain a primary artifact")
+                artifact_id = artifact.get("artifact_id")
+                if not isinstance(artifact_id, str) or not artifact_id:
+                    raise AssertionError(
+                        "completed browser result did not bind the primary artifact ID"
+                    )
+                artifact_href = artifact.get("href")
+                if artifact_href != f"/api/artifacts/{artifact_id}":
+                    raise AssertionError(
+                        "completed browser result did not expose a persisted primary artifact"
+                    )
+                persisted_artifact_response = context.request.get(
+                    base_url + artifact_href, headers=auth_headers
+                )
+                if not persisted_artifact_response.ok:
+                    raise AssertionError("persisted primary artifact download failed")
+                persisted_artifact_content = persisted_artifact_response.body()
+                persisted_artifact_sha256 = hashlib.sha256(
+                    persisted_artifact_content
+                ).hexdigest()
+                if persisted_artifact_sha256 != artifact.get("sha256"):
+                    raise AssertionError(
+                        "persisted primary artifact hash did not match the API result"
+                    )
                 with page.expect_download(timeout=10_000) as download_info:
                     page.locator("#download-link").click()
                 download = download_info.value
@@ -240,8 +268,10 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
                 download_path = run_dir / download_name
                 download.save_as(download_path)
                 downloaded_sha256 = _sha256(download_path)
-                if downloaded_sha256 != artifact.get("sha256"):
-                    raise AssertionError("downloaded artifact hash did not match the API result")
+                if downloaded_sha256 != persisted_artifact_sha256:
+                    raise AssertionError(
+                        "browser download did not match the persisted primary artifact"
+                    )
                 artifact_audit_sha256 = artifact.get("metadata", {}).get("output_sha256")
                 if downloaded_sha256 != artifact_audit_sha256:
                     raise AssertionError(
@@ -260,39 +290,79 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
                     raise AssertionError(
                         "completed browser result did not contain the audit-json artifact"
                     )
+                audit_artifact_id = audit_artifact.get("artifact_id")
+                if not isinstance(audit_artifact_id, str) or not audit_artifact_id:
+                    raise AssertionError(
+                        "completed browser result did not bind the audit artifact ID"
+                    )
+                audit_artifact_href = audit_artifact.get("href")
+                if audit_artifact_href != f"/api/artifacts/{audit_artifact_id}":
+                    raise AssertionError(
+                        "completed browser result did not expose a persisted audit artifact"
+                    )
                 audit_response = context.request.get(
-                    base_url + audit_artifact["href"], headers=auth_headers
+                    base_url + audit_artifact_href, headers=auth_headers
                 )
                 if not audit_response.ok:
                     raise AssertionError("audit JSON artifact download failed")
-                audit_payload = _json_response(audit_response)
+                audit_content = audit_response.body()
+                audit_downloaded_sha256 = hashlib.sha256(audit_content).hexdigest()
+                if audit_downloaded_sha256 != audit_artifact.get("sha256"):
+                    raise AssertionError(
+                        "downloaded audit artifact hash did not match the API result"
+                    )
+                try:
+                    audit_payload = json.loads(audit_content)
+                except (TypeError, ValueError) as exc:
+                    raise AssertionError(
+                        "downloaded audit artifact was not valid JSON"
+                    ) from exc
+                if not isinstance(audit_payload, dict):
+                    raise AssertionError(
+                        "downloaded audit artifact must be a JSON object"
+                    )
                 audit_artifact_path = run_dir / "audit-artifact.json"
-                audit_artifact_path.write_text(
-                    json.dumps(audit_payload, ensure_ascii=False, indent=2) + "\n",
-                    encoding="utf-8",
-                )
+                audit_artifact_path.write_bytes(audit_content)
 
                 page.locator('[data-nav-target="audit"]').click()
                 page.locator("#refresh-audit").click()
                 expect(page.locator("#audit-body tr").first).to_be_visible(timeout=10_000)
                 page.screenshot(path=str(audit_screenshot), full_page=True)
 
-                job_events = _events(
-                    _json_response(
-                        context.request.get(
-                            base_url + f"/api/job-events?job_id={job_id}",
-                            headers=auth_headers,
-                        )
-                    )
+                job_events_response = context.request.get(
+                    base_url + f"/api/job-events?job_id={job_id}",
+                    headers=auth_headers,
                 )
-                review_events = _events(
-                    _json_response(
-                        context.request.get(
-                            base_url + "/api/review-events", headers=auth_headers
-                        )
-                    )
+                if not job_events_response.ok:
+                    raise AssertionError("job audit event lookup failed")
+                job_events = _events(_json_response(job_events_response))
+                if not job_events:
+                    raise AssertionError("completed browser run did not record a job event")
+                review_events_response = context.request.get(
+                    base_url + "/api/review-events", headers=auth_headers
                 )
+                if not review_events_response.ok:
+                    raise AssertionError("review audit event lookup failed")
+                review_events = _events(_json_response(review_events_response))
+                if not review_events:
+                    raise AssertionError(
+                        "completed browser run did not record a review event"
+                    )
                 review_event = review_events[-1]
+                review_actor = review_event.get("actor")
+                expected_review_actor = {
+                    "id": f"local-principal:{approver_actor}",
+                    "role": "approver",
+                }
+                if review_event.get("action") != "approve":
+                    raise AssertionError(
+                        "completed browser run did not record an approval event"
+                    )
+                if review_actor != expected_review_actor:
+                    raise AssertionError(
+                        "approval event was not bound to the authenticated approver: "
+                        f"expected {expected_review_actor!r}, got {review_actor!r}"
+                    )
                 evidence = {
                     "schema_version": "veridoc-mvp-browser-e2e/v1",
                     "run_id": run_id,
@@ -311,14 +381,16 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
                             "document_id": review_event.get("document_id"),
                             "block_id": review_event.get("block_id"),
                             "action": review_event.get("action"),
+                            "actor": review_actor,
                         },
                         "artifact": {
-                            "artifact_id": artifact.get("artifact_id"),
+                            "artifact_id": artifact_id,
                             "filename": artifact.get("filename"),
                             "sha256": downloaded_sha256,
                         },
                         "audit": {
                             "artifact_sha256": artifact_audit_sha256,
+                            "audit_artifact_sha256": audit_downloaded_sha256,
                             "job_event_count": len(job_events),
                             "review_event_count": len(review_events),
                         },

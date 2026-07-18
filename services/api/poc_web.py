@@ -1749,7 +1749,28 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                     template=requested_template,
                     request_parameters=request_parameters,
                     create_template=lambda: self._job_template_snapshot(request.get("template_id")),
+                    enqueue=False,
+                    publish=False,
                 )
+                if created_job:
+                    job_event_store = self._job_event_store()
+                    try:
+                        upload_audit_event = _job_event_with_auth_context(
+                            _web_upload_audit_event(job),
+                            auth_context,
+                        )
+                        upload_audit_event, job = job_event_store.record_once_and_publish(
+                            upload_audit_event,
+                            dedupe={
+                                "job_id": job.job_id,
+                                "action": "browser_upload",
+                            },
+                            job_queue=job_queue,
+                            job_id=job.job_id,
+                        )
+                    except Exception:
+                        job_queue.discard_queued_job(job.job_id)
+                        raise
             else:
                 job, created_job = job_queue.get_or_create_job(
                     idempotency_key=idempotency_key,
@@ -2800,6 +2821,33 @@ def _desktop_upload_audit_event(job: JobRecord) -> dict[str, Any]:
         "source_sha256": _sha256_value(source.get("sha256")),
         "size_bytes": source.get("size_bytes") if isinstance(source.get("size_bytes"), int) else None,
         "content_type": source.get("content_type") if isinstance(source.get("content_type"), str) else None,
+    }
+
+
+def _web_upload_audit_event(job: JobRecord) -> dict[str, Any]:
+    source = job.source if isinstance(job.source, dict) else {}
+    source_filename = source.get("filename")
+    filename = _safe_filename(
+        source_filename if isinstance(source_filename, str) else job.filename
+    )
+    return {
+        "event_type": "web.job_operation",
+        "job_id": job.job_id,
+        "job_status": job.status,
+        "action": "browser_upload",
+        "filename": filename,
+        "mode": job.mode,
+        "source_sha256": _sha256_value(source.get("sha256")),
+        "size_bytes": (
+            source.get("size_bytes")
+            if isinstance(source.get("size_bytes"), int)
+            else None
+        ),
+        "content_type": (
+            source.get("content_type")
+            if isinstance(source.get("content_type"), str)
+            else None
+        ),
     }
 
 
