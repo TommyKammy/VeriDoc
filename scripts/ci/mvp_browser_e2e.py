@@ -2331,13 +2331,13 @@ def run_browser_e2e(
                 page.screenshot(path=str(keyboard_screenshot), full_page=True)
 
                 network_boundary.observe_http_attempt(
-                    base_url + f"/api/job-events?job_id={job_id}",
+                    base_url + "/api/job-events",
                     method="GET",
                     source="playwright_api_request",
                 )
                 job_events_response = _request_local_api_get(
                     context.request,
-                    base_url + f"/api/job-events?job_id={job_id}",
+                    base_url + "/api/job-events",
                     headers=auth_headers,
                 )
                 if not job_events_response.ok:
