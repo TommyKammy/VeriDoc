@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata
 import importlib.util
 import json
 import os
@@ -751,18 +752,42 @@ class RerunPackageValidationTest(unittest.TestCase):
                 "external_attempt_count": 0,
             },
         }
-        with patch("scripts.ci.mvp_browser_e2e._assert_clean_git_checkout"):
-            package = build_rerun_package(
-                evidence,
-                browser_version="test-browser",
-            )["package"]
-        distributions = package["dependencies"]["runtime"]["distributions"]
-        self.assertIn("pyee", distributions)
-        distributions["pyee"] = "0.0.0"
+        real_distribution = importlib.metadata.distribution
 
-        with self.assertRaisesRegex(ValueError, "runtime dependencies"):
+        def distribution(name: str) -> object:
+            normalized_name = name.lower().replace("_", "-")
+            if normalized_name == "playwright":
+                return type(
+                    "Distribution",
+                    (),
+                    {"version": "1.49.0", "requires": ["pyee>=12,<14"]},
+                )()
+            if normalized_name == "pyee":
+                return type(
+                    "Distribution",
+                    (),
+                    {"version": "13.0.0", "requires": []},
+                )()
+            return real_distribution(name)
+
+        with patch(
+            "scripts.ci.mvp_browser_e2e.importlib.metadata.distribution",
+            side_effect=distribution,
+        ):
             with patch("scripts.ci.mvp_browser_e2e._assert_clean_git_checkout"):
-                validate_rerun_package_for_workspace(seal_rerun_package(package))
+                package = build_rerun_package(
+                    evidence,
+                    browser_version="test-browser",
+                )["package"]
+            distributions = package["dependencies"]["runtime"]["distributions"]
+            self.assertIn("pyee", distributions)
+            distributions["pyee"] = "0.0.0"
+
+            with self.assertRaisesRegex(ValueError, "runtime dependencies"):
+                with patch("scripts.ci.mvp_browser_e2e._assert_clean_git_checkout"):
+                    validate_rerun_package_for_workspace(
+                        seal_rerun_package(package)
+                    )
 
     def test_resealed_baseline_must_match_retained_evidence(self) -> None:
         evidence = {
