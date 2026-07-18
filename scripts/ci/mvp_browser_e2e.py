@@ -21,7 +21,7 @@ from contextlib import contextmanager
 from copy import deepcopy
 from http.server import ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, Mapping
 from urllib.parse import urlsplit
 from zipfile import ZipFile
 
@@ -585,6 +585,90 @@ def _rerun_input_paths(repo_root: Path = REPO_ROOT) -> tuple[Path, ...]:
     )
 
 
+def _browser_channel() -> str:
+    return (
+        os.environ.get("VERIDOC_E2E_BROWSER_CHANNEL")
+        or "playwright-managed-chromium"
+    )
+
+
+def _inference_environment_snapshot(
+    profiles: dict[str, Any],
+    *,
+    environment: Mapping[str, str] = os.environ,
+) -> dict[str, Any]:
+    profile_definitions = profiles.get("profiles")
+    if not isinstance(profile_definitions, list) or not profile_definitions:
+        raise ValueError("inference profile configuration is incomplete")
+
+    records: list[dict[str, Any]] = []
+    selected_profile: str | None = None
+    for profile in profile_definitions:
+        if not isinstance(profile, dict):
+            raise ValueError("inference profile configuration is malformed")
+        profile_id = profile.get("id")
+        base_url_env = profile.get("base_url_env")
+        model_env = profile.get("model_env")
+        api_key_env = profile.get("api_key_env")
+        optional_env = profile.get("optional_env")
+        if (
+            not isinstance(profile_id, str)
+            or not profile_id
+            or not isinstance(base_url_env, str)
+            or not base_url_env
+            or not isinstance(model_env, str)
+            or not model_env
+            or (
+                api_key_env is not None
+                and (not isinstance(api_key_env, str) or not api_key_env)
+            )
+            or not isinstance(optional_env, list)
+            or not all(isinstance(name, str) and name for name in optional_env)
+        ):
+            raise ValueError("inference profile environment binding is incomplete")
+
+        environment_names = sorted(
+            {
+                base_url_env,
+                model_env,
+                *optional_env,
+                *([api_key_env] if isinstance(api_key_env, str) else []),
+            }
+        )
+        values: dict[str, str | None] = {}
+        credential_fingerprints: dict[str, dict[str, object]] = {}
+        for name in environment_names:
+            raw_value = environment.get(name)
+            if name == api_key_env:
+                credential_fingerprints[name] = {
+                    "configured": raw_value is not None,
+                    "sha256": (
+                        hashlib.sha256(raw_value.encode("utf-8")).hexdigest()
+                        if raw_value is not None
+                        else None
+                    ),
+                }
+                continue
+            normalized_value = raw_value.strip() if raw_value is not None else None
+            values[name] = normalized_value or None
+
+        if selected_profile is None and values.get(base_url_env) is not None:
+            selected_profile = profile_id
+        records.append(
+            {
+                "id": profile_id,
+                "environment": values,
+                "credential_fingerprints": credential_fingerprints,
+            }
+        )
+
+    return {
+        "mode": "local-llm" if selected_profile is not None else "deterministic-fallback",
+        "selected_profile": selected_profile,
+        "profiles": records,
+    }
+
+
 def validate_rerun_runtime_dependencies(
     package: dict[str, Any],
     *,
@@ -636,10 +720,8 @@ def build_rerun_package(
             "sha256": _sha256(profiles_path),
             "network_boundary": profiles.get("network_boundary"),
             "profiles": profiles.get("profiles"),
-            "browser_channel": os.environ.get(
-                "VERIDOC_E2E_BROWSER_CHANNEL",
-                "playwright-managed-chromium",
-            ),
+            "browser_channel": _browser_channel(),
+            "inference_environment": _inference_environment_snapshot(profiles),
         },
         "dependencies": _dependency_snapshot(
             browser_version=browser_version,
@@ -684,6 +766,21 @@ def validate_rerun_package_for_workspace(
     package = validate_rerun_package_envelope(envelope)
     if package.get("commit") != _current_git_commit(repo_root):
         raise ValueError("rerun package commit does not match the current checkout")
+    configuration = package.get("configuration")
+    if not isinstance(configuration, dict):
+        raise ValueError("rerun package configuration is incomplete")
+    if configuration.get("browser_channel") != _browser_channel():
+        raise ValueError(
+            "rerun package browser channel does not match the current environment"
+        )
+    profiles_path = repo_root / "services" / "api" / "inference_profiles.json"
+    profiles = json.loads(profiles_path.read_text(encoding="utf-8"))
+    if configuration.get(
+        "inference_environment"
+    ) != _inference_environment_snapshot(profiles):
+        raise ValueError(
+            "rerun package inference environment does not match the current environment"
+        )
     records = package.get("inputs")
     if not isinstance(records, list) or not records:
         raise ValueError("rerun package inputs list is missing")
@@ -950,10 +1047,23 @@ def _acceptance_network_boundary(
 
 
 def _launch_browser(playwright: Any) -> Any:
-    requested_channel = os.environ.get("VERIDOC_E2E_BROWSER_CHANNEL")
-    if requested_channel:
+    requested_channel = _browser_channel()
+    if requested_channel != "playwright-managed-chromium":
         return playwright.chromium.launch(channel=requested_channel, headless=True)
     return playwright.chromium.launch(headless=True)
+
+
+def _request_local_api_get(
+    request: Any,
+    url: str,
+    *,
+    headers: dict[str, str],
+) -> Any:
+    return request.get(
+        url,
+        headers=headers,
+        max_redirects=0,
+    )
 
 
 def _record_active_focus(page: Any, focus_trace: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1148,7 +1258,8 @@ def run_browser_e2e(
                     method="GET",
                     source="playwright_api_request",
                 )
-                job_response = context.request.get(
+                job_response = _request_local_api_get(
+                    context.request,
                     base_url + f"/api/jobs/{job_id}", headers=auth_headers
                 )
                 if not job_response.ok:
@@ -1233,7 +1344,8 @@ def run_browser_e2e(
                     method="GET",
                     source="playwright_api_request",
                 )
-                persisted_artifact_response = context.request.get(
+                persisted_artifact_response = _request_local_api_get(
+                    context.request,
                     base_url + artifact_href, headers=auth_headers
                 )
                 if not persisted_artifact_response.ok:
@@ -1290,7 +1402,8 @@ def run_browser_e2e(
                     method="GET",
                     source="playwright_api_request",
                 )
-                audit_response = context.request.get(
+                audit_response = _request_local_api_get(
+                    context.request,
                     base_url + audit_artifact_href, headers=auth_headers
                 )
                 if not audit_response.ok:
@@ -1526,7 +1639,8 @@ def run_browser_e2e(
                     method="GET",
                     source="playwright_api_request",
                 )
-                job_events_response = context.request.get(
+                job_events_response = _request_local_api_get(
+                    context.request,
                     base_url + f"/api/job-events?job_id={job_id}",
                     headers=auth_headers,
                 )
@@ -1548,8 +1662,10 @@ def run_browser_e2e(
                     method="GET",
                     source="playwright_api_request",
                 )
-                review_events_response = context.request.get(
-                    base_url + "/api/review-events", headers=auth_headers
+                review_events_response = _request_local_api_get(
+                    context.request,
+                    base_url + "/api/review-events",
+                    headers=auth_headers,
                 )
                 if not review_events_response.ok:
                     raise AssertionError("review audit event lookup failed")

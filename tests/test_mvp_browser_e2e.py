@@ -16,6 +16,7 @@ from scripts.ci.mvp_browser_e2e import (
     NetworkBoundaryViolation,
     _assert_clean_git_checkout,
     _launch_browser,
+    _request_local_api_get,
     _require_audit_payload_matches_result,
     _require_matching_event,
     assert_rerun_equivalent,
@@ -64,6 +65,27 @@ class BrowserLaunchSelectionTest(unittest.TestCase):
 
         self.assertEqual(chromium.calls, [{"headless": True}])
 
+    def test_empty_channel_uses_playwright_managed_chromium(self) -> None:
+        class Chromium:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            def launch(self, **kwargs: object) -> object:
+                self.calls.append(kwargs)
+                return object()
+
+        chromium = Chromium()
+        playwright = type("Playwright", (), {"chromium": chromium})()
+
+        with patch.dict(
+            os.environ,
+            {"VERIDOC_E2E_BROWSER_CHANNEL": ""},
+            clear=True,
+        ):
+            _launch_browser(playwright)
+
+        self.assertEqual(chromium.calls, [{"headless": True}])
+
     def test_configured_channel_is_an_explicit_override(self) -> None:
         class Chromium:
             def __init__(self) -> None:
@@ -86,6 +108,42 @@ class BrowserLaunchSelectionTest(unittest.TestCase):
         self.assertEqual(
             chromium.calls,
             [{"channel": "chrome", "headless": True}],
+        )
+
+
+class LocalApiRequestTest(unittest.TestCase):
+    def test_get_disables_redirects_before_the_response_is_observed(self) -> None:
+        response = object()
+
+        class Request:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, dict[str, object]]] = []
+
+            def get(self, url: str, **kwargs: object) -> object:
+                self.calls.append((url, kwargs))
+                return response
+
+        request = Request()
+
+        self.assertIs(
+            _request_local_api_get(
+                request,
+                "http://127.0.0.1:8788/api/jobs/job-test",
+                headers={"Authorization": "Bearer local-token"},
+            ),
+            response,
+        )
+        self.assertEqual(
+            request.calls,
+            [
+                (
+                    "http://127.0.0.1:8788/api/jobs/job-test",
+                    {
+                        "headers": {"Authorization": "Bearer local-token"},
+                        "max_redirects": 0,
+                    },
+                )
+            ],
         )
 
 
@@ -321,6 +379,10 @@ class RerunPackageValidationTest(unittest.TestCase):
         self.assertRegex(package["commit"], r"^[0-9a-f]{40}$")
         self.assertGreaterEqual(len(package["inputs"]), 5)
         self.assertTrue(package["configuration"]["profiles"])
+        self.assertIn(
+            "inference_environment",
+            package["configuration"],
+        )
         self.assertTrue(package["dependencies"]["requirement_files"])
         self.assertIn("prompt", package["versions"])
         self.assertIn("<rerun-package-path>", package["commands"]["rerun"])
@@ -393,6 +455,73 @@ class RerunPackageValidationTest(unittest.TestCase):
                 package,
                 browser_version="different-browser",
             )
+
+    def test_package_inference_environment_drift_is_rejected(self) -> None:
+        evidence = {
+            "schema_version": "veridoc-mvp-browser-e2e/v1",
+            "network_observation": {
+                "status": "pass",
+                "external_ai_api_send_count": 0,
+                "external_attempt_count": 0,
+            },
+        }
+        baseline_environment = {
+            "VERIDOC_STANDARD_OPENAI_BASE_URL": "http://127.0.0.1:8000/v1",
+            "VERIDOC_STANDARD_MODEL": "baseline-model",
+            "VERIDOC_STANDARD_OPENAI_API_KEY": "local-secret",
+        }
+        with patch.dict(os.environ, baseline_environment):
+            with patch("scripts.ci.mvp_browser_e2e._assert_clean_git_checkout"):
+                envelope = build_rerun_package(
+                    evidence,
+                    browser_version="test-browser",
+                )
+
+        inference_environment = envelope["package"]["configuration"][
+            "inference_environment"
+        ]
+        self.assertNotIn("local-secret", json.dumps(inference_environment))
+        with patch.dict(
+            os.environ,
+            {
+                **baseline_environment,
+                "VERIDOC_STANDARD_MODEL": "rerun-model",
+            },
+        ):
+            with self.assertRaisesRegex(ValueError, "inference environment"):
+                with patch(
+                    "scripts.ci.mvp_browser_e2e._assert_clean_git_checkout"
+                ):
+                    validate_rerun_package_for_workspace(envelope)
+
+    def test_package_browser_channel_drift_is_rejected(self) -> None:
+        evidence = {
+            "schema_version": "veridoc-mvp-browser-e2e/v1",
+            "network_observation": {
+                "status": "pass",
+                "external_ai_api_send_count": 0,
+                "external_attempt_count": 0,
+            },
+        }
+        with patch.dict(
+            os.environ,
+            {"VERIDOC_E2E_BROWSER_CHANNEL": "chrome"},
+        ):
+            with patch("scripts.ci.mvp_browser_e2e._assert_clean_git_checkout"):
+                envelope = build_rerun_package(
+                    evidence,
+                    browser_version="test-browser",
+                )
+
+        with patch.dict(
+            os.environ,
+            {"VERIDOC_E2E_BROWSER_CHANNEL": "chromium"},
+        ):
+            with self.assertRaisesRegex(ValueError, "browser channel"):
+                with patch(
+                    "scripts.ci.mvp_browser_e2e._assert_clean_git_checkout"
+                ):
+                    validate_rerun_package_for_workspace(envelope)
 
     def test_equivalence_ignores_run_identity_and_timing_only(self) -> None:
         expected = {
