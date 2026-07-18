@@ -14,7 +14,7 @@ Missing authoritative decisions or run evidence remain fail-closed.
 - Reproduction checkout:
   `git checkout --detach "$(git log -1 --format=%H -- docs/mvp-acceptance-gap-register.md)"`
 - Criteria source Git blob:
-  `0a25d7b6b81cc765aa7d362c5686240eef6fc3b6`
+  `6e9d44526e8f0ff8154531a1d2a19e02aa8343a3`
 - Evaluator Git blob:
   `113797aa7ffd7a615b6fdd5eb9c51d8e18536585`
 - Generated at: `2026-07-18` (Asia/Tokyo)
