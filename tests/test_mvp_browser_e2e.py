@@ -198,8 +198,19 @@ class MvpBrowserE2ETest(unittest.TestCase):
                 set(review_flow["actions"]),
                 {"edit", "approve", "reject", "needs_fix"},
             )
+            self.assertEqual(
+                review_flow["actions"],
+                ["edit", "needs_fix", "approve", "reject"],
+            )
             self.assertEqual(review_flow["high_risk"]["auto_confirmed_count"], 0)
             self.assertGreaterEqual(review_flow["high_risk"]["review_target_count"], 1)
+            self.assertTrue(
+                review_flow["high_risk"]["approval_blocked_while_unresolved"]
+            )
+            self.assertIn(
+                "different actor",
+                review_flow["high_risk"]["approval_block_reason"],
+            )
             self.assertEqual(
                 review_flow["source_jump"]["page"],
                 review_flow["source_jump"]["review_item_page"],
@@ -219,12 +230,48 @@ class MvpBrowserE2ETest(unittest.TestCase):
             self.assertEqual(json.loads(evidence_path.read_text()), evidence)
             self.assertTrue((run_dir / evidence["files"]["trace"]).is_file())
             self.assertTrue((run_dir / evidence["files"]["api_result"]).is_file())
+            high_risk_api_result = json.loads(
+                (run_dir / evidence["files"]["high_risk_api_result"]).read_text()
+            )
+            self.assertEqual(
+                high_risk_api_result["audit"]["conversion_id"],
+                review_flow["high_risk"]["conversion_id"],
+            )
+            high_risk_api_items = [
+                item
+                for item in high_risk_api_result["review_items"]
+                if item.get("high_risk") is True
+            ]
+            self.assertEqual(
+                len(high_risk_api_items),
+                review_flow["high_risk"]["review_target_count"],
+            )
+            self.assertEqual(
+                sum(item.get("auto_confirmed") is True for item in high_risk_api_items),
+                review_flow["high_risk"]["auto_confirmed_count"],
+            )
+            self.assertEqual(
+                high_risk_api_items[0]["warning_details"][0],
+                review_flow["warnings"][0],
+            )
             review_events = json.loads(
                 (run_dir / evidence["files"]["review_events"]).read_text()
             )
             self.assertTrue(
                 {"edit", "approve", "reject", "needs_fix"}.issubset(
                     {event["action"] for event in review_events}
+                )
+            )
+            high_risk_review_actions = {
+                event["action"]
+                for event in review_events
+                if event.get("conversion_id")
+                == review_flow["high_risk"]["conversion_id"]
+            }
+            self.assertNotIn("approve", high_risk_review_actions)
+            self.assertTrue(
+                {"edit", "needs_fix", "reject"}.issubset(
+                    high_risk_review_actions
                 )
             )
             audit_artifact_path = run_dir / evidence["files"]["audit_artifact"]

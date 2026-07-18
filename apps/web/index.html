@@ -3236,11 +3236,14 @@
         const descriptors = (
           item.warning_details || item.warnings || []
         ).map(warningBadgeDescriptor);
+        const sourceBbox = reviewAuditSourceBbox(item);
         for (const descriptor of descriptors) {
+          const listItem = document.createElement("span");
+          listItem.setAttribute("role", "listitem");
           const badge = document.createElement("button");
           badge.type = "button";
           badge.className = `warning-badge ${severityClass(descriptor.severity)}`;
-          badge.setAttribute("role", "listitem");
+          badge.disabled = !sourceBbox;
           badge.textContent = `${descriptor.code} ${descriptor.label}`;
           badge.setAttribute(
             "aria-label",
@@ -3253,8 +3256,11 @@
           details.className = "warning-remediation";
           details.textContent = descriptor.remediation;
           badge.append(message, details);
-          badge.addEventListener("click", () => jumpToReviewItem(item));
-          badges.append(badge);
+          if (sourceBbox) {
+            badge.addEventListener("click", () => jumpToReviewItem(item));
+          }
+          listItem.append(badge);
+          badges.append(listItem);
         }
         const llmBadge = llmInvolvementBadge(item);
         if (llmBadge) badges.append(llmBadge);

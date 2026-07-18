@@ -300,6 +300,7 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
     audit_screenshot = run_dir / "03-audit.png"
     keyboard_screenshot = run_dir / "04-keyboard-high-risk-review.png"
     api_result_path = run_dir / "api-result.json"
+    high_risk_api_result_path = run_dir / "high-risk-api-result.json"
     review_events_path = run_dir / "review-events.json"
     auth_token = uuid.uuid4().hex
     approver_actor = f"e2e-{uuid.uuid4().hex}"
@@ -589,6 +590,14 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
                         "high-risk browser fixture did not expose a review target"
                     )
                 high_risk_result = json.loads(page.locator("#raw-result").inner_text())
+                if not isinstance(high_risk_result, dict):
+                    raise AssertionError(
+                        "high-risk browser result must be a JSON object"
+                    )
+                high_risk_api_result_path.write_text(
+                    json.dumps(high_risk_result, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
                 high_risk_api_items = [
                     item
                     for item in high_risk_result.get("review_items", [])
@@ -666,19 +675,6 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
                             f"warning UI did not match API {warning_field}"
                         )
 
-                _keyboard_activate(
-                    page,
-                    first_item_selector
-                    + ' button[data-review-action-name="approve"]:not([disabled])',
-                    focus_trace,
-                )
-                expect(
-                    page.locator(
-                        first_item_selector + ' [data-review-state-for="'
-                        + first_high_risk_block
-                        + '"]'
-                    )
-                ).to_have_text("approved")
                 edit = _tab_to(
                     page,
                     first_item_selector + " .review-edit",
@@ -715,6 +711,27 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
                     high_risk_items.first.get_attribute("data-review-state")
                     == "needs_fix"
                 )
+                approval_selector = (
+                    first_item_selector
+                    + ' button[data-review-action-name="approve"]:not([disabled])'
+                )
+                approval_state = page.locator(
+                    first_item_selector + ' [data-review-state-for="'
+                    + first_high_risk_block
+                    + '"]'
+                )
+                _keyboard_activate(
+                    page,
+                    approval_selector,
+                    focus_trace,
+                )
+                approval_status = page.locator("#review-action-status")
+                expect(approval_status).to_contain_text(
+                    "review approval must be performed by a different actor",
+                    timeout=10_000,
+                )
+                expect(approval_state).to_have_text("needs fix")
+                approval_block_message = approval_status.inner_text().strip()
                 _keyboard_activate(
                     page,
                     first_item_selector
@@ -764,7 +781,6 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
                 )
                 high_risk_conversion_id = high_risk_result["audit"]["conversion_id"]
                 for action, target in (
-                    ("approve", first_high_risk_item),
                     ("edit", first_high_risk_item),
                     ("needs_fix", first_high_risk_item),
                     ("reject", first_high_risk_item),
@@ -826,11 +842,14 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
                     "review_flow": {
                         "keyboard_only": True,
                         "focus_trace": focus_trace,
-                        "actions": ["edit", "needs_fix", "reject", "approve"],
+                        "actions": ["edit", "needs_fix", "approve", "reject"],
                         "warnings": [warning_evidence],
                         "high_risk": {
+                            "conversion_id": high_risk_conversion_id,
                             "review_target_count": len(high_risk_api_items),
                             "auto_confirmed_count": auto_confirmed_count,
+                            "approval_blocked_while_unresolved": True,
+                            "approval_block_reason": approval_block_message,
                         },
                         "source_jump": {
                             "block_id": first_high_risk_block,
@@ -854,6 +873,7 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
                             keyboard_screenshot.name,
                         ],
                         "api_result": api_result_path.name,
+                        "high_risk_api_result": high_risk_api_result_path.name,
                         "review_events": review_events_path.name,
                         "audit_artifact": audit_artifact_path.name,
                         "download": download_name,
