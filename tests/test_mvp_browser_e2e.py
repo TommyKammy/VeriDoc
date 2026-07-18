@@ -14,6 +14,7 @@ from scripts.ci.mvp_browser_e2e import (
     FIXTURE_PATH,
     LocalNetworkBoundaryObserver,
     NetworkBoundaryViolation,
+    _assert_clean_git_checkout,
     _launch_browser,
     _require_audit_payload_matches_result,
     _require_matching_event,
@@ -23,6 +24,7 @@ from scripts.ci.mvp_browser_e2e import (
     validate_endpoint_configuration,
     validate_rerun_package_envelope,
     validate_rerun_package_for_workspace,
+    validate_rerun_runtime_dependencies,
     run_browser_e2e,
 )
 
@@ -208,8 +210,30 @@ class LocalNetworkBoundaryTest(unittest.TestCase):
                 allowed_origins=self.observer.allowed_origins,
             )
 
+    def test_external_profile_endpoint_configuration_is_rejected(self) -> None:
+        with self.assertRaisesRegex(
+            NetworkBoundaryViolation,
+            "VERIDOC_STANDARD_OPENAI_BASE_URL.*external endpoint",
+        ):
+            validate_endpoint_configuration(
+                {
+                    "VERIDOC_STANDARD_OPENAI_BASE_URL": (
+                        "https://api.example.invalid/v1"
+                    )
+                },
+                allowed_origins=self.observer.allowed_origins,
+            )
+
 
 class RerunPackageValidationTest(unittest.TestCase):
+    def test_dirty_checkout_is_rejected_before_package_sealing(self) -> None:
+        with patch(
+            "scripts.ci.mvp_browser_e2e._git_status_porcelain",
+            return_value=" M scripts/ci/mvp_browser_e2e.py\n",
+        ):
+            with self.assertRaisesRegex(ValueError, "dirty checkout"):
+                _assert_clean_git_checkout()
+
     def test_package_payload_tampering_is_rejected(self) -> None:
         envelope = seal_rerun_package(
             {
@@ -234,7 +258,11 @@ class RerunPackageValidationTest(unittest.TestCase):
                 "external_attempt_count": 0,
             },
         }
-        envelope = build_rerun_package(evidence, browser_version="test-browser")
+        with patch("scripts.ci.mvp_browser_e2e._assert_clean_git_checkout"):
+            envelope = build_rerun_package(
+                evidence,
+                browser_version="test-browser",
+            )
         package = validate_rerun_package_for_workspace(envelope)
 
         self.assertRegex(package["commit"], r"^[0-9a-f]{40}$")
@@ -248,6 +276,67 @@ class RerunPackageValidationTest(unittest.TestCase):
         drifted_envelope = seal_rerun_package(package)
         with self.assertRaisesRegex(ValueError, "input hash mismatch"):
             validate_rerun_package_for_workspace(drifted_envelope)
+
+    def test_package_missing_required_input_is_rejected(self) -> None:
+        evidence = {
+            "schema_version": "veridoc-mvp-browser-e2e/v1",
+            "network_observation": {
+                "status": "pass",
+                "external_ai_api_send_count": 0,
+                "external_attempt_count": 0,
+            },
+        }
+        with patch("scripts.ci.mvp_browser_e2e._assert_clean_git_checkout"):
+            envelope = build_rerun_package(
+                evidence,
+                browser_version="test-browser",
+            )
+        package = envelope["package"]
+        package["inputs"].pop()
+
+        with self.assertRaisesRegex(ValueError, "required input set"):
+            validate_rerun_package_for_workspace(seal_rerun_package(package))
+
+    def test_package_runtime_dependency_drift_is_rejected(self) -> None:
+        evidence = {
+            "schema_version": "veridoc-mvp-browser-e2e/v1",
+            "network_observation": {
+                "status": "pass",
+                "external_ai_api_send_count": 0,
+                "external_attempt_count": 0,
+            },
+        }
+        with patch("scripts.ci.mvp_browser_e2e._assert_clean_git_checkout"):
+            envelope = build_rerun_package(
+                evidence,
+                browser_version="test-browser",
+            )
+        package = envelope["package"]
+        package["dependencies"]["runtime"]["python"] = "0.0.0"
+
+        with self.assertRaisesRegex(ValueError, "runtime dependencies"):
+            validate_rerun_package_for_workspace(seal_rerun_package(package))
+
+    def test_package_browser_runtime_drift_is_rejected(self) -> None:
+        evidence = {
+            "schema_version": "veridoc-mvp-browser-e2e/v1",
+            "network_observation": {
+                "status": "pass",
+                "external_ai_api_send_count": 0,
+                "external_attempt_count": 0,
+            },
+        }
+        with patch("scripts.ci.mvp_browser_e2e._assert_clean_git_checkout"):
+            package = build_rerun_package(
+                evidence,
+                browser_version="expected-browser",
+            )["package"]
+
+        with self.assertRaisesRegex(ValueError, "runtime dependencies"):
+            validate_rerun_runtime_dependencies(
+                package,
+                browser_version="different-browser",
+            )
 
     def test_equivalence_ignores_run_identity_and_timing_only(self) -> None:
         expected = {

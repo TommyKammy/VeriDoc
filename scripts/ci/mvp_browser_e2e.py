@@ -55,13 +55,6 @@ MVP_MANIFEST_PATH = REPO_ROOT / "datasets" / "mvp_evaluation_manifest_v1.json"
 FIXTURE_MANIFEST_PATH = REPO_ROOT / "datasets" / "fixtures" / "manifest.json"
 INFERENCE_PROFILES_PATH = REPO_ROOT / "services" / "api" / "inference_profiles.json"
 DEPENDENCY_ROOT_PATH = REPO_ROOT / "requirements-browser-e2e.txt"
-RERUN_INPUT_PATHS = (
-    MVP_MANIFEST_PATH,
-    FIXTURE_MANIFEST_PATH,
-    FIXTURE_PATH,
-    HIGH_RISK_FIXTURE_PATH,
-    INFERENCE_PROFILES_PATH,
-)
 ENDPOINT_ENVIRONMENT_KEYS = (
     "OPENAI_API_BASE",
     "OPENAI_BASE_URL",
@@ -271,10 +264,31 @@ def validate_endpoint_configuration(
     environ: dict[str, str] | os._Environ[str],
     *,
     allowed_origins: tuple[str, ...],
+    profiles_path: Path = INFERENCE_PROFILES_PATH,
 ) -> list[dict[str, str]]:
     """Reject configured external or malformed AI/API endpoints."""
+    try:
+        profiles = json.loads(profiles_path.read_text(encoding="utf-8")).get("profiles")
+    except (OSError, json.JSONDecodeError, AttributeError) as exc:
+        raise NetworkBoundaryViolation(
+            "inference profile endpoint configuration is unreadable"
+        ) from exc
+    if not isinstance(profiles, list):
+        raise NetworkBoundaryViolation(
+            "inference profile endpoint configuration is malformed"
+        )
+    profile_endpoint_keys: list[str] = []
+    for profile in profiles:
+        key = profile.get("base_url_env") if isinstance(profile, dict) else None
+        if not isinstance(key, str) or not key:
+            raise NetworkBoundaryViolation(
+                "inference profile endpoint configuration is malformed"
+            )
+        profile_endpoint_keys.append(key)
+
     configured: list[dict[str, str]] = []
-    for key in ENDPOINT_ENVIRONMENT_KEYS:
+    endpoint_keys = dict.fromkeys((*ENDPOINT_ENVIRONMENT_KEYS, *profile_endpoint_keys))
+    for key in endpoint_keys:
         raw_value = environ.get(key)
         if not raw_value:
             continue
@@ -443,6 +457,22 @@ def _current_git_commit(repo_root: Path = REPO_ROOT) -> str:
     return commit
 
 
+def _git_status_porcelain(repo_root: Path = REPO_ROOT) -> str:
+    completed = subprocess.run(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return completed.stdout
+
+
+def _assert_clean_git_checkout(repo_root: Path = REPO_ROOT) -> None:
+    if _git_status_porcelain(repo_root).strip():
+        raise ValueError("cannot seal rerun package from a dirty checkout")
+
+
 def _requirement_files(
     root_path: Path = DEPENDENCY_ROOT_PATH,
     *,
@@ -513,13 +543,8 @@ def _dependency_snapshot(
     }
 
 
-def build_rerun_package(
-    evidence: dict[str, Any],
-    *,
-    browser_version: str,
-    repo_root: Path = REPO_ROOT,
-) -> dict[str, Any]:
-    input_paths = (
+def _rerun_input_paths(repo_root: Path = REPO_ROOT) -> tuple[Path, ...]:
+    return (
         repo_root / "datasets" / "mvp_evaluation_manifest_v1.json",
         repo_root / "datasets" / "fixtures" / "manifest.json",
         repo_root
@@ -534,6 +559,37 @@ def build_rerun_package(
         / "synthetic-batch-template-regression.json",
         repo_root / "services" / "api" / "inference_profiles.json",
     )
+
+
+def validate_rerun_runtime_dependencies(
+    package: dict[str, Any],
+    *,
+    browser_version: str | None = None,
+    repo_root: Path = REPO_ROOT,
+) -> None:
+    dependencies = package.get("dependencies")
+    runtime = dependencies.get("runtime") if isinstance(dependencies, dict) else None
+    recorded_browser = runtime.get("browser") if isinstance(runtime, dict) else None
+    if not isinstance(recorded_browser, str) or not recorded_browser:
+        raise ValueError("rerun package runtime dependency set is incomplete")
+    current = _dependency_snapshot(
+        browser_version=browser_version or recorded_browser,
+        repo_root=repo_root,
+    )
+    if dependencies != current:
+        raise ValueError(
+            "rerun package runtime dependencies do not match the current environment"
+        )
+
+
+def build_rerun_package(
+    evidence: dict[str, Any],
+    *,
+    browser_version: str,
+    repo_root: Path = REPO_ROOT,
+) -> dict[str, Any]:
+    _assert_clean_git_checkout(repo_root)
+    input_paths = _rerun_input_paths(repo_root)
     profiles_path = repo_root / "services" / "api" / "inference_profiles.json"
     profiles = json.loads(profiles_path.read_text(encoding="utf-8"))
     projection = _equivalence_projection(evidence)
@@ -599,30 +655,37 @@ def validate_rerun_package_for_workspace(
     package = validate_rerun_package_envelope(envelope)
     if package.get("commit") != _current_git_commit(repo_root):
         raise ValueError("rerun package commit does not match the current checkout")
-    for section in ("inputs",):
-        records = package.get(section)
-        if not isinstance(records, list) or not records:
-            raise ValueError(f"rerun package {section} list is missing")
-        for record in records:
-            if not isinstance(record, dict):
-                raise ValueError(f"rerun package {section} entry is malformed")
-            relative_path = record.get("path")
-            expected_sha256 = record.get("sha256")
-            if not isinstance(relative_path, str) or not isinstance(
-                expected_sha256, str
-            ):
-                raise ValueError(f"rerun package {section} entry is incomplete")
-            path = (repo_root / relative_path).resolve()
-            try:
-                path.relative_to(repo_root.resolve())
-            except ValueError as exc:
-                raise ValueError(
-                    f"rerun package {section} path escapes the repository"
-                ) from exc
-            if not path.is_file() or _sha256(path) != expected_sha256:
-                raise ValueError(
-                    f"rerun package input hash mismatch: {relative_path}"
-                )
+    records = package.get("inputs")
+    if not isinstance(records, list) or not records:
+        raise ValueError("rerun package inputs list is missing")
+    recorded_input_paths: list[str] = []
+    for record in records:
+        if not isinstance(record, dict):
+            raise ValueError("rerun package inputs entry is malformed")
+        relative_path = record.get("path")
+        expected_sha256 = record.get("sha256")
+        if not isinstance(relative_path, str) or not isinstance(
+            expected_sha256, str
+        ):
+            raise ValueError("rerun package inputs entry is incomplete")
+        path = (repo_root / relative_path).resolve()
+        try:
+            path.relative_to(repo_root.resolve())
+        except ValueError as exc:
+            raise ValueError(
+                "rerun package inputs path escapes the repository"
+            ) from exc
+        if not path.is_file() or _sha256(path) != expected_sha256:
+            raise ValueError(f"rerun package input hash mismatch: {relative_path}")
+        recorded_input_paths.append(relative_path)
+    expected_input_paths = {
+        _repo_relative(path, repo_root) for path in _rerun_input_paths(repo_root)
+    }
+    if (
+        len(recorded_input_paths) != len(set(recorded_input_paths))
+        or set(recorded_input_paths) != expected_input_paths
+    ):
+        raise ValueError("rerun package inputs do not match the required input set")
     dependencies = package.get("dependencies")
     requirement_files = (
         dependencies.get("requirement_files")
@@ -645,6 +708,7 @@ def validate_rerun_package_for_workspace(
             raise ValueError("rerun package dependency path escapes repository") from exc
         if not path.is_file() or _sha256(path) != expected_sha256:
             raise ValueError(f"rerun package dependency hash mismatch: {path_value}")
+    validate_rerun_runtime_dependencies(package, repo_root=repo_root)
     return package
 
 
@@ -959,6 +1023,11 @@ def run_browser_e2e(
         ) as network_boundary, sync_playwright() as playwright:
             browser = _launch_browser(playwright)
             browser_version = str(browser.version)
+            if expected_rerun_package is not None:
+                validate_rerun_runtime_dependencies(
+                    expected_rerun_package,
+                    browser_version=browser_version,
+                )
             context = browser.new_context(accept_downloads=True)
             network_boundary.install_playwright_guard(context)
             page = context.new_page()
