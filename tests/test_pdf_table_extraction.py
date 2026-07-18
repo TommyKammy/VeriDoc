@@ -257,6 +257,36 @@ def test_build_table_extraction_report_rejects_missing_bboxes_in_later_table(
     )
 
 
+def test_build_table_extraction_report_rejects_misaligned_bboxes_in_later_table(
+    tmp_path: Path,
+) -> None:
+    candidate = _multi_table_candidate(
+        "camelot",
+        "lattice",
+        [
+            [["Section", "Value"], ["Summary", "Complete"]],
+            [["Lot", "Assay"], ["A-001", "12.5"]],
+        ],
+    )
+    misplaced_bbox = candidate.tables[1].cell_bboxes[0].pop()
+    candidate.tables[1].cell_bboxes[1].append(misplaced_bbox)
+
+    report = build_table_extraction_report(
+        source_path=tmp_path / "page-end-table.pdf",
+        candidates=[candidate],
+    )
+
+    assert [len(row) for row in candidate.tables[1].cell_bboxes] == [1, 3]
+    assert candidate.tables[1].has_cell_bboxes is False
+    assert report.selected_candidate is None
+    assert any(
+        mismatch.kind == "cell-boundary"
+        and mismatch.candidate == "camelot:lattice"
+        and "table 2" in mismatch.notes
+        for mismatch in report.mismatches
+    )
+
+
 def test_build_table_extraction_report_preserves_ragged_widths_without_expected_shape(
     tmp_path: Path,
 ) -> None:
