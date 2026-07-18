@@ -1,17 +1,83 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 import tempfile
 import unittest
 from contextlib import ExitStack
 from pathlib import Path
+from unittest.mock import patch
 
-from scripts.ci.mvp_browser_e2e import run_browser_e2e
+from scripts.ci.mvp_browser_e2e import _launch_browser, run_browser_e2e
+
+
+def _browser_e2e_runtime_available() -> bool:
+    if importlib.util.find_spec("playwright") is None:
+        return False
+    if os.environ.get("VERIDOC_E2E_BROWSER_CHANNEL"):
+        return True
+    try:
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as playwright:
+            return Path(playwright.chromium.executable_path).is_file()
+    except Exception:
+        return False
+
+
+BROWSER_E2E_RUNTIME_AVAILABLE = _browser_e2e_runtime_available()
+
+
+class BrowserLaunchSelectionTest(unittest.TestCase):
+    def test_default_launch_uses_playwright_managed_chromium(self) -> None:
+        class Chromium:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            def launch(self, **kwargs: object) -> object:
+                self.calls.append(kwargs)
+                return object()
+
+        chromium = Chromium()
+        playwright = type("Playwright", (), {"chromium": chromium})()
+
+        with patch.dict(os.environ, {}, clear=True):
+            _launch_browser(playwright)
+
+        self.assertEqual(chromium.calls, [{"headless": True}])
+
+    def test_configured_channel_is_an_explicit_override(self) -> None:
+        class Chromium:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            def launch(self, **kwargs: object) -> object:
+                self.calls.append(kwargs)
+                return object()
+
+        chromium = Chromium()
+        playwright = type("Playwright", (), {"chromium": chromium})()
+
+        with patch.dict(
+            os.environ,
+            {"VERIDOC_E2E_BROWSER_CHANNEL": "chrome"},
+            clear=True,
+        ):
+            _launch_browser(playwright)
+
+        self.assertEqual(
+            chromium.calls,
+            [{"channel": "chrome", "headless": True}],
+        )
 
 
 class MvpBrowserE2ETest(unittest.TestCase):
+    @unittest.skipUnless(
+        BROWSER_E2E_RUNTIME_AVAILABLE,
+        "Playwright and its Chromium runtime are optional browser E2E dependencies",
+    )
     def test_upload_to_download_evidence_is_bound_to_one_run(self) -> None:
         with ExitStack() as stack:
             configured_root = os.environ.get("VERIDOC_E2E_EVIDENCE_DIR")

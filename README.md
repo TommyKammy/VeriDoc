@@ -195,7 +195,6 @@ Install the browser acceptance dependencies and the headless Chromium runtime:
 ```bash
 python3 -m pip install -r requirements-browser-e2e.txt
 python3 -m playwright install chromium
-npm ci --omit=optional
 ```
 
 Run the focused acceptance test from the repository root:
@@ -218,8 +217,9 @@ error and successful retry, exercises preview and approver UI controls, verifies
 the downloaded artifact against its server audit metadata, and opens the audit
 screen. A random trusted local approver credential is generated for the
 short-lived test server and is never written to the evidence package.
-The pinned `pdfjs-dist` dependency is served by the local PoC server, so preview
-rendering does not contact an external CDN during the acceptance run.
+The pinned PDF.js 4.10.38 runtime is vendored under `apps/web/vendor/pdfjs` and
+served by the local PoC server, so preview rendering works in a clean checkout
+without npm installation or an external CDN.
 
 Set `VERIDOC_E2E_BROWSER_CHANNEL` only when the runner must use an installed
 browser channel instead of Playwright Chromium.

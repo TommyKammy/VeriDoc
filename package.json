@@ -1,7 +1,0 @@
-{
-  "name": "veridoc-browser-assets",
-  "private": true,
-  "dependencies": {
-    "pdfjs-dist": "4.10.38"
-  }
-}

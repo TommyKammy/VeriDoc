@@ -8128,7 +8128,20 @@ def test_poc_http_api_creates_idempotent_conversion_job() -> None:
     assert server.job_event_store.list_events(filters={"job_id": job_id}) == []
 
 
-def test_poc_http_api_serves_repo_installed_pdfjs_assets(
+def test_repo_vendored_pdfjs_assets_are_available_without_node_modules() -> None:
+    expected_hashes = {
+        "pdf.min.mjs": "27fc2a057a00f92a4334ad06e17dbd7259912954e9fb7f76400bcca5fd190a9c",
+        "pdf.worker.min.mjs": "1baa1844c89c80a5b2797c916e75ab29254be46d8e9cb53cb6364d7aad84be36",
+    }
+
+    assert poc_web.PDFJS_ROOT == poc_web.WEB_ROOT / "vendor" / "pdfjs"
+    for filename, expected_hash in expected_hashes.items():
+        assert hashlib.sha256((poc_web.PDFJS_ROOT / filename).read_bytes()).hexdigest() == (
+            expected_hash
+        )
+
+
+def test_poc_http_api_serves_repo_vendored_pdfjs_assets(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

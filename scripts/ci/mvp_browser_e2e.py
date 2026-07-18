@@ -109,10 +109,7 @@ def _launch_browser(playwright: Any) -> Any:
     requested_channel = os.environ.get("VERIDOC_E2E_BROWSER_CHANNEL")
     if requested_channel:
         return playwright.chromium.launch(channel=requested_channel, headless=True)
-    try:
-        return playwright.chromium.launch(channel="chrome", headless=True)
-    except Exception:
-        return playwright.chromium.launch(headless=True)
+    return playwright.chromium.launch(headless=True)
 
 
 def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:

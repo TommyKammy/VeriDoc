@@ -1,6 +1,6 @@
 # OSS License Inventory
 
-Reviewed: 2026-06-21
+Reviewed: 2026-07-18
 
 This document is the Phase0 SBOM-equivalent inventory for candidate document
 conversion and extraction dependencies. It is not a production, GMP, legal, or
@@ -18,6 +18,7 @@ out of the repository.
 | python-docx | DOCX read/write experiments | MIT | Public package and source license available | Phase1-allowed for PoC evaluation with pinned versions |
 | openpyxl | XLSX read/write experiments | MIT | Public package metadata and docs available; security docs require `defusedxml` to guard against XML expansion attacks | Phase1-allowed only for fully synthetic/trusted XLSX fixtures unless `defusedxml` is pinned and enforced before parsing |
 | pandas | Tabular analysis for evaluation reports only | BSD-3-Clause | Public package metadata available | Phase1-allowed only for evaluation/reporting helpers, not document authority |
+| PDF.js 4.10.38 | Browser-side PDF preview rendering | Apache-2.0 | Versioned runtime and upstream license are vendored under `apps/web/vendor/pdfjs`; file hashes are regression-tested | MVP PoC-allowed for repo-owned preview rendering with the pinned vendored files |
 | PyMuPDF | High-fidelity PDF parsing/rendering candidate | AGPL-3.0 or commercial Artifex license | Actively maintained by Artifex | evaluation-only unless AGPL obligations are accepted or a commercial license is approved |
 | pdf2docx | PDF-to-DOCX conversion candidate | MIT for pdf2docx package pins 0.5.12 and later; requires separate review of transitive PyMuPDF licensing | Upstream repository says it is no longer actively maintained by Artifex; documentation describes extraction through PyMuPDF | evaluation-only; do not make it a Phase1 core dependency |
 
@@ -68,6 +69,9 @@ PyMuPDF AGPL-3.0 or commercial-license decision separately.
   `requirements-pdf-eval.txt` for public synthetic fixtures. Its transitive
   PDF/image processing dependencies still need resolved-lockfile review before
   any Phase2/MVP or confidential-document workflow can depend on it.
+- PDF.js: the browser preview uses only the pinned, hash-checked 4.10.38 runtime
+  committed under `apps/web/vendor/pdfjs`. Keep the included Apache-2.0 license
+  with those files, and do not replace them from an unpinned CDN at runtime.
 - Transitive dependencies: every candidate above still needs lockfile-level
   review when it is added to an installable environment. This Phase0 inventory
   records candidate posture, not a complete resolved dependency graph.
@@ -92,3 +96,5 @@ PyMuPDF AGPL-3.0 or commercial-license decision separately.
 - openpyxl security note: https://openpyxl.readthedocs.io/
 - defusedxml PyPI project metadata: https://pypi.org/project/defusedxml/
 - pandas PyPI project metadata: https://pypi.org/project/pandas/
+- Vendored PDF.js 4.10.38 package metadata and
+  `apps/web/vendor/pdfjs/LICENSE`

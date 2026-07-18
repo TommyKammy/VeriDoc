@@ -66,7 +66,7 @@ from services.api.persistence_repository import default_database_path
 from services.api.warning_catalog import warning_details
 
 WEB_ROOT = REPO_ROOT / "apps" / "web"
-PDFJS_ROOT = REPO_ROOT / "node_modules" / "pdfjs-dist" / "build"
+PDFJS_ROOT = WEB_ROOT / "vendor" / "pdfjs"
 INFERENCE_PROFILES_PATH = REPO_ROOT / "services" / "api" / "inference_profiles.json"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8788

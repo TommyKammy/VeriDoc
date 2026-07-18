@@ -46,7 +46,7 @@ def test_pdf_preview_surface_and_bbox_controls_are_present() -> None:
     }.issubset(parser.ids)
 
 
-def test_pdf_preview_uses_repo_installed_pdfjs_assets() -> None:
+def test_pdf_preview_uses_repo_vendored_pdfjs_assets() -> None:
     html = _web_html()
 
     assert 'const PDFJS_MODULE_URL = "/assets/pdfjs/pdf.min.mjs";' in html
