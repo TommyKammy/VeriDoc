@@ -26,6 +26,7 @@ from scripts.ci.mvp_browser_e2e import (
     _request_local_api_get,
     _require_audit_payload_matches_result,
     _require_matching_event,
+    _retained_evidence_paths,
     evaluate_acceptance_evidence,
     assert_rerun_equivalent,
     build_rerun_package,
@@ -56,6 +57,30 @@ def _browser_e2e_runtime_available() -> bool:
 BROWSER_E2E_RUNTIME_AVAILABLE = _browser_e2e_runtime_available()
 
 
+def _seal_event_chain(
+    events: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    previous_hash: str | None = None
+    for sequence, event in enumerate(events, start=1):
+        event.pop("event_hash", None)
+        event.update(
+            {
+                "integrity_algorithm": "sha256-canonical-json-chain-v1",
+                "sequence": sequence,
+                "prev_event_hash": previous_hash,
+            }
+        )
+        canonical = json.dumps(
+            event,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        event["event_hash"] = hashlib.sha256(canonical).hexdigest()
+        previous_hash = event["event_hash"]
+    return events
+
+
 def _write_complete_evidence_package(run_dir: Path) -> dict[str, object]:
     run_id = "run-current"
     source_filename = "source.pdf"
@@ -75,32 +100,16 @@ def _write_complete_evidence_package(run_dir: Path) -> dict[str, object]:
         "origin": "top-left",
     }
 
-    def chained_event(payload: dict[str, object]) -> dict[str, object]:
-        event = {
-            **payload,
-            "integrity_algorithm": "sha256-canonical-json-chain-v1",
-            "sequence": 1,
-            "prev_event_hash": None,
-        }
-        canonical = json.dumps(
-            event,
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8")
-        event["event_hash"] = hashlib.sha256(canonical).hexdigest()
-        return event
-
-    upload_event = chained_event(
-        {
+    upload_event = _seal_event_chain(
+        [{
             "action": "browser_upload",
             "job_id": job_id,
             "filename": source_filename,
             "source_sha256": source_sha256,
-        }
-    )
-    review_event = chained_event(
-        {
+        }]
+    )[0]
+    review_events = _seal_event_chain(
+        [{
             "action": "approve",
             "conversion_id": conversion_id,
             "document_id": document_id,
@@ -108,14 +117,36 @@ def _write_complete_evidence_package(run_dir: Path) -> dict[str, object]:
             "actor": actor,
             "source_page": 1,
             "source_bbox": source_bbox,
-        }
+        },
+        {
+            "action": "reject",
+            "conversion_id": "conversion-high-risk",
+            "document_id": "document-high-risk",
+            "block_id": "block-high-risk",
+            "actor": actor,
+        }]
     )
+    review_event = review_events[0]
     (run_dir / "job-events.json").write_text(
         json.dumps([upload_event], ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
     (run_dir / "review-events.json").write_text(
-        json.dumps([review_event], ensure_ascii=False, indent=2) + "\n",
+        json.dumps(review_events, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    created_at = "2026-07-18T12:00:00+09:00"
+    (run_dir / "job-response.json").write_text(
+        json.dumps(
+            {
+                "job_id": job_id,
+                "status": "succeeded",
+                "created_at": created_at,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
         encoding="utf-8",
     )
 
@@ -156,11 +187,22 @@ def _write_complete_evidence_package(run_dir: Path) -> dict[str, object]:
     api_result = {
         "audit": audit,
         "hashes": {"source_sha256": source_sha256},
+        "review_items": [
+            {
+                "document_id": document_id,
+                "block_id": block_id,
+                "source_page": 1,
+                "source_bbox": source_bbox,
+            }
+        ],
         "artifacts": [
             {
+                "id": "primary-docx",
+                "kind": "primary",
                 "artifact_id": artifact_id,
                 "sha256": artifact_sha256,
                 "metadata": {
+                    "role": "primary",
                     "source_filename": source_filename,
                     "source_sha256": source_sha256,
                     "output_sha256": artifact_sha256,
@@ -184,7 +226,9 @@ def _write_complete_evidence_package(run_dir: Path) -> dict[str, object]:
             },
             "job": {
                 "job_id": job_id,
-                "created_at": "2026-07-18T12:00:00+09:00",
+                "status": "succeeded",
+                "conversion_status": "converted",
+                "created_at": created_at,
             },
             "review": {
                 "conversion_id": conversion_id,
@@ -207,6 +251,10 @@ def _write_complete_evidence_package(run_dir: Path) -> dict[str, object]:
             },
             "audit": {
                 "audit_artifact_sha256": audit_sha256,
+                "job_event_count": 1,
+                "review_event_count": len(review_events),
+                "job_terminal_event_hash": upload_event["event_hash"],
+                "review_terminal_event_hash": review_events[-1]["event_hash"],
             },
         },
         "evidence_surfaces": {
@@ -226,6 +274,10 @@ def _write_complete_evidence_package(run_dir: Path) -> dict[str, object]:
                 "correlation_id": run_id,
                 "job_event_hash": upload_event["event_hash"],
                 "review_event_hash": review_event["event_hash"],
+                "job_event_count": 1,
+                "review_event_count": len(review_events),
+                "job_terminal_event_hash": upload_event["event_hash"],
+                "review_terminal_event_hash": review_events[-1]["event_hash"],
             },
         },
         "files": {
@@ -233,6 +285,7 @@ def _write_complete_evidence_package(run_dir: Path) -> dict[str, object]:
             "audit_artifact": "audit.json",
             "download": "result.docx",
             "job_events": "job-events.json",
+            "job_response": "job-response.json",
             "review_events": "review-events.json",
         },
     }
@@ -265,6 +318,30 @@ def _evaluate_mutated_audit(
     )
     evidence["correlation"]["audit"]["audit_artifact_sha256"] = audit_sha256
     return evaluate_acceptance_evidence(evidence, run_dir=run_dir)
+
+
+def _rewrite_event_chain(
+    run_dir: Path,
+    evidence: dict[str, object],
+    chain: str,
+    mutate: Callable[[list[dict[str, object]]], None],
+) -> list[dict[str, object]]:
+    events_path = run_dir / f"{chain}-events.json"
+    events = json.loads(events_path.read_text(encoding="utf-8"))
+    mutate(events)
+    _seal_event_chain(events)
+    events_path.write_text(
+        json.dumps(events, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    audit = evidence["correlation"]["audit"]
+    surface = evidence["evidence_surfaces"]["audit_events"]
+    audit[f"{chain}_event_count"] = len(events)
+    audit[f"{chain}_terminal_event_hash"] = events[-1]["event_hash"]
+    surface[f"{chain}_event_count"] = len(events)
+    surface[f"{chain}_terminal_event_hash"] = events[-1]["event_hash"]
+    surface[f"{chain}_event_hash"] = events[0]["event_hash"]
+    return events
 
 
 class BrowserLaunchSelectionTest(unittest.TestCase):
@@ -660,6 +737,225 @@ class EvidenceBoundaryValidationTest(unittest.TestCase):
         self.assertIn(
             "EVIDENCE_AUDIT_EVENT_MISSING",
             {failure["code"] for failure in acceptance["failure_reasons"]},
+        )
+
+    def test_failed_job_state_cannot_pass(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run_dir = Path(temporary_directory)
+            evidence = _write_complete_evidence_package(run_dir)
+            evidence["correlation"]["job"].update(
+                {"status": "failed", "conversion_status": "failed"}
+            )
+            job_response = json.loads(
+                (run_dir / "job-response.json").read_text(encoding="utf-8")
+            )
+            job_response["status"] = "failed"
+            (run_dir / "job-response.json").write_text(
+                json.dumps(job_response, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+            acceptance = evaluate_acceptance_evidence(evidence, run_dir=run_dir)
+
+        self.assertEqual(acceptance["status"], "fail")
+        self.assertIn(
+            "EVIDENCE_JOB_INCOMPLETE",
+            {failure["code"] for failure in acceptance["failure_reasons"]},
+        )
+
+    def test_missing_job_identifier_cannot_self_validate(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run_dir = Path(temporary_directory)
+            evidence = _write_complete_evidence_package(run_dir)
+            evidence["correlation"]["job"].pop("job_id")
+            evidence["evidence_surfaces"]["browser_run"].pop("job_id")
+            _rewrite_event_chain(
+                run_dir,
+                evidence,
+                "job",
+                lambda events: events[0].pop("job_id"),
+            )
+            job_response = json.loads(
+                (run_dir / "job-response.json").read_text(encoding="utf-8")
+            )
+            job_response.pop("job_id")
+            (run_dir / "job-response.json").write_text(
+                json.dumps(job_response, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+            acceptance = evaluate_acceptance_evidence(evidence, run_dir=run_dir)
+
+        self.assertEqual(acceptance["status"], "fail")
+        self.assertIn(
+            "EVIDENCE_IDENTIFIER_MISSING",
+            {failure["code"] for failure in acceptance["failure_reasons"]},
+        )
+
+    def test_malformed_artifact_list_returns_fail_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run_dir = Path(temporary_directory)
+            evidence = _write_complete_evidence_package(run_dir)
+            api_result_path = run_dir / "api-result.json"
+            api_result = json.loads(api_result_path.read_text(encoding="utf-8"))
+            api_result["artifacts"] = None
+            api_result_path.write_text(
+                json.dumps(api_result, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+            acceptance = evaluate_acceptance_evidence(evidence, run_dir=run_dir)
+
+        self.assertEqual(acceptance["status"], "fail")
+        self.assertIn(
+            "EVIDENCE_ARTIFACT_MISSING",
+            {failure["code"] for failure in acceptance["failure_reasons"]},
+        )
+
+    def test_correlated_download_must_be_primary_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run_dir = Path(temporary_directory)
+            evidence = _write_complete_evidence_package(run_dir)
+            api_result_path = run_dir / "api-result.json"
+            api_result = json.loads(api_result_path.read_text(encoding="utf-8"))
+            selected = api_result["artifacts"][0]
+            selected.update({"id": "debug-json", "kind": "debug"})
+            selected["metadata"]["role"] = "debug"
+            api_result_path.write_text(
+                json.dumps(api_result, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+            acceptance = evaluate_acceptance_evidence(evidence, run_dir=run_dir)
+
+        self.assertEqual(acceptance["status"], "fail")
+        self.assertIn(
+            "EVIDENCE_ARTIFACT_MISMATCH",
+            {failure["code"] for failure in acceptance["failure_reasons"]},
+        )
+
+    def test_provenance_must_match_authoritative_result_review_item(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run_dir = Path(temporary_directory)
+            evidence = _write_complete_evidence_package(run_dir)
+            changed_bbox = {
+                **evidence["correlation"]["provenance"]["source_bbox"],
+                "x": 12.0,
+            }
+            evidence["correlation"]["provenance"]["source_bbox"] = changed_bbox
+            _rewrite_event_chain(
+                run_dir,
+                evidence,
+                "review",
+                lambda events: events[0].__setitem__(
+                    "source_bbox",
+                    changed_bbox,
+                ),
+            )
+
+            acceptance = evaluate_acceptance_evidence(evidence, run_dir=run_dir)
+
+        self.assertEqual(acceptance["status"], "fail")
+        self.assertIn(
+            "EVIDENCE_PROVENANCE_MISMATCH",
+            {failure["code"] for failure in acceptance["failure_reasons"]},
+        )
+
+    def test_approval_requires_nonempty_actor(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run_dir = Path(temporary_directory)
+            evidence = _write_complete_evidence_package(run_dir)
+            evidence["correlation"]["review"]["actor"] = None
+            _rewrite_event_chain(
+                run_dir,
+                evidence,
+                "review",
+                lambda events: events[0].__setitem__("actor", None),
+            )
+
+            acceptance = evaluate_acceptance_evidence(evidence, run_dir=run_dir)
+
+        self.assertEqual(acceptance["status"], "fail")
+        self.assertIn(
+            "EVIDENCE_ACTOR_MISSING",
+            {failure["code"] for failure in acceptance["failure_reasons"]},
+        )
+
+    def test_truncated_audit_chain_rejects_valid_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run_dir = Path(temporary_directory)
+            evidence = _write_complete_evidence_package(run_dir)
+            review_events_path = run_dir / "review-events.json"
+            review_events = json.loads(
+                review_events_path.read_text(encoding="utf-8")
+            )
+            review_events_path.write_text(
+                json.dumps(review_events[:1], ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+            acceptance = evaluate_acceptance_evidence(evidence, run_dir=run_dir)
+
+        self.assertEqual(acceptance["status"], "fail")
+        self.assertIn(
+            "EVIDENCE_AUDIT_CHAIN_TRUNCATED",
+            {failure["code"] for failure in acceptance["failure_reasons"]},
+        )
+
+    def test_boolean_source_page_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run_dir = Path(temporary_directory)
+            evidence = _write_complete_evidence_package(run_dir)
+            evidence["correlation"]["provenance"]["source_page"] = True
+            _rewrite_event_chain(
+                run_dir,
+                evidence,
+                "review",
+                lambda events: events[0].__setitem__("source_page", True),
+            )
+
+            acceptance = evaluate_acceptance_evidence(evidence, run_dir=run_dir)
+
+        self.assertEqual(acceptance["status"], "fail")
+        self.assertIn(
+            "EVIDENCE_PROVENANCE_MISSING",
+            {failure["code"] for failure in acceptance["failure_reasons"]},
+        )
+
+    def test_job_timestamp_must_match_retained_response(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run_dir = Path(temporary_directory)
+            evidence = _write_complete_evidence_package(run_dir)
+            evidence["correlation"]["job"][
+                "created_at"
+            ] = "2026-07-18T13:00:00+09:00"
+
+            acceptance = evaluate_acceptance_evidence(evidence, run_dir=run_dir)
+
+        self.assertEqual(acceptance["status"], "fail")
+        self.assertIn(
+            "EVIDENCE_JOB_STATE_MISMATCH",
+            {failure["code"] for failure in acceptance["failure_reasons"]},
+        )
+
+    def test_retained_rerun_allows_job_audit_and_response_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repo_root = Path(temporary_directory)
+            run_dir = repo_root / f"p12g03-{'a' * 32}"
+            run_dir.mkdir()
+            rerun_package_path = run_dir / "rerun-package.json"
+            rerun_package_path.write_text("{}\n", encoding="utf-8")
+            (run_dir / "job-events.json").write_text("[]\n", encoding="utf-8")
+            (run_dir / "job-response.json").write_text("{}\n", encoding="utf-8")
+
+            retained = _retained_evidence_paths(
+                rerun_package_path,
+                repo_root=repo_root,
+            )
+
+        self.assertEqual(
+            {path.name for path in retained},
+            {"rerun-package.json", "job-events.json", "job-response.json"},
         )
 
     def test_evidence_files_cannot_escape_correlation_directory(self) -> None:

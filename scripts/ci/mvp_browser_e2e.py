@@ -86,6 +86,8 @@ RETAINED_EVIDENCE_FILENAMES = frozenset(
         "audit-artifact.json",
         "evidence.json",
         "high-risk-api-result.json",
+        "job-events.json",
+        "job-response.json",
         "rerun-package.json",
         "review-events.json",
         "trace.zip",
@@ -1256,6 +1258,18 @@ def _matching_events(
     ]
 
 
+def _nonempty_string(value: object) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _valid_approver_actor(value: object) -> bool:
+    return (
+        isinstance(value, dict)
+        and _nonempty_string(value.get("id"))
+        and value.get("role") == "approver"
+    )
+
+
 def evaluate_acceptance_evidence(
     evidence: dict[str, Any],
     *,
@@ -1276,6 +1290,7 @@ def evaluate_acceptance_evidence(
     provenance = provenance if isinstance(provenance, dict) else {}
     if (
         not isinstance(provenance.get("source_page"), int)
+        or isinstance(provenance.get("source_page"), bool)
         or provenance["source_page"] < 1
         or not _valid_source_bbox(provenance.get("source_bbox"))
     ):
@@ -1360,25 +1375,117 @@ def evaluate_acceptance_evidence(
     review = review if isinstance(review, dict) else {}
     job = correlation.get("job")
     job = job if isinstance(job, dict) else {}
+    required_identifiers = {
+        "job_id": job.get("job_id"),
+        "conversion_id": review.get("conversion_id"),
+        "document_id": review.get("document_id"),
+        "block_id": review.get("block_id"),
+        "artifact_id": artifact.get("artifact_id"),
+    }
+    if any(
+        not _nonempty_string(value)
+        for value in required_identifiers.values()
+    ):
+        fail(
+            "EVIDENCE_IDENTIFIER_MISSING",
+            "correlation",
+            "Job, conversion, review-item, and artifact identifiers must be explicit.",
+        )
+    if (
+        job.get("status") != "succeeded"
+        or job.get("conversion_status") not in {"converted", "requires_review"}
+    ):
+        fail(
+            "EVIDENCE_JOB_INCOMPLETE",
+            "job_state",
+            "The authoritative job and browser conversion must both be complete.",
+        )
+    if not _valid_approver_actor(review.get("actor")):
+        fail(
+            "EVIDENCE_ACTOR_MISSING",
+            "review_actor",
+            "A non-empty approver identity is required for the accepted decision.",
+        )
+
+    job_response = _load_evidence_json(run_dir, files.get("job_response"))
+    if (
+        not isinstance(job_response, dict)
+        or job_response.get("job_id") != job.get("job_id")
+        or job_response.get("status") != job.get("status")
+        or job_response.get("created_at") != job.get("created_at")
+    ):
+        fail(
+            "EVIDENCE_JOB_STATE_MISMATCH",
+            "job_state",
+            "The retained authoritative job response must match the correlated job.",
+        )
+
     audit_input = result_audit.get("input")
     audit_input = audit_input if isinstance(audit_input, dict) else {}
-    result_artifact = None
-    if isinstance(api_result, dict):
-        result_artifact = next(
-            (
-                item
-                for item in api_result.get("artifacts", [])
-                if isinstance(item, dict)
-                and item.get("artifact_id") == artifact.get("artifact_id")
-            ),
-            None,
+    result_artifacts = (
+        api_result.get("artifacts")
+        if isinstance(api_result, dict)
+        else None
+    )
+    if not isinstance(result_artifacts, list):
+        fail(
+            "EVIDENCE_ARTIFACT_MISSING",
+            "artifact",
+            "The browser result must contain a well-formed artifact list.",
         )
+        result_artifacts = []
+    result_artifact = next(
+        (
+            item
+            for item in result_artifacts
+            if isinstance(item, dict)
+            and item.get("artifact_id") == artifact.get("artifact_id")
+        ),
+        None,
+    )
     result_artifact_metadata = (
         result_artifact.get("metadata")
         if isinstance(result_artifact, dict)
         and isinstance(result_artifact.get("metadata"), dict)
         else {}
     )
+    if (
+        not isinstance(result_artifact, dict)
+        or not _nonempty_string(result_artifact.get("id"))
+        or not str(result_artifact["id"]).startswith("primary-")
+        or result_artifact.get("kind") != "primary"
+        or result_artifact_metadata.get("role") != "primary"
+    ):
+        fail(
+            "EVIDENCE_ARTIFACT_MISMATCH",
+            "artifact",
+            "The correlated download must be the conversion's primary artifact.",
+        )
+
+    result_review_items = (
+        api_result.get("review_items")
+        if isinstance(api_result, dict)
+        else None
+    )
+    review_item_matches = (
+        [
+            item
+            for item in result_review_items
+            if isinstance(item, dict)
+            and item.get("document_id") == review.get("document_id")
+            and item.get("block_id") == review.get("block_id")
+            and item.get("source_page") == provenance.get("source_page")
+            and item.get("source_bbox") == provenance.get("source_bbox")
+        ]
+        if isinstance(result_review_items, list)
+        else []
+    )
+    if len(review_item_matches) != 1:
+        fail(
+            "EVIDENCE_PROVENANCE_MISMATCH",
+            "review_item",
+            "Reviewed source coordinates must match one authoritative result item.",
+        )
 
     source_hashes = {
         upload.get("source_sha256"),
@@ -1444,15 +1551,14 @@ def evaluate_acceptance_evidence(
         else None
     )
     result_audit_artifact = None
-    if isinstance(api_result, dict):
-        result_audit_artifact = next(
-            (
-                item
-                for item in api_result.get("artifacts", [])
-                if isinstance(item, dict) and item.get("id") == "audit-json"
-            ),
-            None,
-        )
+    result_audit_artifact = next(
+        (
+            item
+            for item in result_artifacts
+            if isinstance(item, dict) and item.get("id") == "audit-json"
+        ),
+        None,
+    )
     audit_hashes = {
         audit_downloaded_hash,
         correlation.get("audit", {}).get("audit_artifact_sha256")
@@ -1557,6 +1663,34 @@ def evaluate_acceptance_evidence(
                 "EVIDENCE_AUDIT_CHAIN_INVALID",
                 "audit_hash_chain",
                 "Every audit event must belong to a valid canonical hash chain.",
+            )
+        audit_correlation = correlation.get("audit")
+        audit_correlation = (
+            audit_correlation if isinstance(audit_correlation, dict) else {}
+        )
+        chain_commitments = {
+            "job_event_count": len(job_events),
+            "review_event_count": len(review_events),
+            "job_terminal_event_hash": (
+                job_events[-1].get("event_hash")
+                if job_events and isinstance(job_events[-1], dict)
+                else None
+            ),
+            "review_terminal_event_hash": (
+                review_events[-1].get("event_hash")
+                if review_events and isinstance(review_events[-1], dict)
+                else None
+            ),
+        }
+        if any(
+            audit_correlation.get(field) != expected
+            or audit_surface.get(field) != expected
+            for field, expected in chain_commitments.items()
+        ):
+            fail(
+                "EVIDENCE_AUDIT_CHAIN_TRUNCATED",
+                "audit_hash_chain",
+                "Retained event counts and terminal hashes must cover each complete chain.",
             )
         upload_matches = _matching_events(
             job_events,
@@ -1845,6 +1979,7 @@ def run_browser_e2e(
     api_result_path = run_dir / "api-result.json"
     high_risk_api_result_path = run_dir / "high-risk-api-result.json"
     job_events_path = run_dir / "job-events.json"
+    job_response_path = run_dir / "job-response.json"
     review_events_path = run_dir / "review-events.json"
     rerun_package_path = run_dir / "rerun-package.json"
     auth_token = uuid.uuid4().hex
@@ -1970,6 +2105,10 @@ def run_browser_e2e(
                     raise AssertionError(
                         f"completed browser job has unexpected status: {job_status!r}"
                     )
+                job_response_path.write_text(
+                    json.dumps(authoritative_job, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
 
                 approve = page.locator(
                     '#review-list button[data-review-action-name="approve"]:not([disabled])'
@@ -2462,8 +2601,14 @@ def run_browser_e2e(
                         "audit": {
                             "artifact_sha256": artifact_audit_sha256,
                             "audit_artifact_sha256": audit_downloaded_sha256,
-                            "job_event_count": upload_event_count,
-                            "review_event_count": approval_event_count,
+                            "job_event_count": len(job_events),
+                            "review_event_count": len(review_events),
+                            "job_terminal_event_hash": job_events[-1].get(
+                                "event_hash"
+                            ),
+                            "review_terminal_event_hash": review_events[-1].get(
+                                "event_hash"
+                            ),
                         },
                     },
                     "evidence_surfaces": {
@@ -2483,6 +2628,14 @@ def run_browser_e2e(
                             "correlation_id": run_id,
                             "job_event_hash": upload_event.get("event_hash"),
                             "review_event_hash": review_event.get("event_hash"),
+                            "job_event_count": len(job_events),
+                            "review_event_count": len(review_events),
+                            "job_terminal_event_hash": job_events[-1].get(
+                                "event_hash"
+                            ),
+                            "review_terminal_event_hash": review_events[-1].get(
+                                "event_hash"
+                            ),
                         },
                     },
                     "recovery": {
@@ -2529,6 +2682,7 @@ def run_browser_e2e(
                         "api_result": api_result_path.name,
                         "high_risk_api_result": high_risk_api_result_path.name,
                         "job_events": job_events_path.name,
+                        "job_response": job_response_path.name,
                         "review_events": review_events_path.name,
                         "audit_artifact": audit_artifact_path.name,
                         "download": download_name,
