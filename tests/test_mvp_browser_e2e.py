@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import tempfile
 import unittest
@@ -10,6 +11,10 @@ from scripts.ci.mvp_browser_e2e import run_browser_e2e
 
 
 class MvpBrowserE2ETest(unittest.TestCase):
+    @unittest.skipUnless(
+        importlib.util.find_spec("playwright"),
+        "install requirements-browser-e2e.txt to run the browser acceptance test",
+    )
     def test_upload_to_download_evidence_is_bound_to_one_run(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             evidence = run_browser_e2e(evidence_root=Path(temp_dir))
