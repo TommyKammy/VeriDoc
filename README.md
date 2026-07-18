@@ -188,6 +188,39 @@ JSON is retained for detail and audit inspection, not as the primary review work
 Follow-up P6 work should assert that review decisions are available from the
 Review and Artifact downloads regions before relying on Detail JSON.
 
+## Browser upload-to-download acceptance run
+
+Install the browser acceptance dependencies and the headless Chromium runtime:
+
+```bash
+python3 -m pip install -r requirements-browser-e2e.txt
+python3 -m playwright install chromium
+```
+
+Run the focused acceptance test from the repository root:
+
+```bash
+python3 -m unittest tests.test_mvp_browser_e2e
+```
+
+The same scenario can retain an evidence package at an explicit location:
+
+```bash
+VERIDOC_E2E_EVIDENCE_DIR=<evidence-root> python3 scripts/ci/mvp_browser_e2e.py
+```
+
+Each run creates one `p12g03-...` correlation directory containing
+`evidence.json`, the API result, the downloadable audit artifact, the
+downloaded primary artifact, screenshots, and a Playwright trace. The scenario
+uses the versioned representative PDF fixture, records an incompatible-setting
+error and successful retry, exercises preview and approver UI controls, verifies
+the downloaded artifact against its server audit metadata, and opens the audit
+screen. A random trusted local approver credential is generated for the
+short-lived test server and is never written to the evidence package.
+
+Set `VERIDOC_E2E_BROWSER_CHANNEL` only when the runner must use an installed
+browser channel instead of Playwright Chromium.
+
 ## Local PoC API authentication
 
 `services/api/poc_web.py` can enforce local bearer-token authentication when

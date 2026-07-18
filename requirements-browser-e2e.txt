@@ -1,0 +1,2 @@
+-r requirements-pdf-eval.txt
+playwright>=1.49,<2
