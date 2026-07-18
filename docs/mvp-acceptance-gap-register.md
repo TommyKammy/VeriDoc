@@ -16,7 +16,7 @@ Missing authoritative decisions or run evidence remain fail-closed.
 - Criteria source Git blob:
   `bdfb4c867855a8171b0ccfa72d4f25adb85baec1`
 - Evaluator Git blob:
-  `e0429842ca4c719c0905db4b1e9ff3ffa32ae528`
+  `59c93342699123f6ff1047b503958d472a6e4dac`
 - Generated at: `2026-07-18` (Asia/Tokyo)
 - PDF evaluation prerequisite:
   `python3 -m pip install -r requirements-pdf-eval.txt`

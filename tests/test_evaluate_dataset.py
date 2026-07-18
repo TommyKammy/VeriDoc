@@ -2066,6 +2066,32 @@ class EvaluateDatasetTest(unittest.TestCase):
             result["failures"],
         )
 
+    def test_pdf_to_word_content_validation_rejects_malformed_section_order(
+        self,
+    ) -> None:
+        case = self.valid_mvp_case(4)
+        case["pdf_to_word_expectations"]["section_order"].append(None)
+
+        with mock.patch.object(
+            evaluate_dataset,
+            "p9_docx_source_linkage",
+            return_value=[],
+        ):
+            result = evaluate_dataset.p9_validate_pdf_to_word_docx_content(
+                Path("unused.docx"),
+                case["pdf_to_word_expectations"],
+                docx=mock.Mock(blocks=[]),
+            )
+
+        self.assertEqual("fail", result["status"])
+        self.assertEqual(
+            [
+                "docx section order expectations must be a non-empty list "
+                "of non-empty strings"
+            ],
+            result["failures"],
+        )
+
     def test_mvp_harness_fails_mismatched_audit_fields(self) -> None:
         case = self.valid_mvp_case()
         fixture_content = b"mvp audit review fixture"

@@ -4941,11 +4941,27 @@ def p9_validate_pdf_to_word_docx_content(
     failures: list[str] = []
     if validator == "record_pdf_docx_content_v1":
         expected_sections_value = expectations.get("section_order")
-        expected_sections = (
-            [value for value in expected_sections_value if isinstance(value, str)]
-            if isinstance(expected_sections_value, list)
-            else []
-        )
+        if (
+            not isinstance(expected_sections_value, list)
+            or not expected_sections_value
+            or any(
+                not isinstance(value, str) or not value
+                for value in expected_sections_value
+            )
+        ):
+            failure = (
+                "docx section order expectations must be a non-empty list "
+                "of non-empty strings"
+            )
+            return {
+                "validator": validator,
+                "status": "fail",
+                "checks": [],
+                "metrics": {},
+                "evidence": {},
+                "failures": [failure],
+            }
+        expected_sections = expected_sections_value
         actual_texts = [
             str(block.get("text"))
             for block in actual_body_blocks
