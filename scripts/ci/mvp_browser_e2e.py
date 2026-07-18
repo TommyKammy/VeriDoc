@@ -12,6 +12,7 @@ import tempfile
 import threading
 import uuid
 from contextlib import contextmanager
+from copy import deepcopy
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Iterator
@@ -128,6 +129,36 @@ def _high_risk_template_store() -> TemplateStore:
     definition = fixture.get("template_definition")
     if not isinstance(definition, dict):
         raise AssertionError("high-risk browser fixture is missing template_definition")
+    definition = deepcopy(definition)
+    anchors = definition.get("anchors")
+    fields = definition.get("fields")
+    validation_rules = definition.get("validation_rules")
+    output_mapping = definition.get("output_mapping")
+    field_map = (
+        output_mapping.get("field_map")
+        if isinstance(output_mapping, dict)
+        else None
+    )
+    if (
+        not isinstance(anchors, list)
+        or not anchors
+        or not isinstance(anchors[0], dict)
+        or not isinstance(fields, list)
+        or not fields
+        or not isinstance(fields[0], dict)
+        or not isinstance(validation_rules, list)
+        or not validation_rules
+        or not isinstance(output_mapping, dict)
+        or not isinstance(field_map, list)
+        or not field_map
+    ):
+        raise AssertionError("high-risk browser template fixture is malformed")
+    definition["anchors"] = [{**anchors[0], "text": "Manufacturing Summary"}]
+    definition["fields"] = [{**fields[0], "label": "Batch"}]
+    definition["tables"] = []
+    definition["validation_rules"] = validation_rules[:1]
+    output_mapping["field_map"] = field_map[:1]
+    output_mapping["table_map"] = []
     registration = {
         key: value
         for key, value in definition.items()
@@ -135,7 +166,7 @@ def _high_risk_template_store() -> TemplateStore:
     }
     registration.update(
         {
-            "name": "Synthetic high-risk browser review",
+            "name": "Real PDF high-risk browser review",
             "category": "manufacturing",
             "change_reason": "Register committed high-risk browser review fixture",
             "actor": {"principal_id": "e2e-template-admin", "role": "admin"},
@@ -144,48 +175,6 @@ def _high_risk_template_store() -> TemplateStore:
     store = TemplateStore()
     store.register_template(registration)
     return store
-
-
-def _high_risk_parser_output(fixture: dict[str, Any]) -> dict[str, Any]:
-    document_ir = fixture.get("document_ir")
-    if not isinstance(document_ir, dict):
-        raise AssertionError("high-risk browser fixture is missing document_ir")
-    pages = document_ir.get("pages")
-    blocks = document_ir.get("blocks")
-    if not isinstance(pages, list) or not isinstance(blocks, list):
-        raise AssertionError("high-risk browser fixture has invalid document_ir")
-    parser_pages = []
-    for page in pages:
-        if not isinstance(page, dict):
-            raise AssertionError("high-risk browser fixture page must be an object")
-        page_number = page.get("page_number")
-        fragments = []
-        for block in blocks:
-            if not isinstance(block, dict) or block.get("source_page") != page_number:
-                continue
-            bbox = block.get("bbox")
-            if not isinstance(bbox, dict):
-                raise AssertionError("high-risk browser fixture block bbox is required")
-            fragments.append(
-                {
-                    "text": block.get("text"),
-                    "type": block.get("type"),
-                    "bbox": {
-                        key: bbox[key] for key in ("x", "y", "width", "height")
-                    },
-                    "confidence": block.get("confidence"),
-                }
-            )
-        parser_pages.append(
-            {
-                "page_number": page_number,
-                "width": page.get("width"),
-                "height": page.get("height"),
-                "unit": page.get("unit"),
-                "fragments": fragments,
-            }
-        )
-    return {"pages": parser_pages}
 
 
 @contextmanager
@@ -308,14 +297,6 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
 
     with tempfile.TemporaryDirectory(prefix="veridoc-browser-e2e-") as state_dir:
         high_risk_fixture = _high_risk_fixture()
-        high_risk_input_path = Path(state_dir) / "high-risk-review-input.json"
-        high_risk_input_path.write_text(
-            json.dumps(
-                _high_risk_parser_output(high_risk_fixture),
-                ensure_ascii=False,
-            ),
-            encoding="utf-8",
-        )
         with _poc_server(
             Path(state_dir),
             auth_token=auth_token,
@@ -570,7 +551,9 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
                 page.screenshot(path=str(audit_screenshot), full_page=True)
 
                 page.locator('[data-nav-target="upload"]').click()
-                page.locator("#document-file").set_input_files(str(high_risk_input_path))
+                page.locator("#document-file").set_input_files(
+                    str(FIXTURE_PATH)
+                )
                 page.locator("#direct-conversion-mode").select_option("auto")
                 high_risk_template_id = high_risk_fixture["template_definition"][
                     "template_id"
@@ -593,6 +576,15 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
                 if not isinstance(high_risk_result, dict):
                     raise AssertionError(
                         "high-risk browser result must be a JSON object"
+                    )
+                high_risk_audit = high_risk_result.get("audit")
+                if not isinstance(high_risk_audit, dict) or (
+                    high_risk_audit.get("source_filename") != FIXTURE_PATH.name
+                    or high_risk_audit.get("source_type") != "pdf"
+                    or high_risk_audit.get("source_sha256") != source_sha256
+                ):
+                    raise AssertionError(
+                        "high-risk review evidence was not bound to the real PDF source"
                     )
                 high_risk_api_result_path.write_text(
                     json.dumps(high_risk_result, ensure_ascii=False, indent=2) + "\n",
@@ -727,17 +719,35 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
                 )
                 approval_status = page.locator("#review-action-status")
                 expect(approval_status).to_contain_text(
-                    "review approval must be performed by a different actor",
+                    "review approval is blocked while needs-fix is unresolved",
                     timeout=10_000,
                 )
                 expect(approval_state).to_have_text("needs fix")
                 approval_block_message = approval_status.inner_text().strip()
-                _keyboard_activate(
-                    page,
-                    first_item_selector
-                    + ' button[data-review-action-name="reject"]:not([disabled])',
-                    focus_trace,
-                )
+                with page.expect_response(
+                    lambda response: (
+                        response.request.method == "POST"
+                        and response.url == base_url + "/api/review-events"
+                    )
+                ) as reject_response_info:
+                    _keyboard_activate(
+                        page,
+                        first_item_selector
+                        + ' button[data-review-action-name="reject"]:not([disabled])',
+                        focus_trace,
+                    )
+                reject_response = reject_response_info.value
+                reject_payload = _json_response(reject_response)
+                reject_event = reject_payload.get("audit_event")
+                if (
+                    not reject_response.ok
+                    or not isinstance(reject_event, dict)
+                    or reject_event.get("action") != "reject"
+                    or reject_event.get("block_id") != first_high_risk_block
+                ):
+                    raise AssertionError(
+                        "keyboard reject audit request was not accepted for the target"
+                    )
 
                 page.screenshot(path=str(keyboard_screenshot), full_page=True)
 
@@ -853,6 +863,9 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
                         },
                         "source_jump": {
                             "block_id": first_high_risk_block,
+                            "source_filename": high_risk_audit["source_filename"],
+                            "source_type": high_risk_audit["source_type"],
+                            "source_sha256": high_risk_audit["source_sha256"],
                             "page": source_jump_page,
                             "review_item_page": first_high_risk_item["source_page"],
                             "bbox": source_jump_bbox,

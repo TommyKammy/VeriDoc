@@ -3088,10 +3088,20 @@ def _validate_review_workflow_event(
     for stored_event in reversed(stored_events):
         if not _same_review_workflow_target_base(stored_event, audit_event):
             continue
+        stored_action = stored_event.get("action")
+        if stored_action not in {"edit", "needs_fix"}:
+            continue
         if _has_conflicting_review_conversion_id(stored_event, audit_event):
             if matched_audit_conversion_edit:
                 continue
-            deferred_conflicting_conversion_events.append(stored_event)
+            if stored_action == "edit":
+                deferred_conflicting_conversion_events.append(stored_event)
+            continue
+        if stored_action == "needs_fix":
+            if latest_edit_revised_text is None:
+                raise RuntimeError(
+                    "review approval is blocked while needs-fix is unresolved"
+                )
             continue
         stored_conversion_id = stored_event.get("conversion_id")
         if audit_conversion_id and stored_conversion_id == audit_conversion_id:
@@ -3150,8 +3160,6 @@ def _same_review_workflow_target_base(
     stored_event: dict[str, Any],
     audit_event: dict[str, Any],
 ) -> bool:
-    if stored_event.get("action") != "edit":
-        return False
     if stored_event.get("document_id") != audit_event["document_id"]:
         return False
     if stored_event.get("block_id") != audit_event["block_id"]:

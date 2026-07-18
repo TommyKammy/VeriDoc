@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from scripts.ci.mvp_browser_e2e import (
+    FIXTURE_PATH,
     _launch_browser,
     _require_audit_payload_matches_result,
     _require_matching_event,
@@ -208,16 +209,35 @@ class MvpBrowserE2ETest(unittest.TestCase):
                 review_flow["high_risk"]["approval_blocked_while_unresolved"]
             )
             self.assertIn(
-                "different actor",
+                "needs-fix is unresolved",
                 review_flow["high_risk"]["approval_block_reason"],
+            )
+            self.assertEqual(
+                review_flow["source_jump"]["source_filename"],
+                FIXTURE_PATH.name,
+            )
+            self.assertEqual(review_flow["source_jump"]["source_type"], "pdf")
+            self.assertEqual(
+                review_flow["source_jump"]["source_sha256"],
+                hashlib.sha256(FIXTURE_PATH.read_bytes()).hexdigest(),
             )
             self.assertEqual(
                 review_flow["source_jump"]["page"],
                 review_flow["source_jump"]["review_item_page"],
             )
+            for coordinate in ("x", "y", "width", "height"):
+                self.assertAlmostEqual(
+                    review_flow["source_jump"]["bbox"][coordinate],
+                    review_flow["source_jump"]["review_item_bbox"][coordinate],
+                    places=3,
+                )
             self.assertEqual(
-                review_flow["source_jump"]["bbox"],
-                review_flow["source_jump"]["review_item_bbox"],
+                review_flow["source_jump"]["bbox"]["unit"],
+                review_flow["source_jump"]["review_item_bbox"]["unit"],
+            )
+            self.assertEqual(
+                review_flow["source_jump"]["bbox"]["origin"],
+                review_flow["source_jump"]["review_item_bbox"]["origin"],
             )
             self.assertTrue(review_flow["unresolved"]["blocked_before_approval"])
             for warning in review_flow["warnings"]:
