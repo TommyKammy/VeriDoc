@@ -11,6 +11,7 @@ import json
 import math
 import os
 import platform
+import posixpath
 import re
 import signal
 import shlex
@@ -4711,11 +4712,47 @@ def p9_validate_xlsx_artifact(
 
 def p9_docx_source_linkage(artifact_path: Path) -> list[dict[str, object]]:
     namespace = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    relationship_namespace = (
+        "http://schemas.openxmlformats.org/package/2006/relationships"
+    )
+    comments_relationship_type = (
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments"
+    )
     with ZipFile(artifact_path) as archive:
         document_root = ElementTree.fromstring(archive.read("word/document.xml"))
         try:
-            comments_root = ElementTree.fromstring(archive.read("word/comments.xml"))
-        except KeyError:
+            relationships_root = ElementTree.fromstring(
+                archive.read("word/_rels/document.xml.rels")
+            )
+        except (ElementTree.ParseError, KeyError):
+            relationships_root = None
+        comments_relationship_present = False
+        if relationships_root is not None:
+            for relationship in relationships_root.findall(
+                f"{{{relationship_namespace}}}Relationship"
+            ):
+                target = relationship.attrib.get("Target")
+                if not isinstance(target, str):
+                    continue
+                target_path = (
+                    posixpath.normpath(target).lstrip("/")
+                    if target.startswith("/")
+                    else posixpath.normpath(posixpath.join("word", target))
+                )
+                if (
+                    relationship.attrib.get("Type") == comments_relationship_type
+                    and relationship.attrib.get("TargetMode", "Internal") == "Internal"
+                    and target_path == "word/comments.xml"
+                ):
+                    comments_relationship_present = True
+                    break
+        try:
+            comments_root = (
+                ElementTree.fromstring(archive.read("word/comments.xml"))
+                if comments_relationship_present
+                else None
+            )
+        except (ElementTree.ParseError, KeyError):
             comments_root = None
 
     comments: dict[str, dict[str, str]] = {}

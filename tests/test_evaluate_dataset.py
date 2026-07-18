@@ -1927,6 +1927,24 @@ class EvaluateDatasetTest(unittest.TestCase):
                 "source_linkage",
             ),
             (
+                "stale comments part without document relationship",
+                rewritten_docx(
+                    artifact_content,
+                    replacements={
+                        "word/_rels/document.xml.rels": (
+                            (
+                                '  <Relationship Id="rId3" '
+                                'Type="http://schemas.openxmlformats.org/'
+                                'officeDocument/2006/relationships/comments" '
+                                'Target="comments.xml"/>\n',
+                                "",
+                            ),
+                        )
+                    },
+                ),
+                "source_linkage",
+            ),
+            (
                 "copied source block identity",
                 rewritten_docx(
                     artifact_content,
