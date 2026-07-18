@@ -12,9 +12,17 @@ from unittest.mock import patch
 
 from scripts.ci.mvp_browser_e2e import (
     FIXTURE_PATH,
+    LocalNetworkBoundaryObserver,
+    NetworkBoundaryViolation,
     _launch_browser,
     _require_audit_payload_matches_result,
     _require_matching_event,
+    assert_rerun_equivalent,
+    build_rerun_package,
+    seal_rerun_package,
+    validate_endpoint_configuration,
+    validate_rerun_package_envelope,
+    validate_rerun_package_for_workspace,
     run_browser_e2e,
 )
 
@@ -140,6 +148,141 @@ class EvidenceBoundaryValidationTest(unittest.TestCase):
             )
 
 
+class LocalNetworkBoundaryTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.observer = LocalNetworkBoundaryObserver(
+            allowed_origins=("http://127.0.0.1:8765",)
+        )
+
+    def test_local_http_attempt_is_recorded_without_external_send(self) -> None:
+        self.observer.observe_http_attempt(
+            "http://127.0.0.1:8765/api/jobs",
+            method="POST",
+            source="playwright",
+        )
+
+        result = self.observer.result()
+
+        self.assertEqual(result["http_attempt_count"], 1)
+        self.assertEqual(result["external_attempt_count"], 0)
+        self.assertEqual(result["external_ai_api_send_count"], 0)
+        self.assertEqual(result["status"], "pass")
+
+    def test_external_http_attempt_is_recorded_and_rejected(self) -> None:
+        with self.assertRaisesRegex(
+            NetworkBoundaryViolation,
+            "external HTTP attempt blocked",
+        ):
+            self.observer.observe_http_attempt(
+                "https://api.example.invalid/v1/chat/completions",
+                method="POST",
+                source="playwright",
+            )
+
+        result = self.observer.result()
+        self.assertEqual(result["external_attempt_count"], 1)
+        self.assertEqual(result["external_ai_api_send_count"], 1)
+        self.assertEqual(result["status"], "fail")
+
+    def test_external_dns_attempt_is_recorded_and_rejected(self) -> None:
+        with self.assertRaisesRegex(
+            NetworkBoundaryViolation,
+            "external DNS attempt blocked",
+        ):
+            self.observer.observe_dns_attempt(
+                "api.example.invalid",
+                source="python_socket",
+            )
+
+        result = self.observer.result()
+        self.assertEqual(result["dns_attempt_count"], 1)
+        self.assertEqual(result["external_attempt_count"], 1)
+
+    def test_external_endpoint_configuration_is_rejected(self) -> None:
+        with self.assertRaisesRegex(
+            NetworkBoundaryViolation,
+            "OPENAI_BASE_URL.*external endpoint",
+        ):
+            validate_endpoint_configuration(
+                {"OPENAI_BASE_URL": "https://api.example.invalid/v1"},
+                allowed_origins=self.observer.allowed_origins,
+            )
+
+
+class RerunPackageValidationTest(unittest.TestCase):
+    def test_package_payload_tampering_is_rejected(self) -> None:
+        envelope = seal_rerun_package(
+            {
+                "schema_version": "veridoc-mvp-rerun-package/v1",
+                "commit": "a" * 40,
+                "inputs": [],
+            }
+        )
+        envelope["package"]["commit"] = "b" * 40
+
+        with self.assertRaisesRegex(ValueError, "rerun package integrity"):
+            validate_rerun_package_envelope(envelope)
+
+    def test_generated_package_pins_complete_inputs_and_rejects_hash_drift(
+        self,
+    ) -> None:
+        evidence = {
+            "schema_version": "veridoc-mvp-browser-e2e/v1",
+            "network_observation": {
+                "status": "pass",
+                "external_ai_api_send_count": 0,
+                "external_attempt_count": 0,
+            },
+        }
+        envelope = build_rerun_package(evidence, browser_version="test-browser")
+        package = validate_rerun_package_for_workspace(envelope)
+
+        self.assertRegex(package["commit"], r"^[0-9a-f]{40}$")
+        self.assertGreaterEqual(len(package["inputs"]), 5)
+        self.assertTrue(package["configuration"]["profiles"])
+        self.assertTrue(package["dependencies"]["requirement_files"])
+        self.assertIn("prompt", package["versions"])
+        self.assertIn("<rerun-package-path>", package["commands"]["rerun"])
+
+        package["inputs"][0]["sha256"] = "0" * 64
+        drifted_envelope = seal_rerun_package(package)
+        with self.assertRaisesRegex(ValueError, "input hash mismatch"):
+            validate_rerun_package_for_workspace(drifted_envelope)
+
+    def test_equivalence_ignores_run_identity_and_timing_only(self) -> None:
+        expected = {
+            "schema_version": "veridoc-mvp-browser-e2e/v1",
+            "run_id": "first",
+            "processing_time_ms": 1.0,
+            "correlation": {
+                "run_id": "first",
+                "job": {
+                    "job_id": "job-first",
+                    "status": "succeeded",
+                    "conversion_status": "converted",
+                },
+            },
+            "network_observation": {
+                "status": "pass",
+                "external_ai_api_send_count": 0,
+                "external_attempt_count": 0,
+            },
+            "recovery": {"result": "completed"},
+        }
+        actual = json.loads(json.dumps(expected))
+        actual["run_id"] = "second"
+        actual["processing_time_ms"] = 9.0
+        actual["correlation"]["run_id"] = "second"
+        actual["correlation"]["job"]["job_id"] = "job-second"
+
+        comparison = assert_rerun_equivalent(expected, actual)
+
+        self.assertTrue(comparison["equivalent"])
+        actual["network_observation"]["external_ai_api_send_count"] = 1
+        with self.assertRaisesRegex(AssertionError, "rerun result is not equivalent"):
+            assert_rerun_equivalent(expected, actual)
+
+
 class MvpBrowserE2ETest(unittest.TestCase):
     @unittest.skipUnless(
         BROWSER_E2E_RUNTIME_AVAILABLE,
@@ -157,6 +300,12 @@ class MvpBrowserE2ETest(unittest.TestCase):
             run_dir = evidence_root / evidence["run_id"]
 
             self.assertEqual(evidence["schema_version"], "veridoc-mvp-browser-e2e/v1")
+            self.assertEqual(evidence["network_observation"]["status"], "pass")
+            self.assertEqual(
+                evidence["network_observation"]["external_ai_api_send_count"],
+                0,
+            )
+            self.assertEqual(evidence["network_observation"]["external_attempt_count"], 0)
             self.assertEqual(evidence["run_id"], evidence["correlation"]["run_id"])
             self.assertEqual(evidence["correlation"]["job"]["status"], "succeeded")
             self.assertIn(
@@ -248,6 +397,10 @@ class MvpBrowserE2ETest(unittest.TestCase):
 
             evidence_path = run_dir / "evidence.json"
             self.assertEqual(json.loads(evidence_path.read_text()), evidence)
+            rerun_package_path = run_dir / evidence["files"]["rerun_package"]
+            validate_rerun_package_envelope(
+                json.loads(rerun_package_path.read_text(encoding="utf-8"))
+            )
             self.assertTrue((run_dir / evidence["files"]["trace"]).is_file())
             self.assertTrue((run_dir / evidence["files"]["api_result"]).is_file())
             high_risk_api_result = json.loads(

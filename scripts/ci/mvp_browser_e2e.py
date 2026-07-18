@@ -3,10 +3,16 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
+import importlib.metadata
+import ipaddress
 import json
 import os
+import platform
 import re
+import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -16,6 +22,7 @@ from copy import deepcopy
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Iterator
+from urllib.parse import urlsplit
 from zipfile import ZipFile
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -24,11 +31,15 @@ if str(REPO_ROOT) not in sys.path:
 
 from services.api.job_queue import JobQueue
 from services.api.poc_web import (
+    CONVERSION_AUDIT_SCHEMA_VERSION,
+    CONVERSION_PLAN_PROMPT_VERSION,
+    CONVERSION_PLAN_SCHEMA_VERSION,
     JobAuditEventStore,
     PocWebRequestHandler,
     ReviewAuditEventStore,
     TemplateStore,
 )
+from core.ir.document_ir_v1 import SCHEMA_VERSION as DOCUMENT_IR_SCHEMA_VERSION
 
 FIXTURE_PATH = (
     REPO_ROOT / "datasets" / "fixtures" / "pdf" / "pdf-to-word-representative.pdf"
@@ -40,6 +51,629 @@ HIGH_RISK_FIXTURE_PATH = (
     / "templates"
     / "synthetic-batch-template-regression.json"
 )
+MVP_MANIFEST_PATH = REPO_ROOT / "datasets" / "mvp_evaluation_manifest_v1.json"
+FIXTURE_MANIFEST_PATH = REPO_ROOT / "datasets" / "fixtures" / "manifest.json"
+INFERENCE_PROFILES_PATH = REPO_ROOT / "services" / "api" / "inference_profiles.json"
+DEPENDENCY_ROOT_PATH = REPO_ROOT / "requirements-browser-e2e.txt"
+RERUN_INPUT_PATHS = (
+    MVP_MANIFEST_PATH,
+    FIXTURE_MANIFEST_PATH,
+    FIXTURE_PATH,
+    HIGH_RISK_FIXTURE_PATH,
+    INFERENCE_PROFILES_PATH,
+)
+ENDPOINT_ENVIRONMENT_KEYS = (
+    "OPENAI_API_BASE",
+    "OPENAI_BASE_URL",
+    "VERIDOC_LLM_BASE_URL",
+    "VERIDOC_LLM_ENDPOINT",
+)
+NETWORK_OBSERVATION_SCHEMA_VERSION = "veridoc-network-observation/v1"
+RERUN_PACKAGE_SCHEMA_VERSION = "veridoc-mvp-rerun-package/v1"
+RERUN_PACKAGE_ENVELOPE_SCHEMA_VERSION = "veridoc-mvp-rerun-package-envelope/v1"
+
+
+class NetworkBoundaryViolation(AssertionError):
+    """Raised when the acceptance harness observes an untrusted network boundary."""
+
+
+def _canonical_json_sha256(value: object) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _url_origin(url: str) -> str | None:
+    parsed = urlsplit(url)
+    if parsed.scheme not in {"http", "https", "ws", "wss"} or not parsed.hostname:
+        return None
+    default_port = 443 if parsed.scheme in {"https", "wss"} else 80
+    port = parsed.port or default_port
+    host = parsed.hostname
+    if ":" in host:
+        host = f"[{host}]"
+    return f"{parsed.scheme}://{host}:{port}"
+
+
+def _is_loopback_host(host: str) -> bool:
+    normalized = host.rstrip(".").lower()
+    if normalized == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
+
+def _safe_network_target(url: str) -> str:
+    parsed = urlsplit(url)
+    origin = _url_origin(url)
+    if origin is None:
+        return parsed.scheme or "<malformed>"
+    return f"{origin}{parsed.path or '/'}"
+
+
+class LocalNetworkBoundaryObserver:
+    """Record and fail closed on network attempts outside explicit local origins."""
+
+    def __init__(self, *, allowed_origins: tuple[str, ...]) -> None:
+        normalized = tuple(_url_origin(origin) for origin in allowed_origins)
+        if not normalized or any(origin is None for origin in normalized):
+            raise ValueError("allowed_origins must contain valid HTTP(S) origins")
+        self.allowed_origins = tuple(str(origin) for origin in normalized)
+        self._attempts: list[dict[str, object]] = []
+
+    def _record(
+        self,
+        *,
+        kind: str,
+        target: str,
+        source: str,
+        allowed: bool,
+        method: str | None = None,
+    ) -> None:
+        attempt: dict[str, object] = {
+            "kind": kind,
+            "target": target,
+            "source": source,
+            "allowed": allowed,
+        }
+        if method is not None:
+            attempt["method"] = method.upper()
+        self._attempts.append(attempt)
+
+    def observe_http_attempt(self, url: str, *, method: str, source: str) -> None:
+        origin = _url_origin(url)
+        if origin is None:
+            return
+        allowed = origin in self.allowed_origins
+        target = _safe_network_target(url)
+        self._record(
+            kind="http",
+            target=target,
+            source=source,
+            allowed=allowed,
+            method=method,
+        )
+        if not allowed:
+            raise NetworkBoundaryViolation(
+                f"external HTTP attempt blocked: {method.upper()} {target}"
+            )
+
+    def observe_dns_attempt(self, host: str, *, source: str) -> None:
+        allowed_hosts = {
+            str(urlsplit(origin).hostname).rstrip(".").lower()
+            for origin in self.allowed_origins
+        }
+        normalized = str(host).rstrip(".").lower()
+        allowed = normalized in allowed_hosts or _is_loopback_host(normalized)
+        self._record(
+            kind="dns",
+            target=normalized,
+            source=source,
+            allowed=allowed,
+        )
+        if not allowed:
+            raise NetworkBoundaryViolation(
+                f"external DNS attempt blocked: {normalized}"
+            )
+
+    def observe_socket_attempt(self, address: object, *, source: str) -> None:
+        if not isinstance(address, tuple) or not address:
+            return
+        host = str(address[0])
+        allowed = _is_loopback_host(host)
+        target = f"{host}:{address[1]}" if len(address) > 1 else host
+        self._record(
+            kind="socket",
+            target=target,
+            source=source,
+            allowed=allowed,
+        )
+        if not allowed:
+            raise NetworkBoundaryViolation(
+                f"external socket attempt blocked: {target}"
+            )
+
+    @contextmanager
+    def observe_python_network(self) -> Iterator[None]:
+        original_getaddrinfo = socket.getaddrinfo
+        original_connect = socket.socket.connect
+        observer = self
+
+        def guarded_getaddrinfo(host: object, *args: object, **kwargs: object) -> object:
+            observer.observe_dns_attempt(str(host), source="python_socket")
+            return original_getaddrinfo(host, *args, **kwargs)
+
+        def guarded_connect(sock: socket.socket, address: object) -> object:
+            observer.observe_socket_attempt(address, source="python_socket")
+            return original_connect(sock, address)
+
+        socket.getaddrinfo = guarded_getaddrinfo  # type: ignore[assignment]
+        socket.socket.connect = guarded_connect  # type: ignore[method-assign]
+        try:
+            yield
+        finally:
+            socket.getaddrinfo = original_getaddrinfo
+            socket.socket.connect = original_connect  # type: ignore[method-assign]
+
+    def install_playwright_guard(self, context: Any) -> None:
+        def guard(route: Any, request: Any) -> None:
+            try:
+                self.observe_http_attempt(
+                    request.url,
+                    method=request.method,
+                    source="playwright",
+                )
+            except NetworkBoundaryViolation:
+                route.abort("blockedbyclient")
+                return
+            route.continue_()
+
+        context.route("**/*", guard)
+
+    def assert_clean(self) -> None:
+        external = [attempt for attempt in self._attempts if not attempt["allowed"]]
+        if external:
+            raise NetworkBoundaryViolation(
+                f"acceptance network boundary recorded {len(external)} external attempt(s)"
+            )
+
+    def result(self) -> dict[str, object]:
+        http_attempts = [
+            attempt for attempt in self._attempts if attempt["kind"] == "http"
+        ]
+        dns_attempts = [
+            attempt for attempt in self._attempts if attempt["kind"] == "dns"
+        ]
+        external = [attempt for attempt in self._attempts if not attempt["allowed"]]
+        external_http = [
+            attempt for attempt in external if attempt["kind"] == "http"
+        ]
+        return {
+            "schema_version": NETWORK_OBSERVATION_SCHEMA_VERSION,
+            "status": "pass" if not external else "fail",
+            "allowed_origins": list(self.allowed_origins),
+            "observation_sources": ["playwright", "python_socket"],
+            "http_attempt_count": len(http_attempts),
+            "dns_attempt_count": len(dns_attempts),
+            "external_attempt_count": len(external),
+            "external_ai_api_send_count": len(external_http),
+            "attempts": list(self._attempts),
+        }
+
+
+def validate_endpoint_configuration(
+    environ: dict[str, str] | os._Environ[str],
+    *,
+    allowed_origins: tuple[str, ...],
+) -> list[dict[str, str]]:
+    """Reject configured external or malformed AI/API endpoints."""
+    configured: list[dict[str, str]] = []
+    for key in ENDPOINT_ENVIRONMENT_KEYS:
+        raw_value = environ.get(key)
+        if not raw_value:
+            continue
+        origin = _url_origin(raw_value)
+        host = urlsplit(raw_value).hostname
+        if origin is None or host is None:
+            raise NetworkBoundaryViolation(
+                f"{key} contains a malformed endpoint configuration"
+            )
+        if not _is_loopback_host(host):
+            raise NetworkBoundaryViolation(
+                f"{key} configures an external endpoint outside the local-only boundary"
+            )
+        configured.append({"name": key, "origin": origin})
+    return configured
+
+
+def _equivalence_projection(evidence: dict[str, Any]) -> dict[str, object]:
+    correlation = evidence.get("correlation", {})
+    review_flow = evidence.get("review_flow", {})
+    high_risk = review_flow.get("high_risk", {})
+    source_jump = review_flow.get("source_jump", {})
+    unresolved = review_flow.get("unresolved", {})
+    return {
+        "schema_version": evidence.get("schema_version"),
+        "job": {
+            "status": correlation.get("job", {}).get("status"),
+            "conversion_status": correlation.get("job", {}).get(
+                "conversion_status"
+            ),
+        },
+        "audit_counts": {
+            "job_event_count": correlation.get("audit", {}).get("job_event_count"),
+            "review_event_count": correlation.get("audit", {}).get(
+                "review_event_count"
+            ),
+        },
+        "recovery": {
+            "retry_mode": evidence.get("recovery", {}).get("retry_mode"),
+            "result": evidence.get("recovery", {}).get("result"),
+        },
+        "review": {
+            "keyboard_only": review_flow.get("keyboard_only"),
+            "actions": review_flow.get("actions"),
+            "warnings": review_flow.get("warnings"),
+            "high_risk": {
+                "review_target_count": high_risk.get("review_target_count"),
+                "auto_confirmed_count": high_risk.get("auto_confirmed_count"),
+                "approval_blocked_while_unresolved": high_risk.get(
+                    "approval_blocked_while_unresolved"
+                ),
+                "approval_block_reason": high_risk.get("approval_block_reason"),
+            },
+            "source_jump": {
+                "source_filename": source_jump.get("source_filename"),
+                "source_type": source_jump.get("source_type"),
+                "source_sha256": source_jump.get("source_sha256"),
+                "page": source_jump.get("page"),
+                "review_item_page": source_jump.get("review_item_page"),
+                "bbox": source_jump.get("bbox"),
+                "review_item_bbox": source_jump.get("review_item_bbox"),
+            },
+            "unresolved": {
+                "blocked_before_approval": unresolved.get(
+                    "blocked_before_approval"
+                ),
+                "state": unresolved.get("state"),
+            },
+        },
+        "network": {
+            "status": evidence.get("network_observation", {}).get("status"),
+            "external_attempt_count": evidence.get("network_observation", {}).get(
+                "external_attempt_count"
+            ),
+            "external_ai_api_send_count": evidence.get(
+                "network_observation", {}
+            ).get("external_ai_api_send_count"),
+        },
+    }
+
+
+def assert_rerun_equivalent(
+    expected: dict[str, Any],
+    actual: dict[str, Any],
+) -> dict[str, object]:
+    expected_projection = _equivalence_projection(expected)
+    actual_projection = _equivalence_projection(actual)
+    expected_sha256 = _canonical_json_sha256(expected_projection)
+    actual_sha256 = _canonical_json_sha256(actual_projection)
+    equivalent = expected_sha256 == actual_sha256
+    comparison = {
+        "schema_version": "veridoc-mvp-rerun-equivalence/v1",
+        "equivalent": equivalent,
+        "rule": "decision-relevant fields match; run identity and timing are excluded",
+        "excluded_fields": [
+            "run_id",
+            "correlation.run_id",
+            "processing_time_ms",
+            "generated_at",
+            "dynamic identifiers and artifact bytes",
+        ],
+        "expected_sha256": expected_sha256,
+        "actual_sha256": actual_sha256,
+    }
+    if not equivalent:
+        raise AssertionError(
+            "rerun result is not equivalent under the decision-relevant field rule"
+        )
+    return comparison
+
+
+def seal_rerun_package(package: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "schema_version": RERUN_PACKAGE_ENVELOPE_SCHEMA_VERSION,
+        "package_sha256": _canonical_json_sha256(package),
+        "package": deepcopy(package),
+    }
+
+
+def validate_rerun_package_envelope(
+    envelope: dict[str, Any],
+) -> dict[str, Any]:
+    package = envelope.get("package")
+    recorded_sha256 = envelope.get("package_sha256")
+    if (
+        envelope.get("schema_version") != RERUN_PACKAGE_ENVELOPE_SCHEMA_VERSION
+        or not isinstance(package, dict)
+        or not isinstance(recorded_sha256, str)
+        or _canonical_json_sha256(package) != recorded_sha256
+    ):
+        raise ValueError("rerun package integrity check failed")
+    if package.get("schema_version") != RERUN_PACKAGE_SCHEMA_VERSION:
+        raise ValueError("rerun package schema version is unsupported")
+    required_sections = {
+        "commit",
+        "inputs",
+        "configuration",
+        "dependencies",
+        "versions",
+        "commands",
+        "equivalence",
+    }
+    missing = sorted(required_sections - package.keys())
+    if missing:
+        raise ValueError(
+            "rerun package is incomplete; missing: " + ", ".join(missing)
+        )
+    return package
+
+
+def _repo_relative(path: Path, repo_root: Path = REPO_ROOT) -> str:
+    return path.resolve().relative_to(repo_root.resolve()).as_posix()
+
+
+def _current_git_commit(repo_root: Path = REPO_ROOT) -> str:
+    completed = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    commit = completed.stdout.strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise ValueError("git rev-parse did not return a full commit SHA")
+    return commit
+
+
+def _requirement_files(
+    root_path: Path = DEPENDENCY_ROOT_PATH,
+    *,
+    repo_root: Path = REPO_ROOT,
+) -> tuple[Path, ...]:
+    discovered: list[Path] = []
+
+    def visit(path: Path) -> None:
+        resolved = path.resolve()
+        if resolved in discovered:
+            return
+        resolved.relative_to(repo_root.resolve())
+        if not resolved.is_file():
+            raise ValueError(f"dependency file is missing: {_repo_relative(resolved)}")
+        discovered.append(resolved)
+        for raw_line in resolved.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if line.startswith("-r ") or line.startswith("--requirement "):
+                child = line.split(maxsplit=1)[1]
+                visit(resolved.parent / child)
+
+    visit(root_path)
+    return tuple(discovered)
+
+
+def _dependency_snapshot(
+    *,
+    browser_version: str,
+    repo_root: Path = REPO_ROOT,
+) -> dict[str, object]:
+    requirement_files = _requirement_files(repo_root / "requirements-browser-e2e.txt")
+    specifications: list[str] = []
+    distribution_names: set[str] = {"playwright"}
+    records: list[dict[str, str]] = []
+    for path in requirement_files:
+        lines = [
+            line.strip()
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        specifications.extend(lines)
+        for line in lines:
+            if line.startswith("-"):
+                continue
+            match = re.match(r"([A-Za-z0-9_.-]+)", line)
+            if match:
+                distribution_names.add(match.group(1))
+        records.append(
+            {
+                "path": _repo_relative(path, repo_root),
+                "sha256": _sha256(path),
+            }
+        )
+    installed_versions: dict[str, str] = {}
+    for name in sorted(distribution_names):
+        try:
+            installed_versions[name] = importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            installed_versions[name] = "not-installed"
+    return {
+        "requirement_files": records,
+        "specifications": specifications,
+        "runtime": {
+            "python": platform.python_version(),
+            "browser": browser_version,
+            "distributions": installed_versions,
+        },
+    }
+
+
+def build_rerun_package(
+    evidence: dict[str, Any],
+    *,
+    browser_version: str,
+    repo_root: Path = REPO_ROOT,
+) -> dict[str, Any]:
+    input_paths = (
+        repo_root / "datasets" / "mvp_evaluation_manifest_v1.json",
+        repo_root / "datasets" / "fixtures" / "manifest.json",
+        repo_root
+        / "datasets"
+        / "fixtures"
+        / "pdf"
+        / "pdf-to-word-representative.pdf",
+        repo_root
+        / "datasets"
+        / "fixtures"
+        / "templates"
+        / "synthetic-batch-template-regression.json",
+        repo_root / "services" / "api" / "inference_profiles.json",
+    )
+    profiles_path = repo_root / "services" / "api" / "inference_profiles.json"
+    profiles = json.loads(profiles_path.read_text(encoding="utf-8"))
+    projection = _equivalence_projection(evidence)
+    package = {
+        "schema_version": RERUN_PACKAGE_SCHEMA_VERSION,
+        "commit": _current_git_commit(repo_root),
+        "inputs": [
+            {
+                "path": _repo_relative(path, repo_root),
+                "sha256": _sha256(path),
+            }
+            for path in input_paths
+        ],
+        "configuration": {
+            "path": _repo_relative(profiles_path, repo_root),
+            "sha256": _sha256(profiles_path),
+            "network_boundary": profiles.get("network_boundary"),
+            "profiles": profiles.get("profiles"),
+            "browser_channel": os.environ.get(
+                "VERIDOC_E2E_BROWSER_CHANNEL",
+                "playwright-managed-chromium",
+            ),
+        },
+        "dependencies": _dependency_snapshot(
+            browser_version=browser_version,
+            repo_root=repo_root,
+        ),
+        "versions": {
+            "model_profiles_schema": profiles.get("schema_version"),
+            "prompt": CONVERSION_PLAN_PROMPT_VERSION,
+            "schemas": {
+                "conversion_audit": CONVERSION_AUDIT_SCHEMA_VERSION,
+                "conversion_plan": CONVERSION_PLAN_SCHEMA_VERSION,
+                "document_ir": DOCUMENT_IR_SCHEMA_VERSION,
+                "browser_evidence": evidence.get("schema_version"),
+                "network_observation": NETWORK_OBSERVATION_SCHEMA_VERSION,
+            },
+        },
+        "commands": {
+            "initial": "python3 scripts/ci/mvp_browser_e2e.py",
+            "rerun": (
+                "python3 scripts/ci/mvp_browser_e2e.py "
+                "--rerun-package <rerun-package-path>"
+            ),
+        },
+        "equivalence": {
+            "rule": (
+                "decision-relevant fields must match; run identity, generated "
+                "identifiers, artifact bytes, timestamps, and processing time are excluded"
+            ),
+            "baseline": projection,
+            "baseline_sha256": _canonical_json_sha256(projection),
+        },
+    }
+    return seal_rerun_package(package)
+
+
+def validate_rerun_package_for_workspace(
+    envelope: dict[str, Any],
+    *,
+    repo_root: Path = REPO_ROOT,
+) -> dict[str, Any]:
+    package = validate_rerun_package_envelope(envelope)
+    if package.get("commit") != _current_git_commit(repo_root):
+        raise ValueError("rerun package commit does not match the current checkout")
+    for section in ("inputs",):
+        records = package.get(section)
+        if not isinstance(records, list) or not records:
+            raise ValueError(f"rerun package {section} list is missing")
+        for record in records:
+            if not isinstance(record, dict):
+                raise ValueError(f"rerun package {section} entry is malformed")
+            relative_path = record.get("path")
+            expected_sha256 = record.get("sha256")
+            if not isinstance(relative_path, str) or not isinstance(
+                expected_sha256, str
+            ):
+                raise ValueError(f"rerun package {section} entry is incomplete")
+            path = (repo_root / relative_path).resolve()
+            try:
+                path.relative_to(repo_root.resolve())
+            except ValueError as exc:
+                raise ValueError(
+                    f"rerun package {section} path escapes the repository"
+                ) from exc
+            if not path.is_file() or _sha256(path) != expected_sha256:
+                raise ValueError(
+                    f"rerun package input hash mismatch: {relative_path}"
+                )
+    dependencies = package.get("dependencies")
+    requirement_files = (
+        dependencies.get("requirement_files")
+        if isinstance(dependencies, dict)
+        else None
+    )
+    if not isinstance(requirement_files, list) or not requirement_files:
+        raise ValueError("rerun package dependency set is incomplete")
+    for record in requirement_files:
+        if not isinstance(record, dict):
+            raise ValueError("rerun package dependency record is malformed")
+        path_value = record.get("path")
+        expected_sha256 = record.get("sha256")
+        if not isinstance(path_value, str) or not isinstance(expected_sha256, str):
+            raise ValueError("rerun package dependency record is incomplete")
+        path = (repo_root / path_value).resolve()
+        try:
+            path.relative_to(repo_root.resolve())
+        except ValueError as exc:
+            raise ValueError("rerun package dependency path escapes repository") from exc
+        if not path.is_file() or _sha256(path) != expected_sha256:
+            raise ValueError(f"rerun package dependency hash mismatch: {path_value}")
+    return package
+
+
+def _compare_projection_to_package(
+    package: dict[str, Any],
+    actual: dict[str, Any],
+) -> dict[str, object]:
+    equivalence = package.get("equivalence")
+    baseline = equivalence.get("baseline") if isinstance(equivalence, dict) else None
+    if not isinstance(baseline, dict):
+        raise ValueError("rerun package equivalence baseline is missing")
+    expected_sha256 = equivalence.get("baseline_sha256")
+    if expected_sha256 != _canonical_json_sha256(baseline):
+        raise ValueError("rerun package equivalence baseline integrity check failed")
+    actual_projection = _equivalence_projection(actual)
+    actual_sha256 = _canonical_json_sha256(actual_projection)
+    equivalent = actual_sha256 == expected_sha256
+    comparison = {
+        "schema_version": "veridoc-mvp-rerun-equivalence/v1",
+        "equivalent": equivalent,
+        "rule": equivalence.get("rule"),
+        "expected_sha256": expected_sha256,
+        "actual_sha256": actual_sha256,
+    }
+    if not equivalent:
+        raise AssertionError(
+            "rerun result is not equivalent under the packaged equivalence rule"
+        )
+    return comparison
 
 
 def _sha256(path: Path) -> str:
@@ -208,6 +842,20 @@ def _poc_server(
             os.environ["VERIDOC_LOCAL_AUTH_TOKENS"] = previous_auth
 
 
+@contextmanager
+def _acceptance_network_boundary(
+    base_url: str,
+) -> Iterator[LocalNetworkBoundaryObserver]:
+    observer = LocalNetworkBoundaryObserver(allowed_origins=(base_url,))
+    observer.configured_endpoints = validate_endpoint_configuration(
+        os.environ,
+        allowed_origins=observer.allowed_origins,
+    )
+    with observer.observe_python_network():
+        yield observer
+    observer.assert_clean()
+
+
 def _launch_browser(playwright: Any) -> Any:
     requested_channel = os.environ.get("VERIDOC_E2E_BROWSER_CHANNEL")
     if requested_channel:
@@ -270,7 +918,11 @@ def _keyboard_activate(
     return target
 
 
-def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
+def run_browser_e2e(
+    *,
+    evidence_root: Path,
+    expected_rerun_package: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Exercise recovery and upload-to-download paths and return evidence metadata."""
     try:
         from playwright.sync_api import expect, sync_playwright
@@ -291,6 +943,7 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
     api_result_path = run_dir / "api-result.json"
     high_risk_api_result_path = run_dir / "high-risk-api-result.json"
     review_events_path = run_dir / "review-events.json"
+    rerun_package_path = run_dir / "rerun-package.json"
     auth_token = uuid.uuid4().hex
     approver_actor = f"e2e-{uuid.uuid4().hex}"
     source_sha256 = _sha256(FIXTURE_PATH)
@@ -301,9 +954,13 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
             Path(state_dir),
             auth_token=auth_token,
             approver_actor=approver_actor,
-        ) as base_url, sync_playwright() as playwright:
+        ) as base_url, _acceptance_network_boundary(
+            base_url
+        ) as network_boundary, sync_playwright() as playwright:
             browser = _launch_browser(playwright)
+            browser_version = str(browser.version)
             context = browser.new_context(accept_downloads=True)
+            network_boundary.install_playwright_guard(context)
             page = context.new_page()
             focus_trace: list[dict[str, Any]] = []
             tracing_started = False
@@ -388,6 +1045,11 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
                         raise AssertionError("completed browser result did not expose a job ID")
                     job_id = match.group(1)
                 auth_headers = {"Authorization": f"Bearer {auth_token}"}
+                network_boundary.observe_http_attempt(
+                    base_url + f"/api/jobs/{job_id}",
+                    method="GET",
+                    source="playwright_api_request",
+                )
                 job_response = context.request.get(
                     base_url + f"/api/jobs/{job_id}", headers=auth_headers
                 )
@@ -468,6 +1130,11 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
                     raise AssertionError(
                         "completed browser result did not expose a persisted primary artifact"
                     )
+                network_boundary.observe_http_attempt(
+                    base_url + artifact_href,
+                    method="GET",
+                    source="playwright_api_request",
+                )
                 persisted_artifact_response = context.request.get(
                     base_url + artifact_href, headers=auth_headers
                 )
@@ -520,6 +1187,11 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
                     raise AssertionError(
                         "completed browser result did not expose a persisted audit artifact"
                     )
+                network_boundary.observe_http_attempt(
+                    base_url + audit_artifact_href,
+                    method="GET",
+                    source="playwright_api_request",
+                )
                 audit_response = context.request.get(
                     base_url + audit_artifact_href, headers=auth_headers
                 )
@@ -751,6 +1423,11 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
 
                 page.screenshot(path=str(keyboard_screenshot), full_page=True)
 
+                network_boundary.observe_http_attempt(
+                    base_url + f"/api/job-events?job_id={job_id}",
+                    method="GET",
+                    source="playwright_api_request",
+                )
                 job_events_response = context.request.get(
                     base_url + f"/api/job-events?job_id={job_id}",
                     headers=auth_headers,
@@ -767,6 +1444,11 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
                         "source_sha256": source_sha256,
                     },
                     description="browser upload audit event",
+                )
+                network_boundary.observe_http_attempt(
+                    base_url + "/api/review-events",
+                    method="GET",
+                    source="playwright_api_request",
                 )
                 review_events_response = context.request.get(
                     base_url + "/api/review-events", headers=auth_headers
@@ -811,9 +1493,14 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
                     encoding="utf-8",
                 )
                 review_actor = review_event["actor"]
+                network_boundary.assert_clean()
                 evidence = {
                     "schema_version": "veridoc-mvp-browser-e2e/v1",
                     "run_id": run_id,
+                    "network_observation": {
+                        **network_boundary.result(),
+                        "configured_endpoints": network_boundary.configured_endpoints,
+                    },
                     "correlation": {
                         "run_id": run_id,
                         "upload": {
@@ -890,8 +1577,22 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
                         "review_events": review_events_path.name,
                         "audit_artifact": audit_artifact_path.name,
                         "download": download_name,
+                        "rerun_package": rerun_package_path.name,
                     },
                 }
+                if expected_rerun_package is not None:
+                    evidence["rerun_equivalence"] = _compare_projection_to_package(
+                        expected_rerun_package,
+                        evidence,
+                    )
+                rerun_package = build_rerun_package(
+                    evidence,
+                    browser_version=browser_version,
+                )
+                rerun_package_path.write_text(
+                    json.dumps(rerun_package, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
                 (run_dir / "evidence.json").write_text(
                     json.dumps(evidence, ensure_ascii=False, indent=2) + "\n",
                     encoding="utf-8",
@@ -908,10 +1609,26 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Run the local-only MVP browser acceptance scenario."
+    )
+    parser.add_argument(
+        "--rerun-package",
+        type=Path,
+        help="validate and rerun a previously retained rerun-package.json",
+    )
+    args = parser.parse_args()
     evidence_root = Path(
         os.environ.get("VERIDOC_E2E_EVIDENCE_DIR", "artifacts/mvp-browser-e2e")
     )
-    evidence = run_browser_e2e(evidence_root=evidence_root)
+    expected_package = None
+    if args.rerun_package is not None:
+        envelope = json.loads(args.rerun_package.read_text(encoding="utf-8"))
+        expected_package = validate_rerun_package_for_workspace(envelope)
+    evidence = run_browser_e2e(
+        evidence_root=evidence_root,
+        expected_rerun_package=expected_package,
+    )
     print(evidence_root / evidence["run_id"] / "evidence.json")
     return 0
 

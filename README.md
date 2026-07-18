@@ -211,7 +211,11 @@ VERIDOC_E2E_EVIDENCE_DIR=<evidence-root> python3 scripts/ci/mvp_browser_e2e.py
 
 Each run creates one `p12g03-...` correlation directory containing
 `evidence.json`, the API result, review audit events, the downloadable audit
-artifact, the downloaded primary artifact, screenshots, and a Playwright trace.
+artifact, the downloaded primary artifact, screenshots, a Playwright trace, and
+`rerun-package.json`. The evidence JSON records every observed browser and
+harness HTTP attempt, the allowlisted local origin, DNS/socket observations,
+and `external_ai_api_send_count=0`. External endpoint configuration and any
+external HTTP, DNS, or socket attempt fail the run closed.
 The scenario uses the versioned representative PDF fixture, records an
 incompatible-setting error and successful retry, verifies the downloaded
 artifact against its server audit metadata, and opens the audit screen. It then
@@ -225,6 +229,20 @@ evidence package.
 The pinned PDF.js 4.10.38 runtime is vendored under `apps/web/vendor/pdfjs` and
 served by the local PoC server, so preview rendering works in a clean checkout
 without npm installation or an external CDN.
+
+The rerun package seals the commit, manifest and fixture hashes, inference
+configuration, dependency set, model/prompt/schema versions, and repo-relative
+commands. Re-run the exact package with:
+
+```bash
+VERIDOC_E2E_EVIDENCE_DIR=<evidence-root> python3 scripts/ci/mvp_browser_e2e.py \
+  --rerun-package <rerun-package-path>
+```
+
+The rerun validates the package and every pinned input before starting. Its
+result must match the packaged decision-relevant projection; run identifiers,
+generated identifiers, artifact bytes, timestamps, and processing time are the
+only excluded nondeterministic fields.
 
 Set `VERIDOC_E2E_BROWSER_CHANNEL` only when the runner must use an installed
 browser channel instead of Playwright Chromium.
