@@ -118,6 +118,61 @@
       "confidentiality": "public",
       "public_review_safe": true,
       "mvp_record_pdf_representative": true,
+      "pdf_to_word_expectations": {
+        "validator": "record_pdf_docx_content_v1",
+        "document_title": "record-pdf-neutral-representative.pdf",
+        "heading_texts": [
+          "record-pdf-neutral-representative.pdf"
+        ],
+        "section_order": [
+          "Synthetic Batch Record PDF",
+          "Batch: POC-REC-0001",
+          "Product: Sample sterile fill lot",
+          "Record field: release decision was documented in log.",
+          "Label anchor: FORM-REC-P9-001, no confidential source data."
+        ],
+        "body_blocks": [
+          {
+            "kind": "paragraph",
+            "text": "Synthetic Batch Record PDF",
+            "block_id": "block-0001",
+            "source_page": 1
+          },
+          {
+            "kind": "paragraph",
+            "text": "Batch: POC-REC-0001",
+            "block_id": "block-0002",
+            "source_page": 1
+          },
+          {
+            "kind": "paragraph",
+            "text": "Product: Sample sterile fill lot",
+            "block_id": "block-0003",
+            "source_page": 1
+          },
+          {
+            "kind": "paragraph",
+            "text": "Record field: release decision was documented in log.",
+            "block_id": "block-0004",
+            "source_page": 1
+          },
+          {
+            "kind": "paragraph",
+            "text": "Label anchor: FORM-REC-P9-001, no confidential source data.",
+            "block_id": "block-0005",
+            "source_page": 1
+          }
+        ],
+        "expected_phrases": [
+          "POC-REC-0001",
+          "release decision was documented",
+          "FORM-REC-P9-001"
+        ],
+        "warnings": [
+          "conversion mode pdf_to_word selected",
+          "pdf_to_word reconstruction preserves editable text structure for review; exact PDF layout, fonts, coordinates, columns, footnotes, and OCR fidelity are not guaranteed"
+        ]
+      },
       "notes": "Dedicated neutral synthetic record excerpt for the Phase 12 MVP converted case; contains no high-risk fields or confidential source data."
     },
     {
@@ -185,6 +240,26 @@
       "confidentiality": "public",
       "public_review_safe": true,
       "scanned_pdf_representative": true,
+      "scanned_pdf_ocr_expectations": {
+        "validator": "scanned_pdf_explicit_review_v1",
+        "document_title": "scanned-pdf-representative.pdf",
+        "heading_texts": [
+          "scanned-pdf-representative.pdf"
+        ],
+        "body_blocks": [
+          {
+            "kind": "paragraph",
+            "text": "PDF text extraction produced no text blocks for this page.",
+            "block_id": "block-0001",
+            "source_page": 1
+          }
+        ],
+        "warnings": [
+          "conversion mode pdf_to_word selected",
+          "pdf_to_word reconstruction preserves editable text structure for review; exact PDF layout, fonts, coordinates, columns, footnotes, and OCR fidelity are not guaranteed",
+          "blocks[0].parser marked block requires_review"
+        ]
+      },
       "notes": "Synthetic image-only scan for Phase 12 MVP review-boundary evaluation; contains no text layer or confidential source data."
     },
     {
