@@ -219,6 +219,14 @@ class MvpBrowserE2ETest(unittest.TestCase):
             self.assertEqual(json.loads(evidence_path.read_text()), evidence)
             self.assertTrue((run_dir / evidence["files"]["trace"]).is_file())
             self.assertTrue((run_dir / evidence["files"]["api_result"]).is_file())
+            review_events = json.loads(
+                (run_dir / evidence["files"]["review_events"]).read_text()
+            )
+            self.assertTrue(
+                {"edit", "approve", "reject", "needs_fix"}.issubset(
+                    {event["action"] for event in review_events}
+                )
+            )
             audit_artifact_path = run_dir / evidence["files"]["audit_artifact"]
             self.assertEqual(
                 hashlib.sha256(audit_artifact_path.read_bytes()).hexdigest(),

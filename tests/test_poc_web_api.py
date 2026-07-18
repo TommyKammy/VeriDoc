@@ -645,6 +645,10 @@ def test_convert_uploaded_document_requires_review_for_high_risk_template_field(
         assert set(field_review_items) == {"batch_number", "release_status"}
         assert len({item["block_id"] for item in field_review_items.values()}) == 2
         assert all(item["source_page"] == 1 for item in field_review_items.values())
+        assert all(item["risk_level"] == "high" for item in field_review_items.values())
+        assert all(item["high_risk"] is True for item in field_review_items.values())
+        assert all(item["auto_confirmed"] is False for item in field_review_items.values())
+        assert all(item["warning_details"] for item in field_review_items.values())
 
 
 def test_convert_uploaded_document_emits_template_mapping_warning_review_item() -> None:
@@ -6195,9 +6199,14 @@ def test_poc_http_api_scopes_review_actions_by_conversion_role() -> None:
         thread.join(timeout=5)
 
     assert reviewer_response.status == 200
-    assert reviewer_body["available_review_actions"] == ["edit"]
+    assert reviewer_body["available_review_actions"] == ["edit", "needs_fix"]
     assert approver_response.status == 200
-    assert approver_body["available_review_actions"] == ["edit", "approve"]
+    assert approver_body["available_review_actions"] == [
+        "edit",
+        "needs_fix",
+        "approve",
+        "reject",
+    ]
 
 
 def test_role_permission_matrix_defines_all_mvp_roles_and_sensitive_boundaries() -> None:
@@ -6363,7 +6372,7 @@ def test_poc_http_api_excludes_no_auth_approval_action(
         thread.join(timeout=5)
 
     assert response.status == 200
-    assert body["available_review_actions"] == ["edit"]
+    assert body["available_review_actions"] == ["edit", "needs_fix"]
 
 
 def test_poc_http_api_accepts_review_action_audit_event() -> None:
