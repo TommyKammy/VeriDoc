@@ -761,9 +761,12 @@ def build_rerun_package(
     browser_version: str,
     repo_root: Path = REPO_ROOT,
     generated_evidence_dir: Path | None = None,
+    retained_rerun_package_path: Path | None = None,
 ) -> dict[str, Any]:
-    excluded_paths = (
-        (generated_evidence_dir,) if generated_evidence_dir is not None else ()
+    excluded_paths = tuple(
+        path
+        for path in (generated_evidence_dir, retained_rerun_package_path)
+        if path is not None
     )
     _assert_clean_git_checkout(repo_root, excluded_paths=excluded_paths)
     input_paths = _rerun_input_paths(repo_root)
@@ -806,8 +809,12 @@ def validate_rerun_package_for_workspace(
     envelope: dict[str, Any],
     *,
     repo_root: Path = REPO_ROOT,
+    rerun_package_path: Path | None = None,
 ) -> dict[str, Any]:
-    _assert_clean_git_checkout(repo_root)
+    excluded_paths = (
+        (rerun_package_path,) if rerun_package_path is not None else ()
+    )
+    _assert_clean_git_checkout(repo_root, excluded_paths=excluded_paths)
     package = validate_rerun_package_envelope(envelope)
     if package.get("commit") != _current_git_commit(repo_root):
         raise ValueError("rerun package commit does not match the current checkout")
@@ -1199,6 +1206,7 @@ def run_browser_e2e(
     *,
     evidence_root: Path,
     expected_rerun_package: dict[str, Any] | None = None,
+    retained_rerun_package_path: Path | None = None,
 ) -> dict[str, Any]:
     """Exercise recovery and upload-to-download paths and return evidence metadata."""
     try:
@@ -1877,6 +1885,7 @@ def run_browser_e2e(
                     evidence,
                     browser_version=browser_version,
                     generated_evidence_dir=run_dir,
+                    retained_rerun_package_path=retained_rerun_package_path,
                 )
                 rerun_package_path.write_text(
                     json.dumps(rerun_package, ensure_ascii=False, indent=2) + "\n",
@@ -1913,10 +1922,14 @@ def main() -> int:
     expected_package = None
     if args.rerun_package is not None:
         envelope = json.loads(args.rerun_package.read_text(encoding="utf-8"))
-        expected_package = validate_rerun_package_for_workspace(envelope)
+        expected_package = validate_rerun_package_for_workspace(
+            envelope,
+            rerun_package_path=args.rerun_package,
+        )
     evidence = run_browser_e2e(
         evidence_root=evidence_root,
         expected_rerun_package=expected_package,
+        retained_rerun_package_path=args.rerun_package,
     )
     print(evidence_root / evidence["run_id"] / "evidence.json")
     return 0

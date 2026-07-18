@@ -22,6 +22,7 @@ from scripts.ci.mvp_browser_e2e import (
     _require_matching_event,
     assert_rerun_equivalent,
     build_rerun_package,
+    main,
     seal_rerun_package,
     validate_endpoint_configuration,
     validate_rerun_package_envelope,
@@ -394,6 +395,91 @@ class RerunPackageValidationTest(unittest.TestCase):
         ):
             with self.assertRaisesRegex(ValueError, "dirty checkout"):
                 validate_rerun_package_for_workspace({})
+
+    def test_retained_package_is_excluded_from_rerun_clean_check(self) -> None:
+        repo_root = Path("repo").resolve()
+        rerun_package_path = repo_root / "evidence" / "rerun-package.json"
+        with patch("scripts.ci.mvp_browser_e2e.subprocess.run") as run:
+            run.return_value.stdout = ""
+            with self.assertRaises(ValueError):
+                validate_rerun_package_for_workspace(
+                    {},
+                    repo_root=repo_root,
+                    rerun_package_path=rerun_package_path,
+                )
+
+        self.assertEqual(
+            run.call_args.args[0],
+            [
+                "git",
+                "status",
+                "--porcelain=v1",
+                "--untracked-files=all",
+                "--",
+                ".",
+                ":(exclude,top,literal)evidence/rerun-package.json",
+            ],
+        )
+
+    def test_retained_package_is_excluded_from_final_package_sealing(self) -> None:
+        evidence = {
+            "schema_version": "veridoc-mvp-browser-e2e/v1",
+            "network_observation": {
+                "status": "pass",
+                "external_ai_api_send_count": 0,
+                "external_attempt_count": 0,
+            },
+        }
+        generated_evidence_dir = Path("generated-evidence").resolve()
+        retained_package_path = Path("retained-rerun-package.json").resolve()
+        with patch(
+            "scripts.ci.mvp_browser_e2e._assert_clean_git_checkout"
+        ) as assert_clean:
+            build_rerun_package(
+                evidence,
+                browser_version="test-browser",
+                generated_evidence_dir=generated_evidence_dir,
+                retained_rerun_package_path=retained_package_path,
+            )
+
+        self.assertEqual(
+            assert_clean.call_args.kwargs["excluded_paths"],
+            (generated_evidence_dir, retained_package_path),
+        )
+
+    def test_cli_passes_retained_package_path_to_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            rerun_package_path = Path(temp_dir) / "rerun-package.json"
+            rerun_package_path.write_text("{}\n", encoding="utf-8")
+            with (
+                patch(
+                    "sys.argv",
+                    [
+                        "mvp_browser_e2e.py",
+                        "--rerun-package",
+                        str(rerun_package_path),
+                    ],
+                ),
+                patch(
+                    "scripts.ci.mvp_browser_e2e.validate_rerun_package_for_workspace",
+                    return_value={"validated": True},
+                ) as validate,
+                patch(
+                    "scripts.ci.mvp_browser_e2e.run_browser_e2e",
+                    return_value={"run_id": "rerun"},
+                ) as run,
+                patch("builtins.print"),
+            ):
+                self.assertEqual(main(), 0)
+
+        validate.assert_called_once_with(
+            {},
+            rerun_package_path=rerun_package_path,
+        )
+        self.assertEqual(
+            run.call_args.kwargs["retained_rerun_package_path"],
+            rerun_package_path,
+        )
 
     def test_package_payload_tampering_is_rejected(self) -> None:
         envelope = seal_rerun_package(
