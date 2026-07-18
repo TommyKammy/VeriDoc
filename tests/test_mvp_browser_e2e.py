@@ -378,6 +378,57 @@ class EvidenceBoundaryValidationTest(unittest.TestCase):
         self.assertEqual(acceptance["status"], "pass")
         self.assertEqual(acceptance["failure_reasons"], [])
 
+    def test_source_bbox_rejects_invalid_origin_even_when_event_matches(
+        self,
+    ) -> None:
+        invalid_origins = (
+            ("x", -1),
+            ("y", -1),
+            ("x", float("inf")),
+            ("y", float("nan")),
+        )
+        for field, invalid_value in invalid_origins:
+            with (
+                self.subTest(field=field, invalid_value=invalid_value),
+                tempfile.TemporaryDirectory() as temporary_directory,
+            ):
+                run_dir = Path(temporary_directory)
+                evidence = _write_complete_evidence_package(run_dir)
+                evidence["correlation"]["provenance"]["source_bbox"][
+                    field
+                ] = invalid_value
+                review_events_path = run_dir / "review-events.json"
+                review_event = json.loads(
+                    review_events_path.read_text(encoding="utf-8")
+                )[0]
+                review_event["source_bbox"][field] = invalid_value
+                review_event.pop("event_hash")
+                canonical = json.dumps(
+                    review_event,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ).encode("utf-8")
+                review_event["event_hash"] = hashlib.sha256(canonical).hexdigest()
+                review_events_path.write_text(
+                    json.dumps([review_event], ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+                evidence["evidence_surfaces"]["audit_events"][
+                    "review_event_hash"
+                ] = review_event["event_hash"]
+
+                acceptance = evaluate_acceptance_evidence(
+                    evidence,
+                    run_dir=run_dir,
+                )
+
+            self.assertEqual(acceptance["status"], "fail")
+            self.assertIn(
+                "EVIDENCE_PROVENANCE_MISSING",
+                {failure["code"] for failure in acceptance["failure_reasons"]},
+            )
+
     def test_non_approval_review_event_cannot_pass(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             run_dir = Path(temporary_directory)

@@ -8,6 +8,7 @@ import hashlib
 import importlib.metadata
 import ipaddress
 import json
+import math
 import os
 import platform
 import re
@@ -1192,12 +1193,21 @@ def _load_evidence_json(run_dir: Path, filename: object) -> object | None:
 def _valid_source_bbox(value: object) -> bool:
     if not isinstance(value, dict):
         return False
+    coordinates = {
+        field: value.get(field)
+        for field in ("x", "y", "width", "height")
+    }
     return (
-        all(isinstance(value.get(field), (int, float)) for field in ("x", "y"))
-        and all(
-            isinstance(value.get(field), (int, float)) and value[field] > 0
-            for field in ("width", "height")
+        all(
+            isinstance(coordinate, (int, float))
+            and not isinstance(coordinate, bool)
+            and math.isfinite(coordinate)
+            for coordinate in coordinates.values()
         )
+        and coordinates["x"] >= 0
+        and coordinates["y"] >= 0
+        and coordinates["width"] > 0
+        and coordinates["height"] > 0
         and isinstance(value.get("unit"), str)
         and bool(value["unit"])
         and value.get("origin") == "top-left"
