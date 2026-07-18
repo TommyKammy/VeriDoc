@@ -126,7 +126,7 @@ class MvpAcceptanceTraceabilityDocsTest(unittest.TestCase):
             "mvp-text-pdf-001",
             "mvp-scanned-pdf-001",
             "mvp-record-pdf-001",
-            "no authoritative reviewer decision was recorded",
+            "authoritative review decision is required",
             "P12G-02",
             "P12G-13",
         ):

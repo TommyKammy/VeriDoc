@@ -14,21 +14,21 @@ Missing authoritative decisions or run evidence remain fail-closed.
 - Reproduction checkout:
   `git checkout --detach "$(git log -1 --format=%H -- docs/mvp-acceptance-gap-register.md)"`
 - Criteria source Git blob:
-  `c9a7ba85cfe0f5dcd2d83cfbf67ff4e76b33f688`
+  `b40d042bda5536cb1092a0cc224ad5066260e576`
 - Evaluator Git blob:
-  `fa2849e0427a0701a9e36a55f9c199d9ae13dc42`
+  `d52ecdb27f165bc820353eb08fbef9c936be9302`
 - Generated at: `2026-07-18` (Asia/Tokyo)
 - PDF evaluation prerequisite:
   `python3 -m pip install -r requirements-pdf-eval.txt`
 - Command: `python3 scripts/evaluate_dataset.py --mvp-acceptance-report`
 - Dataset manifest: `datasets/mvp_evaluation_manifest_v1.json`
 - Dataset manifest SHA-256:
-  `d49428211a26431a9bd91b6bffde56bfbda6aafd7b539d027639af39c2560c6d`
+  `a9374c81d4ff83cfce405582affd1c001216680ee8c53fa4e6acd0ade04abbd4`
 - Criteria source: `docs/mvp-acceptance-traceability.md`
 - Report result: `item_count=20`, unique item IDs `20`,
   `overall_decision=fail` (`pass=0`, `fail=20`)
 - Harness result: `case_count=5`, `acceptance_status=fail`
-  (`pass=0`, `fail=3`, `unknown=2`)
+  (`pass=2`, `fail=3`, `unknown=0`)
 
 The containing revision above was checked out, the criteria and evaluator blob
 IDs were verified with `git rev-parse HEAD:<repo-relative-path>`, and the PDF
@@ -63,7 +63,7 @@ to the extractor-level facts recorded below.
 | AC-REVIEW | 一部達成 / fail | Word/Excel use persisted approver decisions and share decision/item versions across artifact, audit, and harness snapshots; missing/forbidden decisions and unresolved high-risk items are rejected. Browser evidence and dataset-wide zero misses remain absent. | `e2e_gap`, `human_evidence_gap` | codex then manual | Keyboard review flow and zero high-risk misses across the accepted dataset. | P12G-08, P12G-12 |
 | AC-EFFICIENCY | 未達 / fail | No approved baseline task/cohort/timing boundary and no measured 30%+ result exist. | `human_evidence_gap`, `decision_gap` | manual/hybrid | Approved protocol/schema followed by a real, reproducible manual-versus-VeriDoc comparison. | P12G-02, P12G-13 |
 | AC-PERFORMANCE | 一部達成 / fail | All five live results pass input-size, processing-time, and timeout evaluations, but no accepted five-case metrics rollup exists. | `e2e_gap` | codex | One committed rollup retaining the 10 s, 2 MiB, and 30 s limits for all accepted cases. | P12G-12 |
-| AC-AUDIT | 一部達成 / fail | `audit=pass` for all five harness results, but review/approval actor, decision, version, hash-chain, and cross-surface correlation are not proven together. | `implementation_gap`, `e2e_gap` | codex | Fail-closed full-flow audit assertions tied to browser run, harness result, and artifact. | P12G-09 |
+| AC-AUDIT | 一部達成 / fail | `audit=pass` for all five harness results, and Word/Excel bind persisted approver identity, decision/item versions, hash-chain audit event, and artifact/acceptance snapshots. Browser correlation and equivalent proof for the remaining cases are incomplete. | `e2e_gap` | codex | Fail-closed full-flow audit assertions tied to browser run, harness result, and artifact. | P12G-09 |
 | AC-AUTH | 一部達成 / fail | Authenticated API component behavior exists; role deny paths, token lifecycle UX, and the approved segregation boundary lack E2E proof. | `e2e_gap`, `decision_gap` | manual/hybrid then codex | Approved role boundary plus allow/deny and token lifecycle E2E evidence. | P12G-02, P12G-10 |
 | AC-SECURITY | 一部達成 / fail | Local-only configuration is documented and tested, but the acceptance run has no network-boundary evidence proving zero external sends. | `e2e_gap` | codex | Acceptance-time network observation with zero external AI/API sends. | P12G-11 |
 | FC-HIGH-RISK | 一部達成 / fail | Component guards prevent auto-confirmation, but the five-case snapshot does not prove zero high-risk misses through the final review UI and gate. | `e2e_gap` | codex | Dataset-wide fail-closed gate plus browser review evidence for every high-risk item. | P12G-08, P12G-12 |
