@@ -140,8 +140,22 @@ def _write_complete_evidence_package(run_dir: Path) -> dict[str, object]:
         json.dumps(
             {
                 "job_id": job_id,
+                "filename": source_filename,
                 "status": "succeeded",
+                "display_status": "completed",
                 "created_at": created_at,
+                "hashes": {"source_sha256": source_sha256},
+                "hash_verification": {
+                    "status": "recorded",
+                    "sha256": source_sha256,
+                },
+                "has_result": True,
+                "artifacts": [
+                    {
+                        "id": "primary-docx",
+                        "artifact_id": artifact_id,
+                    }
+                ],
             },
             ensure_ascii=False,
             indent=2,
@@ -185,6 +199,7 @@ def _write_complete_evidence_package(run_dir: Path) -> dict[str, object]:
     (run_dir / "audit.json").write_bytes(audit_bytes)
     audit_sha256 = hashlib.sha256(audit_bytes).hexdigest()
     api_result = {
+        "status": "converted",
         "audit": audit,
         "hashes": {"source_sha256": source_sha256},
         "review_items": [
@@ -217,6 +232,7 @@ def _write_complete_evidence_package(run_dir: Path) -> dict[str, object]:
     )
 
     return {
+        "schema_version": "veridoc-mvp-browser-e2e/v1",
         "run_id": run_id,
         "correlation": {
             "run_id": run_id,
@@ -763,6 +779,98 @@ class EvidenceBoundaryValidationTest(unittest.TestCase):
             {failure["code"] for failure in acceptance["failure_reasons"]},
         )
 
+    def test_browser_evidence_schema_must_be_supported(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run_dir = Path(temporary_directory)
+            evidence = _write_complete_evidence_package(run_dir)
+            evidence["schema_version"] = "veridoc-mvp-browser-e2e/v0"
+
+            acceptance = evaluate_acceptance_evidence(evidence, run_dir=run_dir)
+
+        self.assertEqual(acceptance["status"], "fail")
+        self.assertIn(
+            "EVIDENCE_SCHEMA_UNSUPPORTED",
+            {failure["code"] for failure in acceptance["failure_reasons"]},
+        )
+
+    def test_conversion_status_must_match_browser_result(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run_dir = Path(temporary_directory)
+            evidence = _write_complete_evidence_package(run_dir)
+            api_result_path = run_dir / "api-result.json"
+            api_result = json.loads(api_result_path.read_text(encoding="utf-8"))
+            api_result["status"] = "blocked"
+            api_result_path.write_text(
+                json.dumps(api_result, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+            acceptance = evaluate_acceptance_evidence(evidence, run_dir=run_dir)
+
+        self.assertEqual(acceptance["status"], "fail")
+        self.assertIn(
+            "EVIDENCE_JOB_STATE_MISMATCH",
+            {failure["code"] for failure in acceptance["failure_reasons"]},
+        )
+
+    def test_job_response_must_match_uploaded_source(self) -> None:
+        invalid_source = {
+            "filename": "source-stale.pdf",
+            "source_sha256": "b" * 64,
+        }
+        for field, invalid_value in invalid_source.items():
+            with (
+                self.subTest(field=field),
+                tempfile.TemporaryDirectory() as temporary_directory,
+            ):
+                run_dir = Path(temporary_directory)
+                evidence = _write_complete_evidence_package(run_dir)
+                job_response_path = run_dir / "job-response.json"
+                job_response = json.loads(
+                    job_response_path.read_text(encoding="utf-8")
+                )
+                if field == "filename":
+                    job_response["filename"] = invalid_value
+                else:
+                    job_response["hashes"][field] = invalid_value
+                job_response_path.write_text(
+                    json.dumps(job_response, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+
+                acceptance = evaluate_acceptance_evidence(
+                    evidence,
+                    run_dir=run_dir,
+                )
+
+            self.assertEqual(acceptance["status"], "fail")
+            self.assertIn(
+                "EVIDENCE_JOB_STATE_MISMATCH",
+                {failure["code"] for failure in acceptance["failure_reasons"]},
+            )
+
+    def test_job_response_must_reference_primary_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run_dir = Path(temporary_directory)
+            evidence = _write_complete_evidence_package(run_dir)
+            job_response_path = run_dir / "job-response.json"
+            job_response = json.loads(
+                job_response_path.read_text(encoding="utf-8")
+            )
+            job_response["artifacts"][0]["artifact_id"] = "artifact-stale"
+            job_response_path.write_text(
+                json.dumps(job_response, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+            acceptance = evaluate_acceptance_evidence(evidence, run_dir=run_dir)
+
+        self.assertEqual(acceptance["status"], "fail")
+        self.assertIn(
+            "EVIDENCE_ARTIFACT_MISMATCH",
+            {failure["code"] for failure in acceptance["failure_reasons"]},
+        )
+
     def test_missing_job_identifier_cannot_self_validate(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             run_dir = Path(temporary_directory)
@@ -989,6 +1097,7 @@ class EvidenceBoundaryValidationTest(unittest.TestCase):
             run_dir = Path(temporary_directory)
             (run_dir / "result.docx").write_bytes(b"artifact exists")
             evidence = {
+                "schema_version": "veridoc-mvp-browser-e2e/v1",
                 "run_id": "run-current",
                 "correlation": {
                     "run_id": "run-current",

@@ -1284,6 +1284,13 @@ def evaluate_acceptance_evidence(
         if failure not in failures:
             failures.append(failure)
 
+    if evidence.get("schema_version") != BROWSER_EVIDENCE_SCHEMA_VERSION:
+        fail(
+            "EVIDENCE_SCHEMA_UNSUPPORTED",
+            "evidence_schema",
+            "Browser evidence must use the supported fail-closed schema version.",
+        )
+
     correlation = evidence.get("correlation")
     correlation = correlation if isinstance(correlation, dict) else {}
     provenance = correlation.get("provenance")
@@ -1408,16 +1415,51 @@ def evaluate_acceptance_evidence(
         )
 
     job_response = _load_evidence_json(run_dir, files.get("job_response"))
+    job_response_hashes = (
+        job_response.get("hashes")
+        if isinstance(job_response, dict)
+        and isinstance(job_response.get("hashes"), dict)
+        else {}
+    )
+    hash_verification = (
+        job_response.get("hash_verification")
+        if isinstance(job_response, dict)
+        and isinstance(job_response.get("hash_verification"), dict)
+        else {}
+    )
+    expected_display_status = {
+        "converted": "completed",
+        "requires_review": "review_required",
+    }.get(job.get("conversion_status"))
     if (
         not isinstance(job_response, dict)
         or job_response.get("job_id") != job.get("job_id")
         or job_response.get("status") != job.get("status")
         or job_response.get("created_at") != job.get("created_at")
+        or job_response.get("display_status") != expected_display_status
+        or job_response.get("has_result") is not True
+        or job_response.get("filename") != upload.get("source_filename")
+        or job_response_hashes.get("source_sha256")
+        != upload.get("source_sha256")
+        or hash_verification.get("status") != "recorded"
+        or hash_verification.get("sha256") != upload.get("source_sha256")
     ):
         fail(
             "EVIDENCE_JOB_STATE_MISMATCH",
             "job_state",
-            "The retained authoritative job response must match the correlated job.",
+            (
+                "The retained authoritative job response must match job state "
+                "and uploaded source provenance."
+            ),
+        )
+    if (
+        not isinstance(api_result, dict)
+        or api_result.get("status") != job.get("conversion_status")
+    ):
+        fail(
+            "EVIDENCE_JOB_STATE_MISMATCH",
+            "conversion_status",
+            "The browser result status must match the correlated successful conversion.",
         )
 
     audit_input = result_audit.get("input")
@@ -1460,6 +1502,30 @@ def evaluate_acceptance_evidence(
             "EVIDENCE_ARTIFACT_MISMATCH",
             "artifact",
             "The correlated download must be the conversion's primary artifact.",
+        )
+    job_response_artifacts = (
+        job_response.get("artifacts")
+        if isinstance(job_response, dict)
+        and isinstance(job_response.get("artifacts"), list)
+        else []
+    )
+    if (
+        not isinstance(result_artifact, dict)
+        or len(
+            [
+                item
+                for item in job_response_artifacts
+                if isinstance(item, dict)
+                and item.get("artifact_id") == artifact.get("artifact_id")
+                and item.get("id") == result_artifact.get("id")
+            ]
+        )
+        != 1
+    ):
+        fail(
+            "EVIDENCE_ARTIFACT_MISMATCH",
+            "artifact",
+            "The retained job response must reference the correlated primary artifact.",
         )
 
     result_review_items = (
