@@ -15,6 +15,7 @@ from contextlib import contextmanager
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Iterator
+from zipfile import ZipFile
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -34,6 +35,24 @@ FIXTURE_PATH = (
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _retain_redacted_trace(
+    raw_trace_path: Path, retained_trace_path: Path, *, secret: str
+) -> None:
+    """Copy a Playwright trace while removing the ephemeral bearer credential."""
+    secret_bytes = secret.encode("utf-8")
+    with ZipFile(raw_trace_path) as raw_trace, ZipFile(retained_trace_path, "w") as retained:
+        for entry in raw_trace.infolist():
+            retained.writestr(
+                entry,
+                raw_trace.read(entry).replace(secret_bytes, b"<redacted-e2e-token>"),
+            )
+    with ZipFile(retained_trace_path) as retained:
+        if any(
+            secret_bytes in retained.read(entry) for entry in retained.infolist()
+        ):
+            raise AssertionError("retained browser trace contains the bearer credential")
 
 
 def _json_response(response: Any) -> dict[str, Any]:
@@ -120,13 +139,18 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
         ) as base_url, sync_playwright() as playwright:
             browser = _launch_browser(playwright)
             context = browser.new_context(accept_downloads=True)
-            context.tracing.start(screenshots=True, snapshots=True, sources=True)
             page = context.new_page()
+            tracing_started = False
+            raw_trace_path = Path(state_dir) / "trace.zip"
             try:
                 page.goto(base_url, wait_until="domcontentloaded")
                 page.locator("#auth-token").fill(auth_token)
                 page.locator("#save-auth-token").click()
                 expect(page.locator('#auth-status[data-auth-state="configured"]')).to_be_visible()
+                page.locator("#auth-token").fill("")
+                expect(page.locator("#auth-token")).to_have_value("")
+                context.tracing.start(screenshots=True, snapshots=True, sources=True)
+                tracing_started = True
                 page.locator('[data-nav-target="upload"]').click()
                 page.locator("#document-file").set_input_files(str(FIXTURE_PATH))
 
@@ -146,8 +170,20 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
                 expect(page.locator("#status")).to_contain_text(
                     re.compile(r"converted|requires_review"), timeout=30_000
                 )
+                conversion_status = page.locator("#status").inner_text().strip()
+                if conversion_status not in {"converted", "requires_review"}:
+                    raise AssertionError(
+                        f"completed conversion has unexpected status: {conversion_status!r}"
+                    )
                 expect(page.locator("#artifact-downloads-panel")).to_be_visible(timeout=10_000)
                 expect(page.locator("#pdf-preview-panel")).to_be_visible(timeout=10_000)
+                preview_canvas = page.locator("#pdf-page-canvas")
+                expect(preview_canvas).to_be_visible(timeout=30_000)
+                preview_size = preview_canvas.evaluate(
+                    "(canvas) => ({width: canvas.width, height: canvas.height})"
+                )
+                if preview_size["width"] <= 0 or preview_size["height"] <= 0:
+                    raise AssertionError("PDF preview canvas did not render any pixels")
                 expect(page.locator("#review-list .review-item").first).to_be_visible(
                     timeout=10_000
                 )
@@ -172,7 +208,7 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
                     raise AssertionError("completed browser job could not be reloaded")
                 authoritative_job = _json_response(job_response).get("job", {})
                 job_status = authoritative_job.get("status")
-                if job_status not in {"succeeded", "requires_review", "converted"}:
+                if job_status != "succeeded":
                     raise AssertionError(
                         f"completed browser job has unexpected status: {job_status!r}"
                     )
@@ -221,16 +257,9 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
                     None,
                 )
                 if audit_artifact is None:
-                    audit_artifact = next(
-                        (
-                            item
-                            for item in result.get("artifacts", [])
-                            if isinstance(item, dict) and item.get("id") == "debug-json"
-                        ),
-                        None,
+                    raise AssertionError(
+                        "completed browser result did not contain the audit-json artifact"
                     )
-                if audit_artifact is None:
-                    raise AssertionError("completed browser result did not contain audit JSON")
                 audit_response = context.request.get(
                     base_url + audit_artifact["href"], headers=auth_headers
                 )
@@ -273,7 +302,11 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
                             "source_filename": FIXTURE_PATH.name,
                             "source_sha256": _sha256(FIXTURE_PATH),
                         },
-                        "job": {"job_id": job_id, "status": job_status},
+                        "job": {
+                            "job_id": job_id,
+                            "status": job_status,
+                            "conversion_status": conversion_status,
+                        },
                         "review": {
                             "document_id": review_event.get("document_id"),
                             "block_id": review_event.get("block_id"),
@@ -313,7 +346,11 @@ def run_browser_e2e(*, evidence_root: Path) -> dict[str, Any]:
                 )
                 return evidence
             finally:
-                context.tracing.stop(path=str(trace_path))
+                if tracing_started:
+                    context.tracing.stop(path=str(raw_trace_path))
+                    _retain_redacted_trace(
+                        raw_trace_path, trace_path, secret=auth_token
+                    )
                 context.close()
                 browser.close()
 

@@ -39,7 +39,10 @@ jobs:
           elif ls requirements*.txt >/dev/null 2>&1; then
             python -m pip install --upgrade pip
             python -m pip install -r requirements.txt
-            if [ -f requirements-pdf-eval.txt ]; then
+            if [ -f requirements-browser-e2e.txt ]; then
+              python -m pip install -r requirements-browser-e2e.txt
+              python -m playwright install --with-deps chromium
+            elif [ -f requirements-pdf-eval.txt ]; then
               python -m pip install -r requirements-pdf-eval.txt
             fi
           else
