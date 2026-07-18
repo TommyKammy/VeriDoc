@@ -4710,6 +4710,28 @@ def p9_validate_xlsx_artifact(
     return failures
 
 
+def p9_docx_bbox_is_usable(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    bbox_parts = value.strip().rsplit(maxsplit=1)
+    if len(bbox_parts) != 2 or bbox_parts[1] not in {"pt", "px", "mm"}:
+        return False
+    coordinate_parts = bbox_parts[0].split(",")
+    if len(coordinate_parts) != 4:
+        return False
+    try:
+        x, y, width, height = (float(part) for part in coordinate_parts)
+    except ValueError:
+        return False
+    return (
+        all(math.isfinite(coordinate) for coordinate in (x, y, width, height))
+        and x >= 0
+        and y >= 0
+        and width > 0
+        and height > 0
+    )
+
+
 def p9_docx_source_linkage(artifact_path: Path) -> list[dict[str, object]]:
     namespace = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
     relationship_namespace = (
@@ -4779,10 +4801,20 @@ def p9_docx_source_linkage(artifact_path: Path) -> list[dict[str, object]]:
             f"{{{namespace['w']}}}tbl",
         }:
             continue
-        text = "".join(
-            text_node.text or ""
-            for text_node in child.findall(".//w:t", namespace)
-        )
+        text_parts: list[str] = []
+        for node in child.iter():
+            if node.tag == f"{{{namespace['w']}}}t":
+                text_parts.append(node.text or "")
+            elif node.tag == f"{{{namespace['w']}}}tab":
+                text_parts.append("\t")
+            elif node.tag in {
+                f"{{{namespace['w']}}}br",
+                f"{{{namespace['w']}}}cr",
+            }:
+                text_parts.append("\n")
+        text = "".join(text_parts)
+        if child.tag == f"{{{namespace['w']}}}p" and not text:
+            continue
         references = child.findall(".//w:commentReference", namespace)
         comment_id = (
             references[-1].attrib.get(f"{{{namespace['w']}}}id")
@@ -4802,6 +4834,7 @@ def p9_docx_source_linkage(artifact_path: Path) -> list[dict[str, object]]:
                 "comment_id": comment_id,
                 "block_id": fields.get("block_id"),
                 "source_page": source_page,
+                "bbox": fields.get("bbox"),
                 "requires_review": fields.get("requires_review") == "true",
             }
         )
@@ -4960,6 +4993,7 @@ def p9_validate_pdf_to_word_docx_content(
             and isinstance(source_page, int)
             and source_page >= 1
             and source_page == expected_page
+            and p9_docx_bbox_is_usable(linked.get("bbox"))
         ):
             linked_count += 1
             linked_block_ids.append(block_id)

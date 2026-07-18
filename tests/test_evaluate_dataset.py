@@ -1875,6 +1875,60 @@ class EvaluateDatasetTest(unittest.TestCase):
         )
 
     @unittest.skipUnless(PYMUPDF_AVAILABLE, "PyMuPDF eval dependency is not installed")
+    def test_record_pdf_docx_validator_ignores_blank_paragraphs_for_linkage(
+        self,
+    ) -> None:
+        from services.api.poc_web import convert_uploaded_document
+
+        case = self.valid_mvp_case(4)
+        fixture_path = REPO_ROOT / str(case["fixture_path"])
+        converted = convert_uploaded_document(
+            filename=fixture_path.name,
+            content=fixture_path.read_bytes(),
+            conversion_mode="pdf_to_word",
+        )
+        artifact_content = converted["artifacts"][0]["content"]
+        title_paragraph_end = f"{fixture_path.name}</w:t></w:r></w:p>"
+        blank_paragraph_content = rewritten_docx(
+            artifact_content,
+            replacements={
+                "word/document.xml": (
+                    (
+                        title_paragraph_end,
+                        f"{title_paragraph_end}<w:p/>",
+                    ),
+                )
+            },
+        )
+        content_validation: dict[str, object] = {}
+
+        self.assertNotEqual(artifact_content, blank_paragraph_content)
+        failures = evaluate_dataset.p9_validate_artifact_expectations(
+            fixture=case,
+            conversion_mode="pdf_to_word",
+            representative_mode="pdf_to_word",
+            primary_artifact={
+                "kind": "primary",
+                "format": "docx",
+                "content": blank_paragraph_content,
+            },
+            warnings=case["expected_warnings"],
+            require_content_validation=True,
+            content_validation=content_validation,
+        )
+
+        self.assertEqual("pass", content_validation["status"])
+        self.assertEqual(
+            "pass",
+            next(
+                check["status"]
+                for check in content_validation["checks"]
+                if check["id"] == "source_linkage"
+            ),
+        )
+        self.assertEqual([], failures)
+
+    @unittest.skipUnless(PYMUPDF_AVAILABLE, "PyMuPDF eval dependency is not installed")
     def test_record_pdf_docx_validator_detects_negative_artifacts(self) -> None:
         from services.api.poc_web import convert_uploaded_document
 
@@ -1957,10 +2011,21 @@ class EvaluateDatasetTest(unittest.TestCase):
                 ),
                 "source_linkage",
             ),
+            (
+                "unusable source bbox",
+                rewritten_docx(
+                    artifact_content,
+                    replacements={
+                        "word/comments.xml": (("bbox=", "bbox=unusable:"),)
+                    },
+                ),
+                "source_linkage",
+            ),
         )
 
         for label, mutated_content, expected_failed_check in mutations:
             with self.subTest(label=label):
+                self.assertNotEqual(artifact_content, mutated_content)
                 content_validation: dict[str, object] = {}
                 failures = evaluate_dataset.p9_validate_artifact_expectations(
                     fixture=case,
