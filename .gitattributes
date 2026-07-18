@@ -1,1 +1,2 @@
 *.pdf binary
+apps/web/vendor/pdfjs/*.mjs linguist-vendored=true

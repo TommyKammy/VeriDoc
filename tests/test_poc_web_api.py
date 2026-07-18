@@ -8083,6 +8083,7 @@ def test_poc_http_api_rejects_review_action_audit_event_boundary_drift(
 def test_poc_http_api_creates_idempotent_conversion_job() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     server.job_queue = JobQueue()
+    server.job_event_store = JobAuditEventStore()
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -8124,6 +8125,56 @@ def test_poc_http_api_creates_idempotent_conversion_job() -> None:
     assert status_response.status == 200
     assert status["job"]["status"] == "queued"
     assert status["job"]["mode"] == "standard"
+    assert server.job_event_store.list_events(filters={"job_id": job_id}) == []
+
+
+def test_repo_vendored_pdfjs_assets_are_available_without_node_modules() -> None:
+    expected_hashes = {
+        "pdf.min.mjs": "27fc2a057a00f92a4334ad06e17dbd7259912954e9fb7f76400bcca5fd190a9c",
+        "pdf.worker.min.mjs": "1baa1844c89c80a5b2797c916e75ab29254be46d8e9cb53cb6364d7aad84be36",
+    }
+
+    assert poc_web.PDFJS_ROOT == poc_web.WEB_ROOT / "vendor" / "pdfjs"
+    for filename, expected_hash in expected_hashes.items():
+        assert hashlib.sha256((poc_web.PDFJS_ROOT / filename).read_bytes()).hexdigest() == (
+            expected_hash
+        )
+
+
+def test_poc_http_api_serves_repo_vendored_pdfjs_assets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pdfjs_root = tmp_path / "pdfjs-dist" / "build"
+    pdfjs_root.mkdir(parents=True)
+    expected_assets = {
+        "/assets/pdfjs/pdf.min.mjs": b"export const version = 'test';\n",
+        "/assets/pdfjs/pdf.worker.min.mjs": b"export const WorkerMessageHandler = {};\n",
+    }
+    for route, content in expected_assets.items():
+        (pdfjs_root / route.rsplit("/", 1)[-1]).write_bytes(content)
+    monkeypatch.setattr(poc_web, "PDFJS_ROOT", pdfjs_root)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    responses: dict[str, tuple[int, str | None, bytes]] = {}
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        for route in expected_assets:
+            connection.request("GET", route)
+            response = connection.getresponse()
+            responses[route] = (
+                response.status,
+                response.getheader("Content-Type"),
+                response.read(),
+            )
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    for route, content in expected_assets.items():
+        assert responses[route] == (200, "text/javascript; charset=utf-8", content)
 
 
 def test_poc_http_api_rejects_source_less_ocr_job(
@@ -8210,7 +8261,12 @@ def test_poc_http_api_stores_uploaded_job_source_before_returning_reference() ->
         "sha256": source_sha256,
         "content": uploaded_content,
     }
-    assert server.job_event_store.list_events(filters={"job_id": job.job_id}) == []
+    events = server.job_event_store.list_events(filters={"job_id": job.job_id})
+    assert len(events) == 1
+    assert events[0]["event_type"] == "web.job_operation"
+    assert events[0]["action"] == "browser_upload"
+    assert events[0]["job_status"] == "queued"
+    assert events[0]["source_sha256"] == source_sha256
 
 
 def test_poc_http_api_job_submission_reaches_status_and_result() -> None:
@@ -9084,7 +9140,10 @@ def test_poc_http_api_rejects_late_idempotent_desktop_upload_audit_create() -> N
         "error": "invalid_job_request",
         "message": "desktop_upload audit cannot be added after idempotent job creation",
     }
-    assert events == []
+    assert len(events) == 1
+    assert events[0]["event_type"] == "web.job_operation"
+    assert events[0]["action"] == "browser_upload"
+    assert events[0]["job_id"] == initial_body["job"]["job_id"]
     assert len(jobs) == 1
     assert jobs[0].job_id == initial_body["job"]["job_id"]
     assert jobs[0].status == "failed"

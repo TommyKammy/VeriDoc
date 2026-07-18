@@ -33,9 +33,11 @@ class OssLicenseInventoryTest(unittest.TestCase):
             "camelot-py",
             "python-docx",
             "openpyxl",
+            "PDF.js 4.10.38",
         ):
             self.assertIn(package_name, inventory)
 
+        self.assertIn("Apache-2.0", inventory)
         self.assertIn("AGPL-3.0", inventory)
         self.assertIn("evaluation-only", inventory)
         self.assertIn("no longer actively maintained", inventory)

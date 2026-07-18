@@ -32,6 +32,7 @@ jobs:
       - name: Run Python checks when present
         env:
           VERIDOC_REQUIRE_PDF_EVAL_DEPS: "1"
+          VERIDOC_E2E_EVIDENCE_DIR: artifacts/mvp-browser-e2e
         run: |
           if [ -f pyproject.toml ]; then
             python -m pip install --upgrade pip
@@ -39,7 +40,10 @@ jobs:
           elif ls requirements*.txt >/dev/null 2>&1; then
             python -m pip install --upgrade pip
             python -m pip install -r requirements.txt
-            if [ -f requirements-pdf-eval.txt ]; then
+            if [ -f requirements-browser-e2e.txt ]; then
+              python -m pip install -r requirements-browser-e2e.txt
+              python -m playwright install --with-deps chromium
+            elif [ -f requirements-pdf-eval.txt ]; then
               python -m pip install -r requirements-pdf-eval.txt
             fi
           else
@@ -53,6 +57,14 @@ jobs:
           else
             echo "No Python sources yet; skipping Python checks."
           fi
+
+      - name: Upload browser E2E evidence
+        if: ${{ success() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: mvp-browser-e2e-${{ github.run_id }}
+          path: artifacts/mvp-browser-e2e
+          if-no-files-found: error
 
       - name: Set up Node
         if: ${{ hashFiles('package.json') != '' }}
