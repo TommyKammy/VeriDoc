@@ -30,6 +30,7 @@ MVP_EVALUATION_MANIFEST_PATH = REPO_ROOT / "datasets" / "mvp_evaluation_manifest
 MVP_ACCEPTANCE_TRACEABILITY_PATH = (
     REPO_ROOT / "docs" / "mvp-acceptance-traceability.md"
 )
+PYMUPDF_AVAILABLE = importlib.util.find_spec("pymupdf") is not None
 
 
 spec = importlib.util.spec_from_file_location("evaluate_dataset", SCRIPT_PATH)
@@ -1745,6 +1746,7 @@ class EvaluateDatasetTest(unittest.TestCase):
         )
         self.assertEqual("fail", result["acceptance_status"])
 
+    @unittest.skipUnless(PYMUPDF_AVAILABLE, "PyMuPDF eval dependency is not installed")
     def test_mvp_harness_validates_record_pdf_docx_content(self) -> None:
         from services.api.poc_web import CONVERSION_AUDIT_SCHEMA_VERSION
 
@@ -1812,6 +1814,7 @@ class EvaluateDatasetTest(unittest.TestCase):
             content_validation["evidence"]["audit_schema_version"],
         )
 
+    @unittest.skipUnless(PYMUPDF_AVAILABLE, "PyMuPDF eval dependency is not installed")
     def test_mvp_harness_uses_separate_scanned_pdf_docx_validator(self) -> None:
         case = self.valid_mvp_case(3)
         fixture_path = REPO_ROOT / str(case["fixture_path"])
@@ -1871,6 +1874,7 @@ class EvaluateDatasetTest(unittest.TestCase):
             failures,
         )
 
+    @unittest.skipUnless(PYMUPDF_AVAILABLE, "PyMuPDF eval dependency is not installed")
     def test_record_pdf_docx_validator_detects_negative_artifacts(self) -> None:
         from services.api.poc_web import convert_uploaded_document
 
@@ -2035,6 +2039,32 @@ class EvaluateDatasetTest(unittest.TestCase):
             content_validation["failures"],
         )
         self.assertIn(content_validation["failures"][0], failures)
+
+    def test_pdf_to_word_content_validation_rejects_malformed_expected_phrase(
+        self,
+    ) -> None:
+        case = self.valid_mvp_case(4)
+        case["pdf_to_word_expectations"]["expected_phrases"].append(None)
+
+        with mock.patch.object(
+            evaluate_dataset,
+            "p9_docx_source_linkage",
+            return_value=[],
+        ):
+            result = evaluate_dataset.p9_validate_pdf_to_word_docx_content(
+                Path("unused.docx"),
+                case["pdf_to_word_expectations"],
+                docx=mock.Mock(blocks=[]),
+            )
+
+        self.assertEqual("fail", result["status"])
+        self.assertEqual(
+            [
+                "docx expected phrase expectations must be a non-empty list "
+                "of non-empty strings"
+            ],
+            result["failures"],
+        )
 
     def test_mvp_harness_fails_mismatched_audit_fields(self) -> None:
         case = self.valid_mvp_case()

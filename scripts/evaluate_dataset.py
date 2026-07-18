@@ -4956,11 +4956,27 @@ def p9_validate_pdf_to_word_docx_content(
             actual_texts,
         )
         expected_phrases_value = expectations.get("expected_phrases")
-        expected_phrases = (
-            [value for value in expected_phrases_value if isinstance(value, str)]
-            if isinstance(expected_phrases_value, list)
-            else []
-        )
+        if (
+            not isinstance(expected_phrases_value, list)
+            or not expected_phrases_value
+            or any(
+                not isinstance(value, str) or not value
+                for value in expected_phrases_value
+            )
+        ):
+            failure = (
+                "docx expected phrase expectations must be a non-empty list "
+                "of non-empty strings"
+            )
+            return {
+                "validator": validator,
+                "status": "fail",
+                "checks": [],
+                "metrics": {},
+                "evidence": {},
+                "failures": [failure],
+            }
+        expected_phrases = expected_phrases_value
         artifact_text = "\n".join(actual_texts)
         matched_phrases = [
             phrase for phrase in expected_phrases if phrase in artifact_text

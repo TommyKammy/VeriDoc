@@ -14,9 +14,9 @@ Missing authoritative decisions or run evidence remain fail-closed.
 - Reproduction checkout:
   `git checkout --detach "$(git log -1 --format=%H -- docs/mvp-acceptance-gap-register.md)"`
 - Criteria source Git blob:
-  `734b5ee9aeee86a0e99ea6574f62c45ab6e1b5e0`
+  `bdfb4c867855a8171b0ccfa72d4f25adb85baec1`
 - Evaluator Git blob:
-  `6ba4b9727546d9925abdba6f86313cc606d0639f`
+  `e0429842ca4c719c0905db4b1e9ff3ffa32ae528`
 - Generated at: `2026-07-18` (Asia/Tokyo)
 - PDF evaluation prerequisite:
   `python3 -m pip install -r requirements-pdf-eval.txt`

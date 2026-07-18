@@ -78,7 +78,7 @@ class MvpAcceptanceTraceabilityDocsTest(unittest.TestCase):
             "python3 -m pip install -r requirements-pdf-eval.txt",
             "python3 -m unittest tests.test_mvp_acceptance_traceability",
             "python3 scripts/ci/repo_hygiene.py",
-            "three `fail`, zero `unknown`, and two `pass`",
+            "two `fail`, zero `unknown`, and three `pass`",
             "未達",
             "一部達成",
             "Phase13以降",
