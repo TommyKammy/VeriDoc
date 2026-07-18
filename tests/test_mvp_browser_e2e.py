@@ -7,6 +7,7 @@ import os
 import tempfile
 import unittest
 from contextlib import ExitStack
+from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
 
@@ -15,6 +16,7 @@ from scripts.ci.mvp_browser_e2e import (
     _launch_browser,
     _require_audit_payload_matches_result,
     _require_matching_event,
+    evaluate_acceptance_evidence,
     run_browser_e2e,
 )
 
@@ -80,6 +82,48 @@ class BrowserLaunchSelectionTest(unittest.TestCase):
 
 
 class EvidenceBoundaryValidationTest(unittest.TestCase):
+    def test_existing_artifact_does_not_pass_without_provenance_or_audit(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run_dir = Path(temporary_directory)
+            (run_dir / "result.docx").write_bytes(b"artifact exists")
+            evidence = {
+                "run_id": "run-current",
+                "correlation": {
+                    "run_id": "run-current",
+                    "artifact": {
+                        "sha256": hashlib.sha256(b"artifact exists").hexdigest(),
+                    },
+                },
+                "files": {"download": "result.docx"},
+            }
+
+            acceptance = evaluate_acceptance_evidence(evidence, run_dir=run_dir)
+
+        self.assertEqual(acceptance["status"], "fail")
+        self.assertEqual(
+            acceptance["failure_reasons"],
+            [
+                {
+                    "code": "EVIDENCE_PROVENANCE_MISSING",
+                    "boundary": "provenance",
+                    "message": (
+                        "Source page and bounding-box provenance are required "
+                        "before acceptance can pass."
+                    ),
+                },
+                {
+                    "code": "EVIDENCE_AUDIT_MISSING",
+                    "boundary": "audit",
+                    "message": (
+                        "Job and review audit events are required before "
+                        "acceptance can pass."
+                    ),
+                },
+            ],
+        )
+
     def test_matching_event_requires_every_authoritative_field(self) -> None:
         expected_fields = {
             "action": "browser_upload",
@@ -155,8 +199,16 @@ class MvpBrowserE2ETest(unittest.TestCase):
             )
             evidence = run_browser_e2e(evidence_root=evidence_root)
             run_dir = evidence_root / evidence["run_id"]
+            acceptance = evidence["acceptance_snapshot"]
 
             self.assertEqual(evidence["schema_version"], "veridoc-mvp-browser-e2e/v1")
+            self.assertEqual(acceptance["status"], "pass")
+            self.assertEqual(acceptance["correlation_id"], evidence["run_id"])
+            self.assertEqual(
+                acceptance["criteria"],
+                ["AC-PROVENANCE", "AC-AUDIT", "FC-EVIDENCE"],
+            )
+            self.assertEqual(acceptance["failure_reasons"], [])
             self.assertEqual(evidence["run_id"], evidence["correlation"]["run_id"])
             self.assertEqual(evidence["correlation"]["job"]["status"], "succeeded")
             self.assertIn(
@@ -302,6 +354,122 @@ class MvpBrowserE2ETest(unittest.TestCase):
             self.assertGreaterEqual(len(evidence["files"]["screenshots"]), 2)
             for screenshot in evidence["files"]["screenshots"]:
                 self.assertTrue((run_dir / screenshot).is_file())
+
+            missing_provenance = deepcopy(evidence)
+            del missing_provenance["correlation"]["provenance"]
+            provenance_failure = evaluate_acceptance_evidence(
+                missing_provenance,
+                run_dir=run_dir,
+            )
+            self.assertEqual(provenance_failure["status"], "fail")
+            self.assertIn(
+                "EVIDENCE_PROVENANCE_MISSING",
+                {
+                    failure["code"]
+                    for failure in provenance_failure["failure_reasons"]
+                },
+            )
+
+            review_events_path = run_dir / evidence["files"]["review_events"]
+            original_review_events = review_events_path.read_bytes()
+            review_events_path.write_text(
+                json.dumps(
+                    [
+                        event
+                        for event in review_events
+                        if not (
+                            event.get("conversion_id")
+                            == evidence["correlation"]["review"]["conversion_id"]
+                            and event.get("action") == "approve"
+                        )
+                    ],
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            try:
+                audit_event_failure = evaluate_acceptance_evidence(
+                    evidence,
+                    run_dir=run_dir,
+                )
+            finally:
+                review_events_path.write_bytes(original_review_events)
+            self.assertEqual(audit_event_failure["status"], "fail")
+            self.assertIn(
+                "EVIDENCE_AUDIT_EVENT_MISSING",
+                {
+                    failure["code"]
+                    for failure in audit_event_failure["failure_reasons"]
+                },
+            )
+
+            tampered_hash = deepcopy(evidence)
+            tampered_hash["correlation"]["artifact"]["sha256"] = "0" * 64
+            hash_failure = evaluate_acceptance_evidence(
+                tampered_hash,
+                run_dir=run_dir,
+            )
+            self.assertIn(
+                "EVIDENCE_HASH_MISMATCH",
+                {failure["code"] for failure in hash_failure["failure_reasons"]},
+            )
+
+            api_result_path = run_dir / evidence["files"]["api_result"]
+            original_api_result = api_result_path.read_bytes()
+            original_audit_artifact = audit_artifact_path.read_bytes()
+            tampered_result = json.loads(original_api_result)
+            tampered_audit = deepcopy(tampered_result["audit"])
+            tampered_audit["versions"]["prompt"]["version"] = "tampered"
+            tampered_result["audit"] = tampered_audit
+            api_result_path.write_text(
+                json.dumps(tampered_result, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            audit_artifact_path.write_text(
+                json.dumps(tampered_audit, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            try:
+                version_failure = evaluate_acceptance_evidence(
+                    evidence,
+                    run_dir=run_dir,
+                )
+            finally:
+                api_result_path.write_bytes(original_api_result)
+                audit_artifact_path.write_bytes(original_audit_artifact)
+            self.assertIn(
+                "EVIDENCE_VERSION_MISMATCH",
+                {
+                    failure["code"]
+                    for failure in version_failure["failure_reasons"]
+                },
+            )
+
+            mixed_run = deepcopy(evidence)
+            mixed_run["evidence_surfaces"]["audit_events"][
+                "correlation_id"
+            ] = "run-stale"
+            correlation_failure = evaluate_acceptance_evidence(
+                mixed_run,
+                run_dir=run_dir,
+            )
+            self.assertIn(
+                "EVIDENCE_CORRELATION_MISMATCH",
+                {
+                    failure["code"]
+                    for failure in correlation_failure["failure_reasons"]
+                },
+            )
+            for failure in (
+                provenance_failure["failure_reasons"]
+                + audit_event_failure["failure_reasons"]
+                + hash_failure["failure_reasons"]
+                + version_failure["failure_reasons"]
+                + correlation_failure["failure_reasons"]
+            ):
+                self.assertEqual(set(failure), {"code", "boundary", "message"})
 
 
 if __name__ == "__main__":
