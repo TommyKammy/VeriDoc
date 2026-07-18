@@ -74,9 +74,12 @@ def test_authoritative_review_decision_persists_decision_and_audit_snapshot(
     )
 
     persisted = repository.get_review_decision(recorded.decision_id)
+    persisted_item = repository.get_review_item(review_item.review_item_id)
     audit = repository.get_audit_event(recorded.audit_event_id)
     assert persisted is not None
+    assert persisted_item is not None
     assert audit is not None
+    assert persisted_item.status == "closed"
     assert persisted.actor == "approver-1"
     assert persisted.role == "approver"
     assert persisted.decision == "approved"
@@ -98,6 +101,13 @@ def test_authoritative_review_decision_persists_decision_and_audit_snapshot(
             "reviewer",
             "edited",
             True,
+            ValueError,
+            "high-risk review item requires approver approval",
+        ),
+        (
+            "reviewer",
+            "edited",
+            False,
             ValueError,
             "high-risk review item requires approver approval",
         ),
@@ -132,6 +142,9 @@ def test_authoritative_review_decision_denials_leave_no_durable_state(
 
     assert repository.get_review_decision("decision-denied") is None
     assert repository.get_audit_event("audit-decision-denied") is None
+    persisted_item = repository.get_review_item(review_item.review_item_id)
+    assert persisted_item is not None
+    assert persisted_item.status == "open"
 
 
 def test_authoritative_review_decision_rolls_back_when_audit_append_fails(
@@ -167,6 +180,9 @@ def test_authoritative_review_decision_rolls_back_when_audit_append_fails(
 
     assert repository.get_review_decision("decision-rolled-back") is None
     assert repository.get_audit_event("audit-decision-rolled-back") is None
+    persisted_item = repository.get_review_item(review_item.review_item_id)
+    assert persisted_item is not None
+    assert persisted_item.status == "open"
 
 
 def test_persistence_repository_rejects_caller_supplied_audit_chain_fields(tmp_path) -> None:

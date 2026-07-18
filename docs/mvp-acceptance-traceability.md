@@ -17,7 +17,7 @@ inputs. Commit
 being reconciled, not the report checkout target; it predates the gap register
 and has older criteria statuses. The recorded report contains all 20 unique
 items with `overall_decision=fail`, and its five-case harness contains three
-`fail`, two `unknown`, and zero `pass` results.
+`fail`, zero `unknown`, and two `pass` results.
 
 ## Status Rules
 
@@ -66,7 +66,7 @@ from committed implementation, tests, and the latest acceptance record.
 | ID | 15.3 evaluation method | Linked issue(s) | Required evidence | Current status |
 | --- | --- | --- | --- | --- |
 | EM-USER-REVIEW | 実務担当者によるレビュー試行（時間・見逃し・過検出） | [#283](https://github.com/TommyKammy/VeriDoc/issues/283), [#284](https://github.com/TommyKammy/VeriDoc/issues/284), [#289](https://github.com/TommyKammy/VeriDoc/issues/289) | Current gap: P12G-02/P12G-13 protocol and schema, followed by named cohort, timing, miss/over-detection, and reviewer records | **未達** — no current authoritative protocol or human user-review record exists. |
-| EM-E2E | 代表テンプレートでのE2E評価 | [#283](https://github.com/TommyKammy/VeriDoc/issues/283), [#284](https://github.com/TommyKammy/VeriDoc/issues/284), [#289](https://github.com/TommyKammy/VeriDoc/issues/289) | Versioned five-case manifest and current report; current gap: P12G-03 through P12G-12 | **一部達成** — the dataset/harness/report chain now runs, but the current result is three `fail`, two `unknown`, and zero `pass`; review decisions and complete E2E evidence remain absent. |
+| EM-E2E | 代表テンプレートでのE2E評価 | [#283](https://github.com/TommyKammy/VeriDoc/issues/283), [#284](https://github.com/TommyKammy/VeriDoc/issues/284), [#289](https://github.com/TommyKammy/VeriDoc/issues/289) | Versioned five-case manifest and current report; current gap: P12G-03 through P12G-12 | **一部達成** — the dataset/harness/report chain now runs with three `fail`, zero `unknown`, and two `pass`; Word/Excel review decisions are present, while complete E2E evidence for the remaining cases is absent. |
 
 ## Open Decisions
 

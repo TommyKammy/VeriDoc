@@ -65,25 +65,39 @@ def record_authoritative_review_decision(
         raise PermissionError(
             f"role {normalized_role!r} cannot record decision {normalized_decision!r}"
         )
-    if high_risk and (
-        normalized_role not in {"approver", "admin"}
-        or normalized_decision != "approved"
-    ):
-        raise ValueError("high-risk review item requires approver approval")
     if not isinstance(decision_version, int) or isinstance(decision_version, bool):
         raise ValueError("decision_version must be a positive integer")
     if decision_version < 1:
         raise ValueError("decision_version must be a positive integer")
 
+    normalized_review_item_id = _required_text(review_item_id, "review_item_id")
     normalized_item_version = _required_text(item_version, "item_version")
     normalized_reason = _required_text(reason, "reason")
     normalized_actor_id = _required_text(actor_id, "actor_id")
     audit_event_id = f"audit-{_required_text(decision_id, 'decision_id')}"
 
     with repository.transaction() as transaction:
+        review_item = transaction.get_review_item(normalized_review_item_id)
+        if review_item is None:
+            raise ValueError(
+                f"review item {normalized_review_item_id!r} does not exist"
+            )
+        effective_high_risk = (
+            bool(high_risk) or review_item.severity.strip().lower() == "high"
+        )
+        if effective_high_risk and (
+            normalized_role not in {"approver", "admin"}
+            or normalized_decision != "approved"
+        ):
+            raise ValueError("high-risk review item requires approver approval")
+        if review_item.status.strip().lower() == "open":
+            transaction.update_review_item_status(
+                normalized_review_item_id,
+                status="closed",
+            )
         stored = transaction.create_review_decision(
             decision_id=decision_id,
-            review_item_id=review_item_id,
+            review_item_id=normalized_review_item_id,
             artifact_id=artifact_id,
             actor=normalized_actor_id,
             role=normalized_role,

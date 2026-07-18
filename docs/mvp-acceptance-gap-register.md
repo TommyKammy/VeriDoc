@@ -14,7 +14,7 @@ Missing authoritative decisions or run evidence remain fail-closed.
 - Reproduction checkout:
   `git checkout --detach "$(git log -1 --format=%H -- docs/mvp-acceptance-gap-register.md)"`
 - Criteria source Git blob:
-  `b40d042bda5536cb1092a0cc224ad5066260e576`
+  `734b5ee9aeee86a0e99ea6574f62c45ab6e1b5e0`
 - Evaluator Git blob:
   `d52ecdb27f165bc820353eb08fbef9c936be9302`
 - Generated at: `2026-07-18` (Asia/Tokyo)
@@ -72,7 +72,7 @@ to the extractor-level facts recorded below.
 | FC-REVIEW-UI | 未達 / fail | No recorded keyboard-only warning, original jump, edit, approve/reject/needs-fix flow exists. | `e2e_gap` | codex | Browser trace covering warnings, remediation, keyboard flow, and API agreement. | P12G-08 |
 | FC-REPRODUCIBILITY | 一部達成 / fail | Commit and manifest are fixed, but no packaged rerun pins fixture/config/model/prompt/schema versions and demonstrates an equivalent result. | `e2e_gap` | codex | A pinned run package and an equivalence-checked rerun. | P12G-11 |
 | EM-USER-REVIEW | 未達 / fail | No representative cohort, task protocol, timing, miss/over-detection results, or reviewer record exists. | `human_evidence_gap`, `decision_gap` | manual/hybrid | Approved protocol and evidence schema ready for the later human execution. | P12G-02, P12G-13 |
-| EM-E2E | 一部達成 / fail | A versioned five-case manifest and live report now exist, but the result is three `fail`, two `unknown`, and zero `pass`. | `implementation_gap`, `e2e_gap` | codex/hybrid | P12G-03 through P12G-12 evidence from one committed snapshot with all intended cases passing. | P12G-03–P12G-12 |
+| EM-E2E | 一部達成 / fail | A versioned five-case manifest and live report now exist; the result is three `fail`, zero `unknown`, and two `pass`, with persisted review decisions for Word and Excel. | `implementation_gap`, `e2e_gap` | codex/hybrid | P12G-03 through P12G-12 evidence from one committed snapshot with all intended cases passing. | P12G-03–P12G-12 |
 | OD-TEMPLATES | 未達 / fail | The manifest is `fixed_for_mvp` with five categories, but no authoritative approval adopts those cases as the representative MVP scope. | `decision_gap` | manual/hybrid | Approval record naming the 3–5 templates and manifest revision. | P12G-02 |
 | OD-EFFICIENCY-SCOPE | 未達 / fail | Baseline task, cohort, timing boundaries, and comparison method remain unapproved. | `decision_gap` | manual/hybrid | Authoritative efficiency-scope decision. | P12G-02 |
 | OD-SEGREGATION | 未達 / fail | API role checks do not decide which segregation controls are mandatory for MVP versus explicitly deferred to Phase13. | `decision_gap`, `e2e_gap` | manual/hybrid then codex | Approved role matrix/carryover plus deny-path E2E proof. | P12G-02, P12G-10 |
