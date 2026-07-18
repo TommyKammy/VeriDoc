@@ -5161,7 +5161,9 @@ def p9_validate_docx_artifact(
         docx=docx,
         required=require_content_validation,
     )
-    if content_validation is not None:
+    if content_validation is not None and (
+        require_content_validation or structured_validation["status"] != "not_applicable"
+    ):
         content_validation.update(structured_validation)
     failures.extend(structured_validation["failures"])
     return failures

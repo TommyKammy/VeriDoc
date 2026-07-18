@@ -1814,6 +1814,20 @@ class EvaluateDatasetTest(unittest.TestCase):
             content_validation["evidence"]["audit_schema_version"],
         )
 
+    def test_mvp_harness_omits_non_applicable_docx_content_validation(self) -> None:
+        case = self.valid_mvp_case(1)
+        fixture_path = REPO_ROOT / str(case["fixture_path"])
+
+        result = evaluate_dataset.mvp_conversion_result(
+            case,
+            fixture_path=fixture_path,
+            acceptance_limits=self.valid_mvp_acceptance_limits(),
+        )
+
+        artifact_evaluation = result["evaluations"]["artifact"]
+        self.assertEqual("pass", artifact_evaluation["status"])
+        self.assertIsNone(artifact_evaluation["content_validation"])
+
     @unittest.skipUnless(PYMUPDF_AVAILABLE, "PyMuPDF eval dependency is not installed")
     def test_mvp_harness_uses_separate_scanned_pdf_docx_validator(self) -> None:
         case = self.valid_mvp_case(3)
