@@ -20,6 +20,7 @@ from scripts.ci.mvp_browser_e2e import (
     NetworkBoundaryViolation,
     _acceptance_network_boundary,
     _assert_clean_git_checkout,
+    _build_accepted_rerun_package,
     _dependency_snapshot,
     _inference_environment_snapshot,
     _launch_browser,
@@ -110,6 +111,7 @@ def _write_complete_evidence_package(run_dir: Path) -> dict[str, object]:
     )[0]
     review_events = _seal_event_chain(
         [{
+            "event_type": "conversion_review.action_requested",
             "action": "approve",
             "conversion_id": conversion_id,
             "document_id": document_id,
@@ -119,6 +121,7 @@ def _write_complete_evidence_package(run_dir: Path) -> dict[str, object]:
             "source_bbox": source_bbox,
         },
         {
+            "event_type": "conversion_review.action_requested",
             "action": "reject",
             "conversion_id": "conversion-high-risk",
             "document_id": "document-high-risk",
@@ -1007,6 +1010,87 @@ class EvidenceBoundaryValidationTest(unittest.TestCase):
         self.assertEqual(acceptance["status"], "fail")
         self.assertIn(
             "EVIDENCE_ACTOR_MISSING",
+            {failure["code"] for failure in acceptance["failure_reasons"]},
+        )
+
+    def test_source_filename_cannot_self_validate_as_blank(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run_dir = Path(temporary_directory)
+            evidence = _write_complete_evidence_package(run_dir)
+            evidence["correlation"]["upload"]["source_filename"] = ""
+            evidence["correlation"]["provenance"]["source_filename"] = ""
+
+            job_response_path = run_dir / "job-response.json"
+            job_response = json.loads(
+                job_response_path.read_text(encoding="utf-8")
+            )
+            job_response["filename"] = ""
+            job_response_path.write_text(
+                json.dumps(job_response, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+            api_result_path = run_dir / "api-result.json"
+            api_result = json.loads(api_result_path.read_text(encoding="utf-8"))
+            audit = api_result["audit"]
+            audit["source_filename"] = ""
+            audit["input"]["filename"] = ""
+            next(
+                artifact
+                for artifact in api_result["artifacts"]
+                if artifact.get("kind") == "primary"
+            )["metadata"]["source_filename"] = ""
+            audit_bytes = (
+                json.dumps(audit, ensure_ascii=False, indent=2) + "\n"
+            ).encode("utf-8")
+            (run_dir / "audit.json").write_bytes(audit_bytes)
+            audit_sha256 = hashlib.sha256(audit_bytes).hexdigest()
+            next(
+                artifact
+                for artifact in api_result["artifacts"]
+                if artifact.get("id") == "audit-json"
+            )["sha256"] = audit_sha256
+            api_result_path.write_text(
+                json.dumps(api_result, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            evidence["correlation"]["audit"]["audit_artifact_sha256"] = (
+                audit_sha256
+            )
+            _rewrite_event_chain(
+                run_dir,
+                evidence,
+                "job",
+                lambda events: events[0].__setitem__("filename", ""),
+            )
+
+            acceptance = evaluate_acceptance_evidence(evidence, run_dir=run_dir)
+
+        self.assertEqual(acceptance["status"], "fail")
+        self.assertIn(
+            "EVIDENCE_IDENTIFIER_MISSING",
+            {failure["code"] for failure in acceptance["failure_reasons"]},
+        )
+
+    def test_approval_requires_review_event_type(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run_dir = Path(temporary_directory)
+            evidence = _write_complete_evidence_package(run_dir)
+            _rewrite_event_chain(
+                run_dir,
+                evidence,
+                "review",
+                lambda events: events[0].__setitem__(
+                    "event_type",
+                    "conversion_review.unrelated",
+                ),
+            )
+
+            acceptance = evaluate_acceptance_evidence(evidence, run_dir=run_dir)
+
+        self.assertEqual(acceptance["status"], "fail")
+        self.assertIn(
+            "EVIDENCE_AUDIT_EVENT_MISSING",
             {failure["code"] for failure in acceptance["failure_reasons"]},
         )
 
@@ -1927,6 +2011,52 @@ class RerunPackageValidationTest(unittest.TestCase):
                         seal_rerun_package(package),
                         rerun_package_path=rerun_package_path,
                     )
+
+    def test_acceptance_snapshot_is_sealed_into_rerun_baseline(self) -> None:
+        evidence = {
+            "schema_version": "veridoc-mvp-browser-e2e/v1",
+            "network_observation": {
+                "status": "pass",
+                "external_ai_api_send_count": 0,
+                "external_attempt_count": 0,
+            },
+        }
+        acceptance_snapshot = {
+            "status": "pass",
+            "correlation_id": "run-current",
+            "criteria": ["AC-PROVENANCE", "AC-AUDIT", "FC-EVIDENCE"],
+            "failure_reasons": [],
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with (
+                patch(
+                    "scripts.ci.mvp_browser_e2e.evaluate_acceptance_evidence",
+                    return_value=acceptance_snapshot,
+                ),
+                patch("scripts.ci.mvp_browser_e2e._assert_clean_git_checkout"),
+            ):
+                envelope = _build_accepted_rerun_package(
+                    evidence,
+                    run_dir=Path(temp_dir),
+                    browser_version="test-browser",
+                )
+
+        expected_hash = hashlib.sha256(
+            json.dumps(
+                evidence,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        self.assertEqual(
+            evidence["acceptance_snapshot"],
+            acceptance_snapshot,
+        )
+        self.assertEqual(
+            envelope["package"]["equivalence"]["baseline_evidence"]["sha256"],
+            expected_hash,
+        )
 
     def test_package_browser_runtime_drift_is_rejected(self) -> None:
         evidence = {

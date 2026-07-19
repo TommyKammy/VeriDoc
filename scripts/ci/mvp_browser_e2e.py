@@ -1388,6 +1388,7 @@ def evaluate_acceptance_evidence(
         "document_id": review.get("document_id"),
         "block_id": review.get("block_id"),
         "artifact_id": artifact.get("artifact_id"),
+        "source_filename": upload.get("source_filename"),
     }
     if any(
         not _nonempty_string(value)
@@ -1396,7 +1397,10 @@ def evaluate_acceptance_evidence(
         fail(
             "EVIDENCE_IDENTIFIER_MISSING",
             "correlation",
-            "Job, conversion, review-item, and artifact identifiers must be explicit.",
+            (
+                "Job, conversion, review-item, artifact, and source filename "
+                "values must be explicit."
+            ),
         )
     if (
         job.get("status") != "succeeded"
@@ -1772,6 +1776,7 @@ def evaluate_acceptance_evidence(
         review_matches = _matching_events(
             review_events,
             expected_fields={
+                "event_type": "conversion_review.action_requested",
                 "action": "approve",
                 "conversion_id": review.get("conversion_id"),
                 "document_id": review.get("document_id"),
@@ -1833,6 +1838,28 @@ def evaluate_acceptance_evidence(
         "criteria": ["AC-PROVENANCE", "AC-AUDIT", "FC-EVIDENCE"],
         "failure_reasons": failures,
     }
+
+
+def _build_accepted_rerun_package(
+    evidence: dict[str, Any],
+    *,
+    run_dir: Path,
+    browser_version: str,
+    repo_root: Path = REPO_ROOT,
+    generated_evidence_dir: Path | None = None,
+    retained_rerun_package_path: Path | None = None,
+) -> dict[str, Any]:
+    evidence["acceptance_snapshot"] = evaluate_acceptance_evidence(
+        evidence,
+        run_dir=run_dir,
+    )
+    return build_rerun_package(
+        evidence,
+        browser_version=browser_version,
+        repo_root=repo_root,
+        generated_evidence_dir=generated_evidence_dir,
+        retained_rerun_package_path=retained_rerun_package_path,
+    )
 
 
 def _high_risk_fixture() -> dict[str, Any]:
@@ -2762,8 +2789,9 @@ def run_browser_e2e(
                         expected_rerun_package,
                         evidence,
                     )
-                rerun_package = build_rerun_package(
+                rerun_package = _build_accepted_rerun_package(
                     evidence,
+                    run_dir=run_dir,
                     browser_version=browser_version,
                     generated_evidence_dir=run_dir,
                     retained_rerun_package_path=retained_rerun_package_path,
@@ -2771,10 +2799,6 @@ def run_browser_e2e(
                 rerun_package_path.write_text(
                     json.dumps(rerun_package, ensure_ascii=False, indent=2) + "\n",
                     encoding="utf-8",
-                )
-                evidence["acceptance_snapshot"] = evaluate_acceptance_evidence(
-                    evidence,
-                    run_dir=run_dir,
                 )
                 (run_dir / "evidence.json").write_text(
                     json.dumps(evidence, ensure_ascii=False, indent=2) + "\n",
