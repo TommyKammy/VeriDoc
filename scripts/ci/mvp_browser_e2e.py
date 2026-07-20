@@ -33,7 +33,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from core.ir.document_ir_v1 import SCHEMA_VERSION as DOCUMENT_IR_SCHEMA_VERSION
+from core.ir.document_ir_v1 import (
+    SCHEMA_VERSION as DOCUMENT_IR_SCHEMA_VERSION,
+    UNITS,
+)
 from services.api.job_queue import JobQueue
 from services.api.poc_web import (
     CONVERSION_AUDIT_SCHEMA_VERSION,
@@ -45,7 +48,6 @@ from services.api.poc_web import (
     ReviewAuditEventStore,
     TemplateStore,
 )
-from core.ir.document_ir_v1 import SCHEMA_VERSION as DOCUMENT_IR_SCHEMA_VERSION
 from core.llm.conversion_plan import is_local_llm_base_url
 
 FIXTURE_PATH = (
@@ -1210,8 +1212,7 @@ def _valid_source_bbox(value: object) -> bool:
         and coordinates["y"] >= 0
         and coordinates["width"] > 0
         and coordinates["height"] > 0
-        and isinstance(value.get("unit"), str)
-        and bool(value["unit"])
+        and str(value.get("unit") or "").strip() in UNITS
         and value.get("origin") == "top-left"
     )
 
@@ -1767,6 +1768,7 @@ def evaluate_acceptance_evidence(
         upload_matches = _matching_events(
             job_events,
             expected_fields={
+                "event_type": "web.job_operation",
                 "action": "browser_upload",
                 "job_id": job.get("job_id"),
                 "filename": upload.get("source_filename"),

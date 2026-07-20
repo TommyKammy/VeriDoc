@@ -103,6 +103,7 @@ def _write_complete_evidence_package(run_dir: Path) -> dict[str, object]:
 
     upload_event = _seal_event_chain(
         [{
+            "event_type": "web.job_operation",
             "action": "browser_upload",
             "job_id": job_id,
             "filename": source_filename,
@@ -993,6 +994,41 @@ class EvidenceBoundaryValidationTest(unittest.TestCase):
             {failure["code"] for failure in acceptance["failure_reasons"]},
         )
 
+    def test_provenance_rejects_unsupported_bbox_unit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run_dir = Path(temporary_directory)
+            evidence = _write_complete_evidence_package(run_dir)
+            changed_bbox = {
+                **evidence["correlation"]["provenance"]["source_bbox"],
+                "unit": "bogus",
+            }
+            evidence["correlation"]["provenance"]["source_bbox"] = changed_bbox
+
+            api_result_path = run_dir / "api-result.json"
+            api_result = json.loads(api_result_path.read_text(encoding="utf-8"))
+            api_result["review_items"][0]["source_bbox"] = changed_bbox
+            api_result_path.write_text(
+                json.dumps(api_result, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            _rewrite_event_chain(
+                run_dir,
+                evidence,
+                "review",
+                lambda events: events[0].__setitem__(
+                    "source_bbox",
+                    changed_bbox,
+                ),
+            )
+
+            acceptance = evaluate_acceptance_evidence(evidence, run_dir=run_dir)
+
+        self.assertEqual(acceptance["status"], "fail")
+        self.assertIn(
+            "EVIDENCE_PROVENANCE_MISSING",
+            {failure["code"] for failure in acceptance["failure_reasons"]},
+        )
+
     def test_approval_requires_nonempty_actor(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             run_dir = Path(temporary_directory)
@@ -1083,6 +1119,28 @@ class EvidenceBoundaryValidationTest(unittest.TestCase):
                 lambda events: events[0].__setitem__(
                     "event_type",
                     "conversion_review.unrelated",
+                ),
+            )
+
+            acceptance = evaluate_acceptance_evidence(evidence, run_dir=run_dir)
+
+        self.assertEqual(acceptance["status"], "fail")
+        self.assertIn(
+            "EVIDENCE_AUDIT_EVENT_MISSING",
+            {failure["code"] for failure in acceptance["failure_reasons"]},
+        )
+
+    def test_upload_requires_job_operation_event_type(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run_dir = Path(temporary_directory)
+            evidence = _write_complete_evidence_package(run_dir)
+            _rewrite_event_chain(
+                run_dir,
+                evidence,
+                "job",
+                lambda events: events[0].__setitem__(
+                    "event_type",
+                    "web.unrelated",
                 ),
             )
 
