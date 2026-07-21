@@ -206,6 +206,7 @@ def _write_complete_evidence_package(run_dir: Path) -> dict[str, object]:
     audit_sha256 = hashlib.sha256(audit_bytes).hexdigest()
     api_result = {
         "status": "converted",
+        "conversion_id": conversion_id,
         "audit": audit,
         "hashes": {"source_sha256": source_sha256},
         "review_items": [
@@ -595,6 +596,38 @@ class EvidenceBoundaryValidationTest(unittest.TestCase):
             "EVIDENCE_CORRELATION_MISMATCH",
             {failure["code"] for failure in acceptance["failure_reasons"]},
         )
+
+    def test_api_result_must_match_reviewed_conversion(self) -> None:
+        for conversion_id in (None, "conversion-stale"):
+            with (
+                self.subTest(conversion_id=conversion_id),
+                tempfile.TemporaryDirectory() as temporary_directory,
+            ):
+                run_dir = Path(temporary_directory)
+                evidence = _write_complete_evidence_package(run_dir)
+                api_result_path = run_dir / "api-result.json"
+                api_result = json.loads(
+                    api_result_path.read_text(encoding="utf-8")
+                )
+                if conversion_id is None:
+                    api_result.pop("conversion_id")
+                else:
+                    api_result["conversion_id"] = conversion_id
+                api_result_path.write_text(
+                    json.dumps(api_result, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+
+                acceptance = evaluate_acceptance_evidence(
+                    evidence,
+                    run_dir=run_dir,
+                )
+
+            self.assertEqual(acceptance["status"], "fail")
+            self.assertIn(
+                "EVIDENCE_CORRELATION_MISMATCH",
+                {failure["code"] for failure in acceptance["failure_reasons"]},
+            )
 
     def test_schema_lineage_requires_authoritative_versions(self) -> None:
         invalid_versions = {

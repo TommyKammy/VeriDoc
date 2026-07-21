@@ -1864,6 +1864,8 @@ def evaluate_acceptance_evidence(
             browser_surface.get("job_id") != job.get("job_id")
             or harness_surface.get("conversion_id")
             != review.get("conversion_id")
+            or not isinstance(api_result, dict)
+            or api_result.get("conversion_id") != review.get("conversion_id")
             or result_audit.get("conversion_id") != review.get("conversion_id")
             or artifact_surface.get("artifact_id")
             != artifact.get("artifact_id")
