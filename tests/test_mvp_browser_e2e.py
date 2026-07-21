@@ -528,6 +528,20 @@ class EvidenceBoundaryValidationTest(unittest.TestCase):
                 {failure["code"] for failure in acceptance["failure_reasons"]},
             )
 
+    def test_source_bbox_rejects_oversized_integer_without_raising(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run_dir = Path(temporary_directory)
+            evidence = _write_complete_evidence_package(run_dir)
+            evidence["correlation"]["provenance"]["source_bbox"]["x"] = 10**400
+
+            acceptance = evaluate_acceptance_evidence(evidence, run_dir=run_dir)
+
+        self.assertEqual(acceptance["status"], "fail")
+        self.assertIn(
+            "EVIDENCE_PROVENANCE_MISSING",
+            {failure["code"] for failure in acceptance["failure_reasons"]},
+        )
+
     def test_non_approval_review_event_cannot_pass(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             run_dir = Path(temporary_directory)
@@ -2070,15 +2084,121 @@ class RerunPackageValidationTest(unittest.TestCase):
                         rerun_package_path=rerun_package_path,
                     )
 
-    def test_acceptance_snapshot_is_sealed_into_rerun_baseline(self) -> None:
-        evidence = {
-            "schema_version": "veridoc-mvp-browser-e2e/v1",
-            "network_observation": {
-                "status": "pass",
-                "external_ai_api_send_count": 0,
-                "external_attempt_count": 0,
+    def test_rerun_package_seals_all_acceptance_evidence_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = Path(temp_dir)
+            evidence = _write_complete_evidence_package(run_dir)
+            evidence["files"].update(
+                {
+                    "trace": "trace.zip",
+                    "screenshots": ["01.png", "02.png"],
+                    "rerun_package": "rerun-package.json",
+                }
+            )
+            with patch("scripts.ci.mvp_browser_e2e._assert_clean_git_checkout"):
+                envelope = _build_accepted_rerun_package(
+                    evidence,
+                    run_dir=run_dir,
+                    browser_version="test-browser",
+                )
+
+        records = envelope["package"]["equivalence"]["retained_files"]
+        self.assertEqual(
+            {record["role"] for record in records},
+            {
+                "api_result",
+                "audit_artifact",
+                "download",
+                "job_events",
+                "job_response",
+                "review_events",
             },
-        }
+        )
+        self.assertTrue(all(len(record["sha256"]) == 64 for record in records))
+
+    def test_rerun_validation_rejects_modified_retained_files(self) -> None:
+        for filename in (
+            "api-result.json",
+            "audit.json",
+            "result.docx",
+            "job-events.json",
+            "job-response.json",
+            "review-events.json",
+        ):
+            with (
+                self.subTest(filename=filename),
+                tempfile.TemporaryDirectory() as temp_dir,
+            ):
+                run_dir = Path(temp_dir)
+                rerun_package_path = run_dir / "rerun-package.json"
+                evidence = _write_complete_evidence_package(run_dir)
+                with patch(
+                    "scripts.ci.mvp_browser_e2e._assert_clean_git_checkout"
+                ):
+                    envelope = _build_accepted_rerun_package(
+                        evidence,
+                        run_dir=run_dir,
+                        browser_version="test-browser",
+                    )
+                (run_dir / "evidence.json").write_text(
+                    json.dumps(evidence, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+                tampered_path = run_dir / filename
+                tampered_path.write_bytes(tampered_path.read_bytes() + b"\n")
+
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "retained evidence files do not match rerun package",
+                ):
+                    with patch(
+                        "scripts.ci.mvp_browser_e2e._assert_clean_git_checkout"
+                    ):
+                        validate_rerun_package_for_workspace(
+                            envelope,
+                            rerun_package_path=rerun_package_path,
+                        )
+
+    def test_resealed_retained_file_metadata_drift_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = Path(temp_dir)
+            rerun_package_path = run_dir / "rerun-package.json"
+            evidence = _write_complete_evidence_package(run_dir)
+            with patch("scripts.ci.mvp_browser_e2e._assert_clean_git_checkout"):
+                envelope = _build_accepted_rerun_package(
+                    evidence,
+                    run_dir=run_dir,
+                    browser_version="test-browser",
+                )
+            (run_dir / "evidence.json").write_text(
+                json.dumps(evidence, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+            for mutation in ("missing", "hash", "path"):
+                with self.subTest(mutation=mutation):
+                    package = deepcopy(envelope["package"])
+                    records = package["equivalence"]["retained_files"]
+                    if mutation == "missing":
+                        records.pop()
+                    elif mutation == "hash":
+                        records[0]["sha256"] = "0" * 64
+                    else:
+                        records[0]["path"] = "unrelated.json"
+
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        "retained evidence files do not match rerun package",
+                    ):
+                        with patch(
+                            "scripts.ci.mvp_browser_e2e._assert_clean_git_checkout"
+                        ):
+                            validate_rerun_package_for_workspace(
+                                seal_rerun_package(package),
+                                rerun_package_path=rerun_package_path,
+                            )
+
+    def test_acceptance_snapshot_is_sealed_into_rerun_baseline(self) -> None:
         acceptance_snapshot = {
             "status": "pass",
             "correlation_id": "run-current",
@@ -2086,6 +2206,13 @@ class RerunPackageValidationTest(unittest.TestCase):
             "failure_reasons": [],
         }
         with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = Path(temp_dir)
+            evidence = _write_complete_evidence_package(run_dir)
+            evidence["network_observation"] = {
+                "status": "pass",
+                "external_ai_api_send_count": 0,
+                "external_attempt_count": 0,
+            }
             with (
                 patch(
                     "scripts.ci.mvp_browser_e2e.evaluate_acceptance_evidence",
@@ -2095,7 +2222,7 @@ class RerunPackageValidationTest(unittest.TestCase):
             ):
                 envelope = _build_accepted_rerun_package(
                     evidence,
-                    run_dir=Path(temp_dir),
+                    run_dir=run_dir,
                     browser_version="test-browser",
                 )
 

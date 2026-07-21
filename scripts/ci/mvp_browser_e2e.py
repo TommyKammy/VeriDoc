@@ -78,6 +78,15 @@ RERUN_EQUIVALENCE_RULE = (
     "decision-relevant fields must match; run identity, generated "
     "identifiers, artifact bytes, timestamps, and processing time are excluded"
 )
+# Keep this tuple aligned with every file role read by evaluate_acceptance_evidence.
+ACCEPTANCE_EVIDENCE_FILE_ROLES = (
+    "api_result",
+    "audit_artifact",
+    "download",
+    "job_events",
+    "job_response",
+    "review_events",
+)
 RETAINED_EVIDENCE_FILENAMES = frozenset(
     {
         "01-recovery.png",
@@ -880,6 +889,7 @@ def build_rerun_package(
     repo_root: Path = REPO_ROOT,
     generated_evidence_dir: Path | None = None,
     retained_rerun_package_path: Path | None = None,
+    retained_evidence_dir: Path | None = None,
 ) -> dict[str, Any]:
     excluded_paths = (
         ((generated_evidence_dir,) if generated_evidence_dir is not None else ())
@@ -926,6 +936,13 @@ def build_rerun_package(
             },
         },
     }
+    if retained_evidence_dir is not None:
+        package["equivalence"]["retained_files"] = (
+            _retained_evidence_file_records(
+                evidence,
+                run_dir=retained_evidence_dir,
+            )
+        )
     return seal_rerun_package(package)
 
 
@@ -1007,6 +1024,23 @@ def validate_rerun_package_for_workspace(
         ):
             raise ValueError(
                 "rerun package equivalence baseline does not match retained evidence"
+            )
+        retained_files = equivalence.get("retained_files")
+        try:
+            actual_retained_files = _retained_evidence_file_records(
+                retained_evidence,
+                run_dir=evidence_path.parent,
+            )
+        except ValueError as exc:
+            raise ValueError(
+                "rerun package retained evidence files are unavailable"
+            ) from exc
+        if (
+            not isinstance(retained_files, list)
+            or retained_files != actual_retained_files
+        ):
+            raise ValueError(
+                "retained evidence files do not match rerun package"
             )
     records = package.get("inputs")
     if not isinstance(records, list) or not records:
@@ -1194,6 +1228,29 @@ def _load_evidence_json(run_dir: Path, filename: object) -> object | None:
         return None
 
 
+def _retained_evidence_file_records(
+    evidence: dict[str, Any],
+    *,
+    run_dir: Path,
+) -> list[dict[str, str]]:
+    files = evidence.get("files")
+    if not isinstance(files, dict):
+        raise ValueError("browser evidence files manifest is missing")
+    records: list[dict[str, str]] = []
+    for role in ACCEPTANCE_EVIDENCE_FILE_ROLES:
+        path = _resolve_evidence_path(run_dir, files.get(role))
+        if path is None or not path.is_file():
+            raise ValueError(f"browser evidence file is unavailable: {role}")
+        records.append(
+            {
+                "role": role,
+                "path": path.relative_to(run_dir.resolve()).as_posix(),
+                "sha256": _sha256(path),
+            }
+        )
+    return records
+
+
 def _valid_source_bbox(value: object) -> bool:
     if not isinstance(value, dict):
         return False
@@ -1201,14 +1258,16 @@ def _valid_source_bbox(value: object) -> bool:
         field: value.get(field)
         for field in ("x", "y", "width", "height")
     }
+    for coordinate in coordinates.values():
+        if not isinstance(coordinate, (int, float)) or isinstance(coordinate, bool):
+            return False
+        try:
+            if not math.isfinite(coordinate):
+                return False
+        except OverflowError:
+            return False
     return (
-        all(
-            isinstance(coordinate, (int, float))
-            and not isinstance(coordinate, bool)
-            and math.isfinite(coordinate)
-            for coordinate in coordinates.values()
-        )
-        and coordinates["x"] >= 0
+        coordinates["x"] >= 0
         and coordinates["y"] >= 0
         and coordinates["width"] > 0
         and coordinates["height"] > 0
@@ -1861,6 +1920,7 @@ def _build_accepted_rerun_package(
         repo_root=repo_root,
         generated_evidence_dir=generated_evidence_dir,
         retained_rerun_package_path=retained_rerun_package_path,
+        retained_evidence_dir=run_dir,
     )
 
 
