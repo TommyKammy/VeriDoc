@@ -631,6 +631,48 @@ class EvidenceBoundaryValidationTest(unittest.TestCase):
                 {failure["code"] for failure in acceptance["failure_reasons"]},
             )
 
+    def test_surface_ids_fail_closed_for_unhashable_values(self) -> None:
+        for invalid_value in ([], {}):
+            with (
+                self.subTest(invalid_value=invalid_value),
+                tempfile.TemporaryDirectory() as temporary_directory,
+            ):
+                run_dir = Path(temporary_directory)
+                evidence = _write_complete_evidence_package(run_dir)
+                evidence["evidence_surfaces"]["browser_run"][
+                    "correlation_id"
+                ] = invalid_value
+
+                acceptance = evaluate_acceptance_evidence(
+                    evidence,
+                    run_dir=run_dir,
+                )
+
+                self.assertEqual(acceptance["status"], "fail")
+                self.assertIn(
+                    "EVIDENCE_CORRELATION_MISMATCH",
+                    {failure["code"] for failure in acceptance["failure_reasons"]},
+                )
+
+    def test_early_return_preserves_missing_evidence_reasons(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            acceptance = evaluate_acceptance_evidence(
+                {},
+                run_dir=Path(temporary_directory),
+            )
+
+        self.assertEqual(acceptance["status"], "fail")
+        self.assertEqual(
+            {
+                "EVIDENCE_PROVENANCE_MISSING",
+                "EVIDENCE_AUDIT_MISSING",
+            },
+            {
+                failure["code"]
+                for failure in acceptance["failure_reasons"]
+            },
+        )
+
     def test_hash_fields_fail_closed_for_unhashable_values(self) -> None:
         paths = (
             ("correlation", "upload", "source_sha256"),

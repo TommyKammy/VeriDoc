@@ -1438,17 +1438,19 @@ def evaluate_acceptance_evidence(
         "download_artifact",
         "audit_events",
     }
-    surface_ids = {
-        surface.get("correlation_id")
+    surface_ids = [
+        surface.get("correlation_id") if isinstance(surface, dict) else None
         for surface in surfaces.values()
-        if isinstance(surface, dict)
-    }
+    ]
     if (
         not isinstance(run_id, str)
         or not run_id
         or correlation.get("run_id") != run_id
         or set(surfaces) != required_surfaces
-        or surface_ids != {run_id}
+        or not all(
+            isinstance(surface_id, str) and surface_id == run_id
+            for surface_id in surface_ids
+        )
     ):
         fail(
             "EVIDENCE_CORRELATION_MISMATCH",
@@ -1463,7 +1465,12 @@ def evaluate_acceptance_evidence(
             "status": "fail",
             "correlation_id": run_id,
             "criteria": ["AC-PROVENANCE", "AC-AUDIT", "FC-EVIDENCE"],
-            "failure_reasons": failures[:2],
+            "failure_reasons": [
+                failure
+                for failure in failures
+                if failure["code"]
+                in {"EVIDENCE_PROVENANCE_MISSING", "EVIDENCE_AUDIT_MISSING"}
+            ],
         }
 
     api_result = _load_evidence_json(run_dir, files.get("api_result"))
