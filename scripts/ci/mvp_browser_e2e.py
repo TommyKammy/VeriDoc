@@ -1043,6 +1043,23 @@ def validate_rerun_package_for_workspace(
             raise ValueError(
                 "retained evidence files do not match rerun package"
             )
+        acceptance_snapshot = retained_evidence.get("acceptance_snapshot")
+        if (
+            not isinstance(acceptance_snapshot, dict)
+            or acceptance_snapshot.get("status") != "pass"
+            or acceptance_snapshot.get("failure_reasons") != []
+        ):
+            raise ValueError(
+                "rerun package retained baseline acceptance did not pass"
+            )
+        evaluated_snapshot = evaluate_acceptance_evidence(
+            retained_evidence,
+            run_dir=evidence_path.parent,
+        )
+        if evaluated_snapshot != acceptance_snapshot:
+            raise ValueError(
+                "rerun package retained acceptance snapshot does not match evidence"
+            )
     records = package.get("inputs")
     if not isinstance(records, list) or not records:
         raise ValueError("rerun package inputs list is missing")
@@ -1291,13 +1308,16 @@ def _audit_chain_is_valid(events: object) -> bool:
         if event.get("prev_event_hash") != previous_hash:
             return False
         event_hash = event.get("event_hash")
-        canonical = json.dumps(
-            {key: value for key, value in event.items() if key != "event_hash"},
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8")
-        expected_hash = hashlib.sha256(canonical).hexdigest()
+        try:
+            expected_hash = _canonical_json_sha256(
+                {
+                    key: value
+                    for key, value in event.items()
+                    if key != "event_hash"
+                }
+            )
+        except (TypeError, UnicodeEncodeError, ValueError):
+            return False
         if event_hash != expected_hash:
             return False
         previous_hash = event_hash
@@ -1332,15 +1352,22 @@ def _all_matching_sha256(values: list[object]) -> bool:
     )
 
 
+def _valid_review_event_text(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        return len(value.encode("utf-8")) <= MAX_REVIEW_EVENT_TEXT_BYTES
+    except UnicodeEncodeError:
+        return False
+
+
 def _valid_approval_event_payload(event: dict[str, Any]) -> bool:
     original_text = event.get("original_text")
     revised_text = event.get("revised_text")
     warnings = event.get("warnings", [])
     return (
-        isinstance(original_text, str)
-        and len(original_text.encode("utf-8")) <= MAX_REVIEW_EVENT_TEXT_BYTES
-        and isinstance(revised_text, str)
-        and len(revised_text.encode("utf-8")) <= MAX_REVIEW_EVENT_TEXT_BYTES
+        _valid_review_event_text(original_text)
+        and _valid_review_event_text(revised_text)
         and isinstance(warnings, list)
         and all(isinstance(warning, str) for warning in warnings)
     )

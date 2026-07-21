@@ -1238,6 +1238,35 @@ class EvidenceBoundaryValidationTest(unittest.TestCase):
                     {failure["code"] for failure in acceptance["failure_reasons"]},
                 )
 
+    def test_invalid_utf8_review_text_fails_closed(self) -> None:
+        for field in ("original_text", "revised_text"):
+            with (
+                self.subTest(field=field),
+                tempfile.TemporaryDirectory() as temporary_directory,
+            ):
+                run_dir = Path(temporary_directory)
+                evidence = _write_complete_evidence_package(run_dir)
+                review_events_path = run_dir / "review-events.json"
+                review_events = json.loads(
+                    review_events_path.read_text(encoding="utf-8")
+                )
+                review_events[0][field] = "\ud800"
+                review_events_path.write_text(
+                    json.dumps(review_events, ensure_ascii=True, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+
+                acceptance = evaluate_acceptance_evidence(
+                    evidence,
+                    run_dir=run_dir,
+                )
+
+                self.assertEqual(acceptance["status"], "fail")
+                self.assertIn(
+                    "EVIDENCE_AUDIT_CHAIN_INVALID",
+                    {failure["code"] for failure in acceptance["failure_reasons"]},
+                )
+
     def test_upload_requires_job_operation_event_type(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             run_dir = Path(temporary_directory)
@@ -2336,6 +2365,89 @@ class RerunPackageValidationTest(unittest.TestCase):
             envelope["package"]["equivalence"]["baseline_evidence"]["sha256"],
             expected_hash,
         )
+
+    def test_failed_acceptance_snapshot_cannot_be_a_rerun_baseline(self) -> None:
+        failure_snapshot = {
+            "status": "fail",
+            "correlation_id": "run-current",
+            "criteria": ["AC-PROVENANCE", "AC-AUDIT", "FC-EVIDENCE"],
+            "failure_reasons": [
+                {
+                    "code": "EVIDENCE_CORRELATION_MISMATCH",
+                    "boundary": "correlation",
+                    "message": "retained baseline did not pass",
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = Path(temp_dir)
+            rerun_package_path = run_dir / "rerun-package.json"
+            evidence = _write_complete_evidence_package(run_dir)
+            with (
+                patch(
+                    "scripts.ci.mvp_browser_e2e.evaluate_acceptance_evidence",
+                    return_value=failure_snapshot,
+                ),
+                patch("scripts.ci.mvp_browser_e2e._assert_clean_git_checkout"),
+            ):
+                envelope = _build_accepted_rerun_package(
+                    evidence,
+                    run_dir=run_dir,
+                    browser_version="test-browser",
+                )
+            (run_dir / "evidence.json").write_text(
+                json.dumps(evidence, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "retained baseline acceptance did not pass",
+            ):
+                with patch("scripts.ci.mvp_browser_e2e._assert_clean_git_checkout"):
+                    validate_rerun_package_for_workspace(
+                        envelope,
+                        rerun_package_path=rerun_package_path,
+                    )
+
+    def test_resealed_pass_snapshot_must_match_retained_evidence(self) -> None:
+        forged_pass_snapshot = {
+            "status": "pass",
+            "correlation_id": "run-current",
+            "criteria": ["AC-PROVENANCE", "AC-AUDIT", "FC-EVIDENCE"],
+            "failure_reasons": [],
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = Path(temp_dir)
+            rerun_package_path = run_dir / "rerun-package.json"
+            evidence = _write_complete_evidence_package(run_dir)
+            evidence["correlation"]["upload"]["source_sha256"] = "b" * 64
+            with (
+                patch(
+                    "scripts.ci.mvp_browser_e2e.evaluate_acceptance_evidence",
+                    return_value=forged_pass_snapshot,
+                ),
+                patch("scripts.ci.mvp_browser_e2e._assert_clean_git_checkout"),
+            ):
+                envelope = _build_accepted_rerun_package(
+                    evidence,
+                    run_dir=run_dir,
+                    browser_version="test-browser",
+                )
+            (run_dir / "evidence.json").write_text(
+                json.dumps(evidence, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "retained acceptance snapshot does not match evidence",
+            ):
+                with patch("scripts.ci.mvp_browser_e2e._assert_clean_git_checkout"):
+                    validate_rerun_package_for_workspace(
+                        envelope,
+                        rerun_package_path=rerun_package_path,
+                    )
 
     def test_package_browser_runtime_drift_is_rejected(self) -> None:
         evidence = {
