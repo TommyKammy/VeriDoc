@@ -14258,7 +14258,14 @@ def test_web_direct_convert_defines_phase6_review_information_architecture() -> 
         "conversion-settings": ["conversion_mode"],
         "review": ["review_items", "warnings", "document_ir"],
         "artifact-downloads": ["artifacts[]", "download", "audit"],
-        "detail-json": ["document_ir", "review_items", "warnings", "artifacts[]", "audit"],
+        "detail-json": [
+            "conversion_id",
+            "document_ir",
+            "review_items",
+            "warnings",
+            "artifacts[]",
+            "audit",
+        ],
     }
 
     for region, fields in expected_regions.items():
@@ -14343,7 +14350,14 @@ def test_web_app_shell_defines_phase10_navigation_and_screen_frames() -> None:
         "conversion-settings": ["conversion_mode", "use_llm", "use_ocr"],
         "review": ["review_items", "warnings", "document_ir"],
         "artifact-downloads": ["artifacts[]", "download", "audit"],
-        "detail-json": ["document_ir", "review_items", "warnings", "artifacts[]", "audit"],
+        "detail-json": [
+            "conversion_id",
+            "document_ir",
+            "review_items",
+            "warnings",
+            "artifacts[]",
+            "audit",
+        ],
     }
     for region, fields in preserved_regions.items():
         assert region in parser.region_fields
@@ -14705,6 +14719,7 @@ def test_web_direct_convert_download_uses_primary_artifact_before_debug_json() -
 
     assert render_result is not None
     body = render_result.group("body")
+    assert "conversion_id: result.conversion_id" in body
     assert "primaryDownloadArtifact(result)" in body
     assert "artifact.content_base64" in html
     assert "Download primary DOCX/XLSX" in html

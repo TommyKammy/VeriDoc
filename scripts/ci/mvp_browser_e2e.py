@@ -43,6 +43,7 @@ from services.api.poc_web import (
     CONVERSION_PLAN_PROMPT_ID,
     CONVERSION_PLAN_PROMPT_VERSION,
     CONVERSION_PLAN_SCHEMA_VERSION,
+    MAX_REVIEW_EVENT_TEXT_BYTES,
     JobAuditEventStore,
     PocWebRequestHandler,
     ReviewAuditEventStore,
@@ -1322,6 +1323,29 @@ def _nonempty_string(value: object) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
+def _all_matching_sha256(values: list[object]) -> bool:
+    return bool(values) and all(
+        isinstance(value, str)
+        and re.fullmatch(r"[0-9a-f]{64}", value)
+        and value == values[0]
+        for value in values
+    )
+
+
+def _valid_approval_event_payload(event: dict[str, Any]) -> bool:
+    original_text = event.get("original_text")
+    revised_text = event.get("revised_text")
+    warnings = event.get("warnings", [])
+    return (
+        isinstance(original_text, str)
+        and len(original_text.encode("utf-8")) <= MAX_REVIEW_EVENT_TEXT_BYTES
+        and isinstance(revised_text, str)
+        and len(revised_text.encode("utf-8")) <= MAX_REVIEW_EVENT_TEXT_BYTES
+        and isinstance(warnings, list)
+        and all(isinstance(warning, str) for warning in warnings)
+    )
+
+
 def _valid_approver_actor(value: object) -> bool:
     return (
         isinstance(value, dict)
@@ -1619,23 +1643,17 @@ def evaluate_acceptance_evidence(
             "Reviewed source coordinates must match one authoritative result item.",
         )
 
-    source_hashes = {
+    source_hashes = [
         upload.get("source_sha256"),
         provenance.get("source_sha256"),
         result_audit.get("source_sha256"),
         audit_input.get("sha256"),
-    }
+    ]
     hashes = api_result.get("hashes") if isinstance(api_result, dict) else None
     if isinstance(hashes, dict):
-        source_hashes.add(hashes.get("source_sha256"))
-    source_hashes.add(result_artifact_metadata.get("source_sha256"))
-    if (
-        len(source_hashes) != 1
-        or not all(
-            isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value)
-            for value in source_hashes
-        )
-    ):
+        source_hashes.append(hashes.get("source_sha256"))
+    source_hashes.append(result_artifact_metadata.get("source_sha256"))
+    if not _all_matching_sha256(source_hashes):
         fail(
             "EVIDENCE_HASH_MISMATCH",
             "input_hash",
@@ -1652,7 +1670,7 @@ def evaluate_acceptance_evidence(
         if download_path is not None and download_path.is_file()
         else None
     )
-    output_hashes = {
+    output_hashes = [
         downloaded_hash,
         artifact.get("sha256"),
         (
@@ -1661,14 +1679,8 @@ def evaluate_acceptance_evidence(
             else None
         ),
         result_artifact_metadata.get("output_sha256"),
-    }
-    if (
-        len(output_hashes) != 1
-        or not all(
-            isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value)
-            for value in output_hashes
-        )
-    ):
+    ]
+    if not _all_matching_sha256(output_hashes):
         fail(
             "EVIDENCE_HASH_MISMATCH",
             "output_hash",
@@ -1691,7 +1703,7 @@ def evaluate_acceptance_evidence(
         ),
         None,
     )
-    audit_hashes = {
+    audit_hashes = [
         audit_downloaded_hash,
         correlation.get("audit", {}).get("audit_artifact_sha256")
         if isinstance(correlation.get("audit"), dict)
@@ -1701,14 +1713,8 @@ def evaluate_acceptance_evidence(
             if isinstance(result_audit_artifact, dict)
             else None
         ),
-    }
-    if (
-        len(audit_hashes) != 1
-        or not all(
-            isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value)
-            for value in audit_hashes
-        )
-    ):
+    ]
+    if not _all_matching_sha256(audit_hashes):
         fail(
             "EVIDENCE_HASH_MISMATCH",
             "audit_hash",
@@ -1847,6 +1853,11 @@ def evaluate_acceptance_evidence(
                 "source_bbox": provenance.get("source_bbox"),
             },
         )
+        review_matches = [
+            event
+            for event in review_matches
+            if _valid_approval_event_payload(event)
+        ]
         if (
             review.get("action") != "approve"
             or len(upload_matches) != 1

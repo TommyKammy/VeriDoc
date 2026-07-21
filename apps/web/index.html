@@ -1255,7 +1255,7 @@
         <div
           id="raw-panel"
           data-poc-ui-region="detail-json"
-          data-api-fields="document_ir review_items warnings artifacts[] audit"
+          data-api-fields="conversion_id document_ir review_items warnings artifacts[] audit"
           hidden
         >
           <div class="page-status">
@@ -2468,6 +2468,7 @@
         renderArtifactList(result.artifacts || []);
         rawResult.textContent = JSON.stringify(
           {
+            conversion_id: result.conversion_id,
             document_ir: result.document_ir,
             validation: result.validation,
             review_items: result.review_items.map(reviewItemForDetail),

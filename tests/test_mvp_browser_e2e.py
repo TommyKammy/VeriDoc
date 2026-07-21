@@ -120,6 +120,8 @@ def _write_complete_evidence_package(run_dir: Path) -> dict[str, object]:
             "actor": actor,
             "source_page": 1,
             "source_bbox": source_bbox,
+            "original_text": "Approved source text",
+            "revised_text": "Approved source text",
         },
         {
             "event_type": "conversion_review.action_requested",
@@ -628,6 +630,39 @@ class EvidenceBoundaryValidationTest(unittest.TestCase):
                 "EVIDENCE_CORRELATION_MISMATCH",
                 {failure["code"] for failure in acceptance["failure_reasons"]},
             )
+
+    def test_hash_fields_fail_closed_for_unhashable_values(self) -> None:
+        paths = (
+            ("correlation", "upload", "source_sha256"),
+            ("correlation", "artifact", "sha256"),
+            ("correlation", "audit", "audit_artifact_sha256"),
+        )
+        for path in paths:
+            for invalid_value in ([], {}):
+                with (
+                    self.subTest(path=path, invalid_value=invalid_value),
+                    tempfile.TemporaryDirectory() as temporary_directory,
+                ):
+                    run_dir = Path(temporary_directory)
+                    evidence = _write_complete_evidence_package(run_dir)
+                    target = evidence
+                    for field in path[:-1]:
+                        target = target[field]
+                    target[path[-1]] = invalid_value
+
+                    acceptance = evaluate_acceptance_evidence(
+                        evidence,
+                        run_dir=run_dir,
+                    )
+
+                    self.assertEqual(acceptance["status"], "fail")
+                    self.assertIn(
+                        "EVIDENCE_HASH_MISMATCH",
+                        {
+                            failure["code"]
+                            for failure in acceptance["failure_reasons"]
+                        },
+                    )
 
     def test_schema_lineage_requires_authoritative_versions(self) -> None:
         invalid_versions = {
@@ -1176,6 +1211,32 @@ class EvidenceBoundaryValidationTest(unittest.TestCase):
             "EVIDENCE_AUDIT_EVENT_MISSING",
             {failure["code"] for failure in acceptance["failure_reasons"]},
         )
+
+    def test_approval_requires_review_event_text_payload(self) -> None:
+        for field in ("original_text", "revised_text"):
+            with (
+                self.subTest(field=field),
+                tempfile.TemporaryDirectory() as temporary_directory,
+            ):
+                run_dir = Path(temporary_directory)
+                evidence = _write_complete_evidence_package(run_dir)
+                _rewrite_event_chain(
+                    run_dir,
+                    evidence,
+                    "review",
+                    lambda events, field=field: events[0].pop(field),
+                )
+
+                acceptance = evaluate_acceptance_evidence(
+                    evidence,
+                    run_dir=run_dir,
+                )
+
+                self.assertEqual(acceptance["status"], "fail")
+                self.assertIn(
+                    "EVIDENCE_AUDIT_EVENT_MISSING",
+                    {failure["code"] for failure in acceptance["failure_reasons"]},
+                )
 
     def test_upload_requires_job_operation_event_type(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
