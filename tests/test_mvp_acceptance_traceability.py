@@ -78,7 +78,7 @@ class MvpAcceptanceTraceabilityDocsTest(unittest.TestCase):
             "python3 -m pip install -r requirements-pdf-eval.txt",
             "python3 -m unittest tests.test_mvp_acceptance_traceability",
             "python3 scripts/ci/repo_hygiene.py",
-            "two `fail`, zero `unknown`, and three `pass`",
+            "one `fail`, zero `unknown`, and four `pass`",
             "未達",
             "一部達成",
             "Phase13以降",
@@ -128,7 +128,7 @@ class MvpAcceptanceTraceabilityDocsTest(unittest.TestCase):
             "mvp-scanned-pdf-001",
             "mvp-record-pdf-001",
             "authoritative review decision is required",
-            "two `fail`, zero `unknown`, and three `pass`",
+            "one `fail`, zero `unknown`, and four `pass`",
             "P12G-02",
             "P12G-13",
         ):

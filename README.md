@@ -210,9 +210,10 @@ VERIDOC_E2E_EVIDENCE_DIR=<evidence-root> python3 scripts/ci/mvp_browser_e2e.py
 ```
 
 Each run creates one `p12g03-...` correlation directory containing
-`evidence.json`, the API result, review audit events, the downloadable audit
-artifact, the downloaded primary artifact, screenshots, a Playwright trace, and
-`rerun-package.json`. The evidence JSON records every observed browser and
+`evidence.json`, the API result, complete job/review audit chains, the
+downloadable audit artifact, the downloaded primary artifact, screenshots, and
+a Playwright trace, plus `rerun-package.json`. The evidence JSON records every
+observed browser and
 harness HTTP attempt, the allowlisted local origin, DNS/socket observations,
 and `external_ai_api_send_count=0`. External endpoint configuration and any
 external HTTP, DNS, or socket attempt fail the run closed.
@@ -223,9 +224,14 @@ uses the committed high-risk template fixture to drive warning-to-bbox, value
 edit, approve, reject, and needs-fix controls with Tab/Enter only. The retained
 evidence records focus order and visible-focus checks, structured warning
 contract fields, source page/bbox agreement, zero high-risk auto-confirms, and
-the unresolved state before approval. A random trusted local approver credential
-is generated for the short-lived test server and is never written to the
-evidence package.
+the unresolved state before approval. Its fail-closed acceptance snapshot binds
+the browser run, harness result, download artifact, and audit events to one
+correlation ID and directly references `AC-PROVENANCE`, `AC-AUDIT`, and
+`FC-EVIDENCE`. Missing provenance or audit events, changed hashes or versions,
+and mixed-run surface IDs remain `fail` with a machine-readable code plus an
+operator-facing explanation. A random trusted local approver credential is
+generated for the short-lived test server and is never written to the evidence
+package.
 The pinned PDF.js 4.10.38 runtime is vendored under `apps/web/vendor/pdfjs` and
 served by the local PoC server, so preview rendering works in a clean checkout
 without npm installation or an external CDN.
