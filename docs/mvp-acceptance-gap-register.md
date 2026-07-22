@@ -14,9 +14,9 @@ Missing authoritative decisions or run evidence remain fail-closed.
 - Reproduction checkout:
   `git checkout --detach "$(git log -1 --format=%H -- docs/mvp-acceptance-gap-register.md)"`
 - Criteria source Git blob:
-  `c9944ae1903855f67d254636bd32eb6768dc8e76`
+  `dd2b408df2866e662b45b8bbda204a0fe30a4b03`
 - Evaluator Git blob:
-  `67ae419af7a0dab6a17820faae6e97b894327097`
+  `bd3e1bacc66a90ecac809e74b131b961daff8e2c`
 - Generated at: `2026-07-22` (Asia/Tokyo)
 - PDF evaluation prerequisite:
   `python3 -m pip install -r requirements-pdf-eval.txt`
@@ -74,7 +74,7 @@ to the extractor-level facts recorded below.
 | EM-USER-REVIEW | 未達 / fail | The task, cohort, training, timing, and comparison scope is approved in `docs/mvp-scope-decisions.md`; no versioned execution protocol/schema, miss/over-detection result, or reviewer record exists. | `human_evidence_gap` | manual/hybrid | Versioned protocol and evidence schema ready for the later human execution. | P12G-13 |
 | EM-E2E | 一部達成 / fail | A repo-owned browser run emits screenshots, trace, API result, downloaded artifact, audit artifact, and correlation metadata for one representative case; the versioned five-case report is one `fail`, zero `unknown`, and four `pass`, with persisted review decisions for Word and Excel and structured text-PDF/record-PDF evidence. | `implementation_gap`, `e2e_gap` | codex/hybrid | P12G-05 through P12G-12 evidence from one committed snapshot with all intended cases passing. | P12G-05–P12G-12 |
 | OD-TEMPLATES | 達成 / pass | `TommyKammy` approved all five manifest cases at product commit `584ef2db12a6676abb65f75de1ec38145e06b487` and manifest revision `phase12-mvp-v1`; the report recomputes the approved case, fixture, source-policy, and expectation contract hash. | `none` | — | Preserve `docs/mvp-scope-decisions.md`; contract drift fails this item until renewed approval. | — |
-| OD-EFFICIENCY-SCOPE | 達成 / pass | Decision revision `p12g-02-v1` fixes the baseline task, minimum three-person pseudonymous cohort, training, timing boundaries, paired median comparison, 30% target, and invalidation conditions. | `none` | — | Preserve the approved scope while P12G-13 defines its versioned protocol and evidence schema. | — |
+| OD-EFFICIENCY-SCOPE | 達成 / pass | Decision revision `p12g-02-v1` fixes the baseline task, minimum three-person pseudonymous cohort, training, timing boundaries, paired median comparison, 30% target, and invalidation conditions; the report validates the revision-bound canonical section hash. | `none` | — | Preserve the approved scope; protocol-scope drift fails this item until renewed approval, while P12G-13 defines its versioned protocol and evidence schema. | — |
 | OD-SEGREGATION | 達成 / pass | Decision revision `p12g-02-v1` fixes the six-role `ROLE_PERMISSIONS` target matrix, mandatory authentication and preceding distinct-actor review boundaries, known implementation gaps, and explicit Phase13 carryover; the report recomputes the matrix hash. | `none` | — | Preserve the approved scope; any matrix drift fails this item, while P12G-10 implements and proves the currently missing deny paths for AC-AUTH. | — |
 
 ## Five representative cases

@@ -1177,6 +1177,80 @@ class EvaluateDatasetTest(unittest.TestCase):
             current,
         )
 
+        for label, original, replacement in (
+            (
+                "cohort",
+                "at least three designated document reviewers",
+                "at least two designated document reviewers",
+            ),
+            (
+                "training",
+                "one fixed, unscored practice task per arm",
+                "two fixed, unscored practice tasks per arm",
+            ),
+            (
+                "timing",
+                "start when the participant receives the source",
+                "start after the participant reviews the source",
+            ),
+            (
+                "comparison",
+                "paired cohort median",
+                "unpaired cohort median",
+            ),
+            (
+                "rejection",
+                "unbalanced ordering",
+                "unrecorded ordering",
+            ),
+        ):
+            with self.subTest(efficiency_scope_drift=label):
+                drifted_efficiency_record = decision_record.replace(
+                    original,
+                    replacement,
+                )
+                self.assertNotEqual(decision_record, drifted_efficiency_record)
+                efficiency_failures = (
+                    evaluate_dataset.mvp_scope_decision_input_failures(
+                        decision_record=drifted_efficiency_record,
+                        manifest=manifest,
+                        manifest_source="datasets/mvp_evaluation_manifest_v1.json",
+                        role_permissions=ROLE_PERMISSIONS,
+                    )
+                )
+                self.assertEqual((), efficiency_failures["OD-TEMPLATES"])
+                self.assertTrue(efficiency_failures["OD-EFFICIENCY-SCOPE"])
+                self.assertEqual((), efficiency_failures["OD-SEGREGATION"])
+
+        tampered_efficiency_pin = decision_record.replace(
+            "3d9d05671895ec8d6e8b14f44b6a8dd7f99aa17b7b65871b78fb56a49966b6fb",
+            "0" * 64,
+        )
+        pin_failures = evaluate_dataset.mvp_scope_decision_input_failures(
+            decision_record=tampered_efficiency_pin,
+            manifest=manifest,
+            manifest_source="datasets/mvp_evaluation_manifest_v1.json",
+            role_permissions=ROLE_PERMISSIONS,
+        )
+        self.assertEqual((), pin_failures["OD-TEMPLATES"])
+        self.assertTrue(pin_failures["OD-EFFICIENCY-SCOPE"])
+        self.assertEqual((), pin_failures["OD-SEGREGATION"])
+
+        unapproved_revision = decision_record.replace(
+            "Decision revision: `p12g-02-v1`",
+            "Decision revision: `p12g-02-v2`",
+        )
+        self.assertNotEqual(decision_record, unapproved_revision)
+        revision_failures = evaluate_dataset.mvp_scope_decision_input_failures(
+            decision_record=unapproved_revision,
+            manifest=manifest,
+            manifest_source="datasets/mvp_evaluation_manifest_v1.json",
+            role_permissions=ROLE_PERMISSIONS,
+        )
+        self.assertTrue(revision_failures["OD-TEMPLATES"])
+        self.assertTrue(revision_failures["OD-EFFICIENCY-SCOPE"])
+        self.assertTrue(revision_failures["OD-SEGREGATION"])
+
         manifest_failures = None
         for label, mutate in (
             (

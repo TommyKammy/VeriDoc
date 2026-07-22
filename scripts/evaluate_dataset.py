@@ -6466,6 +6466,19 @@ MVP_MANIFEST_DECISION_CONTRACT_FIELDS = (
     "required_categories",
     "cases",
 )
+MVP_SCOPE_DECISION_APPROVED_CONTRACTS = {
+    "p12g-02-v1": {
+        "Approved manifest contract SHA-256": (
+            "18996f997b7f6f9909ae2cd9f98a992713f76e7d95057ca5116f365bc8a88a75"
+        ),
+        "Approved OD-EFFICIENCY-SCOPE contract SHA-256": (
+            "3d9d05671895ec8d6e8b14f44b6a8dd7f99aa17b7b65871b78fb56a49966b6fb"
+        ),
+        "Approved ROLE_PERMISSIONS contract SHA-256": (
+            "dad052a8f6fe7acd549b2fa974c20e09b702fbcf31917deecf1636db61dfb322"
+        ),
+    }
+}
 MVP_ACCEPTANCE_HARNESS_REFS = {
     "AC-UI": (
         "evidence_snapshot.harness_results[*].evaluations.artifact",
@@ -6513,6 +6526,20 @@ def _mvp_scope_record_value(decision_record: str, label: str) -> str | None:
         flags=re.MULTILINE,
     )
     return match.group(1) if match is not None else None
+
+
+def _mvp_scope_section_sha256(decision_record: str, item_id: str) -> str | None:
+    match = re.search(
+        rf"^## {re.escape(item_id)}\n.*?(?=^## |\Z)",
+        decision_record,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    if match is None:
+        return None
+    canonical = "\n".join(
+        line.rstrip() for line in match.group(0).splitlines()
+    ).strip() + "\n"
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def mvp_role_permissions_from_source(path: Path) -> dict[str, frozenset[str]]:
@@ -6579,7 +6606,6 @@ def mvp_scope_decision_input_failures(
     }
     common_metadata = {
         "Record schema": "veridoc-mvp-scope-decisions/v1",
-        "Decision revision": "p12g-02-v1",
         "Approval status": "approved",
     }
     for label, expected in common_metadata.items():
@@ -6588,6 +6614,31 @@ def mvp_scope_decision_input_failures(
             reason = f"{label} must be {expected!r}, got {actual!r}"
             for item_failures in failures.values():
                 item_failures.append(reason)
+
+    decision_revision = _mvp_scope_record_value(decision_record, "Decision revision")
+    approved_contracts = MVP_SCOPE_DECISION_APPROVED_CONTRACTS.get(
+        decision_revision or ""
+    )
+    if approved_contracts is None:
+        reason = f"Decision revision {decision_revision!r} has no approved contract pins"
+        for item_failures in failures.values():
+            item_failures.append(reason)
+    else:
+        for item_id, label in (
+            ("OD-TEMPLATES", "Approved manifest contract SHA-256"),
+            (
+                "OD-EFFICIENCY-SCOPE",
+                "Approved OD-EFFICIENCY-SCOPE contract SHA-256",
+            ),
+            ("OD-SEGREGATION", "Approved ROLE_PERMISSIONS contract SHA-256"),
+        ):
+            recorded_hash = _mvp_scope_record_value(decision_record, label)
+            approved_hash = approved_contracts[label]
+            if recorded_hash != approved_hash:
+                failures[item_id].append(
+                    f"{label} is not approved for revision {decision_revision!r}: "
+                    f"expected {approved_hash!r}, got {recorded_hash!r}"
+                )
 
     approved_manifest_source = _mvp_scope_record_value(
         decision_record,
@@ -6623,6 +6674,21 @@ def mvp_scope_decision_input_failures(
         failures["OD-TEMPLATES"].append(
             "manifest case, fixture, source-policy, or expectation contract drifted: "
             f"expected {approved_manifest_hash!r}, got {actual_manifest_hash!r}"
+        )
+
+    approved_efficiency_hash = _mvp_scope_record_value(
+        decision_record,
+        "Approved OD-EFFICIENCY-SCOPE contract SHA-256",
+    )
+    actual_efficiency_hash = _mvp_scope_section_sha256(
+        decision_record,
+        "OD-EFFICIENCY-SCOPE",
+    )
+    if approved_efficiency_hash != actual_efficiency_hash:
+        failures["OD-EFFICIENCY-SCOPE"].append(
+            "efficiency cohort, training, timing, comparison, safety, or rejection "
+            "contract drifted: "
+            f"expected {approved_efficiency_hash!r}, got {actual_efficiency_hash!r}"
         )
 
     approved_role_hash = _mvp_scope_record_value(

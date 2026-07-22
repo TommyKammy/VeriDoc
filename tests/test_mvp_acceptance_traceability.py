@@ -56,6 +56,20 @@ def _required_record_value(record: str, label: str) -> str:
     return match.group(1)
 
 
+def _scope_section_sha256(record: str, item_id: str) -> str:
+    match = re.search(
+        rf"^## {re.escape(item_id)}\n.*?(?=^## |\Z)",
+        record,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    if match is None:
+        raise AssertionError(f"missing decision record section: {item_id}")
+    canonical = "\n".join(
+        line.rstrip() for line in match.group(0).splitlines()
+    ).strip() + "\n"
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 class MvpAcceptanceTraceabilityDocsTest(unittest.TestCase):
     def test_all_15_3_items_have_stable_traceability_rows(self) -> None:
         self.assertTrue(
@@ -129,6 +143,7 @@ class MvpAcceptanceTraceabilityDocsTest(unittest.TestCase):
             "Target manifest revision: `phase12-mvp-v1`",
             "Target manifest Git blob: `13450762d323198b1b6e87315be173c784fc4880`",
             "Approved manifest contract SHA-256",
+            "Approved OD-EFFICIENCY-SCOPE contract SHA-256",
             "Approved ROLE_PERMISSIONS contract SHA-256",
             "Decision owner: `TommyKammy`",
             "Approved by: `TommyKammy`",
@@ -218,6 +233,13 @@ class MvpAcceptanceTraceabilityDocsTest(unittest.TestCase):
         self.assertEqual(
             _required_record_value(record, "Approved manifest contract SHA-256"),
             manifest_contract_sha256,
+        )
+        self.assertEqual(
+            _required_record_value(
+                record,
+                "Approved OD-EFFICIENCY-SCOPE contract SHA-256",
+            ),
+            _scope_section_sha256(record, "OD-EFFICIENCY-SCOPE"),
         )
 
         from services.api.poc_web import ROLE_PERMISSIONS
