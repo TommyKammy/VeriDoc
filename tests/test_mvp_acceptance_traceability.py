@@ -9,6 +9,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DOC_PATH = REPO_ROOT / "docs" / "mvp-acceptance-traceability.md"
 GAP_REGISTER_PATH = REPO_ROOT / "docs" / "mvp-acceptance-gap-register.md"
+SCOPE_DECISIONS_PATH = REPO_ROOT / "docs" / "mvp-scope-decisions.md"
 
 EXPECTED_ITEM_IDS = (
     "AC-UI",
@@ -74,6 +75,7 @@ class MvpAcceptanceTraceabilityDocsTest(unittest.TestCase):
             "product/harness baseline",
             "not the report checkout target",
             "tests/test_poc_web_api.py",
+            "docs/mvp-scope-decisions.md",
             "docs/mvp-transition-decision.md",
             "python3 -m pip install -r requirements-pdf-eval.txt",
             "python3 -m unittest tests.test_mvp_acceptance_traceability",
@@ -90,6 +92,84 @@ class MvpAcceptanceTraceabilityDocsTest(unittest.TestCase):
             self.assertNotIn(fragment, docs)
 
         self.assertNotIn("8e9846828570cf89a062df3b4eb276e5ecc31647", docs)
+
+    def test_scope_decisions_record_authoritative_approval_and_invalidation(self) -> None:
+        self.assertTrue(
+            SCOPE_DECISIONS_PATH.is_file(),
+            msg=f"missing MVP scope decisions: "
+            f"{SCOPE_DECISIONS_PATH.relative_to(REPO_ROOT)}",
+        )
+
+        record = SCOPE_DECISIONS_PATH.read_text(encoding="utf-8")
+        normalized_record = " ".join(record.split())
+        self.assertEqual(
+            3,
+            len(re.findall(r"^## OD-[A-Z-]+$", record, flags=re.MULTILINE)),
+        )
+
+        for required_text in (
+            "Record schema: `veridoc-mvp-scope-decisions/v1`",
+            "Decision revision: `p12g-02-v1`",
+            "584ef2db12a6676abb65f75de1ec38145e06b487",
+            "Target manifest revision: `phase12-mvp-v1`",
+            "Decision owner: `TommyKammy`",
+            "Approved by: `TommyKammy`",
+            "Approval date: `2026-07-22`",
+            "Approval status: `approved`",
+            "at least three designated document reviewers",
+            "paired cohort median",
+            "reduced by at least 30%",
+            "no high-risk miss",
+            "not shown to a participant until that timed task is complete",
+            "retaining direct participant identity",
+            "`ROLE_PERMISSIONS`",
+            "distinct actor identities",
+            "production IdP/SSO integration",
+            "renewed approval",
+            "did not supply or infer the approval",
+        ):
+            self.assertIn(required_text, normalized_record)
+
+        for case_id in (
+            "mvp-word-001",
+            "mvp-excel-001",
+            "mvp-text-pdf-001",
+            "mvp-scanned-pdf-001",
+            "mvp-record-pdf-001",
+        ):
+            self.assertIn(case_id, record)
+
+        for role in (
+            "viewer",
+            "operator",
+            "reviewer",
+            "approver",
+            "admin",
+            "audit_viewer",
+        ):
+            self.assertRegex(record, rf"`{role}`")
+
+        self.assertNotIn("pending authoritative approval", normalized_record)
+        for fragment in ("/" + "Users" + "/", "C:" + "\\Users" + "\\"):
+            self.assertNotIn(fragment, record)
+
+        traceability = DOC_PATH.read_text(encoding="utf-8")
+        gap_register = GAP_REGISTER_PATH.read_text(encoding="utf-8")
+        for item_id in ("OD-TEMPLATES", "OD-EFFICIENCY-SCOPE", "OD-SEGREGATION"):
+            traceability_row = re.search(
+                rf"^\| {re.escape(item_id)} \|.*$",
+                traceability,
+                flags=re.MULTILINE,
+            )
+            gap_register_row = re.search(
+                rf"^\| {re.escape(item_id)} \|.*$",
+                gap_register,
+                flags=re.MULTILINE,
+            )
+            self.assertIsNotNone(traceability_row)
+            self.assertIsNotNone(gap_register_row)
+            self.assertIn("**達成**", traceability_row.group(0))
+            self.assertIn("達成 / pass", gap_register_row.group(0))
 
     def test_gap_register_matches_report_scope_and_records_current_failures(self) -> None:
         self.assertTrue(
@@ -116,6 +196,7 @@ class MvpAcceptanceTraceabilityDocsTest(unittest.TestCase):
             "git checkout --detach",
             "anchor, not a checkout instruction",
             "datasets/mvp_evaluation_manifest_v1.json",
+            "docs/mvp-scope-decisions.md",
             "python3 -m pip install -r requirements-pdf-eval.txt",
             "Without the prerequisite, the PDF",
             "implementation_gap",
