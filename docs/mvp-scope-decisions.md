@@ -6,6 +6,11 @@ human decision owner against the pinned manifest and product commit. Downstream
 work must preserve the rejection conditions and must request a new decision
 revision before changing the approved scope.
 
+The acceptance evaluator recomputes the approved manifest contract from its
+case, fixture, source-policy, and expectation fields and recomputes the sorted
+`ROLE_PERMISSIONS` contract. A mismatch fails the affected `OD-*` item until a
+new human-approved decision revision updates these pins.
+
 ## Record metadata
 
 - Record schema: `veridoc-mvp-scope-decisions/v1`
@@ -13,6 +18,9 @@ revision before changing the approved scope.
 - Target product commit: `584ef2db12a6676abb65f75de1ec38145e06b487`
 - Target manifest: `datasets/mvp_evaluation_manifest_v1.json`
 - Target manifest revision: `phase12-mvp-v1`
+- Target manifest Git blob: `13450762d323198b1b6e87315be173c784fc4880`
+- Approved manifest contract SHA-256: `18996f997b7f6f9909ae2cd9f98a992713f76e7d95057ca5116f365bc8a88a75`
+- Approved ROLE_PERMISSIONS contract SHA-256: `dad052a8f6fe7acd549b2fa974c20e09b702fbcf31917deecf1636db61dfb322`
 - Decision owner: `TommyKammy`
 - Approved by: `TommyKammy`
 - Approval date: `2026-07-22`
@@ -73,17 +81,30 @@ revision before changing the approved scope.
   - `operator` cannot edit or approve review decisions;
   - `reviewer` cannot approve review decisions;
   - only `admin` can manage templates;
-  - review and approval must use distinct actor identities even when an
-    `approver` role can edit and approve, and UI visibility never substitutes
-    for server authorization.
+  - approval requires a preceding review/edit event for the same workflow
+    target from a distinct authenticated actor, even when an `approver` role
+    can edit and approve;
+  - UI visibility never substitutes for server authorization.
+- Current implementation gaps, which this decision does not count as completed
+  controls:
+  - when `VERIDOC_LOCAL_AUTH_TOKENS` is unset, the documented local smoke-test
+    mode permits unauthenticated non-approval operations; it is not an accepted
+    MVP authorization configuration;
+  - `_validate_review_workflow_event()` rejects same-actor approval only when a
+    matching prior edit exists, but currently accepts approval with no prior
+    review/edit event.
+- Required follow-up: P12G-10 must make authentication mandatory for protected
+  MVP operations, require the preceding distinct-actor review/edit event, and
+  prove both paths with API/UI evidence before `AC-AUTH` can pass.
 - Phase 13 carryover: production IdP/SSO integration, operating-system credential
   storage, enterprise role governance, and richer desktop reauthentication and
-  rotation workflows. Deferral of these integrations does not relax the current
-  API role checks, distinct reviewer/approver identities, or fail-closed denial
-  behavior.
-- Rationale: this adopts the code-level source of truth already documented and
-  tested, while separating integration work from the minimum MVP segregation
-  controls that protect review, approval, audit, and template operations.
+  rotation workflows. Deferral of these integrations does not relax the
+  approved permission matrix, mandatory authentication, preceding review, or
+  distinct reviewer/approver identity boundaries.
+- Rationale: this fixes the role matrix and required deny paths as the target
+  boundary while keeping the known server-enforcement gaps explicit and
+  separating them from Phase 13 integration work. `OD-SEGREGATION=pass` records
+  that the scope decision exists; it is not evidence that `AC-AUTH` is complete.
 - Rejection conditions: permission-matrix changes, shared credentials across
   reviewer and approver duties, client-only enforcement, or any Phase 13
   deferral that weakens an MVP deny path requires a new decision revision and

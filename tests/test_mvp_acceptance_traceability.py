@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -10,6 +12,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DOC_PATH = REPO_ROOT / "docs" / "mvp-acceptance-traceability.md"
 GAP_REGISTER_PATH = REPO_ROOT / "docs" / "mvp-acceptance-gap-register.md"
 SCOPE_DECISIONS_PATH = REPO_ROOT / "docs" / "mvp-scope-decisions.md"
+MANIFEST_PATH = REPO_ROOT / "datasets" / "mvp_evaluation_manifest_v1.json"
+REPORT_SAMPLE_PATH = REPO_ROOT / "reports" / "mvp-acceptance-report.md"
 
 EXPECTED_ITEM_IDS = (
     "AC-UI",
@@ -39,6 +43,17 @@ def _git_blob_id(path: Path) -> str:
     content = path.read_bytes()
     header = f"blob {len(content)}\0".encode()
     return hashlib.sha1(header + content).hexdigest()
+
+
+def _required_record_value(record: str, label: str) -> str:
+    match = re.search(
+        rf"^- {re.escape(label)}: `([^`]+)`$",
+        record,
+        flags=re.MULTILINE,
+    )
+    if match is None:
+        raise AssertionError(f"missing decision record field: {label}")
+    return match.group(1)
 
 
 class MvpAcceptanceTraceabilityDocsTest(unittest.TestCase):
@@ -112,6 +127,9 @@ class MvpAcceptanceTraceabilityDocsTest(unittest.TestCase):
             "Decision revision: `p12g-02-v1`",
             "584ef2db12a6676abb65f75de1ec38145e06b487",
             "Target manifest revision: `phase12-mvp-v1`",
+            "Target manifest Git blob: `13450762d323198b1b6e87315be173c784fc4880`",
+            "Approved manifest contract SHA-256",
+            "Approved ROLE_PERMISSIONS contract SHA-256",
             "Decision owner: `TommyKammy`",
             "Approved by: `TommyKammy`",
             "Approval date: `2026-07-22`",
@@ -123,7 +141,11 @@ class MvpAcceptanceTraceabilityDocsTest(unittest.TestCase):
             "not shown to a participant until that timed task is complete",
             "retaining direct participant identity",
             "`ROLE_PERMISSIONS`",
-            "distinct actor identities",
+            "distinct authenticated actor",
+            "preceding review/edit event",
+            "permits unauthenticated non-approval operations",
+            "currently accepts approval with no prior review/edit event",
+            "not evidence that `AC-AUTH` is complete",
             "production IdP/SSO integration",
             "renewed approval",
             "did not supply or infer the approval",
@@ -152,6 +174,73 @@ class MvpAcceptanceTraceabilityDocsTest(unittest.TestCase):
         self.assertNotIn("pending authoritative approval", normalized_record)
         for fragment in ("/" + "Users" + "/", "C:" + "\\Users" + "\\"):
             self.assertNotIn(fragment, record)
+
+        target_commit = _required_record_value(record, "Target product commit")
+        target_manifest = _required_record_value(record, "Target manifest")
+        target_blob = _required_record_value(record, "Target manifest Git blob")
+        resolved_commit = subprocess.run(
+            ["git", "rev-parse", "--verify", f"{target_commit}^{{commit}}"],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        self.assertEqual(target_commit, resolved_commit)
+        resolved_blob = subprocess.run(
+            ["git", "rev-parse", f"{target_commit}:{target_manifest}"],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        self.assertEqual(target_blob, resolved_blob)
+
+        manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+        contract_fields = (
+            "schema_version",
+            "selection_status",
+            "selection_revision",
+            "fixture_manifest",
+            "source_policy",
+            "confidential_source_documents_allowed",
+            "required_categories",
+            "cases",
+        )
+        manifest_contract = {field: manifest.get(field) for field in contract_fields}
+        manifest_contract_sha256 = hashlib.sha256(
+            json.dumps(
+                manifest_contract,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()
+        self.assertEqual(
+            _required_record_value(record, "Approved manifest contract SHA-256"),
+            manifest_contract_sha256,
+        )
+
+        from services.api.poc_web import ROLE_PERMISSIONS
+
+        role_contract = {
+            role: sorted(permissions)
+            for role, permissions in sorted(ROLE_PERMISSIONS.items())
+        }
+        role_contract_sha256 = hashlib.sha256(
+            json.dumps(
+                role_contract,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()
+        self.assertEqual(
+            _required_record_value(
+                record,
+                "Approved ROLE_PERMISSIONS contract SHA-256",
+            ),
+            role_contract_sha256,
+        )
 
         traceability = DOC_PATH.read_text(encoding="utf-8")
         gap_register = GAP_REGISTER_PATH.read_text(encoding="utf-8")
@@ -236,6 +325,17 @@ class MvpAcceptanceTraceabilityDocsTest(unittest.TestCase):
         forbidden_fragments = ("/" + "Users" + "/", "C:" + "\\Users" + "\\")
         for fragment in forbidden_fragments:
             self.assertNotIn(fragment, register)
+
+    def test_committed_acceptance_report_sample_matches_current_decision_counts(
+        self,
+    ) -> None:
+        sample = REPORT_SAMPLE_PATH.read_text(encoding="utf-8")
+        self.assertIn("five `pass` and fifteen `fail`", sample)
+        self.assertIn('"decision_counts": {"pass": 5, "fail": 15}', sample)
+        self.assertIn('"phase13": ["AC-AUTH", "OD-SEGREGATION"]', sample)
+        self.assertIn("decision_input_validation", sample)
+        self.assertNotIn("all 20 are `fail`", sample)
+        self.assertNotIn('"decision_counts": {"pass": 0, "fail": 20}', sample)
 
 
 if __name__ == "__main__":

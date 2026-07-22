@@ -43,6 +43,7 @@ DEFAULT_GMP_ACCEPTANCE = Path("datasets/gold/gmp_acceptance_v1.json")
 DEFAULT_P9_HARNESS_MANIFEST = Path("datasets/poc_evaluation_manifest_v1.json")
 DEFAULT_MVP_HARNESS_MANIFEST = Path("datasets/mvp_evaluation_manifest_v1.json")
 DEFAULT_MVP_ACCEPTANCE_TRACEABILITY = Path("docs/mvp-acceptance-traceability.md")
+DEFAULT_MVP_SCOPE_DECISIONS = Path("docs/mvp-scope-decisions.md")
 EVALUATION_CASES_SCHEMA_VERSION = "veridoc-evaluation-cases/v0"
 LLM_STABILITY_RUNS_SCHEMA_VERSION = "veridoc-llm-stability-runs/v0"
 POC_MODE_COMPARISON_SCHEMA_VERSION = "veridoc-poc-mode-comparison/v1"
@@ -3514,6 +3515,8 @@ class MVPAcceptanceReport:
     traceability_source: Path
     traceability_text: str
     items: tuple[dict[str, object], ...]
+    scope_decision_source: Path | None = None
+    scope_decision_text: str = ""
 
     def as_dict(self) -> dict[str, object]:
         harness_payload = self.harness.as_dict()
@@ -3521,6 +3524,13 @@ class MVPAcceptanceReport:
             "harness": harness_payload,
             "traceability_source": str(self.traceability_source),
             "traceability_text": self.traceability_text,
+            "scope_decision_source": (
+                str(self.scope_decision_source)
+                if self.scope_decision_source is not None
+                else None
+            ),
+            "scope_decision_text": self.scope_decision_text,
+            "items": self.items,
         }
         snapshot_sha256 = hashlib.sha256(
             json.dumps(
@@ -3565,6 +3575,16 @@ class MVPAcceptanceReport:
                 "sha256": snapshot_sha256,
                 "harness_schema_version": harness_payload["schema_version"],
                 "dataset_manifest": harness_payload["dataset_manifest"],
+                "scope_decision_source": (
+                    str(self.scope_decision_source)
+                    if self.scope_decision_source is not None
+                    else None
+                ),
+                "scope_decision_sha256": (
+                    hashlib.sha256(self.scope_decision_text.encode("utf-8")).hexdigest()
+                    if self.scope_decision_source is not None
+                    else None
+                ),
                 "harness_summary": harness_payload["summary"],
                 "harness_results": harness_payload["results"],
             },
@@ -6436,6 +6456,16 @@ MVP_ACCEPTANCE_SECTIONS = {
     "## Open Decisions": "open_decision",
 }
 MVP_ACCEPTANCE_STATUS_SEPARATORS = " \t—–-:：.。"
+MVP_MANIFEST_DECISION_CONTRACT_FIELDS = (
+    "schema_version",
+    "selection_status",
+    "selection_revision",
+    "fixture_manifest",
+    "source_policy",
+    "confidential_source_documents_allowed",
+    "required_categories",
+    "cases",
+)
 MVP_ACCEPTANCE_HARNESS_REFS = {
     "AC-UI": (
         "evidence_snapshot.harness_results[*].evaluations.artifact",
@@ -6466,8 +6496,160 @@ MVP_ACCEPTANCE_HARNESS_REFS = {
 }
 
 
+def _canonical_json_sha256(value: object) -> str:
+    canonical = json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def _mvp_scope_record_value(decision_record: str, label: str) -> str | None:
+    match = re.search(
+        rf"^- {re.escape(label)}: `([^`]+)`$",
+        decision_record,
+        flags=re.MULTILINE,
+    )
+    return match.group(1) if match is not None else None
+
+
+def mvp_role_permissions_from_source(path: Path) -> dict[str, frozenset[str]]:
+    try:
+        module = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except (OSError, SyntaxError) as exc:
+        raise EvaluationCaseError(
+            f"cannot read ROLE_PERMISSIONS from {path}: {exc}"
+        ) from exc
+
+    raw_permissions: object | None = None
+    for node in module.body:
+        value: ast.expr | None = None
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "ROLE_PERMISSIONS"
+            for target in node.targets
+        ):
+            value = node.value
+        elif (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == "ROLE_PERMISSIONS"
+        ):
+            value = node.value
+        if value is not None:
+            try:
+                raw_permissions = ast.literal_eval(value)
+            except (TypeError, ValueError) as exc:
+                raise EvaluationCaseError(
+                    f"ROLE_PERMISSIONS in {path} must be a literal mapping"
+                ) from exc
+            break
+
+    if not isinstance(raw_permissions, dict):
+        raise EvaluationCaseError(f"ROLE_PERMISSIONS mapping is missing from {path}")
+    permissions: dict[str, frozenset[str]] = {}
+    for role, role_permissions in raw_permissions.items():
+        if not isinstance(role, str) or not isinstance(
+            role_permissions,
+            (set, frozenset, list, tuple),
+        ):
+            raise EvaluationCaseError(
+                f"ROLE_PERMISSIONS in {path} has a malformed role entry"
+            )
+        if not all(isinstance(permission, str) for permission in role_permissions):
+            raise EvaluationCaseError(
+                f"ROLE_PERMISSIONS in {path} has a non-string permission"
+            )
+        permissions[role] = frozenset(role_permissions)
+    return permissions
+
+
+def mvp_scope_decision_input_failures(
+    *,
+    decision_record: str,
+    manifest: Mapping[str, object],
+    manifest_source: str,
+    role_permissions: Mapping[str, Iterable[str]],
+) -> dict[str, tuple[str, ...]]:
+    failures: dict[str, list[str]] = {
+        "OD-TEMPLATES": [],
+        "OD-EFFICIENCY-SCOPE": [],
+        "OD-SEGREGATION": [],
+    }
+    common_metadata = {
+        "Record schema": "veridoc-mvp-scope-decisions/v1",
+        "Decision revision": "p12g-02-v1",
+        "Approval status": "approved",
+    }
+    for label, expected in common_metadata.items():
+        actual = _mvp_scope_record_value(decision_record, label)
+        if actual != expected:
+            reason = f"{label} must be {expected!r}, got {actual!r}"
+            for item_failures in failures.values():
+                item_failures.append(reason)
+
+    approved_manifest_source = _mvp_scope_record_value(
+        decision_record,
+        "Target manifest",
+    )
+    if approved_manifest_source != manifest_source:
+        failures["OD-TEMPLATES"].append(
+            "target manifest path drifted: "
+            f"expected {approved_manifest_source!r}, got {manifest_source!r}"
+        )
+
+    approved_manifest_revision = _mvp_scope_record_value(
+        decision_record,
+        "Target manifest revision",
+    )
+    actual_manifest_revision = manifest.get("selection_revision")
+    if approved_manifest_revision != actual_manifest_revision:
+        failures["OD-TEMPLATES"].append(
+            "manifest revision drifted: "
+            f"expected {approved_manifest_revision!r}, got {actual_manifest_revision!r}"
+        )
+
+    approved_manifest_hash = _mvp_scope_record_value(
+        decision_record,
+        "Approved manifest contract SHA-256",
+    )
+    manifest_contract = {
+        field: manifest.get(field)
+        for field in MVP_MANIFEST_DECISION_CONTRACT_FIELDS
+    }
+    actual_manifest_hash = _canonical_json_sha256(manifest_contract)
+    if approved_manifest_hash != actual_manifest_hash:
+        failures["OD-TEMPLATES"].append(
+            "manifest case, fixture, source-policy, or expectation contract drifted: "
+            f"expected {approved_manifest_hash!r}, got {actual_manifest_hash!r}"
+        )
+
+    approved_role_hash = _mvp_scope_record_value(
+        decision_record,
+        "Approved ROLE_PERMISSIONS contract SHA-256",
+    )
+    role_contract = {
+        role: sorted(str(permission) for permission in permissions)
+        for role, permissions in sorted(role_permissions.items())
+    }
+    actual_role_hash = _canonical_json_sha256(role_contract)
+    if approved_role_hash != actual_role_hash:
+        failures["OD-SEGREGATION"].append(
+            "ROLE_PERMISSIONS contract drifted: "
+            f"expected {approved_role_hash!r}, got {actual_role_hash!r}"
+        )
+
+    return {
+        item_id: tuple(item_failures)
+        for item_id, item_failures in failures.items()
+    }
+
+
 def mvp_acceptance_traceability_items(
     traceability_text: str,
+    *,
+    decision_input_failures: Mapping[str, Iterable[str]] | None = None,
 ) -> tuple[dict[str, object], ...]:
     section: str | None = None
     items: list[dict[str, object]] = []
@@ -6563,6 +6745,24 @@ def mvp_acceptance_traceability_items(
             )
             if re.search(pattern, row_text)
         ]
+        input_failures = tuple(
+            str(failure)
+            for failure in (decision_input_failures or {}).get(item_id, ())
+        )
+        if input_failures:
+            decision = "fail"
+        evidence: dict[str, object] = {
+            "traceability": cells[3],
+            "harness_refs": list(MVP_ACCEPTANCE_HARNESS_REFS.get(item_id, ())),
+        }
+        if item_id.startswith("OD-"):
+            evidence["decision_input_validation"] = {
+                "status": "fail" if input_failures else "pass",
+                "failures": list(input_failures),
+            }
+        unmet = None if status_label == "達成" else current_status
+        if input_failures:
+            unmet = "approved decision input drift: " + "; ".join(input_failures)
         items.append(
             {
                 "item_id": item_id,
@@ -6571,13 +6771,8 @@ def mvp_acceptance_traceability_items(
                 "decision": decision,
                 "traceability_status": status_label,
                 "linked_scope": cells[2],
-                "evidence": {
-                    "traceability": cells[3],
-                    "harness_refs": list(
-                        MVP_ACCEPTANCE_HARNESS_REFS.get(item_id, ())
-                    ),
-                },
-                "unmet": None if status_label == "達成" else current_status,
+                "evidence": evidence,
+                "unmet": unmet,
                 "carryover_phases": carryover_phases,
             }
         )
@@ -6604,12 +6799,34 @@ def build_mvp_acceptance_report(
         else traceability_path.resolve()
     )
     traceability_text = resolved_traceability.read_text(encoding="utf-8")
+    scope_decision_path = repo_root / DEFAULT_MVP_SCOPE_DECISIONS
+    scope_decision_text = scope_decision_path.read_text(encoding="utf-8")
+    manifest = load_json(manifest_path.resolve())
+    role_permissions = mvp_role_permissions_from_source(
+        repo_root / "services" / "api" / "poc_web.py"
+    )
+
+    try:
+        manifest_source = manifest_path.resolve().relative_to(repo_root).as_posix()
+    except ValueError:
+        manifest_source = str(manifest_path.resolve())
+    decision_input_failures = mvp_scope_decision_input_failures(
+        decision_record=scope_decision_text,
+        manifest=manifest,
+        manifest_source=manifest_source,
+        role_permissions=role_permissions,
+    )
     harness = evaluate_mvp_harness(manifest_path)
     return MVPAcceptanceReport(
         harness=harness,
         traceability_source=traceability_source,
         traceability_text=traceability_text,
-        items=mvp_acceptance_traceability_items(traceability_text),
+        items=mvp_acceptance_traceability_items(
+            traceability_text,
+            decision_input_failures=decision_input_failures,
+        ),
+        scope_decision_source=DEFAULT_MVP_SCOPE_DECISIONS,
+        scope_decision_text=scope_decision_text,
     )
 
 
