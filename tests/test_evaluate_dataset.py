@@ -1291,6 +1291,63 @@ class EvaluateDatasetTest(unittest.TestCase):
                 self.assertEqual((), manifest_failures["OD-SEGREGATION"])
         self.assertIsNotNone(manifest_failures)
 
+        for label, original, replacement in (
+            (
+                "unauthenticated deny path",
+                "unauthenticated requests cannot use protected API operations",
+                "unauthenticated requests may use protected API operations",
+            ),
+            (
+                "distinct preceding actor",
+                "target from a distinct authenticated actor",
+                "target from the same authenticated actor",
+            ),
+            (
+                "Phase 13 deferral",
+                "deferral that weakens an MVP deny path",
+                "deferral that removes an MVP deny path",
+            ),
+        ):
+            with self.subTest(segregation_scope_drift=label):
+                drifted_segregation_record = decision_record.replace(
+                    original,
+                    replacement,
+                )
+                self.assertNotEqual(decision_record, drifted_segregation_record)
+                segregation_failures = (
+                    evaluate_dataset.mvp_scope_decision_input_failures(
+                        decision_record=drifted_segregation_record,
+                        manifest=manifest,
+                        manifest_source="datasets/mvp_evaluation_manifest_v1.json",
+                        role_permissions=ROLE_PERMISSIONS,
+                    )
+                )
+                self.assertEqual((), segregation_failures["OD-TEMPLATES"])
+                self.assertEqual(
+                    (),
+                    segregation_failures["OD-EFFICIENCY-SCOPE"],
+                )
+                self.assertTrue(segregation_failures["OD-SEGREGATION"])
+
+        tampered_segregation_pin = decision_record.replace(
+            "74d83d2d028c1ba79fffd6742ab9f13f7e345932248e36b86289e16c93a01476",
+            "0" * 64,
+        )
+        segregation_pin_failures = (
+            evaluate_dataset.mvp_scope_decision_input_failures(
+                decision_record=tampered_segregation_pin,
+                manifest=manifest,
+                manifest_source="datasets/mvp_evaluation_manifest_v1.json",
+                role_permissions=ROLE_PERMISSIONS,
+            )
+        )
+        self.assertEqual((), segregation_pin_failures["OD-TEMPLATES"])
+        self.assertEqual(
+            (),
+            segregation_pin_failures["OD-EFFICIENCY-SCOPE"],
+        )
+        self.assertTrue(segregation_pin_failures["OD-SEGREGATION"])
+
         drifted_roles = {
             role: set(permissions)
             for role, permissions in ROLE_PERMISSIONS.items()

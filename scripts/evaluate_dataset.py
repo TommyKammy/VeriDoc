@@ -6474,6 +6474,9 @@ MVP_SCOPE_DECISION_APPROVED_CONTRACTS = {
         "Approved OD-EFFICIENCY-SCOPE contract SHA-256": (
             "3d9d05671895ec8d6e8b14f44b6a8dd7f99aa17b7b65871b78fb56a49966b6fb"
         ),
+        "Approved OD-SEGREGATION contract SHA-256": (
+            "74d83d2d028c1ba79fffd6742ab9f13f7e345932248e36b86289e16c93a01476"
+        ),
         "Approved ROLE_PERMISSIONS contract SHA-256": (
             "dad052a8f6fe7acd549b2fa974c20e09b702fbcf31917deecf1636db61dfb322"
         ),
@@ -6630,6 +6633,7 @@ def mvp_scope_decision_input_failures(
                 "OD-EFFICIENCY-SCOPE",
                 "Approved OD-EFFICIENCY-SCOPE contract SHA-256",
             ),
+            ("OD-SEGREGATION", "Approved OD-SEGREGATION contract SHA-256"),
             ("OD-SEGREGATION", "Approved ROLE_PERMISSIONS contract SHA-256"),
         ):
             recorded_hash = _mvp_scope_record_value(decision_record, label)
@@ -6689,6 +6693,21 @@ def mvp_scope_decision_input_failures(
             "efficiency cohort, training, timing, comparison, safety, or rejection "
             "contract drifted: "
             f"expected {approved_efficiency_hash!r}, got {actual_efficiency_hash!r}"
+        )
+
+    approved_segregation_hash = _mvp_scope_record_value(
+        decision_record,
+        "Approved OD-SEGREGATION contract SHA-256",
+    )
+    actual_segregation_hash = _mvp_scope_section_sha256(
+        decision_record,
+        "OD-SEGREGATION",
+    )
+    if approved_segregation_hash != actual_segregation_hash:
+        failures["OD-SEGREGATION"].append(
+            "segregation roles, deny paths, implementation gaps, follow-up, "
+            "carryover, or rejection contract drifted: "
+            f"expected {approved_segregation_hash!r}, got {actual_segregation_hash!r}"
         )
 
     approved_role_hash = _mvp_scope_record_value(

@@ -144,6 +144,7 @@ class MvpAcceptanceTraceabilityDocsTest(unittest.TestCase):
             "Target manifest Git blob: `13450762d323198b1b6e87315be173c784fc4880`",
             "Approved manifest contract SHA-256",
             "Approved OD-EFFICIENCY-SCOPE contract SHA-256",
+            "Approved OD-SEGREGATION contract SHA-256",
             "Approved ROLE_PERMISSIONS contract SHA-256",
             "Decision owner: `TommyKammy`",
             "Approved by: `TommyKammy`",
@@ -240,6 +241,13 @@ class MvpAcceptanceTraceabilityDocsTest(unittest.TestCase):
                 "Approved OD-EFFICIENCY-SCOPE contract SHA-256",
             ),
             _scope_section_sha256(record, "OD-EFFICIENCY-SCOPE"),
+        )
+        self.assertEqual(
+            _required_record_value(
+                record,
+                "Approved OD-SEGREGATION contract SHA-256",
+            ),
+            _scope_section_sha256(record, "OD-SEGREGATION"),
         )
 
         from services.api.poc_web import ROLE_PERMISSIONS

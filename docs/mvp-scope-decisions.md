@@ -8,10 +8,11 @@ revision before changing the approved scope.
 
 The acceptance evaluator recomputes the approved manifest contract from its
 case, fixture, source-policy, and expectation fields, the canonical
-`OD-EFFICIENCY-SCOPE` section, and the sorted `ROLE_PERMISSIONS` contract. Each
-pin is also bound to the named decision revision in evaluator code. A mismatch
-fails the affected `OD-*` item until a new human-approved decision revision
-updates both the record and evaluator pins.
+`OD-EFFICIENCY-SCOPE` and `OD-SEGREGATION` sections, and the sorted
+`ROLE_PERMISSIONS` contract. Each pin is also bound to the named decision
+revision in evaluator code. A mismatch fails the affected `OD-*` item until a
+new human-approved decision revision updates both the record and evaluator
+pins.
 
 ## Record metadata
 
@@ -23,6 +24,7 @@ updates both the record and evaluator pins.
 - Target manifest Git blob: `13450762d323198b1b6e87315be173c784fc4880`
 - Approved manifest contract SHA-256: `18996f997b7f6f9909ae2cd9f98a992713f76e7d95057ca5116f365bc8a88a75`
 - Approved OD-EFFICIENCY-SCOPE contract SHA-256: `3d9d05671895ec8d6e8b14f44b6a8dd7f99aa17b7b65871b78fb56a49966b6fb`
+- Approved OD-SEGREGATION contract SHA-256: `74d83d2d028c1ba79fffd6742ab9f13f7e345932248e36b86289e16c93a01476`
 - Approved ROLE_PERMISSIONS contract SHA-256: `dad052a8f6fe7acd549b2fa974c20e09b702fbcf31917deecf1636db61dfb322`
 - Decision owner: `TommyKammy`
 - Approved by: `TommyKammy`

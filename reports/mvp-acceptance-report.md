@@ -20,12 +20,12 @@ pinned in this sample.
 
 With the committed default inputs, the report contains 20 acceptance items and
 fails closed with five `pass` and fifteen `fail`. The three approved `OD-*`
-items pass only while the live manifest, canonical efficiency-scope section,
-and `ROLE_PERMISSIONS` contracts match the revision-bound decision pins; scope
-drift fails the affected item until renewed approval. A passing harness case
-does not promote a broader 15.3 item whose required evidence remains
-incomplete. The overall decision also remains `fail` whenever the live harness
-overall status is `fail` or `unknown`.
+items pass only while the live manifest, canonical efficiency- and
+segregation-scope sections, and `ROLE_PERMISSIONS` contracts match the
+revision-bound decision pins; scope drift fails the affected item until renewed
+approval. A passing harness case does not promote a broader 15.3 item whose
+required evidence remains incomplete. The overall decision also remains `fail`
+whenever the live harness overall status is `fail` or `unknown`.
 
 ```json
 {
@@ -56,7 +56,8 @@ Each object in `items` records:
 - `evidence.harness_refs`: directly applicable paths into the single harness
   snapshot; an empty list means the current harness does not prove that item.
 - `evidence.decision_input_validation`: for `OD-*` rows, the result of checking
-  approval metadata and the applicable manifest or permission-matrix pin.
+  approval metadata and the applicable manifest, canonical decision-section,
+  or permission-matrix pin.
 - `unmet`: the explicit incomplete boundary for every failed item.
 - `carryover_phases`: only phases explicitly named by that row.
 

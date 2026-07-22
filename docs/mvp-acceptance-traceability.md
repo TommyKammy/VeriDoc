@@ -74,7 +74,7 @@ from committed implementation, tests, and the latest acceptance record.
 | --- | --- | --- | --- | --- |
 | OD-TEMPLATES | 対象業務・テンプレートの確定 | Historical owner [#283](https://github.com/TommyKammy/VeriDoc/issues/283); decision [#308](https://github.com/TommyKammy/VeriDoc/issues/308) | `datasets/mvp_evaluation_manifest_v1.json`, `docs/mvp-scope-decisions.md`; evaluator validates the approved manifest contract hash | **達成** — `TommyKammy` approved all five cases in manifest revision `phase12-mvp-v1` on `2026-07-22`; any case, fixture, source-policy, or expectation drift fails this item until renewed approval. |
 | OD-EFFICIENCY-SCOPE | 効率指標の測定対象業務 | Historical owners [#284](https://github.com/TommyKammy/VeriDoc/issues/284), [#285](https://github.com/TommyKammy/VeriDoc/issues/285); decision [#308](https://github.com/TommyKammy/VeriDoc/issues/308) | `docs/mvp-scope-decisions.md` baseline task, cohort, training, timing, comparison, and rejection conditions; evaluator validates the revision-bound canonical section hash | **達成** — decision revision `p12g-02-v1` fixes a reproducible paired comparison and retains the 30% target without claiming a human result; any protocol-scope drift fails this item until renewed approval. |
-| OD-SEGREGATION | 職務分掌をMVPでどこまで満たすか | Historical owner [#276](https://github.com/TommyKammy/VeriDoc/issues/276); decision [#308](https://github.com/TommyKammy/VeriDoc/issues/308); E2E P12G-10 | `docs/mvp-scope-decisions.md` approved matrix hash, deny paths, known implementation gaps, and **Phase13以降** carryover | **達成** — decision revision `p12g-02-v1` fixes the six-role target boundary; this closes the scope decision only. P12G-10 must require authentication and a preceding distinct-actor review/edit event, then prove the API/UI deny paths before `AC-AUTH` can pass. |
+| OD-SEGREGATION | 職務分掌をMVPでどこまで満たすか | Historical owner [#276](https://github.com/TommyKammy/VeriDoc/issues/276); decision [#308](https://github.com/TommyKammy/VeriDoc/issues/308); E2E P12G-10 | `docs/mvp-scope-decisions.md` approved matrix hash, deny paths, known implementation gaps, and **Phase13以降** carryover; evaluator validates the revision-bound canonical section hash | **達成** — decision revision `p12g-02-v1` fixes the six-role target boundary; any deny-path or carryover drift fails this item until renewed approval. P12G-10 must require authentication and a preceding distinct-actor review/edit event, then prove the API/UI deny paths before `AC-AUTH` can pass. |
 
 ## Stable MVP Gate
 
@@ -90,10 +90,10 @@ The Phase12 MVP gate is fail-closed and is evaluated from the table above:
    set; it must not combine partial results from different runs.
 5. The historical Phase9 decision in `docs/mvp-transition-decision.md` is
    context, not current Phase12 acceptance evidence.
-6. The evaluator must recompute the approved manifest, efficiency-scope, and
-   permission-matrix input contracts. Any drift fails the affected `OD-*` item
-   until a renewed human-approved decision revision updates the recorded and
-   evaluator pins.
+6. The evaluator must recompute the approved manifest, efficiency-scope,
+   segregation-scope, and permission-matrix input contracts. Any drift fails the
+   affected `OD-*` item until a renewed human-approved decision revision updates
+   the recorded and evaluator pins.
 
 Minimum verification for changes to this baseline:
 
