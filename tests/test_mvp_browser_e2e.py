@@ -13,8 +13,11 @@ from contextlib import ExitStack
 from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
+from zipfile import ZipFile
 
 from scripts.ci.mvp_browser_e2e import (
+    ACCEPTANCE_CRITERIA,
+    AUTHORIZATION_ROLE_MATRIX,
     FIXTURE_PATH,
     LocalNetworkBoundaryObserver,
     NetworkBoundaryViolation,
@@ -25,6 +28,7 @@ from scripts.ci.mvp_browser_e2e import (
     _inference_environment_snapshot,
     _launch_browser,
     _request_local_api_get,
+    _retain_redacted_trace,
     _require_audit_payload_matches_result,
     _require_matching_event,
     _retained_evidence_paths,
@@ -91,7 +95,8 @@ def _write_complete_evidence_package(run_dir: Path) -> dict[str, object]:
     document_id = "document-current"
     block_id = "block-current"
     artifact_id = "artifact-current"
-    actor = {"id": "reviewer-current", "role": "approver"}
+    actor = {"id": "approver-current", "role": "approver"}
+    reviewer_actor = {"id": "reviewer-current", "role": "reviewer"}
     source_bbox = {
         "x": 1.0,
         "y": 2.0,
@@ -113,6 +118,19 @@ def _write_complete_evidence_package(run_dir: Path) -> dict[str, object]:
     review_events = _seal_event_chain(
         [{
             "event_type": "conversion_review.action_requested",
+            "action": "edit",
+            "conversion_id": conversion_id,
+            "document_id": document_id,
+            "block_id": block_id,
+            "actor": reviewer_actor,
+            "source_page": 1,
+            "source_bbox": source_bbox,
+            "original_text": "Approved source text",
+            "revised_text": "Approved source text",
+            "warnings": [],
+        },
+        {
+            "event_type": "conversion_review.action_requested",
             "action": "approve",
             "conversion_id": conversion_id,
             "document_id": document_id,
@@ -122,6 +140,7 @@ def _write_complete_evidence_package(run_dir: Path) -> dict[str, object]:
             "source_bbox": source_bbox,
             "original_text": "Approved source text",
             "revised_text": "Approved source text",
+            "warnings": [],
         },
         {
             "event_type": "conversion_review.action_requested",
@@ -132,7 +151,7 @@ def _write_complete_evidence_package(run_dir: Path) -> dict[str, object]:
             "actor": actor,
         }]
     )
-    review_event = review_events[0]
+    review_event = review_events[1]
     (run_dir / "job-events.json").write_text(
         json.dumps([upload_event], ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
@@ -243,6 +262,49 @@ def _write_complete_evidence_package(run_dir: Path) -> dict[str, object]:
     return {
         "schema_version": "veridoc-mvp-browser-e2e/v1",
         "run_id": run_id,
+        "authorization": {
+            "decision_revision": "p12g-02-v1",
+            "role_matrix": deepcopy(AUTHORIZATION_ROLE_MATRIX),
+            "token_lifecycle": {
+                "states": [
+                    {
+                        "state": "missing",
+                        "status": 401,
+                        "error": "auth_required",
+                    },
+                    {
+                        "state": "rejected",
+                        "status": 401,
+                        "error": "auth_required",
+                    },
+                    {
+                        "state": "forbidden",
+                        "status": 403,
+                        "error": "forbidden",
+                        "role": "operator",
+                    },
+                    {
+                        "state": "cleared",
+                        "status": 401,
+                        "error": "auth_required",
+                    },
+                    {
+                        "state": "re_authenticated",
+                        "status": 200,
+                        "role": "approver",
+                    },
+                ],
+                "re_authenticated_role": "approver",
+            },
+            "segregation": {
+                "preceding_action": "edit",
+                "reviewer_role": "reviewer",
+                "approver_role": "approver",
+                "reviewer_actor": reviewer_actor,
+                "approver_actor": actor,
+                "distinct_actor": True,
+            },
+        },
         "correlation": {
             "run_id": run_id,
             "upload": {
@@ -365,7 +427,15 @@ def _rewrite_event_chain(
     audit[f"{chain}_terminal_event_hash"] = events[-1]["event_hash"]
     surface[f"{chain}_event_count"] = len(events)
     surface[f"{chain}_terminal_event_hash"] = events[-1]["event_hash"]
-    surface[f"{chain}_event_hash"] = events[0]["event_hash"]
+    correlated_event = next(
+        (
+            event
+            for event in events
+            if chain != "review" or event.get("action") == "approve"
+        ),
+        events[0],
+    )
+    surface[f"{chain}_event_hash"] = correlated_event["event_hash"]
     return events
 
 
@@ -433,6 +503,40 @@ class BrowserLaunchSelectionTest(unittest.TestCase):
         )
 
 
+class TraceRedactionTest(unittest.TestCase):
+    def test_all_ephemeral_role_tokens_are_redacted(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            raw_trace = root / "raw.zip"
+            retained_trace = root / "retained.zip"
+            secrets = {
+                "reviewer": "reviewer-secret-token",
+                "approver": "approver-secret-token",
+            }
+            with ZipFile(raw_trace, "w") as archive:
+                archive.writestr(
+                    "trace.network",
+                    (
+                        "Authorization: Bearer reviewer-secret-token\n"
+                        "Authorization: Bearer approver-secret-token\n"
+                    ),
+                )
+
+            _retain_redacted_trace(
+                raw_trace,
+                retained_trace,
+                secrets=secrets,
+            )
+
+            with ZipFile(retained_trace) as archive:
+                content = archive.read("trace.network")
+
+        self.assertNotIn(b"reviewer-secret-token", content)
+        self.assertNotIn(b"approver-secret-token", content)
+        self.assertIn(b"<redacted-e2e-reviewer-token>", content)
+        self.assertIn(b"<redacted-e2e-approver-token>", content)
+
+
 class LocalApiRequestTest(unittest.TestCase):
     def test_get_disables_redirects_before_the_response_is_observed(self) -> None:
         response = object()
@@ -480,6 +584,39 @@ class EvidenceBoundaryValidationTest(unittest.TestCase):
         self.assertEqual(acceptance["status"], "pass")
         self.assertEqual(acceptance["failure_reasons"], [])
 
+    def test_authorization_evidence_is_required(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run_dir = Path(temporary_directory)
+            evidence = _write_complete_evidence_package(run_dir)
+            evidence.pop("authorization")
+
+            acceptance = evaluate_acceptance_evidence(evidence, run_dir=run_dir)
+
+        self.assertEqual(acceptance["status"], "fail")
+        self.assertIn(
+            "EVIDENCE_AUTHORIZATION_MISSING",
+            {failure["code"] for failure in acceptance["failure_reasons"]},
+        )
+
+    def test_segregation_evidence_rejects_same_reviewer_and_approver(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run_dir = Path(temporary_directory)
+            evidence = _write_complete_evidence_package(run_dir)
+            authorization = evidence["authorization"]
+            segregation = authorization["segregation"]
+            segregation["reviewer_actor"] = segregation["approver_actor"]
+            segregation["distinct_actor"] = False
+
+            acceptance = evaluate_acceptance_evidence(evidence, run_dir=run_dir)
+
+        self.assertEqual(acceptance["status"], "fail")
+        self.assertIn(
+            "EVIDENCE_SEGREGATION_MISSING",
+            {failure["code"] for failure in acceptance["failure_reasons"]},
+        )
+
     def test_source_bbox_rejects_invalid_origin_even_when_event_matches(
         self,
     ) -> None:
@@ -499,26 +636,19 @@ class EvidenceBoundaryValidationTest(unittest.TestCase):
                 evidence["correlation"]["provenance"]["source_bbox"][
                     field
                 ] = invalid_value
-                review_events_path = run_dir / "review-events.json"
-                review_event = json.loads(
-                    review_events_path.read_text(encoding="utf-8")
-                )[0]
-                review_event["source_bbox"][field] = invalid_value
-                review_event.pop("event_hash")
-                canonical = json.dumps(
-                    review_event,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                    sort_keys=True,
-                ).encode("utf-8")
-                review_event["event_hash"] = hashlib.sha256(canonical).hexdigest()
-                review_events_path.write_text(
-                    json.dumps([review_event], ensure_ascii=False, indent=2) + "\n",
-                    encoding="utf-8",
+
+                def mutate_source_bbox(
+                    events: list[dict[str, object]],
+                ) -> None:
+                    for event in events[:2]:
+                        event["source_bbox"][field] = invalid_value  # type: ignore[index]
+
+                _rewrite_event_chain(
+                    run_dir,
+                    evidence,
+                    "review",
+                    mutate_source_bbox,
                 )
-                evidence["evidence_surfaces"]["audit_events"][
-                    "review_event_hash"
-                ] = review_event["event_hash"]
 
                 acceptance = evaluate_acceptance_evidence(
                     evidence,
@@ -549,27 +679,16 @@ class EvidenceBoundaryValidationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             run_dir = Path(temporary_directory)
             evidence = _write_complete_evidence_package(run_dir)
-            review_events_path = run_dir / "review-events.json"
-            review_event = json.loads(
-                review_events_path.read_text(encoding="utf-8")
-            )[0]
-            review_event["action"] = "reject"
-            review_event.pop("event_hash")
-            canonical = json.dumps(
-                review_event,
-                ensure_ascii=False,
-                separators=(",", ":"),
-                sort_keys=True,
-            ).encode("utf-8")
-            review_event["event_hash"] = hashlib.sha256(canonical).hexdigest()
-            review_events_path.write_text(
-                json.dumps([review_event], ensure_ascii=False, indent=2) + "\n",
-                encoding="utf-8",
+            review_events = _rewrite_event_chain(
+                run_dir,
+                evidence,
+                "review",
+                lambda events: events[1].__setitem__("action", "reject"),
             )
             evidence["correlation"]["review"]["action"] = "reject"
             evidence["evidence_surfaces"]["audit_events"][
                 "review_event_hash"
-            ] = review_event["event_hash"]
+            ] = review_events[1]["event_hash"]
 
             acceptance = evaluate_acceptance_evidence(evidence, run_dir=run_dir)
 
@@ -1104,7 +1223,7 @@ class EvidenceBoundaryValidationTest(unittest.TestCase):
                 run_dir,
                 evidence,
                 "review",
-                lambda events: events[0].__setitem__(
+                lambda events: events[1].__setitem__(
                     "source_bbox",
                     changed_bbox,
                 ),
@@ -1139,7 +1258,7 @@ class EvidenceBoundaryValidationTest(unittest.TestCase):
                 run_dir,
                 evidence,
                 "review",
-                lambda events: events[0].__setitem__(
+                lambda events: events[1].__setitem__(
                     "source_bbox",
                     changed_bbox,
                 ),
@@ -1162,7 +1281,7 @@ class EvidenceBoundaryValidationTest(unittest.TestCase):
                 run_dir,
                 evidence,
                 "review",
-                lambda events: events[0].__setitem__("actor", None),
+                lambda events: events[1].__setitem__("actor", None),
             )
 
             acceptance = evaluate_acceptance_evidence(evidence, run_dir=run_dir)
@@ -1240,7 +1359,7 @@ class EvidenceBoundaryValidationTest(unittest.TestCase):
                 run_dir,
                 evidence,
                 "review",
-                lambda events: events[0].__setitem__(
+                lambda events: events[1].__setitem__(
                     "event_type",
                     "conversion_review.unrelated",
                 ),
@@ -1266,7 +1385,7 @@ class EvidenceBoundaryValidationTest(unittest.TestCase):
                     run_dir,
                     evidence,
                     "review",
-                    lambda events, field=field: events[0].pop(field),
+                    lambda events, field=field: events[1].pop(field),
                 )
 
                 acceptance = evaluate_acceptance_evidence(
@@ -1292,7 +1411,7 @@ class EvidenceBoundaryValidationTest(unittest.TestCase):
                 review_events = json.loads(
                     review_events_path.read_text(encoding="utf-8")
                 )
-                review_events[0][field] = "\ud800"
+                review_events[1][field] = "\ud800"
                 review_events_path.write_text(
                     json.dumps(review_events, ensure_ascii=True, indent=2) + "\n",
                     encoding="utf-8",
@@ -2367,7 +2486,7 @@ class RerunPackageValidationTest(unittest.TestCase):
         acceptance_snapshot = {
             "status": "pass",
             "correlation_id": "run-current",
-            "criteria": ["AC-PROVENANCE", "AC-AUDIT", "FC-EVIDENCE"],
+            "criteria": list(ACCEPTANCE_CRITERIA),
             "failure_reasons": [],
         }
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -2412,7 +2531,7 @@ class RerunPackageValidationTest(unittest.TestCase):
         failure_snapshot = {
             "status": "fail",
             "correlation_id": "run-current",
-            "criteria": ["AC-PROVENANCE", "AC-AUDIT", "FC-EVIDENCE"],
+            "criteria": list(ACCEPTANCE_CRITERIA),
             "failure_reasons": [
                 {
                     "code": "EVIDENCE_CORRELATION_MISMATCH",
@@ -2456,7 +2575,7 @@ class RerunPackageValidationTest(unittest.TestCase):
         forged_pass_snapshot = {
             "status": "pass",
             "correlation_id": "run-current",
-            "criteria": ["AC-PROVENANCE", "AC-AUDIT", "FC-EVIDENCE"],
+            "criteria": list(ACCEPTANCE_CRITERIA),
             "failure_reasons": [],
         }
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -2687,7 +2806,7 @@ class MvpBrowserE2ETest(unittest.TestCase):
             self.assertEqual(acceptance["correlation_id"], evidence["run_id"])
             self.assertEqual(
                 acceptance["criteria"],
-                ["AC-PROVENANCE", "AC-AUDIT", "FC-EVIDENCE"],
+                list(ACCEPTANCE_CRITERIA),
             )
             self.assertEqual(acceptance["failure_reasons"], [])
             self.assertEqual(evidence["network_observation"]["status"], "pass")

@@ -75,6 +75,99 @@ NETWORK_OBSERVATION_SCHEMA_VERSION = "veridoc-network-observation/v1"
 BROWSER_EVIDENCE_SCHEMA_VERSION = "veridoc-mvp-browser-e2e/v1"
 RERUN_PACKAGE_SCHEMA_VERSION = "veridoc-mvp-rerun-package/v1"
 RERUN_PACKAGE_ENVELOPE_SCHEMA_VERSION = "veridoc-mvp-rerun-package-envelope/v1"
+AUTHORIZATION_DECISION_REVISION = "p12g-02-v1"
+ACCEPTANCE_CRITERIA = (
+    "AC-PROVENANCE",
+    "AC-AUDIT",
+    "AC-AUTH",
+    "FC-EVIDENCE",
+)
+AUTHORIZATION_READ_MATRIX = {
+    "viewer": {
+        "jobs": 200,
+        "job_events": 200,
+        "review_events": 200,
+        "templates": 200,
+    },
+    "operator": {
+        "jobs": 200,
+        "job_events": 200,
+        "review_events": 403,
+        "templates": 200,
+    },
+    "reviewer": {
+        "jobs": 200,
+        "job_events": 200,
+        "review_events": 200,
+        "templates": 200,
+    },
+    "approver": {
+        "jobs": 200,
+        "job_events": 200,
+        "review_events": 200,
+        "templates": 200,
+    },
+    "admin": {
+        "jobs": 200,
+        "job_events": 200,
+        "review_events": 200,
+        "templates": 200,
+    },
+    "audit_viewer": {
+        "jobs": 403,
+        "job_events": 200,
+        "review_events": 200,
+        "templates": 403,
+    },
+}
+AUTHORIZATION_SENSITIVE_MATRIX = {
+    "viewer": {
+        "review_edit": 403,
+        "review_approve": 403,
+        "template_manage": 403,
+        "audit_events_read": 200,
+    },
+    "operator": {
+        "review_edit": 403,
+        "review_approve": 403,
+        "template_manage": 403,
+        "audit_events_read": 403,
+    },
+    "reviewer": {
+        "review_edit": 202,
+        "review_approve": 403,
+        "template_manage": 403,
+        "audit_events_read": 200,
+    },
+    "approver": {
+        "review_edit": 202,
+        "review_approve": 202,
+        "template_manage": 403,
+        "audit_events_read": 200,
+    },
+    "admin": {
+        "review_edit": 202,
+        "review_approve": 202,
+        "template_manage": 400,
+        "audit_events_read": 200,
+    },
+    "audit_viewer": {
+        "review_edit": 403,
+        "review_approve": 403,
+        "template_manage": 403,
+        "audit_events_read": 200,
+    },
+}
+AUTHORIZATION_ROLE_MATRIX = {
+    "read": AUTHORIZATION_READ_MATRIX,
+    "sensitive": AUTHORIZATION_SENSITIVE_MATRIX,
+}
+AUTHORIZATION_READ_ENDPOINTS = {
+    "jobs": "/api/jobs",
+    "job_events": "/api/job-events",
+    "review_events": "/api/review-events",
+    "templates": "/api/templates",
+}
 RERUN_EQUIVALENCE_RULE = (
     "decision-relevant fields must match; run identity, generated "
     "identifiers, artifact bytes, timestamps, and processing time are excluded"
@@ -382,6 +475,9 @@ def validate_endpoint_configuration(
 
 def _equivalence_projection(evidence: dict[str, Any]) -> dict[str, object]:
     correlation = evidence.get("correlation", {})
+    authorization = evidence.get("authorization", {})
+    token_lifecycle = authorization.get("token_lifecycle", {})
+    segregation = authorization.get("segregation", {})
     review_flow = evidence.get("review_flow", {})
     high_risk = review_flow.get("high_risk", {})
     source_jump = review_flow.get("source_jump", {})
@@ -403,6 +499,22 @@ def _equivalence_projection(evidence: dict[str, Any]) -> dict[str, object]:
         "recovery": {
             "retry_mode": evidence.get("recovery", {}).get("retry_mode"),
             "result": evidence.get("recovery", {}).get("result"),
+        },
+        "authorization": {
+            "decision_revision": authorization.get("decision_revision"),
+            "role_matrix": authorization.get("role_matrix"),
+            "token_lifecycle": {
+                "states": token_lifecycle.get("states"),
+                "re_authenticated_role": token_lifecycle.get(
+                    "re_authenticated_role"
+                ),
+            },
+            "segregation": {
+                "preceding_action": segregation.get("preceding_action"),
+                "reviewer_role": segregation.get("reviewer_role"),
+                "approver_role": segregation.get("approver_role"),
+                "distinct_actor": segregation.get("distinct_actor"),
+            },
         },
         "review": {
             "keyboard_only": review_flow.get("keyboard_only"),
@@ -1150,21 +1262,36 @@ def _sha256(path: Path) -> str:
 
 
 def _retain_redacted_trace(
-    raw_trace_path: Path, retained_trace_path: Path, *, secret: str
+    raw_trace_path: Path,
+    retained_trace_path: Path,
+    *,
+    secrets: Mapping[str, str],
 ) -> None:
-    """Copy a Playwright trace while removing the ephemeral bearer credential."""
-    secret_bytes = secret.encode("utf-8")
+    """Copy a Playwright trace while removing ephemeral bearer credentials."""
+    secret_bytes = {
+        role: secret.encode("utf-8")
+        for role, secret in secrets.items()
+        if isinstance(secret, str) and secret
+    }
     with ZipFile(raw_trace_path) as raw_trace, ZipFile(retained_trace_path, "w") as retained:
         for entry in raw_trace.infolist():
+            content = raw_trace.read(entry)
+            for role, credential in secret_bytes.items():
+                content = content.replace(
+                    credential,
+                    f"<redacted-e2e-{role}-token>".encode("utf-8"),
+                )
             retained.writestr(
                 entry,
-                raw_trace.read(entry).replace(secret_bytes, b"<redacted-e2e-token>"),
+                content,
             )
     with ZipFile(retained_trace_path) as retained:
-        if any(
-            secret_bytes in retained.read(entry) for entry in retained.infolist()
-        ):
-            raise AssertionError("retained browser trace contains the bearer credential")
+        for entry in retained.infolist():
+            content = retained.read(entry)
+            if any(credential in content for credential in secret_bytes.values()):
+                raise AssertionError(
+                    "retained browser trace contains a bearer credential"
+                )
 
 
 def _json_response(response: Any) -> dict[str, Any]:
@@ -1402,6 +1529,65 @@ def evaluate_acceptance_evidence(
             "Browser evidence must use the supported fail-closed schema version.",
         )
 
+    authorization = evidence.get("authorization")
+    authorization = authorization if isinstance(authorization, dict) else {}
+    token_lifecycle = authorization.get("token_lifecycle")
+    token_lifecycle = (
+        token_lifecycle if isinstance(token_lifecycle, dict) else {}
+    )
+    expected_lifecycle_states = [
+        {"state": "missing", "status": 401, "error": "auth_required"},
+        {"state": "rejected", "status": 401, "error": "auth_required"},
+        {
+            "state": "forbidden",
+            "status": 403,
+            "error": "forbidden",
+            "role": "operator",
+        },
+        {"state": "cleared", "status": 401, "error": "auth_required"},
+        {"state": "re_authenticated", "status": 200, "role": "approver"},
+    ]
+    if (
+        authorization.get("decision_revision")
+        != AUTHORIZATION_DECISION_REVISION
+        or authorization.get("role_matrix") != AUTHORIZATION_ROLE_MATRIX
+        or token_lifecycle.get("states") != expected_lifecycle_states
+        or token_lifecycle.get("re_authenticated_role") != "approver"
+    ):
+        fail(
+            "EVIDENCE_AUTHORIZATION_MISSING",
+            "authorization",
+            (
+                "The approved role matrix and missing, rejected, forbidden, "
+                "cleared, and re-authenticated token states must be observed."
+            ),
+        )
+    segregation = authorization.get("segregation")
+    segregation = segregation if isinstance(segregation, dict) else {}
+    reviewer_actor = segregation.get("reviewer_actor")
+    reviewer_actor = reviewer_actor if isinstance(reviewer_actor, dict) else {}
+    approver_actor = segregation.get("approver_actor")
+    approver_actor = approver_actor if isinstance(approver_actor, dict) else {}
+    if (
+        segregation.get("preceding_action") != "edit"
+        or segregation.get("reviewer_role") != "reviewer"
+        or segregation.get("approver_role") != "approver"
+        or segregation.get("distinct_actor") is not True
+        or reviewer_actor.get("role") != "reviewer"
+        or approver_actor.get("role") != "approver"
+        or not _nonempty_string(reviewer_actor.get("id"))
+        or not _nonempty_string(approver_actor.get("id"))
+        or reviewer_actor.get("id") == approver_actor.get("id")
+    ):
+        fail(
+            "EVIDENCE_SEGREGATION_MISSING",
+            "segregation",
+            (
+                "Approval must retain a preceding reviewer edit and a distinct "
+                "approver identity under the approved decision revision."
+            ),
+        )
+
     correlation = evidence.get("correlation")
     correlation = correlation if isinstance(correlation, dict) else {}
     provenance = correlation.get("provenance")
@@ -1464,7 +1650,7 @@ def evaluate_acceptance_evidence(
         return {
             "status": "fail",
             "correlation_id": run_id,
-            "criteria": ["AC-PROVENANCE", "AC-AUDIT", "FC-EVIDENCE"],
+            "criteria": list(ACCEPTANCE_CRITERIA),
             "failure_reasons": [
                 failure
                 for failure in failures
@@ -1892,6 +2078,36 @@ def evaluate_acceptance_evidence(
             for event in review_matches
             if _valid_approval_event_payload(event)
         ]
+        preceding_review_matches = _matching_events(
+            review_events,
+            expected_fields={
+                "event_type": "conversion_review.action_requested",
+                "action": "edit",
+                "conversion_id": review.get("conversion_id"),
+                "document_id": review.get("document_id"),
+                "block_id": review.get("block_id"),
+                "actor": reviewer_actor,
+                "source_page": provenance.get("source_page"),
+                "source_bbox": provenance.get("source_bbox"),
+            },
+        )
+        if (
+            len(preceding_review_matches) != 1
+            or len(review_matches) != 1
+            or not isinstance(preceding_review_matches[0].get("sequence"), int)
+            or not isinstance(review_matches[0].get("sequence"), int)
+            or preceding_review_matches[0]["sequence"]
+            >= review_matches[0]["sequence"]
+            or review.get("actor") != approver_actor
+        ):
+            fail(
+                "EVIDENCE_SEGREGATION_MISSING",
+                "segregation",
+                (
+                    "The retained audit chain must place one distinct-reviewer "
+                    "edit before the correlated approval."
+                ),
+            )
         if (
             review.get("action") != "approve"
             or len(upload_matches) != 1
@@ -1943,7 +2159,7 @@ def evaluate_acceptance_evidence(
     return {
         "status": "fail" if failures else "pass",
         "correlation_id": run_id,
-        "criteria": ["AC-PROVENANCE", "AC-AUDIT", "FC-EVIDENCE"],
+        "criteria": list(ACCEPTANCE_CRITERIA),
         "failure_reasons": failures,
     }
 
@@ -2033,14 +2249,19 @@ def _high_risk_template_store() -> TemplateStore:
 
 @contextmanager
 def _poc_server(
-    state_root: Path, *, auth_token: str, approver_actor: str
+    state_root: Path,
+    *,
+    role_tokens: Mapping[str, str],
+    role_actors: Mapping[str, str],
 ) -> Iterator[str]:
     previous_auth = os.environ.get("VERIDOC_LOCAL_AUTH_TOKENS")
-    os.environ["VERIDOC_LOCAL_AUTH_TOKENS"] = (
-        f"approver:{approver_actor}={auth_token}"
+    os.environ["VERIDOC_LOCAL_AUTH_TOKENS"] = ",".join(
+        f"{role}:{role_actors[role]}={role_tokens[role]}"
+        for role in AUTHORIZATION_READ_MATRIX
     )
     database_path = state_root / "veridoc.sqlite3"
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.require_local_auth = True
     server.job_queue = JobQueue(
         database_path=database_path,
         artifact_store_root=state_root / "artifacts",
@@ -2060,6 +2281,144 @@ def _poc_server(
             os.environ.pop("VERIDOC_LOCAL_AUTH_TOKENS", None)
         else:
             os.environ["VERIDOC_LOCAL_AUTH_TOKENS"] = previous_auth
+
+
+def _probe_authorization_matrix(
+    request_context: Any,
+    *,
+    base_url: str,
+    role_tokens: Mapping[str, str],
+    network_boundary: LocalNetworkBoundaryObserver,
+) -> dict[str, dict[str, dict[str, int]]]:
+    read_observed: dict[str, dict[str, int]] = {}
+    for role, expected_endpoints in AUTHORIZATION_READ_MATRIX.items():
+        role_observed: dict[str, int] = {}
+        for endpoint_name, expected_status in expected_endpoints.items():
+            url = base_url + AUTHORIZATION_READ_ENDPOINTS[endpoint_name]
+            network_boundary.observe_http_attempt(
+                url,
+                method="GET",
+                source=f"authorization_matrix:{role}",
+            )
+            response = request_context.get(
+                url,
+                headers={"Authorization": f"Bearer {role_tokens[role]}"},
+            )
+            role_observed[endpoint_name] = response.status
+            if response.status != expected_status:
+                raise AssertionError(
+                    "authorization matrix mismatch for "
+                    f"{role}.{endpoint_name}: expected {expected_status}, "
+                    f"observed {response.status}"
+                )
+        read_observed[role] = role_observed
+
+    sensitive_observed: dict[str, dict[str, int]] = {}
+
+    def review_event(
+        *,
+        action: str,
+        target: str,
+    ) -> dict[str, Any]:
+        return {
+            "audit_event": {
+                "event_type": "conversion_review.action_requested",
+                "action": action,
+                "conversion_id": f"authorization-probe-{target}",
+                "document_id": f"authorization-probe-{target}",
+                "block_id": "block-0001",
+                "source_page": 1,
+                "source_bbox": {
+                    "x": 1,
+                    "y": 1,
+                    "width": 10,
+                    "height": 10,
+                    "unit": "pt",
+                    "origin": "top-left",
+                },
+                "original_text": "Authorization probe",
+                "revised_text": "Authorization probe",
+                "warnings": [],
+            }
+        }
+
+    def request_status(
+        *,
+        role: str,
+        endpoint: str,
+        method: str,
+        data: object | None = None,
+        source: str,
+    ) -> int:
+        url = base_url + endpoint
+        network_boundary.observe_http_attempt(
+            url,
+            method=method,
+            source=source,
+        )
+        headers = {"Authorization": f"Bearer {role_tokens[role]}"}
+        if method == "GET":
+            return request_context.get(url, headers=headers).status
+        return request_context.post(url, headers=headers, data=data).status
+
+    for role, expected_operations in AUTHORIZATION_SENSITIVE_MATRIX.items():
+        role_observed = {}
+        edit_target = f"edit-{role}"
+        role_observed["review_edit"] = request_status(
+            role=role,
+            endpoint="/api/review-events",
+            method="POST",
+            data=review_event(action="edit", target=edit_target),
+            source=f"authorization_matrix:{role}:review_edit",
+        )
+
+        approval_target = f"approve-{role}"
+        if expected_operations["review_approve"] == 202:
+            seed_status = request_status(
+                role="reviewer",
+                endpoint="/api/review-events",
+                method="POST",
+                data=review_event(action="edit", target=approval_target),
+                source=(
+                    "authorization_matrix:"
+                    f"{role}:preceding_reviewer_edit"
+                ),
+            )
+            if seed_status != 202:
+                raise AssertionError(
+                    f"authorization approval probe seed failed: {seed_status}"
+                )
+        role_observed["review_approve"] = request_status(
+            role=role,
+            endpoint="/api/review-events",
+            method="POST",
+            data=review_event(action="approve", target=approval_target),
+            source=f"authorization_matrix:{role}:review_approve",
+        )
+        role_observed["template_manage"] = request_status(
+            role=role,
+            endpoint="/api/templates",
+            method="POST",
+            data="{not valid json",
+            source=f"authorization_matrix:{role}:template_manage",
+        )
+        role_observed["audit_events_read"] = request_status(
+            role=role,
+            endpoint="/api/review-events",
+            method="GET",
+            source=f"authorization_matrix:{role}:audit_events_read",
+        )
+        if role_observed != expected_operations:
+            raise AssertionError(
+                "sensitive authorization matrix mismatch for "
+                f"{role}: expected {expected_operations}, observed {role_observed}"
+            )
+        sensitive_observed[role] = role_observed
+
+    return {
+        "read": read_observed,
+        "sensitive": sensitive_observed,
+    }
 
 
 @contextmanager
@@ -2186,16 +2545,23 @@ def run_browser_e2e(
     job_response_path = run_dir / "job-response.json"
     review_events_path = run_dir / "review-events.json"
     rerun_package_path = run_dir / "rerun-package.json"
-    auth_token = uuid.uuid4().hex
-    approver_actor = f"e2e-{uuid.uuid4().hex}"
+    role_tokens = {
+        role: uuid.uuid4().hex for role in AUTHORIZATION_READ_MATRIX
+    }
+    role_actors = {
+        role: f"e2e-{role}-{uuid.uuid4().hex}"
+        for role in AUTHORIZATION_READ_MATRIX
+    }
+    auth_token = role_tokens["approver"]
+    approver_actor = role_actors["approver"]
     source_sha256 = _sha256(FIXTURE_PATH)
 
     with tempfile.TemporaryDirectory(prefix="veridoc-browser-e2e-") as state_dir:
         high_risk_fixture = _high_risk_fixture()
         with _poc_server(
             Path(state_dir),
-            auth_token=auth_token,
-            approver_actor=approver_actor,
+            role_tokens=role_tokens,
+            role_actors=role_actors,
         ) as base_url, _acceptance_network_boundary(
             base_url
         ) as network_boundary, sync_playwright() as playwright:
@@ -2213,12 +2579,127 @@ def run_browser_e2e(
             tracing_started = False
             raw_trace_path = Path(state_dir) / "trace.zip"
             try:
-                page.goto(base_url, wait_until="domcontentloaded")
-                page.locator("#auth-token").fill(auth_token)
-                page.locator("#save-auth-token").click()
+                role_matrix = _probe_authorization_matrix(
+                    context.request,
+                    base_url=base_url,
+                    role_tokens=role_tokens,
+                    network_boundary=network_boundary,
+                )
+                lifecycle_states: list[dict[str, Any]] = []
+                with page.expect_response(
+                    lambda response: (
+                        response.request.method == "GET"
+                        and response.url == base_url + "/api/jobs"
+                    )
+                ) as missing_response_info:
+                    page.goto(base_url, wait_until="domcontentloaded")
+                missing_response = missing_response_info.value
+                missing_body = _json_response(missing_response)
+                expect(
+                    page.locator('#auth-status[data-auth-state="missing"]')
+                ).to_be_visible()
+                lifecycle_states.append(
+                    {
+                        "state": "missing",
+                        "status": missing_response.status,
+                        "error": missing_body.get("error"),
+                    }
+                )
+
+                with page.expect_response(
+                    lambda response: (
+                        response.request.method == "GET"
+                        and response.url == base_url + "/api/jobs"
+                    )
+                ) as rejected_response_info:
+                    page.locator("#auth-token").fill(
+                        f"expired-{uuid.uuid4().hex}"
+                    )
+                    page.locator("#save-auth-token").click()
+                rejected_response = rejected_response_info.value
+                rejected_body = _json_response(rejected_response)
+                expect(
+                    page.locator('#auth-status[data-auth-state="rejected"]')
+                ).to_be_visible()
+                lifecycle_states.append(
+                    {
+                        "state": "rejected",
+                        "status": rejected_response.status,
+                        "error": rejected_body.get("error"),
+                    }
+                )
+
+                with page.expect_response(
+                    lambda response: (
+                        response.request.method == "GET"
+                        and response.url == base_url + "/api/jobs"
+                    )
+                ):
+                    page.locator("#auth-token").fill(role_tokens["operator"])
+                    page.locator("#save-auth-token").click()
+                expect(
+                    page.locator('#auth-status[data-auth-state="configured"]')
+                ).to_be_visible()
+                page.locator('[data-nav-target="audit"]').click()
+                with page.expect_response(
+                    lambda response: (
+                        response.request.method == "GET"
+                        and response.url == base_url + "/api/review-events"
+                    )
+                ) as forbidden_response_info:
+                    page.locator("#refresh-audit").click()
+                forbidden_response = forbidden_response_info.value
+                forbidden_body = _json_response(forbidden_response)
+                expect(
+                    page.locator('#auth-status[data-auth-state="forbidden"]')
+                ).to_be_visible()
+                lifecycle_states.append(
+                    {
+                        "state": "forbidden",
+                        "status": forbidden_response.status,
+                        "error": forbidden_body.get("error"),
+                        "role": "operator",
+                    }
+                )
+
+                with page.expect_response(
+                    lambda response: (
+                        response.request.method == "GET"
+                        and response.url == base_url + "/api/jobs"
+                    )
+                ) as cleared_response_info:
+                    page.locator("#clear-auth-token").click()
+                cleared_response = cleared_response_info.value
+                cleared_body = _json_response(cleared_response)
+                expect(
+                    page.locator('#auth-status[data-auth-state="missing"]')
+                ).to_be_visible()
+                lifecycle_states.append(
+                    {
+                        "state": "cleared",
+                        "status": cleared_response.status,
+                        "error": cleared_body.get("error"),
+                    }
+                )
+
+                with page.expect_response(
+                    lambda response: (
+                        response.request.method == "GET"
+                        and response.url == base_url + "/api/jobs"
+                    )
+                ) as reauthenticated_response_info:
+                    page.locator("#auth-token").fill(auth_token)
+                    page.locator("#save-auth-token").click()
+                reauthenticated_response = reauthenticated_response_info.value
                 expect(page.locator('#auth-status[data-auth-state="configured"]')).to_be_visible()
-                page.locator("#auth-token").fill("")
                 expect(page.locator("#auth-token")).to_have_value("")
+                lifecycle_states.append(
+                    {
+                        "state": "re_authenticated",
+                        "status": reauthenticated_response.status,
+                        "role": "approver",
+                    }
+                )
                 context.tracing.start(screenshots=True, snapshots=True, sources=True)
                 tracing_started = True
                 page.locator('[data-nav-target="upload"]').click()
@@ -2354,6 +2835,59 @@ def run_browser_e2e(
                     raise AssertionError(
                         "browser approval target did not expose authoritative review "
                         "provenance"
+                    )
+                review_original_text = review_item.get("text")
+                review_warnings = review_item.get("warnings", [])
+                if (
+                    not isinstance(review_original_text, str)
+                    or not isinstance(review_warnings, list)
+                    or not all(
+                        isinstance(warning, str) for warning in review_warnings
+                    )
+                ):
+                    raise AssertionError(
+                        "browser approval target did not expose valid review text"
+                    )
+                network_boundary.observe_http_attempt(
+                    base_url + "/api/review-events",
+                    method="POST",
+                    source="playwright_api_request:preceding_reviewer_edit",
+                )
+                preceding_review_response = context.request.post(
+                    base_url + "/api/review-events",
+                    headers={
+                        "Authorization": (
+                            f"Bearer {role_tokens['reviewer']}"
+                        )
+                    },
+                    data={
+                        "audit_event": {
+                            "event_type": (
+                                "conversion_review.action_requested"
+                            ),
+                            "action": "edit",
+                            "conversion_id": conversion_id,
+                            "document_id": review_document_id,
+                            "block_id": review_block_id,
+                            "source_page": review_source_page,
+                            "source_bbox": review_source_bbox,
+                            "original_text": review_original_text,
+                            "revised_text": review_original_text,
+                            "warnings": review_warnings,
+                        }
+                    },
+                )
+                if preceding_review_response.status != 202:
+                    raise AssertionError(
+                        "preceding reviewer edit was not accepted: "
+                        f"{preceding_review_response.status}"
+                    )
+                preceding_review_event = _json_response(
+                    preceding_review_response
+                ).get("audit_event")
+                if not isinstance(preceding_review_event, dict):
+                    raise AssertionError(
+                        "preceding reviewer edit did not return an audit event"
                     )
                 _keyboard_activate(
                     page,
@@ -2727,6 +3261,28 @@ def run_browser_e2e(
                     "id": f"local-principal:{approver_actor}",
                     "role": "approver",
                 }
+                expected_preceding_reviewer_actor = {
+                    "id": (
+                        "local-principal:"
+                        f"{role_actors['reviewer']}"
+                    ),
+                    "role": "reviewer",
+                }
+                preceding_review_event, _preceding_review_event_count = (
+                    _require_matching_event(
+                        review_events,
+                        expected_fields={
+                            "action": "edit",
+                            "conversion_id": conversion_id,
+                            "document_id": review_document_id,
+                            "block_id": review_block_id,
+                            "actor": expected_preceding_reviewer_actor,
+                            "source_page": review_source_page,
+                            "source_bbox": review_source_bbox,
+                        },
+                        description="preceding reviewer edit audit event",
+                    )
+                )
                 review_event, approval_event_count = _require_matching_event(
                     review_events,
                     expected_fields={
@@ -2769,6 +3325,27 @@ def run_browser_e2e(
                     "network_observation": {
                         **network_boundary.result(),
                         "configured_endpoints": network_boundary.configured_endpoints,
+                    },
+                    "authorization": {
+                        "decision_revision": AUTHORIZATION_DECISION_REVISION,
+                        "role_matrix": role_matrix,
+                        "token_lifecycle": {
+                            "states": lifecycle_states,
+                            "re_authenticated_role": "approver",
+                        },
+                        "segregation": {
+                            "preceding_action": "edit",
+                            "reviewer_role": "reviewer",
+                            "approver_role": "approver",
+                            "reviewer_actor": preceding_review_event.get(
+                                "actor"
+                            ),
+                            "approver_actor": review_actor,
+                            "distinct_actor": (
+                                preceding_review_event.get("actor", {}).get("id")
+                                != review_actor.get("id")
+                            ),
+                        },
                     },
                     "correlation": {
                         "run_id": run_id,
@@ -2927,7 +3504,9 @@ def run_browser_e2e(
                 if tracing_started:
                     context.tracing.stop(path=str(raw_trace_path))
                     _retain_redacted_trace(
-                        raw_trace_path, trace_path, secret=auth_token
+                        raw_trace_path,
+                        trace_path,
+                        secrets=role_tokens,
                     )
                 context.close()
                 browser.close()

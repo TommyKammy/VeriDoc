@@ -1124,8 +1124,16 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertEqual([], payload["carryovers"]["phase14"])
         self.assertEqual("fail", payload["summary"]["overall_decision"])
         self.assertEqual(
-            {"pass": 5, "fail": 15},
+            {"pass": 6, "fail": 14},
             payload["summary"]["decision_counts"],
+        )
+        self.assertEqual(
+            "pass",
+            next(
+                item
+                for item in payload["items"]
+                if item["item_id"] == "AC-AUTH"
+            )["decision"],
         )
         open_decisions = {
             item["item_id"]: item
