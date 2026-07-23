@@ -30,6 +30,7 @@ MVP_EVALUATION_MANIFEST_PATH = REPO_ROOT / "datasets" / "mvp_evaluation_manifest
 MVP_ACCEPTANCE_TRACEABILITY_PATH = (
     REPO_ROOT / "docs" / "mvp-acceptance-traceability.md"
 )
+MVP_SCOPE_DECISIONS_PATH = REPO_ROOT / "docs" / "mvp-scope-decisions.md"
 PYMUPDF_AVAILABLE = importlib.util.find_spec("pymupdf") is not None
 
 
@@ -1081,6 +1082,14 @@ class EvaluateDatasetTest(unittest.TestCase):
             payload["evidence_snapshot"]["harness_schema_version"],
         )
         self.assertRegex(payload["evidence_snapshot"]["sha256"], r"^[0-9a-f]{64}$")
+        self.assertEqual(
+            "docs/mvp-scope-decisions.md",
+            payload["evidence_snapshot"]["scope_decision_source"],
+        )
+        self.assertRegex(
+            payload["evidence_snapshot"]["scope_decision_sha256"],
+            r"^[0-9a-f]{64}$",
+        )
         expected_ids = {
             "AC-UI",
             "AC-TEMPLATE",
@@ -1114,6 +1123,271 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertIn("OD-SEGREGATION", payload["carryovers"]["phase13"])
         self.assertEqual([], payload["carryovers"]["phase14"])
         self.assertEqual("fail", payload["summary"]["overall_decision"])
+        self.assertEqual(
+            {"pass": 5, "fail": 15},
+            payload["summary"]["decision_counts"],
+        )
+        open_decisions = {
+            item["item_id"]: item
+            for item in payload["items"]
+            if item["item_id"].startswith("OD-")
+        }
+        self.assertEqual(
+            {
+                "OD-TEMPLATES",
+                "OD-EFFICIENCY-SCOPE",
+                "OD-SEGREGATION",
+            },
+            set(open_decisions),
+        )
+        for item in open_decisions.values():
+            self.assertEqual(
+                {"status": "pass", "failures": []},
+                item["evidence"]["decision_input_validation"],
+            )
+
+    def test_mvp_scope_decision_input_validation_fails_closed_on_drift(self) -> None:
+        decision_record = MVP_SCOPE_DECISIONS_PATH.read_text(encoding="utf-8")
+        manifest = json.loads(MVP_EVALUATION_MANIFEST_PATH.read_text(encoding="utf-8"))
+        from services.api.poc_web import ROLE_PERMISSIONS
+
+        parsed_role_permissions = evaluate_dataset.mvp_role_permissions_from_source(
+            REPO_ROOT / "services" / "api" / "poc_web.py"
+        )
+        self.assertEqual(
+            {
+                role: frozenset(permissions)
+                for role, permissions in ROLE_PERMISSIONS.items()
+            },
+            parsed_role_permissions,
+        )
+
+        current = evaluate_dataset.mvp_scope_decision_input_failures(
+            decision_record=decision_record,
+            manifest=manifest,
+            manifest_source="datasets/mvp_evaluation_manifest_v1.json",
+            role_permissions=ROLE_PERMISSIONS,
+        )
+        self.assertEqual(
+            {
+                "OD-TEMPLATES": (),
+                "OD-EFFICIENCY-SCOPE": (),
+                "OD-SEGREGATION": (),
+            },
+            current,
+        )
+
+        for label, original, replacement in (
+            (
+                "cohort",
+                "at least three designated document reviewers",
+                "at least two designated document reviewers",
+            ),
+            (
+                "training",
+                "one fixed, unscored practice task per arm",
+                "two fixed, unscored practice tasks per arm",
+            ),
+            (
+                "timing",
+                "start when the participant receives the source",
+                "start after the participant reviews the source",
+            ),
+            (
+                "comparison",
+                "paired cohort median",
+                "unpaired cohort median",
+            ),
+            (
+                "rejection",
+                "unbalanced ordering",
+                "unrecorded ordering",
+            ),
+        ):
+            with self.subTest(efficiency_scope_drift=label):
+                drifted_efficiency_record = decision_record.replace(
+                    original,
+                    replacement,
+                )
+                self.assertNotEqual(decision_record, drifted_efficiency_record)
+                efficiency_failures = (
+                    evaluate_dataset.mvp_scope_decision_input_failures(
+                        decision_record=drifted_efficiency_record,
+                        manifest=manifest,
+                        manifest_source="datasets/mvp_evaluation_manifest_v1.json",
+                        role_permissions=ROLE_PERMISSIONS,
+                    )
+                )
+                self.assertEqual((), efficiency_failures["OD-TEMPLATES"])
+                self.assertTrue(efficiency_failures["OD-EFFICIENCY-SCOPE"])
+                self.assertEqual((), efficiency_failures["OD-SEGREGATION"])
+
+        tampered_efficiency_pin = decision_record.replace(
+            "3d9d05671895ec8d6e8b14f44b6a8dd7f99aa17b7b65871b78fb56a49966b6fb",
+            "0" * 64,
+        )
+        pin_failures = evaluate_dataset.mvp_scope_decision_input_failures(
+            decision_record=tampered_efficiency_pin,
+            manifest=manifest,
+            manifest_source="datasets/mvp_evaluation_manifest_v1.json",
+            role_permissions=ROLE_PERMISSIONS,
+        )
+        self.assertEqual((), pin_failures["OD-TEMPLATES"])
+        self.assertTrue(pin_failures["OD-EFFICIENCY-SCOPE"])
+        self.assertEqual((), pin_failures["OD-SEGREGATION"])
+
+        unapproved_revision = decision_record.replace(
+            "Decision revision: `p12g-02-v1`",
+            "Decision revision: `p12g-02-v2`",
+        )
+        self.assertNotEqual(decision_record, unapproved_revision)
+        revision_failures = evaluate_dataset.mvp_scope_decision_input_failures(
+            decision_record=unapproved_revision,
+            manifest=manifest,
+            manifest_source="datasets/mvp_evaluation_manifest_v1.json",
+            role_permissions=ROLE_PERMISSIONS,
+        )
+        self.assertTrue(revision_failures["OD-TEMPLATES"])
+        self.assertTrue(revision_failures["OD-EFFICIENCY-SCOPE"])
+        self.assertTrue(revision_failures["OD-SEGREGATION"])
+
+        manifest_failures = None
+        for label, mutate in (
+            (
+                "source policy",
+                lambda changed: changed.__setitem__(
+                    "source_policy",
+                    "different-source-policy",
+                ),
+            ),
+            (
+                "case id",
+                lambda changed: changed["cases"][0].__setitem__(
+                    "id",
+                    "changed-case-id",
+                ),
+            ),
+            (
+                "fixture binding",
+                lambda changed: changed["cases"][0].__setitem__(
+                    "fixture_path",
+                    "datasets/fixtures/word/changed.docx",
+                ),
+            ),
+        ):
+            with self.subTest(drift=label):
+                drifted_manifest = copy.deepcopy(manifest)
+                mutate(drifted_manifest)
+                manifest_failures = (
+                    evaluate_dataset.mvp_scope_decision_input_failures(
+                        decision_record=decision_record,
+                        manifest=drifted_manifest,
+                        manifest_source="datasets/mvp_evaluation_manifest_v1.json",
+                        role_permissions=ROLE_PERMISSIONS,
+                    )
+                )
+                self.assertTrue(manifest_failures["OD-TEMPLATES"])
+                self.assertEqual((), manifest_failures["OD-EFFICIENCY-SCOPE"])
+                self.assertEqual((), manifest_failures["OD-SEGREGATION"])
+        self.assertIsNotNone(manifest_failures)
+
+        for label, original, replacement in (
+            (
+                "unauthenticated deny path",
+                "unauthenticated requests cannot use protected API operations",
+                "unauthenticated requests may use protected API operations",
+            ),
+            (
+                "distinct preceding actor",
+                "target from a distinct authenticated actor",
+                "target from the same authenticated actor",
+            ),
+            (
+                "Phase 13 deferral",
+                "deferral that weakens an MVP deny path",
+                "deferral that removes an MVP deny path",
+            ),
+        ):
+            with self.subTest(segregation_scope_drift=label):
+                drifted_segregation_record = decision_record.replace(
+                    original,
+                    replacement,
+                )
+                self.assertNotEqual(decision_record, drifted_segregation_record)
+                segregation_failures = (
+                    evaluate_dataset.mvp_scope_decision_input_failures(
+                        decision_record=drifted_segregation_record,
+                        manifest=manifest,
+                        manifest_source="datasets/mvp_evaluation_manifest_v1.json",
+                        role_permissions=ROLE_PERMISSIONS,
+                    )
+                )
+                self.assertEqual((), segregation_failures["OD-TEMPLATES"])
+                self.assertEqual(
+                    (),
+                    segregation_failures["OD-EFFICIENCY-SCOPE"],
+                )
+                self.assertTrue(segregation_failures["OD-SEGREGATION"])
+
+        tampered_segregation_pin = decision_record.replace(
+            "74d83d2d028c1ba79fffd6742ab9f13f7e345932248e36b86289e16c93a01476",
+            "0" * 64,
+        )
+        segregation_pin_failures = (
+            evaluate_dataset.mvp_scope_decision_input_failures(
+                decision_record=tampered_segregation_pin,
+                manifest=manifest,
+                manifest_source="datasets/mvp_evaluation_manifest_v1.json",
+                role_permissions=ROLE_PERMISSIONS,
+            )
+        )
+        self.assertEqual((), segregation_pin_failures["OD-TEMPLATES"])
+        self.assertEqual(
+            (),
+            segregation_pin_failures["OD-EFFICIENCY-SCOPE"],
+        )
+        self.assertTrue(segregation_pin_failures["OD-SEGREGATION"])
+
+        drifted_roles = {
+            role: set(permissions)
+            for role, permissions in ROLE_PERMISSIONS.items()
+        }
+        drifted_roles["viewer"].add("templates:manage")
+        role_failures = evaluate_dataset.mvp_scope_decision_input_failures(
+            decision_record=decision_record,
+            manifest=manifest,
+            manifest_source="datasets/mvp_evaluation_manifest_v1.json",
+            role_permissions=drifted_roles,
+        )
+        self.assertEqual((), role_failures["OD-TEMPLATES"])
+        self.assertEqual((), role_failures["OD-EFFICIENCY-SCOPE"])
+        self.assertTrue(role_failures["OD-SEGREGATION"])
+
+        unapproved = decision_record.replace(
+            "- Approval status: `approved`",
+            "- Approval status: `pending`",
+        )
+        unapproved_failures = evaluate_dataset.mvp_scope_decision_input_failures(
+            decision_record=unapproved,
+            manifest=manifest,
+            manifest_source="datasets/mvp_evaluation_manifest_v1.json",
+            role_permissions=ROLE_PERMISSIONS,
+        )
+        self.assertTrue(all(unapproved_failures.values()))
+
+        drift_items = evaluate_dataset.mvp_acceptance_traceability_items(
+            MVP_ACCEPTANCE_TRACEABILITY_PATH.read_text(encoding="utf-8"),
+            decision_input_failures=manifest_failures,
+        )
+        template_item = next(
+            item for item in drift_items if item["item_id"] == "OD-TEMPLATES"
+        )
+        self.assertEqual("fail", template_item["decision"])
+        self.assertIn("approved decision input drift", template_item["unmet"])
+        self.assertEqual(
+            "fail",
+            template_item["evidence"]["decision_input_validation"]["status"],
+        )
 
     def test_mvp_acceptance_report_rejects_missing_traceability_row(self) -> None:
         traceability = MVP_ACCEPTANCE_TRACEABILITY_PATH.read_text(encoding="utf-8")
@@ -1234,13 +1508,28 @@ class EvaluateDatasetTest(unittest.TestCase):
             traceability_path = (
                 checkout / evaluate_dataset.DEFAULT_MVP_ACCEPTANCE_TRACEABILITY
             )
+            scope_decision_path = (
+                checkout / evaluate_dataset.DEFAULT_MVP_SCOPE_DECISIONS
+            )
+            role_source_path = checkout / "services" / "api" / "poc_web.py"
             manifest_path.parent.mkdir(parents=True)
             fixture_manifest_path.parent.mkdir(parents=True)
             traceability_path.parent.mkdir(parents=True)
+            role_source_path.parent.mkdir(parents=True)
             manifest_path.write_text("{}\n", encoding="utf-8")
             fixture_manifest_path.write_text("{}\n", encoding="utf-8")
             traceability_path.write_text(
                 "<!-- alternate checkout -->\n" + traceability,
+                encoding="utf-8",
+            )
+            scope_decision_path.write_text(
+                MVP_SCOPE_DECISIONS_PATH.read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            role_source_path.write_text(
+                (REPO_ROOT / "services" / "api" / "poc_web.py").read_text(
+                    encoding="utf-8"
+                ),
                 encoding="utf-8",
             )
             harness = evaluate_dataset.MVPHarnessReport(
@@ -1259,6 +1548,14 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertEqual(
             evaluate_dataset.DEFAULT_MVP_ACCEPTANCE_TRACEABILITY,
             report.traceability_source,
+        )
+        template_item = next(
+            item for item in report.items if item["item_id"] == "OD-TEMPLATES"
+        )
+        self.assertEqual("fail", template_item["decision"])
+        self.assertEqual(
+            "fail",
+            template_item["evidence"]["decision_input_validation"]["status"],
         )
 
     def test_mvp_processing_time_evaluation_enforces_manifest_threshold(self) -> None:
