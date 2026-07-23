@@ -5163,9 +5163,24 @@ def test_convert_scanned_pdf_exposes_trusted_ocr_fail_closed_boundary() -> None:
         "remediation": expected_warning["remediation"],
     }
     assert result["warning_details"] == warning_details(result["warnings"])
-    assert expected_warning in result["review_items"][0]["warning_details"]
-    assert expected_warning in result["review_items"][0]["warnings"]
-    assert result["review_items"][0]["text"] == (
+    review_item = result["review_items"][0]
+    assert expected_warning in review_item["warning_details"]
+    assert all(isinstance(warning, str) for warning in review_item["warnings"])
+    assert expected_warning not in review_item["warnings"]
+    assert poc_web._validate_review_event(
+        {
+            "event_type": "conversion_review.action_requested",
+            "action": "approve",
+            "conversion_id": result["conversion_id"],
+            "document_id": review_item["document_id"],
+            "block_id": review_item["block_id"],
+            "source_page": review_item["source_page"],
+            "original_text": review_item["text"],
+            "revised_text": review_item["text"],
+            "warnings": review_item["warnings"],
+        }
+    )["warnings"] == review_item["warnings"]
+    assert review_item["text"] == (
         "PDF text extraction produced no text blocks for this page."
     )
     primary_artifact = next(

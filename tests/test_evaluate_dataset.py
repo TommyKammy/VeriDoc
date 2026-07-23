@@ -2227,6 +2227,22 @@ class EvaluateDatasetTest(unittest.TestCase):
                 ].pop("remediation"),
                 "conversion_setting",
             ),
+            (
+                "incorrect OCR boundary source page",
+                lambda payload: payload["ocr_boundary"].__setitem__(
+                    "source_pages",
+                    [2],
+                ),
+                "source_linkage",
+            ),
+            (
+                "incorrect OCR review item source page",
+                lambda payload: payload["review_items"][0].__setitem__(
+                    "source_page",
+                    2,
+                ),
+                "source_linkage",
+            ),
         )
         for name, mutate, expected_failed_check in scenarios:
             with self.subTest(name=name):
@@ -10208,6 +10224,28 @@ class EvaluateDatasetTest(unittest.TestCase):
             result["artifact_expectation_failures"],
         )
         self.assertIn("artifact expectation mismatch", str(result["failure_reason"]))
+
+    @unittest.skipUnless(PYMUPDF_AVAILABLE, "PyMuPDF eval dependency is not installed")
+    def test_p9_harness_accepts_valid_scanned_pdf_fail_closed_boundary(self) -> None:
+        manifest = json.loads(
+            (REPO_ROOT / "datasets" / "fixtures" / "manifest.json").read_text()
+        )
+        fixture = next(
+            fixture
+            for fixture in manifest["fixtures"]
+            if fixture["id"] == "scanned-pdf-representative"
+        )
+        result = evaluate_dataset.p9_conversion_result(
+            {**fixture, "sample_id": "p9-scanned-ocr-boundary"},
+            fixture_path=REPO_ROOT / fixture["path"],
+            mode="scanned_pdf_ocr",
+            llm_scenario="no_llm",
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("blocked", result["use_ocr_status"])
+        self.assertIsNone(result["failure_reason"])
+        self.assertEqual([], result["artifact_expectation_failures"])
 
     def test_p9_harness_validates_declared_pdf_table_size_expectations(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".pdf") as fixture_file:

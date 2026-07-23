@@ -4660,8 +4660,10 @@ def _attach_ocr_boundary_to_review_items(
     for item in review_items:
         if item.get("block_id") not in affected_block_ids:
             continue
-        item["warnings"] = [*item["warnings"], boundary_warning]
-        item["warning_details"] = warning_details(item["warnings"])
+        item["warning_details"] = [
+            *warning_details(item["warnings"]),
+            boundary_warning,
+        ]
 
 
 def _review_items(document_ir: DocumentIRV1) -> list[dict[str, Any]]:

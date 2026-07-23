@@ -5403,14 +5403,32 @@ def p9_conversion_result(
     use_ocr = conversion_settings.get("use_ocr", {})
     conversion_plan = audit.get("conversion_plan", {}) if audit else {}
     external_ai_api_guard_violation = p9_external_ai_api_guard_violation(audit)
-    allowed_runtime_warning_prefixes = (
-        ("LLM conversion plan fallback ",)
-        if llm_requested
+    scanned_pdf_expectations = (
+        p9_expectations_for_mode(fixture, mode)
+        if mode == "scanned_pdf_ocr"
+        else None
+    )
+    ocr_boundary_expected = (
+        isinstance(scanned_pdf_expectations, Mapping)
+        and isinstance(scanned_pdf_expectations.get("ocr_boundary"), Mapping)
+    )
+    allowed_runtime_warning_prefixes: tuple[str, ...] = ()
+    if (
+        llm_requested
         and isinstance(use_llm, dict)
         and use_llm.get("status") == "blocked"
         and use_llm.get("enabled") is False
-        else ()
-    )
+    ):
+        allowed_runtime_warning_prefixes += ("LLM conversion plan fallback ",)
+    if (
+        ocr_boundary_expected
+        and isinstance(use_ocr, Mapping)
+        and use_ocr.get("status") == "blocked"
+        and use_ocr.get("enabled") is False
+    ):
+        allowed_runtime_warning_prefixes += (
+            "OCR conversion setting is not implemented in the local PoC API",
+        )
     artifacts = converted.get("artifacts")
     artifact_list = artifacts if isinstance(artifacts, list) else []
     primary_artifact = p9_primary_artifact(artifact_list)
@@ -5424,6 +5442,7 @@ def p9_conversion_result(
     conversion_status = converted.get("status")
     ir_generated = isinstance(converted.get("document_ir"), dict)
     audit_present = audit is not None
+    content_validation: dict[str, Any] = {}
     artifact_expectation_failures = p9_validate_artifact_expectations(
         fixture=fixture,
         conversion_mode=conversion_mode,
@@ -5431,6 +5450,8 @@ def p9_conversion_result(
         primary_artifact=primary_artifact,
         warnings=warnings,
         allowed_runtime_warning_prefixes=allowed_runtime_warning_prefixes,
+        require_content_validation=ocr_boundary_expected,
+        content_validation=content_validation,
     )
     row_failures: list[str] = []
     if conversion_status == "blocked":
@@ -5451,7 +5472,27 @@ def p9_conversion_result(
         row_failures.append(
             f"expected exactly one primary artifact, got {primary_artifact_count}"
         )
-    if mode == "scanned_pdf_ocr":
+    if mode == "scanned_pdf_ocr" and ocr_boundary_expected:
+        ocr_boundary_evaluation = mvp_scanned_pdf_boundary_evaluation(
+            {
+                **fixture,
+                "category": "scanned_pdf",
+                "expected_status": "requires_review",
+            },
+            converted,
+            content_validation=content_validation,
+        )
+        if ocr_boundary_evaluation["status"] != "pass":
+            boundary_failures = ocr_boundary_evaluation.get("failures")
+            failure_detail = (
+                "; ".join(str(item) for item in boundary_failures)
+                if isinstance(boundary_failures, list) and boundary_failures
+                else "unknown boundary mismatch"
+            )
+            row_failures.append(
+                f"OCR fail-closed boundary validation failed: {failure_detail}"
+            )
+    elif mode == "scanned_pdf_ocr":
         use_ocr_status = use_ocr.get("status") if isinstance(use_ocr, dict) else None
         if use_ocr_status != "enabled":
             row_failures.append(f"OCR status {use_ocr_status!r} is not enabled")
@@ -6025,6 +6066,10 @@ def mvp_scanned_pdf_boundary_evaluation(
         if isinstance(runtime_boundary, Mapping)
         else None
     )
+    document_ir = converted.get("document_ir")
+    actual_blocks = (
+        document_ir.get("blocks") if isinstance(document_ir, Mapping) else None
+    )
     runtime_boundary_matches = (
         isinstance(runtime_boundary, Mapping)
         and runtime_boundary.get("status") == expected_boundary["status"]
@@ -6083,16 +6128,55 @@ def mvp_scanned_pdf_boundary_evaluation(
         item
         for item in review_items
         if isinstance(item, Mapping)
-        and item.get("block_id") in affected_ids
+        and isinstance(item.get("block_id"), str)
+        and item["block_id"] in affected_ids
     ] if isinstance(review_items, list) else []
+    affected_review_item_ids = [
+        item.get("block_id")
+        for item in affected_review_items
+    ]
     review_item_warning_matches = (
         bool(affected_ids)
         and isinstance(review_items, list)
         and len(review_items) == len(affected_ids)
         and len(affected_review_items) == len(affected_ids)
+        and set(affected_review_item_ids) == affected_ids
         and all(
             isinstance(item.get("warning_details"), list)
             and expected_warning in item["warning_details"]
+            for item in affected_review_items
+        )
+    )
+    affected_blocks = [
+        block
+        for block in actual_blocks
+        if isinstance(block, Mapping)
+        and isinstance(block.get("id"), str)
+        and block["id"] in affected_ids
+    ] if isinstance(actual_blocks, list) else []
+    affected_blocks_by_id = {
+        block["id"]: block
+        for block in affected_blocks
+    }
+    affected_block_pages = [
+        block.get("source_page")
+        for block in affected_blocks
+    ]
+    source_linkage_matches = (
+        bool(affected_ids)
+        and isinstance(affected_block_ids, list)
+        and len(affected_ids) == len(affected_block_ids)
+        and len(affected_blocks) == len(affected_ids)
+        and all(
+            isinstance(page, int) and not isinstance(page, bool) and page >= 1
+            for page in affected_block_pages
+        )
+        and source_pages == sorted(set(affected_block_pages))
+        and len(affected_review_items) == len(affected_ids)
+        and set(affected_review_item_ids) == affected_ids
+        and all(
+            item.get("source_page")
+            == affected_blocks_by_id[item["block_id"]].get("source_page")
             for item in affected_review_items
         )
     )
@@ -6113,10 +6197,6 @@ def mvp_scanned_pdf_boundary_evaluation(
             for block in expected_blocks
         )
         else []
-    )
-    document_ir = converted.get("document_ir")
-    actual_blocks = (
-        document_ir.get("blocks") if isinstance(document_ir, Mapping) else None
     )
     placeholder_guard_matches = (
         bool(expected_texts)
@@ -6148,6 +6228,7 @@ def mvp_scanned_pdf_boundary_evaluation(
         ("conversion_setting", conversion_setting_matches),
         ("structured_warning", structured_warning_matches),
         ("review_item_warning", review_item_warning_matches),
+        ("source_linkage", source_linkage_matches),
         ("placeholder_guard", placeholder_guard_matches),
         ("artifact_validation", artifact_validation_matches),
         ("fail_closed_status", fail_closed_status_matches),
@@ -6162,10 +6243,13 @@ def mvp_scanned_pdf_boundary_evaluation(
         if not passed
     ]
     content_metrics = content_validation.get("metrics")
-    source_linkage_rate = (
+    artifact_source_linkage_rate = (
         content_metrics.get("source_linkage_rate", 0.0)
         if isinstance(content_metrics, Mapping)
         else 0.0
+    )
+    source_linkage_rate = (
+        artifact_source_linkage_rate if source_linkage_matches else 0.0
     )
     return {
         "status": "fail" if failures else "pass",
