@@ -5119,6 +5119,64 @@ def test_convert_uploaded_pdf_preserves_ocr_low_confidence_from_v0_metadata(
     ]
 
 
+def test_convert_scanned_pdf_exposes_trusted_ocr_fail_closed_boundary() -> None:
+    fixture_path = (
+        REPO_ROOT
+        / "datasets"
+        / "fixtures"
+        / "pdf"
+        / "scanned-pdf-representative.pdf"
+    )
+
+    result = convert_uploaded_document(
+        filename=fixture_path.name,
+        content=fixture_path.read_bytes(),
+        conversion_mode="pdf_to_word",
+    )
+
+    expected_warning = {
+        "code": "OCR_TEXT_LAYER_UNAVAILABLE",
+        "severity": "error",
+        "message": "PDF page has no extractable text layer; OCR is unavailable in the MVP",
+        "remediation": (
+            "Route the source through a separately approved trusted OCR workflow "
+            "before accepting extracted text."
+        ),
+    }
+    assert result["status"] == "requires_review"
+    assert result["ocr_boundary"] == {
+        "status": "blocked",
+        "reason": "text_layer_unavailable",
+        "trusted_ocr_required": True,
+        "affected_block_ids": ["block-0001"],
+        "source_pages": [1],
+        "warning": expected_warning,
+    }
+    assert result["audit"]["ocr_boundary"] == result["ocr_boundary"]
+    assert result["audit"]["conversion_settings"]["use_ocr"] == {
+        "requested": False,
+        "enabled": False,
+        "status": "blocked",
+        "support_status": "unsupported",
+        "reason": "text_layer_unavailable",
+        "message": expected_warning["message"],
+        "remediation": expected_warning["remediation"],
+    }
+    assert result["warning_details"] == warning_details(result["warnings"])
+    assert expected_warning in result["review_items"][0]["warning_details"]
+    assert expected_warning in result["review_items"][0]["warnings"]
+    assert result["review_items"][0]["text"] == (
+        "PDF text extraction produced no text blocks for this page."
+    )
+    primary_artifact = next(
+        artifact for artifact in result["artifacts"] if artifact["kind"] == "primary"
+    )
+    assert primary_artifact["content"]
+    download_payload = json.loads(result["download"]["content"])
+    assert download_payload["ocr_boundary"] == result["ocr_boundary"]
+    assert download_payload["warning_details"] == result["warning_details"]
+
+
 def test_binary_pdf_parser_output_adapts_blocks_before_v1_conversion(monkeypatch) -> None:
     def fake_parse_text_pdf_to_document_ir(upload_path: Path, *, document_id: str) -> dict:
         assert upload_path.read_bytes() == b"%PDF sample bytes"
@@ -14369,6 +14427,7 @@ def test_web_upload_settings_distinguishes_unsupported_and_blocked_states() -> N
     assert "placeholder_api_key" in html
     assert "conversion_settings.use_llm.support_status" in parser.region_fields["conversion-settings"]
     assert "conversion_settings.use_ocr.support_status" in parser.region_fields["conversion-settings"]
+    assert "conversion_settings.use_ocr.remediation" in parser.region_fields["conversion-settings"]
     assert "llm.reason" in parser.region_fields["conversion-settings"]
 
 
@@ -14381,13 +14440,21 @@ def test_web_direct_convert_defines_phase6_review_information_architecture() -> 
     expected_regions = {
         "upload": ["content_base64", "document_ir"],
         "conversion-settings": ["conversion_mode"],
-        "review": ["review_items", "warnings", "document_ir"],
+        "review": [
+            "review_items",
+            "warning_details",
+            "ocr_boundary.warning.remediation",
+            "warnings",
+            "document_ir",
+        ],
         "artifact-downloads": ["artifacts[]", "download", "audit"],
         "detail-json": [
             "conversion_id",
             "document_ir",
             "review_items",
             "warnings",
+            "warning_details",
+            "ocr_boundary",
             "artifacts[]",
             "audit",
         ],
@@ -14408,7 +14475,11 @@ def test_web_direct_convert_defines_phase6_review_information_architecture() -> 
     ]:
         assert "review" in parser.element_regions[element_id]
     assert 'function renderTopLevelWarnings(warnings)' in html
-    assert "renderTopLevelWarnings(result.warning_details || result.warnings || [])" in html
+    assert "const ocrBoundaryWarning = result.ocr_boundary?.warning;" in html
+    assert (
+        "ocrBoundaryWarning ? [...resultWarnings, ocrBoundaryWarning] : resultWarnings"
+        in html
+    )
     for element_id in [
         "artifact-summary",
         "download-link",

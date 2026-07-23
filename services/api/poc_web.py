@@ -53,7 +53,11 @@ from core.llm.conversion_plan import (
 from core.llm.audit_parameters import sanitize_audit_parameters
 from core.parsers.docx_extraction import extract_docx_structure
 from core.parsers.pdf_table_extraction import compare_pdf_table_extractors
-from core.parsers.pdf_text_extraction import MissingPdfExtractorDependency, parse_text_pdf_to_document_ir
+from core.parsers.pdf_text_extraction import (
+    EMPTY_PAGE_REVIEW_TEXT,
+    MissingPdfExtractorDependency,
+    parse_text_pdf_to_document_ir,
+)
 from core.parsers.xlsx_extraction import extract_xlsx_structure
 from core.render.ooxml import (
     render_docx_from_ir,
@@ -63,7 +67,12 @@ from core.render.ooxml import (
 from services.api.artifact_store import default_artifact_store_root
 from services.api.job_queue import JobQueue, JobRecord
 from services.api.persistence_repository import default_database_path
-from services.api.warning_catalog import warning_details
+from services.api.warning_catalog import (
+    OCR_TEXT_LAYER_UNAVAILABLE_MESSAGE,
+    OCR_TRUSTED_WORKFLOW_REMEDIATION,
+    warning_detail,
+    warning_details,
+)
 
 WEB_ROOT = REPO_ROOT / "apps" / "web"
 PDFJS_ROOT = WEB_ROOT / "vendor" / "pdfjs"
@@ -835,6 +844,7 @@ LLM_FALLBACK_WARNING_CODES = {
     "missing_required_model": "llm_fallback_missing_model",
     "schema_invalid": "llm_fallback_schema_invalid",
 }
+OCR_TEXT_LAYER_UNAVAILABLE_REASON = "text_layer_unavailable"
 
 
 def convert_uploaded_document(
@@ -899,7 +909,12 @@ def convert_uploaded_document(
         use_llm=use_llm,
     )
     conversion_settings["use_llm"] = conversion_plan_state["setting"]
+    ocr_boundary = _ocr_fail_closed_boundary(document_ir)
+    if ocr_boundary is not None:
+        conversion_settings["use_ocr"] = _ocr_boundary_conversion_setting(use_ocr)
     review_items = _review_items(document_ir)
+    if ocr_boundary is not None:
+        _attach_ocr_boundary_to_review_items(review_items, ocr_boundary)
     if template_mapping is not None:
         review_items.extend(
             _template_mapping_review_items(
@@ -935,6 +950,7 @@ def convert_uploaded_document(
     if primary_warning is not None:
         warnings.append(primary_warning)
     review_items.extend(_pdf_table_warning_review_items(document_ir, warnings))
+    structured_warning_details = warning_details(warnings)
     audit = {
         "schema_version": CONVERSION_AUDIT_SCHEMA_VERSION,
         "conversion_id": conversion_id,
@@ -971,6 +987,8 @@ def convert_uploaded_document(
         "warnings": {"count": len(warnings)},
         "review_items": {"count": len(review_items)},
     }
+    if ocr_boundary is not None:
+        audit["ocr_boundary"] = ocr_boundary
     if requested_output_format is not None:
         audit["requested_output_format"] = requested_output_format
     if requested_template_id is not None:
@@ -981,9 +999,11 @@ def convert_uploaded_document(
         "validation": asdict(validation),
         "review_items": review_items,
         "warnings": warnings,
-        "warning_details": warning_details(warnings),
+        "warning_details": structured_warning_details,
         "audit": audit,
     }
+    if ocr_boundary is not None:
+        download_payload["ocr_boundary"] = ocr_boundary
     if template_mapping is not None:
         download_payload["template_mapping"] = asdict(template_mapping)
     download_content = _strict_json_bytes(download_payload, indent=2)
@@ -4588,6 +4608,60 @@ def _plain_text_parser_output(text: str) -> dict[str, Any]:
             }
         ]
     }
+
+
+def _ocr_fail_closed_boundary(document_ir: DocumentIRV1) -> dict[str, Any] | None:
+    if document_ir.document.source_type != "pdf":
+        return None
+    affected_blocks = [
+        block
+        for block in document_ir.blocks
+        if (
+            block.text == EMPTY_PAGE_REVIEW_TEXT
+            and block.confidence == 0.0
+            and block.review.requires_review
+        )
+    ]
+    if not affected_blocks:
+        return None
+    return {
+        "status": "blocked",
+        "reason": OCR_TEXT_LAYER_UNAVAILABLE_REASON,
+        "trusted_ocr_required": True,
+        "affected_block_ids": [block.id for block in affected_blocks],
+        "source_pages": sorted({block.source_page for block in affected_blocks}),
+        "warning": warning_detail(
+            {
+                "code": "OCR_TEXT_LAYER_UNAVAILABLE",
+                "message": OCR_TEXT_LAYER_UNAVAILABLE_MESSAGE,
+            }
+        ),
+    }
+
+
+def _ocr_boundary_conversion_setting(requested: bool) -> dict[str, Any]:
+    return {
+        "requested": requested,
+        "enabled": False,
+        "status": "blocked",
+        "support_status": "unsupported",
+        "reason": OCR_TEXT_LAYER_UNAVAILABLE_REASON,
+        "message": OCR_TEXT_LAYER_UNAVAILABLE_MESSAGE,
+        "remediation": OCR_TRUSTED_WORKFLOW_REMEDIATION,
+    }
+
+
+def _attach_ocr_boundary_to_review_items(
+    review_items: list[dict[str, Any]],
+    ocr_boundary: dict[str, Any],
+) -> None:
+    affected_block_ids = set(ocr_boundary["affected_block_ids"])
+    boundary_warning = ocr_boundary["warning"]
+    for item in review_items:
+        if item.get("block_id") not in affected_block_ids:
+            continue
+        item["warnings"] = [*item["warnings"], boundary_warning]
+        item["warning_details"] = warning_details(item["warnings"])
 
 
 def _review_items(document_ir: DocumentIRV1) -> list[dict[str, Any]]:

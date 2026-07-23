@@ -6,6 +6,9 @@ from pathlib import Path
 from typing import Any
 
 
+EMPTY_PAGE_REVIEW_TEXT = "PDF text extraction produced no text blocks for this page."
+
+
 @dataclass(frozen=True)
 class TextBBox:
     x: float
@@ -143,7 +146,7 @@ def _review_required_empty_page_block(
     return {
         "id": f"block-{block_index:03d}",
         "type": "paragraph",
-        "text": "PDF text extraction produced no text blocks for this page.",
+        "text": EMPTY_PAGE_REVIEW_TEXT,
         "value_metadata": {
             "source_page": page.page_number,
             "bbox": {

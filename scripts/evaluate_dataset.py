@@ -5211,7 +5211,7 @@ def p9_validate_artifact_expectations(
         return []
     artifact_content = primary_artifact.get("content")
     artifact_format = primary_artifact.get("format")
-    if not isinstance(artifact_content, bytes):
+    if not isinstance(artifact_content, bytes) or not artifact_content:
         return ["primary artifact content is missing"]
     artifact_format_mismatch = (
         expected_artifact_format is not None
@@ -5965,6 +5965,236 @@ def mvp_audit_failures(
     return failures
 
 
+def mvp_scanned_pdf_boundary_evaluation(
+    case: Mapping[str, Any],
+    converted: Mapping[str, Any],
+    *,
+    content_validation: Mapping[str, Any],
+) -> dict[str, Any]:
+    if case.get("category") != "scanned_pdf":
+        return {
+            "status": "not_applicable",
+            "checks": [],
+            "metrics": {},
+            "evidence": {},
+            "failures": [],
+        }
+
+    expectations = case.get("scanned_pdf_ocr_expectations")
+    expected_boundary = (
+        expectations.get("ocr_boundary")
+        if isinstance(expectations, Mapping)
+        else None
+    )
+    required_boundary_fields = (
+        "status",
+        "reason",
+        "warning_code",
+        "warning_severity",
+        "warning_message",
+        "remediation",
+    )
+    if not isinstance(expected_boundary, Mapping) or any(
+        not isinstance(expected_boundary.get(field), str)
+        or not str(expected_boundary[field]).strip()
+        for field in required_boundary_fields
+    ):
+        failure = "scanned PDF OCR boundary expectations are missing or malformed"
+        return {
+            "status": "fail",
+            "checks": [{"id": "manifest_contract", "status": "fail"}],
+            "metrics": {},
+            "evidence": {},
+            "failures": [failure],
+        }
+
+    expected_warning = {
+        "code": expected_boundary["warning_code"],
+        "severity": expected_boundary["warning_severity"],
+        "message": expected_boundary["warning_message"],
+        "remediation": expected_boundary["remediation"],
+    }
+    runtime_boundary = converted.get("ocr_boundary")
+    affected_block_ids = (
+        runtime_boundary.get("affected_block_ids")
+        if isinstance(runtime_boundary, Mapping)
+        else None
+    )
+    source_pages = (
+        runtime_boundary.get("source_pages")
+        if isinstance(runtime_boundary, Mapping)
+        else None
+    )
+    runtime_boundary_matches = (
+        isinstance(runtime_boundary, Mapping)
+        and runtime_boundary.get("status") == expected_boundary["status"]
+        and runtime_boundary.get("reason") == expected_boundary["reason"]
+        and runtime_boundary.get("trusted_ocr_required") is True
+        and runtime_boundary.get("warning") == expected_warning
+        and isinstance(affected_block_ids, list)
+        and bool(affected_block_ids)
+        and all(
+            isinstance(block_id, str) and block_id
+            for block_id in affected_block_ids
+        )
+        and isinstance(source_pages, list)
+        and bool(source_pages)
+        and all(
+            isinstance(page, int) and not isinstance(page, bool) and page >= 1
+            for page in source_pages
+        )
+    )
+
+    audit = converted.get("audit")
+    audit_boundary_matches = (
+        isinstance(audit, Mapping)
+        and audit.get("ocr_boundary") == runtime_boundary
+    )
+    conversion_settings = (
+        audit.get("conversion_settings") if isinstance(audit, Mapping) else None
+    )
+    use_ocr = (
+        conversion_settings.get("use_ocr")
+        if isinstance(conversion_settings, Mapping)
+        else None
+    )
+    conversion_setting_matches = (
+        isinstance(use_ocr, Mapping)
+        and use_ocr.get("enabled") is False
+        and use_ocr.get("status") == expected_boundary["status"]
+        and use_ocr.get("support_status") == "unsupported"
+        and use_ocr.get("reason") == expected_boundary["reason"]
+        and use_ocr.get("message") == expected_boundary["warning_message"]
+        and use_ocr.get("remediation") == expected_boundary["remediation"]
+    )
+
+    structured_warning_matches = (
+        isinstance(runtime_boundary, Mapping)
+        and runtime_boundary.get("warning") == expected_warning
+    )
+    review_items = converted.get("review_items")
+    affected_ids = (
+        set(affected_block_ids)
+        if isinstance(affected_block_ids, list)
+        and all(isinstance(block_id, str) for block_id in affected_block_ids)
+        else set()
+    )
+    affected_review_items = [
+        item
+        for item in review_items
+        if isinstance(item, Mapping)
+        and item.get("block_id") in affected_ids
+    ] if isinstance(review_items, list) else []
+    review_item_warning_matches = (
+        bool(affected_ids)
+        and isinstance(review_items, list)
+        and len(review_items) == len(affected_ids)
+        and len(affected_review_items) == len(affected_ids)
+        and all(
+            isinstance(item.get("warning_details"), list)
+            and expected_warning in item["warning_details"]
+            for item in affected_review_items
+        )
+    )
+
+    expected_blocks = (
+        expectations.get("body_blocks")
+        if isinstance(expectations, Mapping)
+        else None
+    )
+    expected_texts = (
+        [block.get("text") for block in expected_blocks]
+        if isinstance(expected_blocks, list)
+        and expected_blocks
+        and all(
+            isinstance(block, Mapping)
+            and isinstance(block.get("text"), str)
+            and block["text"]
+            for block in expected_blocks
+        )
+        else []
+    )
+    document_ir = converted.get("document_ir")
+    actual_blocks = (
+        document_ir.get("blocks") if isinstance(document_ir, Mapping) else None
+    )
+    placeholder_guard_matches = (
+        bool(expected_texts)
+        and isinstance(actual_blocks, list)
+        and len(actual_blocks) == len(expected_texts)
+        and [
+            block.get("text") if isinstance(block, Mapping) else None
+            for block in actual_blocks
+        ]
+        == expected_texts
+        and all(
+            isinstance(block, Mapping)
+            and isinstance(block.get("review"), Mapping)
+            and block["review"].get("requires_review") is True
+            for block in actual_blocks
+        )
+    )
+
+    artifact_validation_matches = (
+        content_validation.get("validator") == "scanned_pdf_explicit_review_v1"
+        and content_validation.get("status") == "pass"
+    )
+    fail_closed_status_matches = (
+        converted.get("status") == case.get("expected_status") == "requires_review"
+    )
+    check_states = (
+        ("runtime_boundary", runtime_boundary_matches),
+        ("audit_boundary", audit_boundary_matches),
+        ("conversion_setting", conversion_setting_matches),
+        ("structured_warning", structured_warning_matches),
+        ("review_item_warning", review_item_warning_matches),
+        ("placeholder_guard", placeholder_guard_matches),
+        ("artifact_validation", artifact_validation_matches),
+        ("fail_closed_status", fail_closed_status_matches),
+    )
+    checks = [
+        {"id": check_id, "status": "pass" if passed else "fail"}
+        for check_id, passed in check_states
+    ]
+    failures = [
+        f"scanned PDF OCR {check_id.replace('_', ' ')} validation failed"
+        for check_id, passed in check_states
+        if not passed
+    ]
+    content_metrics = content_validation.get("metrics")
+    source_linkage_rate = (
+        content_metrics.get("source_linkage_rate", 0.0)
+        if isinstance(content_metrics, Mapping)
+        else 0.0
+    )
+    return {
+        "status": "fail" if failures else "pass",
+        "checks": checks,
+        "metrics": {
+            "explicit_warning_match": 1.0 if structured_warning_matches else 0.0,
+            "fail_closed_status_match": 1.0 if fail_closed_status_matches else 0.0,
+            "placeholder_guard_rate": 1.0 if placeholder_guard_matches else 0.0,
+            "review_item_warning_rate": (
+                1.0 if review_item_warning_matches else 0.0
+            ),
+            "artifact_validator_pass": 1.0 if artifact_validation_matches else 0.0,
+            "source_linkage_rate": source_linkage_rate,
+        },
+        "evidence": {
+            "reason": expected_boundary["reason"],
+            "warning_code": expected_boundary["warning_code"],
+            "affected_block_ids": (
+                list(affected_block_ids)
+                if isinstance(affected_block_ids, list)
+                else []
+            ),
+            "source_pages": list(source_pages) if isinstance(source_pages, list) else [],
+            "content_validator": content_validation.get("validator"),
+        },
+        "failures": failures,
+    }
+
+
 def mvp_conversion_result(
     case: dict[str, Any],
     *,
@@ -6088,6 +6318,11 @@ def mvp_conversion_result(
     observed_status = converted.get("status")
     review_items = converted.get("review_items")
     review_items_count = len(review_items) if isinstance(review_items, list) else 0
+    ocr_boundary_evaluation = mvp_scanned_pdf_boundary_evaluation(
+        case,
+        converted,
+        content_validation=content_validation,
+    )
     review_failures: list[str] = []
     if observed_status != case["expected_status"]:
         review_failures.append(
@@ -6100,8 +6335,11 @@ def mvp_conversion_result(
         review_failures.append("requires_review conversion did not emit review items")
     if case["expected_status"] == "converted" and review_items_count != 0:
         review_failures.append("converted conversion unexpectedly emitted review items")
+    if ocr_boundary_evaluation["status"] == "fail":
+        review_failures.extend(ocr_boundary_evaluation["failures"])
     authoritative_decisions: list[dict[str, object]] = []
-    if not review_failures and review_items_count:
+    uses_accepted_ocr_boundary = ocr_boundary_evaluation["status"] == "pass"
+    if not review_failures and review_items_count and not uses_accepted_ocr_boundary:
         try:
             authoritative_decisions = mvp_record_authoritative_review_decisions(
                 case,
@@ -6113,7 +6351,11 @@ def mvp_conversion_result(
             )
         except (PermissionError, RuntimeError, ValueError) as exc:
             review_failures.append(str(exc))
-    if not review_failures and review_items_count != len(authoritative_decisions):
+    if (
+        not review_failures
+        and not uses_accepted_ocr_boundary
+        and review_items_count != len(authoritative_decisions)
+    ):
         review_failures.append(
             "authoritative decision missing for one or more review items"
         )
@@ -6152,6 +6394,7 @@ def mvp_conversion_result(
             "decision": primary_review_decision,
             "decisions": authoritative_decisions,
             "review_focus": list(case["review_focus"]),
+            "ocr_boundary": ocr_boundary_evaluation,
             "reason": review_reason,
         },
         "audit": {
@@ -6190,6 +6433,7 @@ def mvp_conversion_result(
         "review_items_count": review_items_count,
         "audit_present": audit_present,
         "warnings": actual_warnings,
+        "ocr_boundary": ocr_boundary_evaluation,
         "failure_reason": (
             None
             if acceptance_status != "fail"

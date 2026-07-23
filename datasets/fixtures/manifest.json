@@ -254,6 +254,14 @@
             "source_page": 1
           }
         ],
+        "ocr_boundary": {
+          "status": "blocked",
+          "reason": "text_layer_unavailable",
+          "warning_code": "OCR_TEXT_LAYER_UNAVAILABLE",
+          "warning_severity": "error",
+          "warning_message": "PDF page has no extractable text layer; OCR is unavailable in the MVP",
+          "remediation": "Route the source through a separately approved trusted OCR workflow before accepting extracted text."
+        },
         "warnings": [
           "conversion mode pdf_to_word selected",
           "pdf_to_word reconstruction preserves editable text structure for review; exact PDF layout, fonts, coordinates, columns, footnotes, and OCR fidelity are not guaranteed",

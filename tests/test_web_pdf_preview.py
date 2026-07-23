@@ -482,3 +482,14 @@ def test_review_warning_badges_show_codes_levels_and_llm_involvement() -> None:
     assert "wrapper.append(title, text, badges, edit, actions);" in html
     assert 'wrapper.dataset.reviewRisk = item.risk_level || "unknown";' in html
     assert 'wrapper.dataset.reviewState = "unresolved";' in html
+
+
+def test_conversion_setting_status_exposes_ocr_message_and_remediation() -> None:
+    html = _web_html()
+
+    assert "const ocrBoundaryWarning = result.ocr_boundary?.warning;" in html
+    assert "ocrBoundaryWarning ? [...resultWarnings, ocrBoundaryWarning]" in html
+    assert "if (setting.message)" in html
+    assert "message.textContent = setting.message;" in html
+    assert "if (setting.remediation)" in html
+    assert "remediation.textContent = `Next step: ${setting.remediation}`;" in html

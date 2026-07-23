@@ -2165,6 +2165,109 @@ class EvaluateDatasetTest(unittest.TestCase):
             "section_order",
             {check["id"] for check in content_validation["checks"]},
         )
+        self.assertEqual("pass", result["acceptance_status"])
+        self.assertEqual("pass", result["evaluations"]["review"]["status"])
+        self.assertEqual([], result["review_decisions"])
+        self.assertEqual(
+            "pass",
+            result["evaluations"]["review"]["ocr_boundary"]["status"],
+        )
+        self.assertEqual(
+            1.0,
+            result["evaluations"]["review"]["ocr_boundary"]["metrics"][
+                "source_linkage_rate"
+            ],
+        )
+
+    @unittest.skipUnless(PYMUPDF_AVAILABLE, "PyMuPDF eval dependency is not installed")
+    def test_scanned_pdf_boundary_rejects_missing_warning_and_invented_text(
+        self,
+    ) -> None:
+        from services.api.poc_web import convert_uploaded_document
+
+        case = self.valid_mvp_case(3)
+        fixture_path = REPO_ROOT / str(case["fixture_path"])
+        converted = convert_uploaded_document(
+            filename=fixture_path.name,
+            content=fixture_path.read_bytes(),
+            conversion_mode="pdf_to_word",
+        )
+        content_validation: dict[str, object] = {}
+        failures = evaluate_dataset.p9_validate_artifact_expectations(
+            fixture=case,
+            conversion_mode="pdf_to_word",
+            representative_mode="scanned_pdf_ocr",
+            primary_artifact=evaluate_dataset.p9_primary_artifact(
+                converted["artifacts"]
+            ),
+            warnings=converted["warnings"],
+            require_content_validation=True,
+            content_validation=content_validation,
+        )
+        self.assertEqual([], failures)
+
+        scenarios = (
+            (
+                "missing structured warning",
+                lambda payload: payload["ocr_boundary"].pop("warning"),
+                "structured_warning",
+            ),
+            (
+                "invented extracted text",
+                lambda payload: payload["document_ir"]["blocks"][0].__setitem__(
+                    "text",
+                    "Invented OCR output",
+                ),
+                "placeholder_guard",
+            ),
+            (
+                "missing trusted OCR remediation",
+                lambda payload: payload["audit"]["conversion_settings"][
+                    "use_ocr"
+                ].pop("remediation"),
+                "conversion_setting",
+            ),
+        )
+        for name, mutate, expected_failed_check in scenarios:
+            with self.subTest(name=name):
+                payload = copy.deepcopy(converted)
+                mutate(payload)
+                boundary = evaluate_dataset.mvp_scanned_pdf_boundary_evaluation(
+                    case,
+                    payload,
+                    content_validation=content_validation,
+                )
+                self.assertEqual("fail", boundary["status"])
+                self.assertEqual(
+                    "fail",
+                    {
+                        check["id"]: check["status"]
+                        for check in boundary["checks"]
+                    }[expected_failed_check],
+                )
+
+    def test_scanned_pdf_artifact_validation_rejects_empty_primary_artifact(
+        self,
+    ) -> None:
+        case = self.valid_mvp_case(3)
+        content_validation: dict[str, object] = {}
+
+        failures = evaluate_dataset.p9_validate_artifact_expectations(
+            fixture=case,
+            conversion_mode="pdf_to_word",
+            representative_mode="scanned_pdf_ocr",
+            primary_artifact={
+                "kind": "primary",
+                "format": "docx",
+                "content": b"",
+            },
+            warnings=case["expected_warnings"],
+            require_content_validation=True,
+            content_validation=content_validation,
+        )
+
+        self.assertEqual(["primary artifact content is missing"], failures)
+        self.assertEqual({}, content_validation)
 
     def test_pdf_to_word_content_validation_fails_closed_without_expectations(
         self,
