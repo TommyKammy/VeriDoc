@@ -35,6 +35,8 @@ class MvpOperationsRunbookDocsTest(unittest.TestCase):
         for required_text in (
             "VERIDOC_DB_PATH",
             "VERIDOC_ARTIFACT_STORE_ROOT",
+            "VERIDOC_LOCAL_AUTH_TOKENS",
+            "VERIDOC_OPERATOR_TOKEN",
             "var/veridoc/dev.sqlite3",
             "var/veridoc/artifacts",
             "python3 services/api/poc_web.py --check",
@@ -81,6 +83,11 @@ class MvpOperationsRunbookDocsTest(unittest.TestCase):
             self.assertNotIn(fragment, docs)
 
         self.assertNotIn("SQLite metadata, job, review, and audit records", docs)
+        start_section = docs.split("## Start", 1)[1].split("## Stop", 1)[0]
+        self.assertIn("VERIDOC_LOCAL_AUTH_TOKENS", start_section)
+        self.assertIn("VERIDOC_OPERATOR_TOKEN", start_section)
+        self.assertNotIn("For token-protected operation", start_section)
+        self.assertNotIn("When authentication is enabled", start_section)
         stop_section = docs.split("## Stop", 1)[1].split("## Backup", 1)[0]
         self.assertLess(
             stop_section.index("except HTTPError:"),

@@ -6925,6 +6925,52 @@ def test_poc_http_api_rejects_approval_without_preceding_review_edit() -> None:
     assert events == []
 
 
+@pytest.mark.parametrize(
+    "stored_conversion_id",
+    ["conversion-current", "conversion-old"],
+    ids=["same-conversion", "cross-conversion"],
+)
+def test_poc_http_api_rejects_legacy_unauthenticated_edit_as_approval_prerequisite(
+    stored_conversion_id: str,
+) -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    store = ReviewAuditEventStore()
+    store.record(
+        _review_audit_event(
+            conversion_id=stored_conversion_id,
+            revised_text="Lot: SAMPLE-001",
+        )
+    )
+    server.review_event_store = store
+    server.local_auth_tokens = _local_auth_tokens()
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        approve_status, approve_body = _post_review_event_on_connection(
+            connection,
+            _review_audit_event(
+                action="approve",
+                conversion_id="conversion-current",
+                original_text="Lot: SAMPLE-001",
+                revised_text="Lot: SAMPLE-001",
+            ),
+            role_token="admin-token",
+        )
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert approve_status == 409
+    assert approve_body == {
+        "error": "review_conflict",
+        "message": (
+            "review approval requires a preceding review edit from a different actor"
+        ),
+    }
+    assert [event["action"] for event in store.list_events()] == ["edit"]
+
+
 def test_poc_http_api_rejects_same_actor_approving_prior_review_edit() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     store = ReviewAuditEventStore()
@@ -14147,6 +14193,13 @@ def test_readme_documents_local_poc_api_startup_and_smoke_contract() -> None:
     for snippet in expected_snippets:
         assert snippet in readme
 
+    startup_section = readme.split(
+        "## Local PoC API startup and smoke checks", 1
+    )[1].split("### Conversion API responsibilities", 1)[0]
+    assert "VERIDOC_OPERATOR_TOKEN" in startup_section
+    assert "VERIDOC_LOCAL_AUTH_TOKENS" in startup_section
+    assert '"Authorization": f"Bearer {token}"' in startup_section
+    assert "With `VERIDOC_LOCAL_AUTH_TOKENS` unset" not in startup_section
     assert str(poc_web.MAX_UPLOAD_BYTES // (1024 * 1024)) + " MiB" in readme
     for mode in poc_web.CONVERSION_MODE_SOURCE_TYPES:
         assert f"`{mode}`" in readme

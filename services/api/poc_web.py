@@ -3092,8 +3092,7 @@ def _validate_review_workflow_event(
 ) -> None:
     if audit_event["action"] != "approve":
         return
-    actor = audit_event.get("actor")
-    actor_id = actor.get("id") if isinstance(actor, dict) else None
+    actor_id = _authenticated_review_actor_id(audit_event)
     audit_conversion_id = audit_event.get("conversion_id")
     latest_edit_revised_text = None
     matched_audit_conversion_edit = False
@@ -3117,15 +3116,16 @@ def _validate_review_workflow_event(
                     "review approval is blocked while needs-fix is unresolved"
                 )
             continue
+        stored_actor_id = _authenticated_review_actor_id(stored_event)
+        if stored_actor_id is None:
+            continue
         stored_conversion_id = stored_event.get("conversion_id")
         if audit_conversion_id and stored_conversion_id == audit_conversion_id:
             matched_audit_conversion_edit = True
         preceding_review_edit_found = True
         if latest_edit_revised_text is None:
             latest_edit_revised_text = stored_event.get("revised_text")
-        stored_actor = stored_event.get("actor")
-        stored_actor_id = stored_actor.get("id") if isinstance(stored_actor, dict) else None
-        if isinstance(actor_id, str) and actor_id and stored_actor_id == actor_id:
+        if actor_id is not None and stored_actor_id == actor_id:
             raise RuntimeError("review approval must be performed by a different actor")
     if not matched_audit_conversion_edit:
         for stored_event in deferred_conflicting_conversion_events:
@@ -3170,13 +3170,22 @@ def _qualifying_cross_conversion_review_edit(
 ) -> bool:
     if stored_event.get("revised_text") != audit_event["revised_text"]:
         return False
-    stored_actor = stored_event.get("actor")
-    stored_actor_id = stored_actor.get("id") if isinstance(stored_actor, dict) else None
-    if isinstance(actor_id, str) and actor_id and stored_actor_id == actor_id:
+    stored_actor_id = _authenticated_review_actor_id(stored_event)
+    if stored_actor_id is None:
+        return False
+    if actor_id is not None and stored_actor_id == actor_id:
         raise RuntimeError("review approval must be performed by a different actor")
     if audit_event.get("original_text") != audit_event["revised_text"]:
         _reject_stale_review_approval()
     return True
+
+
+def _authenticated_review_actor_id(audit_event: dict[str, Any]) -> str | None:
+    actor = audit_event.get("actor")
+    actor_id = actor.get("id") if isinstance(actor, dict) else None
+    if not isinstance(actor_id, str) or not actor_id.strip():
+        return None
+    return actor_id.strip()
 
 
 def _reject_stale_review_approval() -> None:

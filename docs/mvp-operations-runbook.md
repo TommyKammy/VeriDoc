@@ -43,10 +43,11 @@ change evidence to an approved external system before stopping the API.
 
 Always stop the API before copying or restoring either part of the state set.
 
-Use real locally issued credentials when authentication is enabled. Placeholder
-values such as `<operator-token>` document command shape only and must never be
-accepted as working credentials. Do not trust forwarded identity headers as a
-substitute for `VERIDOC_LOCAL_AUTH_TOKENS`.
+Authentication is mandatory for protected operations. Use real locally issued
+credentials. Placeholder values such as `<operator-token>` document command
+shape only and must never be accepted as working credentials. Do not trust
+forwarded identity headers as a substitute for
+`VERIDOC_LOCAL_AUTH_TOKENS`.
 
 ## Start
 
@@ -65,17 +66,19 @@ substitute for `VERIDOC_LOCAL_AUTH_TOKENS`.
    python3 -m services.api.persistence init-db --db-path "$VERIDOC_DB_PATH"
    ```
 
-3. Start the API in the foreground so startup failures and audit-integrity
-   failures remain visible:
+3. Load a real operator token from a trusted local secret source into
+   `VERIDOC_OPERATOR_TOKEN`, then start the API in the foreground so startup
+   failures and audit-integrity failures remain visible:
 
    ```bash
+   test -n "${VERIDOC_OPERATOR_TOKEN:?set a real locally issued operator token}"
+   export VERIDOC_LOCAL_AUTH_TOKENS="operator:mvp-operator=${VERIDOC_OPERATOR_TOKEN}"
    python3 services/api/poc_web.py
    ```
 
    The expected message is `VeriDoc PoC web API listening on
-   http://127.0.0.1:8788`. The web UI is at that address. For token-protected
-   operation, set `VERIDOC_LOCAL_AUTH_TOKENS` from a trusted local secret source
-   before starting; do not put the value in the repository or shell history.
+   http://127.0.0.1:8788`. The web UI is at that address. Do not put the token
+   value in the repository or shell history.
 
 4. From another terminal, make a read-only health request:
 
@@ -90,9 +93,10 @@ substitute for `VERIDOC_LOCAL_AUTH_TOKENS`.
    PY
    ```
 
-The conversion smoke request in `README.md` may be used after this read-only
-check. When authentication is enabled, use a real token with only the required
-role and clear it from the browser tab after the check.
+The authenticated conversion smoke request in `README.md` may be used after
+this read-only check. Load the same real operator token into
+`VERIDOC_OPERATOR_TOKEN` in the request terminal, use only the required role,
+and clear the token from the browser tab after the check.
 
 ## Stop
 
