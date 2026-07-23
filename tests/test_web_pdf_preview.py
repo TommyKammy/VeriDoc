@@ -343,6 +343,7 @@ def test_auth_status_tracks_active_credential_requests() -> None:
     html = _web_html()
 
     assert "function authFailure(response, body, requestAuthToken)" in html
+    assert 'body.error === "auth_configuration_required"' in html
     assert 'body.error === "auth_required"' in html
     assert 'body.error === "forbidden"' in html
     assert (
@@ -364,7 +365,8 @@ def test_auth_status_tracks_active_credential_requests() -> None:
         r"if \(\s+response\.ok &&\s+token &&\s+"
         r"!signal\.aborted &&\s+isActiveCredentialRequest\(token, authGeneration\)\s+"
         r'\) \{\s+setAuthStatus\("configured", "Token is set for this browser tab\."\);\s+'
-        r"\} else if \(\s+\(response\.status === 401 \|\| response\.status === 403\)",
+        r"\} else if \(\s+\(\s+response\.status === 401 \|\|\s+"
+        r"response\.status === 403 \|\|\s+\(\s+response\.status === 503",
         html,
     )
     assert (

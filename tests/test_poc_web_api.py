@@ -6375,6 +6375,42 @@ def test_poc_http_api_excludes_no_auth_approval_action(
     assert body["available_review_actions"] == ["edit", "needs_fix"]
 
 
+def test_poc_http_api_fails_closed_when_required_auth_is_not_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(poc_web.LOCAL_AUTH_TOKENS_ENV, raising=False)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.require_local_auth = True
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = b"{not valid json"
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/convert",
+            body=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Content-Length": str(len(payload)),
+            },
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 503
+    assert body == {
+        "error": "auth_configuration_required",
+        "message": (
+            "Local authentication is not configured; set "
+            "VERIDOC_LOCAL_AUTH_TOKENS and restart the server"
+        ),
+    }
+
+
 def test_poc_http_api_accepts_review_action_audit_event() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     thread = Thread(target=server.serve_forever, daemon=True)
@@ -6868,6 +6904,73 @@ def test_poc_http_api_rejects_review_approve_without_approver_role() -> None:
     assert events == []
 
 
+def test_poc_http_api_rejects_approval_without_preceding_review_edit() -> None:
+    audit_event = _review_audit_event(
+        action="approve",
+        revised_text="Lot: SAMPLE-001",
+    )
+
+    status, body, events = _post_review_audit_event_with_store(
+        audit_event,
+        role_token="approver-token",
+    )
+
+    assert status == 409
+    assert body == {
+        "error": "review_conflict",
+        "message": (
+            "review approval requires a preceding review edit from a different actor"
+        ),
+    }
+    assert events == []
+
+
+@pytest.mark.parametrize(
+    "stored_conversion_id",
+    ["conversion-current", "conversion-old"],
+    ids=["same-conversion", "cross-conversion"],
+)
+def test_poc_http_api_rejects_legacy_unauthenticated_edit_as_approval_prerequisite(
+    stored_conversion_id: str,
+) -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    store = ReviewAuditEventStore()
+    store.record(
+        _review_audit_event(
+            conversion_id=stored_conversion_id,
+            revised_text="Lot: SAMPLE-001",
+        )
+    )
+    server.review_event_store = store
+    server.local_auth_tokens = _local_auth_tokens()
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        approve_status, approve_body = _post_review_event_on_connection(
+            connection,
+            _review_audit_event(
+                action="approve",
+                conversion_id="conversion-current",
+                original_text="Lot: SAMPLE-001",
+                revised_text="Lot: SAMPLE-001",
+            ),
+            role_token="admin-token",
+        )
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert approve_status == 409
+    assert approve_body == {
+        "error": "review_conflict",
+        "message": (
+            "review approval requires a preceding review edit from a different actor"
+        ),
+    }
+    assert [event["action"] for event in store.list_events()] == ["edit"]
+
+
 def test_poc_http_api_rejects_same_actor_approving_prior_review_edit() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     store = ReviewAuditEventStore()
@@ -7283,7 +7386,7 @@ def test_poc_http_api_rejects_approval_with_unbound_conversion_id() -> None:
     assert [event["action"] for event in store.list_events()] == ["edit"]
 
 
-def test_poc_http_api_allows_unchanged_approval_with_other_scoped_edit() -> None:
+def test_poc_http_api_rejects_approval_with_only_unrelated_scoped_edit() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     store = ReviewAuditEventStore()
     server.review_event_store = store
@@ -7315,14 +7418,18 @@ def test_poc_http_api_allows_unchanged_approval_with_other_scoped_edit() -> None
         thread.join(timeout=5)
 
     assert edit_status == 202
-    assert approve_status == 202
-    assert approve_body["audit_event"]["conversion_id"] == "conversion-current"
+    assert approve_status == 409
+    assert approve_body == {
+        "error": "review_conflict",
+        "message": (
+            "review approval requires a preceding review edit from a different actor"
+        ),
+    }
     assert [
         (event["action"], event["conversion_id"])
         for event in store.list_events()
     ] == [
         ("edit", "conversion-old"),
-        ("approve", "conversion-current"),
     ]
 
 
@@ -7457,7 +7564,9 @@ def test_poc_http_api_rejects_changed_approval_without_saved_edit() -> None:
     assert status == 409
     assert body == {
         "error": "review_conflict",
-        "message": "review approval must target latest edited text",
+        "message": (
+            "review approval requires a preceding review edit from a different actor"
+        ),
     }
     assert events == []
 
@@ -7938,7 +8047,7 @@ def test_poc_http_api_rejects_malformed_review_action_audit_event() -> None:
     }
 
 
-def test_poc_http_api_accepts_approve_review_action_without_duplicate_revised_text() -> None:
+def test_poc_http_api_rejects_approval_without_revised_text_or_preceding_edit() -> None:
     audit_event = _review_audit_event(
         action="approve",
         original_text="Lot: SAMPLE-001",
@@ -7947,10 +8056,13 @@ def test_poc_http_api_accepts_approve_review_action_without_duplicate_revised_te
 
     status, body = _post_review_audit_event(audit_event)
 
-    assert status == 202
-    assert body["audit_event"]["action"] == "approve"
-    assert body["audit_event"]["original_text"] == "Lot: SAMPLE-001"
-    assert body["audit_event"]["revised_text"] == "Lot: SAMPLE-001"
+    assert status == 409
+    assert body == {
+        "error": "review_conflict",
+        "message": (
+            "review approval requires a preceding review edit from a different actor"
+        ),
+    }
 
 
 def test_poc_http_api_accepts_review_action_without_source_bbox() -> None:
@@ -11883,12 +11995,18 @@ def test_bundled_web_ui_explains_token_state_and_auth_failures() -> None:
     assert 'id="auth-status"' in html
     assert 'data-auth-state="missing"' in html
     assert "Token is not set." in html
+    assert (
+        "Local authentication is not configured. Set VERIDOC_LOCAL_AUTH_TOKENS, "
+        "then restart the server."
+    ) in html
     assert "Token was rejected or has expired. Clear it, then set a new token." in html
     assert "Token is valid, but its role does not allow this operation." in html
     assert "function setAuthStatus(state, message)" in html
     assert "function authFailure(response, body, requestAuthToken)" in html
+    assert 'body.error === "auth_configuration_required"' in html
     assert "response.status === 401" in html
     assert "response.status === 403" in html
+    assert "response.status === 503" in html
 
 
 def test_bundled_web_ui_exposes_audit_log_search_and_export() -> None:
@@ -14075,6 +14193,13 @@ def test_readme_documents_local_poc_api_startup_and_smoke_contract() -> None:
     for snippet in expected_snippets:
         assert snippet in readme
 
+    startup_section = readme.split(
+        "## Local PoC API startup and smoke checks", 1
+    )[1].split("### Conversion API responsibilities", 1)[0]
+    assert "VERIDOC_OPERATOR_TOKEN" in startup_section
+    assert "VERIDOC_LOCAL_AUTH_TOKENS" in startup_section
+    assert '"Authorization": f"Bearer {token}"' in startup_section
+    assert "With `VERIDOC_LOCAL_AUTH_TOKENS` unset" not in startup_section
     assert str(poc_web.MAX_UPLOAD_BYTES // (1024 * 1024)) + " MiB" in readme
     for mode in poc_web.CONVERSION_MODE_SOURCE_TYPES:
         assert f"`{mode}`" in readme

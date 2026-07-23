@@ -37,9 +37,13 @@ non-zero exit usually means the command was not run from the repository root, a
 required source file is missing, or the Python environment cannot import one of
 the local modules named in the traceback.
 
-Start the local PoC API with:
+Load a real operator token from an approved local secret source into
+`VERIDOC_OPERATOR_TOKEN`, then start the local PoC API with configured
+credentials:
 
 ```bash
+test -n "${VERIDOC_OPERATOR_TOKEN:?set a real locally issued operator token}"
+export VERIDOC_LOCAL_AUTH_TOKENS="operator:smoke-operator=${VERIDOC_OPERATOR_TOKEN}"
 python3 services/api/poc_web.py
 ```
 
@@ -53,16 +57,18 @@ credentials. External AI endpoints remain blocked before conversion, and the
 UI states explicitly that document content must not be sent outside the local
 API boundary.
 
-With `VERIDOC_LOCAL_AUTH_TOKENS` unset, use this minimal HTTP smoke test from
-another terminal while the server is running:
+Load the same real token into `VERIDOC_OPERATOR_TOKEN` in another terminal,
+then use this minimal HTTP smoke test while the server is running:
 
 ```bash
 python3 - <<'PY'
 import base64
 import json
+import os
 from urllib.request import Request, urlopen
 
 base_url = "http://127.0.0.1:8788"
+token = os.environ["VERIDOC_OPERATOR_TOKEN"]
 
 with urlopen(base_url + "/", timeout=5) as response:
     assert response.status == 200
@@ -94,7 +100,10 @@ payload = {
 request = Request(
     base_url + "/api/convert",
     data=json.dumps(payload).encode("utf-8"),
-    headers={"content-type": "application/json"},
+    headers={
+        "Authorization": f"Bearer {token}",
+        "content-type": "application/json",
+    },
     method="POST",
 )
 with urlopen(request, timeout=5) as response:
@@ -255,9 +264,10 @@ browser channel instead of Playwright Chromium.
 
 ## Local PoC API authentication
 
-`services/api/poc_web.py` can enforce local bearer-token authentication when
-`VERIDOC_LOCAL_AUTH_TOKENS` is configured. Use comma-separated
-`role:principal-id=token` entries:
+The normal `services/api/poc_web.py` entrypoint requires configured local
+bearer-token authentication for protected operations. Set
+`VERIDOC_LOCAL_AUTH_TOKENS` to comma-separated `role:principal-id=token`
+entries:
 
 ```bash
 VERIDOC_LOCAL_AUTH_TOKENS='viewer:<viewer-id>=<viewer-token>,operator:<operator-id>=<operator-token>,reviewer:<reviewer-id>=<reviewer-token>,approver:<approver-id>=<approver-token>,admin:<admin-id>=<admin-token>,audit_viewer:<audit-id>=<audit-token>' python3 -m services.api.poc_web

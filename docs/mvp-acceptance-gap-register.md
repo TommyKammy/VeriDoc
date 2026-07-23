@@ -14,7 +14,7 @@ Missing authoritative decisions or run evidence remain fail-closed.
 - Reproduction checkout:
   `git checkout --detach "$(git log -1 --format=%H -- docs/mvp-acceptance-gap-register.md)"`
 - Criteria source Git blob:
-  `72cb66e5a4fcf1b176949e43a8200923a34365f8`
+  `1c2669997cd08025bb799007f0bccd87dc442e8a`
 - Evaluator Git blob:
   `64d8901cedf438d500cedeccc02dad45a2a94977`
 - Generated at: `2026-07-23` (Asia/Tokyo)
@@ -26,7 +26,7 @@ Missing authoritative decisions or run evidence remain fail-closed.
   `a9374c81d4ff83cfce405582affd1c001216680ee8c53fa4e6acd0ade04abbd4`
 - Criteria source: `docs/mvp-acceptance-traceability.md`
 - Report result: `item_count=20`, unique item IDs `20`,
-  `overall_decision=fail` (`pass=5`, `fail=15`)
+  `overall_decision=fail` (`pass=6`, `fail=14`)
 - Harness result: `case_count=5`, `acceptance_status=fail`
   (`pass=4`, `fail=1`, `unknown=0`)
 
@@ -64,7 +64,7 @@ to the extractor-level facts recorded below.
 | AC-EFFICIENCY | 未達 / fail | `docs/mvp-scope-decisions.md` approves the baseline task, cohort, training, timing boundary, comparison method, and rejection conditions; no protocol/schema or measured 30%+ human result exists. | `human_evidence_gap` | manual/hybrid | Versioned protocol/schema followed by a real, reproducible manual-versus-VeriDoc comparison. | P12G-13 |
 | AC-PERFORMANCE | 一部達成 / fail | All five live results pass input-size, processing-time, and timeout evaluations, but no accepted five-case metrics rollup exists. | `e2e_gap` | codex | One committed rollup retaining the 10 s, 2 MiB, and 30 s limits for all accepted cases. | P12G-12 |
 | AC-AUDIT | 達成 / pass | `tests/test_mvp_browser_e2e.py` binds browser run, harness result, artifact hashes, actor/decision, version lineage, timestamp, and complete job/review hash chains to one correlation ID and emits a fail-closed acceptance snapshot. | `none` | — | Preserve the correlated E2E and persistence audit contract tests. | — |
-| AC-AUTH | 一部達成 / fail | `docs/mvp-scope-decisions.md` approves the six-role target matrix and MVP/Phase13 boundary, but unset `VERIDOC_LOCAL_AUTH_TOKENS` still permits unauthenticated non-approval operations and approval still succeeds without a preceding review/edit event. | `implementation_gap`, `e2e_gap` | codex | Require authentication for protected MVP operations and a preceding distinct-actor review/edit event, then retain allow/deny and token-lifecycle E2E evidence against decision revision `p12g-02-v1`. | P12G-10 |
+| AC-AUTH | 達成 / pass | The product server fails closed when `VERIDOC_LOCAL_AUTH_TOKENS` is unset, approval requires a preceding distinct-reviewer edit, and `scripts/ci/mvp_browser_e2e.py` retains six-role read/sensitive allow-deny probes plus missing, rejected, forbidden, cleared, and re-authenticated UI states against decision revision `p12g-02-v1`. | `none` | — | Preserve the fail-closed product, role-matrix, token-lifecycle, and segregation evidence tests. | — |
 | AC-SECURITY | 一部達成 / fail | The harness and negative tests enforce the local-only boundary, but the clean checkout does not retain a concrete run `evidence.json` that the report can validate before claiming `external_ai_api_send_count=0`. | `e2e_gap` | codex | Retain and validate the machine-readable network observation for the reported acceptance run. | P12G-11 |
 | FC-HIGH-RISK | 一部達成 / fail | Component guards prevent auto-confirmation, but the five-case snapshot does not prove zero high-risk misses through the final review UI and gate. | `e2e_gap` | codex | Dataset-wide fail-closed gate plus browser review evidence for every high-risk item. | P12G-08, P12G-12 |
 | FC-EVIDENCE | 達成 / pass | The browser E2E mutates provenance, audit-event, hash/version, and correlation boundaries and requires structured failure codes; an artifact alone cannot produce an acceptance pass. | `none` | — | Preserve the fail-closed negative scenarios in `tests/test_mvp_browser_e2e.py`. | — |
@@ -75,7 +75,7 @@ to the extractor-level facts recorded below.
 | EM-E2E | 一部達成 / fail | A repo-owned browser run emits screenshots, trace, API result, downloaded artifact, audit artifact, and correlation metadata for one representative case; the versioned five-case report is one `fail`, zero `unknown`, and four `pass`, with persisted review decisions for Word and Excel and structured text-PDF/record-PDF evidence. | `implementation_gap`, `e2e_gap` | codex/hybrid | P12G-05 through P12G-12 evidence from one committed snapshot with all intended cases passing. | P12G-05–P12G-12 |
 | OD-TEMPLATES | 達成 / pass | `TommyKammy` approved all five manifest cases at product commit `584ef2db12a6676abb65f75de1ec38145e06b487` and manifest revision `phase12-mvp-v1`; the report recomputes the approved case, fixture, source-policy, and expectation contract hash. | `none` | — | Preserve `docs/mvp-scope-decisions.md`; contract drift fails this item until renewed approval. | — |
 | OD-EFFICIENCY-SCOPE | 達成 / pass | Decision revision `p12g-02-v1` fixes the baseline task, minimum three-person pseudonymous cohort, training, timing boundaries, paired median comparison, 30% target, and invalidation conditions; the report validates the revision-bound canonical section hash. | `none` | — | Preserve the approved scope; protocol-scope drift fails this item until renewed approval, while P12G-13 defines its versioned protocol and evidence schema. | — |
-| OD-SEGREGATION | 達成 / pass | Decision revision `p12g-02-v1` fixes the six-role `ROLE_PERMISSIONS` target matrix, mandatory authentication and preceding distinct-actor review boundaries, known implementation gaps, and explicit Phase13 carryover; the report validates the revision-bound canonical section and matrix hashes. | `none` | — | Preserve the approved scope; any deny-path, carryover, or matrix drift fails this item, while P12G-10 implements and proves the currently missing deny paths for AC-AUTH. | — |
+| OD-SEGREGATION | 達成 / pass | Decision revision `p12g-02-v1` fixes the six-role `ROLE_PERMISSIONS` target matrix, mandatory authentication and preceding distinct-actor review boundaries, known implementation gaps, and explicit Phase13 carryover; the report validates the revision-bound canonical section and matrix hashes, while P12G-10 implements and proves the MVP deny paths. | `none` | — | Preserve the approved scope; any deny-path, carryover, or matrix drift fails this item. | — |
 
 ## Five representative cases
 

@@ -2403,7 +2403,12 @@
           response.status === 403 &&
           body.error === "forbidden" &&
           body.message === "review approval requires authenticated actor identity";
-        if (
+        if (response.status === 503 && body.error === "auth_configuration_required") {
+          setAuthStatus(
+            "unavailable",
+            "Local authentication is not configured. Set VERIDOC_LOCAL_AUTH_TOKENS, then restart the server.",
+          );
+        } else if (
           requiresIdentity ||
           (!requestAuthToken && response.status === 401 && body.error === "auth_required")
         ) {
@@ -3597,7 +3602,14 @@
         ) {
           setAuthStatus("configured", "Token is set for this browser tab.");
         } else if (
-          (response.status === 401 || response.status === 403) &&
+          (
+            response.status === 401 ||
+            response.status === 403 ||
+            (
+              response.status === 503 &&
+              response.headers.get("Content-Type")?.includes("application/json")
+            )
+          ) &&
           !signal.aborted &&
           isActiveCredentialRequest(token, authGeneration)
         ) {
