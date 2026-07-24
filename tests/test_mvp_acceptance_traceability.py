@@ -360,8 +360,8 @@ class MvpAcceptanceTraceabilityDocsTest(unittest.TestCase):
         self,
     ) -> None:
         sample = REPORT_SAMPLE_PATH.read_text(encoding="utf-8")
-        self.assertIn("six `pass` and fourteen `fail`", sample)
-        self.assertIn('"decision_counts": {"pass": 6, "fail": 14}', sample)
+        self.assertIn("twelve `pass` and eight `fail`", sample)
+        self.assertIn('"decision_counts": {"pass": 12, "fail": 8}', sample)
         self.assertIn('"phase13": ["OD-SEGREGATION"]', sample)
         self.assertIn("decision_input_validation", sample)
         self.assertNotIn("all 20 are `fail`", sample)

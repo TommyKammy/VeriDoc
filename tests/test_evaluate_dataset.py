@@ -1082,6 +1082,60 @@ class EvaluateDatasetTest(unittest.TestCase):
             payload["evidence_snapshot"]["harness_schema_version"],
         )
         self.assertRegex(payload["evidence_snapshot"]["sha256"], r"^[0-9a-f]{64}$")
+        rollup = payload["evidence_snapshot"]["metrics_rollup"]
+        self.assertEqual(
+            "veridoc-mvp-metrics-rollup/v1",
+            rollup["schema_version"],
+        )
+        self.assertEqual("pass", rollup["status"])
+        self.assertEqual(5, len(rollup["case_results"]))
+        self.assertEqual(
+            {"pass"},
+            {case_result["status"] for case_result in rollup["case_results"]},
+        )
+        dimensions = rollup["dimensions"]
+        self.assertEqual((56, 56), (
+            dimensions["quality"]["numerator"],
+            dimensions["quality"]["denominator"],
+        ))
+        self.assertGreaterEqual(dimensions["quality"]["rate"], 0.80)
+        self.assertEqual((12, 12), (
+            dimensions["provenance"]["numerator"],
+            dimensions["provenance"]["denominator"],
+        ))
+        self.assertGreaterEqual(dimensions["provenance"]["rate"], 0.95)
+        self.assertEqual(0, dimensions["high_risk"]["miss_count"])
+        self.assertEqual(0, dimensions["high_risk"]["auto_confirmed_count"])
+        self.assertEqual(0, dimensions["external_send"]["external_send_count"])
+        self.assertEqual(
+            {
+                "input_size": 2 * 1024 * 1024,
+                "processing_time": 10_000,
+                "timeout": 30_000,
+            },
+            dimensions["performance"]["limits"],
+        )
+        self.assertTrue(
+            all(
+                not dimension["unknown"]
+                for dimension in dimensions.values()
+                if "unknown" in dimension
+            )
+        )
+        metadata = payload["evidence_snapshot"]["metadata"]
+        self.assertRegex(metadata["commit"], r"^[0-9a-f]{40}$")
+        self.assertEqual("phase12-mvp-v1", metadata["manifest_revision"])
+        self.assertRegex(metadata["manifest_sha256"], r"^[0-9a-f]{64}$")
+        self.assertRegex(metadata["dependency_set_sha256"], r"^[0-9a-f]{64}$")
+        self.assertRegex(metadata["decision_set_sha256"], r"^[0-9a-f]{64}$")
+        self.assertEqual(
+            {
+                "requirements.txt",
+                "requirements-pdf-eval.txt",
+                "requirements-browser-e2e.txt",
+            },
+            set(metadata["dependency_set"]),
+        )
         self.assertEqual(
             "docs/mvp-scope-decisions.md",
             payload["evidence_snapshot"]["scope_decision_source"],
@@ -1124,7 +1178,7 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertEqual([], payload["carryovers"]["phase14"])
         self.assertEqual("fail", payload["summary"]["overall_decision"])
         self.assertEqual(
-            {"pass": 6, "fail": 14},
+            {"pass": 12, "fail": 8},
             payload["summary"]["decision_counts"],
         )
         self.assertEqual(
@@ -1436,6 +1490,138 @@ class EvaluateDatasetTest(unittest.TestCase):
         ).as_dict()
 
         self.assertEqual("fail", payload["summary"]["overall_decision"])
+
+    def test_mvp_metrics_rollup_fails_closed_on_missing_or_low_quality_data(
+        self,
+    ) -> None:
+        harness_payload = evaluate_dataset.evaluate_mvp_harness(
+            MVP_EVALUATION_MANIFEST_PATH
+        ).as_dict()
+
+        missing = json.loads(json.dumps(harness_payload))
+        del missing["results"][0]["metrics"]["quality"]["denominator"]
+        missing_rollup = evaluate_dataset.mvp_metrics_rollup(missing)
+        self.assertEqual("unknown", missing_rollup["status"])
+        self.assertEqual(
+            ["mvp-word-001"],
+            missing_rollup["dimensions"]["quality"]["unknown_case_ids"],
+        )
+        self.assertTrue(
+            missing_rollup["dimensions"]["quality"]["failure_reasons"]
+        )
+        for dimension_name in (
+            "quality",
+            "provenance",
+            "high_risk",
+            "external_send",
+            "performance",
+        ):
+            with self.subTest(missing_dimension=dimension_name):
+                missing_dimension = json.loads(json.dumps(harness_payload))
+                del missing_dimension["results"][0]["metrics"][dimension_name]
+                self.assertNotEqual(
+                    "pass",
+                    evaluate_dataset.mvp_metrics_rollup(missing_dimension)[
+                        "status"
+                    ],
+                )
+
+        hidden_case_failure = json.loads(json.dumps(harness_payload))
+        hidden_case_failure["results"][0]["metrics"]["quality"]["status"] = "fail"
+        hidden_case_failure_rollup = evaluate_dataset.mvp_metrics_rollup(
+            hidden_case_failure
+        )
+        self.assertGreaterEqual(
+            hidden_case_failure_rollup["dimensions"]["quality"]["rate"],
+            0.80,
+        )
+        self.assertEqual("fail", hidden_case_failure_rollup["status"])
+        self.assertEqual(
+            ["mvp-word-001"],
+            hidden_case_failure_rollup["dimensions"]["quality"]["failed_case_ids"],
+        )
+
+        below_threshold = json.loads(json.dumps(harness_payload))
+        for result in below_threshold["results"]:
+            result["metrics"]["quality"]["numerator"] = 0
+        below_threshold_rollup = evaluate_dataset.mvp_metrics_rollup(
+            below_threshold
+        )
+        self.assertEqual("fail", below_threshold_rollup["status"])
+        self.assertEqual(
+            "fail",
+            below_threshold_rollup["dimensions"]["quality"]["status"],
+        )
+        self.assertEqual(0.0, below_threshold_rollup["dimensions"]["quality"]["rate"])
+
+    def test_mvp_case_metrics_counts_persisted_high_risk_decisions_by_item(
+        self,
+    ) -> None:
+        fixture_content = b"synthetic fixture"
+        evaluations = {
+            "audit": {"status": "pass"},
+            "input_size": {
+                "status": "pass",
+                "input_size_bytes": len(fixture_content),
+                "limit_bytes": 2 * 1024 * 1024,
+                "reason": None,
+            },
+            "processing_time": {
+                "status": "pass",
+                "processing_time_ms": 1.0,
+                "threshold_ms": 10_000,
+                "reason": None,
+            },
+            "timeout": {
+                "status": "pass",
+                "processing_time_ms": 1.0,
+                "timeout_ms": 30_000,
+                "reason": None,
+            },
+            "review": {"ocr_boundary": {"status": "not_applicable"}},
+        }
+        converted = {
+            "status": "requires_review",
+            "hashes": {
+                "source_sha256": hashlib.sha256(fixture_content).hexdigest()
+            },
+            "audit": {"llm": {"enabled": False}},
+        }
+        content_validation = {
+            "evidence": {
+                "quality_numerator": 1,
+                "quality_denominator": 1,
+                "provenance_numerator": 0,
+                "provenance_denominator": 0,
+            }
+        }
+
+        metrics = evaluate_dataset.mvp_case_metrics(
+            converted=converted,
+            fixture_content=fixture_content,
+            content_validation=content_validation,
+            review_items=[{"high_risk": True}],
+            authoritative_decisions=[{"decision": "approved"}],
+            evaluations=evaluations,
+        )
+        self.assertEqual("pass", metrics["status"])
+        self.assertEqual(
+            {
+                "target_count": 1,
+                "covered_count": 1,
+                "miss_count": 0,
+                "auto_confirmed_count": 0,
+            },
+            {
+                key: metrics["high_risk"][key]
+                for key in (
+                    "target_count",
+                    "covered_count",
+                    "miss_count",
+                    "auto_confirmed_count",
+                )
+            },
+        )
 
     def test_mvp_acceptance_report_rejects_unknown_traceability_row(self) -> None:
         traceability = MVP_ACCEPTANCE_TRACEABILITY_PATH.read_text(encoding="utf-8")
@@ -2119,7 +2305,7 @@ class EvaluateDatasetTest(unittest.TestCase):
             content_validation["evidence"]["audit_schema_version"],
         )
 
-    def test_mvp_harness_omits_non_applicable_docx_content_validation(self) -> None:
+    def test_mvp_harness_structures_excel_to_word_content_validation(self) -> None:
         case = self.valid_mvp_case(1)
         fixture_path = REPO_ROOT / str(case["fixture_path"])
 
@@ -2131,7 +2317,26 @@ class EvaluateDatasetTest(unittest.TestCase):
 
         artifact_evaluation = result["evaluations"]["artifact"]
         self.assertEqual("pass", artifact_evaluation["status"])
-        self.assertIsNone(artifact_evaluation["content_validation"])
+        content_validation = artifact_evaluation["content_validation"]
+        self.assertEqual("docx_expectations_v1", content_validation["validator"])
+        self.assertEqual("pass", content_validation["status"])
+        self.assertEqual(
+            {
+                "quality_numerator": 29,
+                "quality_denominator": 29,
+                "provenance_numerator": 0,
+                "provenance_denominator": 0,
+            },
+            {
+                key: content_validation["evidence"][key]
+                for key in (
+                    "quality_numerator",
+                    "quality_denominator",
+                    "provenance_numerator",
+                    "provenance_denominator",
+                )
+            },
+        )
 
     @unittest.skipUnless(PYMUPDF_AVAILABLE, "PyMuPDF eval dependency is not installed")
     def test_mvp_harness_uses_separate_scanned_pdf_docx_validator(self) -> None:
