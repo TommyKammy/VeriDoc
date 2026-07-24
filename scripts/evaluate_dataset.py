@@ -51,6 +51,25 @@ GMP_ACCEPTANCE_SCHEMA_VERSION = "veridoc-gmp-acceptance/v1"
 P9_HARNESS_SCHEMA_VERSION = "veridoc-p9-poc-evaluation-harness/v0"
 MVP_HARNESS_SCHEMA_VERSION = "veridoc-mvp-evaluation-harness/v1"
 MVP_ACCEPTANCE_REPORT_SCHEMA_VERSION = "veridoc-mvp-acceptance-report/v1"
+MVP_METRICS_ROLLUP_SCHEMA_VERSION = "veridoc-mvp-metrics-rollup/v1"
+MVP_QUALITY_AGREEMENT_THRESHOLD = 0.80
+MVP_PROVENANCE_COVERAGE_THRESHOLD = 0.95
+MVP_REQUIRED_CATEGORIES = frozenset(
+    {"word", "excel", "text_pdf", "scanned_pdf", "record_pdf"}
+)
+MVP_METRIC_BACKED_ITEM_DIMENSIONS = {
+    "AC-TEMPLATE": ("completeness", "case_acceptance"),
+    "AC-QUALITY": ("quality",),
+    "AC-PROVENANCE": ("provenance",),
+    "AC-REVIEW": ("high_risk",),
+    "AC-PERFORMANCE": ("performance",),
+    "FC-HIGH-RISK": ("high_risk",),
+}
+MVP_SNAPSHOT_DEPENDENCY_PATHS = (
+    Path("requirements.txt"),
+    Path("requirements-pdf-eval.txt"),
+    Path("requirements-browser-e2e.txt"),
+)
 POC_ACCEPTANCE_REPORT_SCHEMA_VERSION = "veridoc-poc-acceptance-report/v0"
 P9_EVALUATION_MANIFEST_SCHEMA_VERSION = "veridoc-poc-evaluation-dataset/v1"
 MVP_EVALUATION_MANIFEST_SCHEMA_VERSION = "veridoc-mvp-evaluation-dataset/v1"
@@ -3517,11 +3536,20 @@ class MVPAcceptanceReport:
     items: tuple[dict[str, object], ...]
     scope_decision_source: Path | None = None
     scope_decision_text: str = ""
+    snapshot_metadata: Mapping[str, object] | None = None
 
     def as_dict(self) -> dict[str, object]:
         harness_payload = self.harness.as_dict()
+        snapshot_metadata = dict(self.snapshot_metadata or {})
+        metrics_rollup = mvp_metrics_rollup(
+            harness_payload,
+            snapshot_metadata=snapshot_metadata,
+        )
+        items = mvp_acceptance_items_with_rollup(self.items, metrics_rollup)
         snapshot_payload = {
             "harness": harness_payload,
+            "metrics_rollup": metrics_rollup,
+            "metadata": snapshot_metadata,
             "traceability_source": str(self.traceability_source),
             "traceability_text": self.traceability_text,
             "scope_decision_source": (
@@ -3530,7 +3558,7 @@ class MVPAcceptanceReport:
                 else None
             ),
             "scope_decision_text": self.scope_decision_text,
-            "items": self.items,
+            "items": items,
         }
         snapshot_sha256 = hashlib.sha256(
             json.dumps(
@@ -3540,15 +3568,15 @@ class MVPAcceptanceReport:
                 sort_keys=True,
             ).encode("utf-8")
         ).hexdigest()
-        decisions = Counter(str(item["decision"]) for item in self.items)
+        decisions = Counter(str(item["decision"]) for item in items)
         phase13 = [
             item["item_id"]
-            for item in self.items
+            for item in items
             if "phase13" in item["carryover_phases"]
         ]
         phase14 = [
             item["item_id"]
-            for item in self.items
+            for item in items
             if "phase14" in item["carryover_phases"]
         ]
         return {
@@ -3558,14 +3586,15 @@ class MVPAcceptanceReport:
                 "overall_decision": (
                     "pass"
                     if (
-                        self.items
+                        items
                         and decisions.get("fail", 0) == 0
                         and harness_payload["acceptance_handoff"]["overall_status"]
                         == "pass"
+                        and metrics_rollup["status"] == "pass"
                     )
                     else "fail"
                 ),
-                "item_count": len(self.items),
+                "item_count": len(items),
                 "decision_counts": {
                     "pass": decisions.get("pass", 0),
                     "fail": decisions.get("fail", 0),
@@ -3587,8 +3616,10 @@ class MVPAcceptanceReport:
                 ),
                 "harness_summary": harness_payload["summary"],
                 "harness_results": harness_payload["results"],
+                "metadata": snapshot_metadata,
+                "metrics_rollup": metrics_rollup,
             },
-            "items": list(self.items),
+            "items": list(items),
             "carryovers": {
                 "phase13": phase13,
                 "phase14": phase14,
@@ -4645,16 +4676,40 @@ def p9_cell_column_label(ref: str) -> str:
 
 
 def p9_validate_xlsx_artifact(
-    artifact_path: Path, expectations: dict[str, Any], fixture_id: object
+    artifact_path: Path,
+    expectations: dict[str, Any],
+    fixture_id: object,
+    *,
+    content_validation: dict[str, Any] | None = None,
+    require_content_validation: bool = False,
 ) -> list[str]:
     from core.parsers.xlsx_extraction import extract_xlsx_structure
 
     failures: list[str] = []
     xlsx = extract_xlsx_structure(artifact_path)
     if not xlsx.sheets:
-        return ["xlsx artifact has no sheets"]
+        failure = "xlsx artifact has no sheets"
+        if content_validation is not None:
+            content_validation.update(
+                {
+                    "validator": "xlsx_expectations_v1",
+                    "status": "fail",
+                    "checks": [],
+                    "metrics": {},
+                    "evidence": {
+                        "quality_numerator": 0,
+                        "quality_denominator": 0,
+                        "provenance_numerator": 0,
+                        "provenance_denominator": 0,
+                    },
+                    "failures": [failure],
+                }
+            )
+        return [failure]
     sheet = xlsx.sheets[0]
     cells = {cell.ref: (cell.value, cell.value_type) for cell in sheet.cells}
+    quality_numerator = 0
+    quality_denominator = 0
     expected_dimension = expectations.get("dimension")
     if isinstance(expected_dimension, str) and sheet.dimension != expected_dimension:
         failures.append(
@@ -4666,8 +4721,11 @@ def p9_validate_xlsx_artifact(
             if not isinstance(ref, str) or not isinstance(expected, dict):
                 failures.append(f"fixture {fixture_id!r} has malformed cell expectation")
                 continue
+            quality_denominator += 1
             expected_pair = (expected.get("value"), expected.get("value_type"))
-            if cells.get(ref) != expected_pair:
+            if cells.get(ref) == expected_pair:
+                quality_numerator += 1
+            else:
                 failures.append(
                     f"expected cell {ref} {expected_pair!r}, got {cells.get(ref)!r}"
                 )
@@ -4714,7 +4772,10 @@ def p9_validate_xlsx_artifact(
                 f"{expected_table_column_count} table columns, got "
                 f"{actual_table_column_count}"
             )
+    provenance_numerator = 0
+    provenance_denominator = 0
     if isinstance(source_comment, dict):
+        provenance_denominator = 1
         comment_ref = source_comment.get("cell")
         contains = source_comment.get("contains")
         comments_by_ref = p9_xlsx_comments_by_ref(artifact_path)
@@ -4722,11 +4783,72 @@ def p9_validate_xlsx_artifact(
             failures.append(f"expected source comment at {comment_ref!r}")
         elif isinstance(contains, list):
             comment_text = comments_by_ref[comment_ref]
+            source_comment_matches = True
             for expected_text in contains:
                 if isinstance(expected_text, str) and expected_text not in comment_text:
+                    source_comment_matches = False
                     failures.append(
                         f"expected source comment at {comment_ref} to contain {expected_text!r}"
                     )
+            if source_comment_matches:
+                provenance_numerator = 1
+        else:
+            provenance_numerator = 1
+    if require_content_validation and quality_denominator == 0:
+        failures.append("xlsx content agreement denominator is unavailable")
+    if content_validation is not None and (
+        require_content_validation or quality_denominator or provenance_denominator
+    ):
+        content_validation.update(
+            {
+                "validator": "xlsx_expectations_v1",
+                "status": "fail" if failures else "pass",
+                "checks": [
+                    {
+                        "id": "content_agreement",
+                        "status": (
+                            "pass"
+                            if quality_denominator
+                            and quality_numerator == quality_denominator
+                            else "fail"
+                        ),
+                    },
+                    *(
+                        [
+                            {
+                                "id": "source_linkage",
+                                "status": (
+                                    "pass"
+                                    if provenance_numerator == provenance_denominator
+                                    else "fail"
+                                ),
+                            }
+                        ]
+                        if provenance_denominator
+                        else []
+                    ),
+                ],
+                "metrics": {
+                    "content_match_rate": (
+                        quality_numerator / quality_denominator
+                        if quality_denominator
+                        else 0.0
+                    ),
+                    "source_linkage_rate": (
+                        provenance_numerator / provenance_denominator
+                        if provenance_denominator
+                        else None
+                    ),
+                },
+                "evidence": {
+                    "quality_numerator": quality_numerator,
+                    "quality_denominator": quality_denominator,
+                    "provenance_numerator": provenance_numerator,
+                    "provenance_denominator": provenance_denominator,
+                },
+                "failures": list(failures),
+            }
+        )
     return failures
 
 
@@ -5145,6 +5267,14 @@ def p9_validate_pdf_to_word_docx_content(
             "source_pages": sorted(source_pages),
             "expected_body_block_count": len(expected_blocks),
             "actual_body_block_count": len(actual_body_blocks),
+            "quality_numerator": sum(
+                expected == actual_body_blocks[index]
+                for index, expected in enumerate(expected_blocks)
+                if index < len(actual_body_blocks)
+            ),
+            "quality_denominator": len(expected_blocks),
+            "provenance_numerator": linked_count,
+            "provenance_denominator": len(expected_source_links),
         },
         "failures": failures,
     }
@@ -5175,17 +5305,81 @@ def p9_validate_docx_artifact(
         paragraphs = [block.text for block in docx.blocks if block.kind == "paragraph"]
         if paragraphs != expected_paragraphs:
             failures.append("docx paragraph texts did not match expectations")
-    structured_validation = p9_validate_pdf_to_word_docx_content(
-        artifact_path,
-        expectations,
-        docx=docx,
-        required=require_content_validation,
-    )
+    validator = expectations.get("validator")
+    structured_failures_to_add: list[str]
+    if isinstance(validator, str):
+        structured_validation = p9_validate_pdf_to_word_docx_content(
+            artifact_path,
+            expectations,
+            docx=docx,
+            required=require_content_validation,
+        )
+        structured_failures_to_add = structured_validation["failures"]
+    else:
+        expected_values: list[object] = []
+        actual_values: list[object] = []
+        if isinstance(expected_table_rows, list):
+            for table in expected_table_rows:
+                for row in table if isinstance(table, list) else []:
+                    expected_values.extend(row if isinstance(row, list) else [])
+            for table in table_rows:
+                for row in table:
+                    actual_values.extend(row)
+        if isinstance(expected_headings, list):
+            expected_values.extend(expected_headings)
+            actual_values.extend(
+                block.text for block in docx.blocks if block.kind == "heading"
+            )
+        if isinstance(expected_paragraphs, list):
+            expected_values.extend(expected_paragraphs)
+            actual_values.extend(
+                block.text for block in docx.blocks if block.kind == "paragraph"
+            )
+        quality_numerator = sum(
+            expected == actual_values[index]
+            for index, expected in enumerate(expected_values)
+            if index < len(actual_values)
+        )
+        quality_denominator = len(expected_values)
+        structured_failures: list[str] = []
+        if require_content_validation and quality_denominator == 0:
+            structured_failures.append("docx content agreement denominator is unavailable")
+        structured_failures_to_add = structured_failures
+        structured_validation = {
+            "validator": "docx_expectations_v1",
+            "status": "fail" if failures or structured_failures else "pass",
+            "checks": [
+                {
+                    "id": "content_agreement",
+                    "status": (
+                        "pass"
+                        if quality_denominator
+                        and quality_numerator == quality_denominator
+                        else "fail"
+                    ),
+                }
+            ],
+            "metrics": {
+                "content_match_rate": (
+                    quality_numerator / quality_denominator
+                    if quality_denominator
+                    else 0.0
+                ),
+                "source_linkage_rate": None,
+            },
+            "evidence": {
+                "quality_numerator": quality_numerator,
+                "quality_denominator": quality_denominator,
+                "provenance_numerator": 0,
+                "provenance_denominator": 0,
+            },
+            "failures": [*failures, *structured_failures],
+        }
     if content_validation is not None and (
         require_content_validation or structured_validation["status"] != "not_applicable"
     ):
         content_validation.update(structured_validation)
-    failures.extend(structured_validation["failures"])
+    failures.extend(structured_failures_to_add)
     return failures
 
 
@@ -5274,22 +5468,29 @@ def p9_validate_artifact_expectations(
             artifact_path = Path(artifact_file.name)
 
         if artifact_format == "xlsx":
-            failures.extend(
-                p9_validate_xlsx_artifact(
-                    artifact_path, expectations, fixture.get("id")
+            if require_content_validation or content_validation is not None:
+                failures.extend(
+                    p9_validate_xlsx_artifact(
+                        artifact_path,
+                        expectations,
+                        fixture.get("id"),
+                        content_validation=content_validation,
+                        require_content_validation=require_content_validation,
+                    )
                 )
-            )
+            else:
+                failures.extend(
+                    p9_validate_xlsx_artifact(
+                        artifact_path, expectations, fixture.get("id")
+                    )
+                )
         elif artifact_format == "docx":
             failures.extend(
                 p9_validate_docx_artifact(
                     artifact_path,
                     expectations,
                     content_validation=content_validation,
-                    require_content_validation=(
-                        require_content_validation
-                        and representative_mode
-                        in {"pdf_to_word", "scanned_pdf_ocr"}
-                    ),
+                    require_content_validation=require_content_validation,
                 )
             )
     except Exception as exc:
@@ -5569,6 +5770,826 @@ def mvp_acceptance_status(statuses: Iterable[str]) -> str:
     if observed and all(status == "pass" for status in observed):
         return "pass"
     return "unknown"
+
+
+def mvp_acceptance_items_with_rollup(
+    items: Iterable[Mapping[str, object]],
+    metrics_rollup: Mapping[str, object],
+) -> tuple[dict[str, object], ...]:
+    dimensions_value = metrics_rollup.get("dimensions")
+    dimensions = (
+        dimensions_value if isinstance(dimensions_value, Mapping) else {}
+    )
+    criteria_refs_value = metrics_rollup.get("criteria_refs")
+    criteria_refs = (
+        criteria_refs_value if isinstance(criteria_refs_value, Mapping) else {}
+    )
+    effective_items: list[dict[str, object]] = []
+    for item in items:
+        effective_item = dict(item)
+        item_id = str(item.get("item_id") or "")
+        required_dimensions = MVP_METRIC_BACKED_ITEM_DIMENSIONS.get(item_id)
+        if required_dimensions is None:
+            effective_items.append(effective_item)
+            continue
+
+        dimension_statuses: dict[str, str] = {}
+        for dimension_name in required_dimensions:
+            dimension = dimensions.get(dimension_name)
+            status = (
+                dimension.get("status")
+                if isinstance(dimension, Mapping)
+                else None
+            )
+            dimension_statuses[dimension_name] = (
+                str(status) if status in {"pass", "fail"} else "unknown"
+            )
+        validation_status = mvp_acceptance_status(dimension_statuses.values())
+        evidence_value = item.get("evidence")
+        evidence = (
+            dict(evidence_value)
+            if isinstance(evidence_value, Mapping)
+            else {}
+        )
+        refs_value = criteria_refs.get(item_id)
+        evidence["metrics_rollup_validation"] = {
+            "status": validation_status,
+            "required_dimensions": list(required_dimensions),
+            "dimension_statuses": dimension_statuses,
+            "refs": list(refs_value) if isinstance(refs_value, list) else [],
+        }
+        effective_item["evidence"] = evidence
+        if item.get("decision") == "pass" and validation_status != "pass":
+            effective_item["decision"] = "fail"
+            effective_item["unmet"] = (
+                "live metrics rollup validation is non-passing: "
+                + ", ".join(
+                    f"{name}={status}"
+                    for name, status in dimension_statuses.items()
+                )
+            )
+        effective_items.append(effective_item)
+    return tuple(effective_items)
+
+
+def _mvp_ratio_metric(
+    *,
+    numerator: object,
+    denominator: object,
+    threshold: float,
+    label: str,
+) -> dict[str, object]:
+    valid_counts = (
+        isinstance(numerator, int)
+        and not isinstance(numerator, bool)
+        and isinstance(denominator, int)
+        and not isinstance(denominator, bool)
+        and denominator > 0
+        and 0 <= numerator <= denominator
+    )
+    if not valid_counts:
+        reason = f"{label} numerator or denominator is missing or invalid"
+        return {
+            "status": "unknown",
+            "numerator": numerator,
+            "denominator": denominator,
+            "rate": None,
+            "threshold": threshold,
+            "operator": ">=",
+            "exclusions": [],
+            "unknown": [reason],
+            "failure_reasons": [reason],
+        }
+    rate = numerator / denominator
+    passed = rate >= threshold
+    return {
+        "status": "pass" if passed else "fail",
+        "numerator": numerator,
+        "denominator": denominator,
+        "rate": rate,
+        "threshold": threshold,
+        "operator": ">=",
+        "exclusions": [],
+        "unknown": [],
+        "failure_reasons": (
+            []
+            if passed
+            else [f"{label} {rate:.6f} is below the {threshold:.6f} threshold"]
+        ),
+    }
+
+
+def mvp_case_metrics(
+    *,
+    converted: Mapping[str, Any],
+    fixture_content: bytes,
+    content_validation: Mapping[str, Any],
+    review_items: object,
+    authoritative_decisions: list[dict[str, object]],
+    evaluations: Mapping[str, Mapping[str, object]],
+) -> dict[str, object]:
+    evidence = content_validation.get("evidence")
+    validation_evidence = evidence if isinstance(evidence, Mapping) else {}
+    quality = _mvp_ratio_metric(
+        numerator=validation_evidence.get("quality_numerator"),
+        denominator=validation_evidence.get("quality_denominator"),
+        threshold=MVP_QUALITY_AGREEMENT_THRESHOLD,
+        label="quality agreement",
+    )
+
+    direct_provenance_numerator = validation_evidence.get(
+        "provenance_numerator", 0
+    )
+    direct_provenance_denominator = validation_evidence.get(
+        "provenance_denominator", 0
+    )
+    hashes = converted.get("hashes")
+    audit_source_bound = (
+        isinstance(hashes, Mapping)
+        and hashes.get("source_sha256")
+        == hashlib.sha256(fixture_content).hexdigest()
+        and evaluations.get("audit", {}).get("status") == "pass"
+    )
+    provenance_counts_valid = (
+        isinstance(direct_provenance_numerator, int)
+        and not isinstance(direct_provenance_numerator, bool)
+        and isinstance(direct_provenance_denominator, int)
+        and not isinstance(direct_provenance_denominator, bool)
+        and 0 <= direct_provenance_numerator <= direct_provenance_denominator
+    )
+    provenance = _mvp_ratio_metric(
+        numerator=(
+            direct_provenance_numerator + int(audit_source_bound)
+            if provenance_counts_valid
+            else None
+        ),
+        denominator=(
+            direct_provenance_denominator + 1
+            if provenance_counts_valid
+            else None
+        ),
+        threshold=MVP_PROVENANCE_COVERAGE_THRESHOLD,
+        label="provenance coverage",
+    )
+    provenance["basis"] = {
+        "direct_source_links": {
+            "numerator": direct_provenance_numerator,
+            "denominator": direct_provenance_denominator,
+        },
+        "audit_source_hash_binding": {
+            "numerator": int(audit_source_bound),
+            "denominator": 1,
+        },
+    }
+
+    high_risk_unknown: list[str] = []
+    if not isinstance(review_items, list) or not all(
+        isinstance(item, Mapping) for item in review_items
+    ):
+        high_risk_items: list[Mapping[str, Any]] = []
+        high_risk_unknown.append("review items are missing or malformed")
+    else:
+        high_risk_items = [
+            item for item in review_items if mvp_review_item_is_high_risk(item)
+        ]
+    review_item_values = review_items if isinstance(review_items, list) else []
+    persisted_high_risk_indices = {
+        index
+        for index, (review_item, decision) in enumerate(
+            zip(review_item_values, authoritative_decisions)
+        )
+        if isinstance(review_item, Mapping)
+        and mvp_review_item_is_high_risk(review_item)
+        and isinstance(decision, Mapping)
+        and decision.get("decision") in {"approved", "rejected", "needs_fix"}
+    }
+    high_risk_indices = {
+        index
+        for index, review_item in enumerate(review_item_values)
+        if isinstance(review_item, Mapping)
+        and mvp_review_item_is_high_risk(review_item)
+    }
+    explicitly_auto_confirmed_indices = {
+        index
+        for index, review_item in enumerate(review_item_values)
+        if index in high_risk_indices
+        and isinstance(review_item, Mapping)
+        and review_item.get("auto_confirmed") is True
+    }
+    implicitly_auto_confirmed_indices = (
+        high_risk_indices - persisted_high_risk_indices
+        if converted.get("status") == "converted"
+        else set()
+    )
+    high_risk_auto_confirmed_indices = (
+        explicitly_auto_confirmed_indices | implicitly_auto_confirmed_indices
+    )
+    persisted_high_risk_decisions = len(persisted_high_risk_indices)
+    ocr_boundary = evaluations.get("review", {}).get("ocr_boundary")
+    fail_closed_high_risk = (
+        len(high_risk_items)
+        if isinstance(ocr_boundary, Mapping)
+        and ocr_boundary.get("status") == "pass"
+        and converted.get("status") == "requires_review"
+        else 0
+    )
+    covered_high_risk_count = min(
+        len(high_risk_items),
+        persisted_high_risk_decisions + fail_closed_high_risk,
+    )
+    high_risk_miss_count = len(high_risk_items) - covered_high_risk_count
+    high_risk_auto_confirmed_count = len(high_risk_auto_confirmed_indices)
+    high_risk_failures = [
+        *high_risk_unknown,
+        *(
+            [f"{high_risk_miss_count} high-risk target(s) were missed"]
+            if high_risk_miss_count
+            else []
+        ),
+        *(
+            [
+                f"{high_risk_auto_confirmed_count} high-risk target(s) "
+                "were auto-confirmed"
+            ]
+            if high_risk_auto_confirmed_count
+            else []
+        ),
+    ]
+    high_risk = {
+        "status": (
+            "unknown"
+            if high_risk_unknown
+            else "fail"
+            if high_risk_failures
+            else "pass"
+        ),
+        "target_count": len(high_risk_items),
+        "covered_count": covered_high_risk_count,
+        "miss_count": high_risk_miss_count,
+        "auto_confirmed_count": high_risk_auto_confirmed_count,
+        "denominator": len(high_risk_items),
+        "rate": (
+            covered_high_risk_count / len(high_risk_items)
+            if high_risk_items
+            else None
+        ),
+        "applicability": "targets_present" if high_risk_items else "no_targets",
+        "exclusions": [],
+        "unknown": high_risk_unknown,
+        "failure_reasons": high_risk_failures,
+    }
+
+    audit = converted.get("audit")
+    if not isinstance(audit, dict):
+        external_send = {
+            "status": "unknown",
+            "external_send_count": None,
+            "denominator": 1,
+            "limit": 0,
+            "operator": "<=",
+            "exclusions": [],
+            "unknown": ["conversion audit is missing or malformed"],
+            "failure_reasons": ["conversion audit is missing or malformed"],
+            "basis": "conversion_audit_external_ai_api_guard",
+        }
+    else:
+        external_send_count = int(p9_external_ai_api_guard_violation(audit))
+        external_send = {
+            "status": "pass" if external_send_count == 0 else "fail",
+            "external_send_count": external_send_count,
+            "denominator": 1,
+            "limit": 0,
+            "operator": "<=",
+            "exclusions": [],
+            "unknown": [],
+            "failure_reasons": (
+                []
+                if external_send_count == 0
+                else ["external AI API send was detected"]
+            ),
+            "basis": "conversion_audit_external_ai_api_guard",
+        }
+
+    performance_dimensions = {
+        key: dict(evaluations.get(key, {}))
+        for key in ("input_size", "processing_time", "timeout")
+    }
+    performance_status = mvp_acceptance_status(
+        str(dimension.get("status", "unknown"))
+        for dimension in performance_dimensions.values()
+    )
+    performance_failures = [
+        str(dimension.get("reason") or f"{key} metric is {dimension.get('status')}")
+        for key, dimension in performance_dimensions.items()
+        if dimension.get("status") != "pass"
+    ]
+    performance = {
+        "status": performance_status,
+        "dimensions": performance_dimensions,
+        "denominator": len(performance_dimensions),
+        "exclusions": [],
+        "unknown": [
+            key
+            for key, dimension in performance_dimensions.items()
+            if dimension.get("status") == "unknown"
+        ],
+        "failure_reasons": performance_failures,
+    }
+
+    dimensions = {
+        "quality": quality,
+        "provenance": provenance,
+        "high_risk": high_risk,
+        "external_send": external_send,
+        "performance": performance,
+    }
+    return {
+        "schema_version": MVP_METRICS_ROLLUP_SCHEMA_VERSION,
+        "status": mvp_acceptance_status(
+            str(dimension["status"]) for dimension in dimensions.values()
+        ),
+        **dimensions,
+    }
+
+
+def mvp_metrics_rollup(
+    harness_payload: Mapping[str, object],
+    *,
+    snapshot_metadata: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    results_value = harness_payload.get("results")
+    results = (
+        [result for result in results_value if isinstance(result, Mapping)]
+        if isinstance(results_value, list)
+        else []
+    )
+    case_ids = [result.get("case_id") for result in results]
+    categories = [result.get("category") for result in results]
+    valid_case_ids = [
+        case_id for case_id in case_ids if isinstance(case_id, str) and case_id
+    ]
+    valid_categories = [
+        category for category in categories if isinstance(category, str) and category
+    ]
+    completeness_failures: list[str] = []
+    if len(results) != 5:
+        completeness_failures.append(f"expected 5 cases, got {len(results)}")
+    if (
+        len(valid_case_ids) != len(case_ids)
+        or len(set(valid_case_ids)) != len(valid_case_ids)
+    ):
+        completeness_failures.append("case IDs are missing or duplicated")
+    if set(valid_categories) != MVP_REQUIRED_CATEGORIES:
+        completeness_failures.append(
+            "case categories do not match the fixed five-category MVP set"
+        )
+    metrics_by_case: list[tuple[Mapping[str, object], Mapping[str, object]]] = []
+    unknown_case_ids: list[str] = []
+    for result in results:
+        metrics = result.get("metrics")
+        case_id = str(result.get("case_id") or "<unknown>")
+        if not isinstance(metrics, Mapping):
+            unknown_case_ids.append(case_id)
+            continue
+        metrics_by_case.append((result, metrics))
+    if unknown_case_ids:
+        completeness_failures.append(
+            "structured metrics missing for: " + ", ".join(unknown_case_ids)
+        )
+    completeness = {
+        "status": "fail" if completeness_failures else "pass",
+        "numerator": len(metrics_by_case),
+        "denominator": 5,
+        "required_categories": sorted(MVP_REQUIRED_CATEGORIES),
+        "observed_categories": sorted(
+            valid_categories
+        ),
+        "exclusions": [],
+        "unknown": unknown_case_ids,
+        "failure_reasons": completeness_failures,
+    }
+    failed_acceptance_case_ids = [
+        str(result.get("case_id") or "<unknown>")
+        for result in results
+        if result.get("acceptance_status") == "fail"
+    ]
+    unknown_acceptance_case_ids = [
+        str(result.get("case_id") or "<unknown>")
+        for result in results
+        if result.get("acceptance_status") not in ("pass", "fail")
+    ]
+    passing_acceptance_case_count = sum(
+        result.get("acceptance_status") == "pass" for result in results
+    )
+    case_acceptance_failures = [
+        *(
+            ["harness acceptance results are missing"]
+            if not results
+            else []
+        ),
+        *(
+            [
+                "harness acceptance failed for case(s): "
+                + ", ".join(failed_acceptance_case_ids)
+            ]
+            if failed_acceptance_case_ids
+            else []
+        ),
+        *(
+            [
+                "harness acceptance is missing or unknown for case(s): "
+                + ", ".join(unknown_acceptance_case_ids)
+            ]
+            if unknown_acceptance_case_ids
+            else []
+        ),
+    ]
+    case_acceptance = {
+        "status": (
+            "fail"
+            if failed_acceptance_case_ids
+            else "unknown"
+            if not results or unknown_acceptance_case_ids
+            else "pass"
+        ),
+        "numerator": passing_acceptance_case_count,
+        "denominator": len(results),
+        "failed_case_ids": failed_acceptance_case_ids,
+        "unknown_case_ids": unknown_acceptance_case_ids,
+        "exclusions": [],
+        "unknown": unknown_acceptance_case_ids,
+        "failure_reasons": case_acceptance_failures,
+    }
+
+    def aggregate_ratio(
+        dimension_name: str, threshold: float, label: str
+    ) -> dict[str, object]:
+        numerator = 0
+        denominator = 0
+        invalid_cases: list[str] = []
+        failed_cases: list[str] = []
+        for result, metrics in metrics_by_case:
+            dimension = metrics.get(dimension_name)
+            case_id = str(result.get("case_id") or "<unknown>")
+            if not isinstance(dimension, Mapping):
+                invalid_cases.append(case_id)
+                continue
+            case_status = dimension.get("status")
+            if case_status not in {"pass", "fail"}:
+                invalid_cases.append(case_id)
+                continue
+            if case_status == "fail":
+                failed_cases.append(case_id)
+            case_numerator = dimension.get("numerator")
+            case_denominator = dimension.get("denominator")
+            if (
+                not isinstance(case_numerator, int)
+                or isinstance(case_numerator, bool)
+                or not isinstance(case_denominator, int)
+                or isinstance(case_denominator, bool)
+                or case_denominator <= 0
+                or not 0 <= case_numerator <= case_denominator
+            ):
+                invalid_cases.append(case_id)
+                continue
+            numerator += case_numerator
+            denominator += case_denominator
+        metric = _mvp_ratio_metric(
+            numerator=numerator if not invalid_cases else None,
+            denominator=denominator if not invalid_cases else None,
+            threshold=threshold,
+            label=label,
+        )
+        metric["unknown_case_ids"] = invalid_cases
+        metric["failed_case_ids"] = failed_cases
+        if failed_cases and not invalid_cases:
+            metric["status"] = "fail"
+            metric["failure_reasons"] = [
+                *metric["failure_reasons"],
+                f"{label} failed for case(s): " + ", ".join(failed_cases),
+            ]
+        return metric
+
+    quality = aggregate_ratio(
+        "quality", MVP_QUALITY_AGREEMENT_THRESHOLD, "quality agreement"
+    )
+    provenance = aggregate_ratio(
+        "provenance",
+        MVP_PROVENANCE_COVERAGE_THRESHOLD,
+        "provenance coverage",
+    )
+
+    high_risk_unknown: list[str] = []
+    high_risk_failed_cases: list[str] = []
+    high_risk_target_count = 0
+    high_risk_covered_count = 0
+    high_risk_miss_count = 0
+    high_risk_auto_confirmed_count = 0
+    for result, metrics in metrics_by_case:
+        dimension = metrics.get("high_risk")
+        case_id = str(result.get("case_id") or "<unknown>")
+        if not isinstance(dimension, Mapping):
+            high_risk_unknown.append(case_id)
+            continue
+        if dimension.get("status") not in {"pass", "fail"}:
+            high_risk_unknown.append(case_id)
+            continue
+        counts = (
+            dimension.get("target_count"),
+            dimension.get("covered_count"),
+            dimension.get("miss_count"),
+            dimension.get("auto_confirmed_count"),
+        )
+        if any(not isinstance(value, int) or isinstance(value, bool) for value in counts):
+            high_risk_unknown.append(case_id)
+            continue
+        target_count, covered_count, miss_count, auto_confirmed_count = counts
+        if (
+            target_count < 0
+            or not 0 <= covered_count <= target_count
+            or not 0 <= miss_count <= target_count
+            or not 0 <= auto_confirmed_count <= target_count
+            or covered_count + miss_count != target_count
+        ):
+            high_risk_unknown.append(case_id)
+            continue
+        if dimension.get("status") == "fail":
+            high_risk_failed_cases.append(case_id)
+        high_risk_target_count += target_count
+        high_risk_covered_count += covered_count
+        high_risk_miss_count += miss_count
+        high_risk_auto_confirmed_count += auto_confirmed_count
+    high_risk_failures = [
+        *(
+            [
+                "high-risk metrics missing or invalid for: "
+                + ", ".join(high_risk_unknown)
+            ]
+            if high_risk_unknown
+            else []
+        ),
+        *(
+            [
+                "high-risk metric failed for case(s): "
+                + ", ".join(high_risk_failed_cases)
+            ]
+            if high_risk_failed_cases
+            else []
+        ),
+        *(
+            [f"{high_risk_miss_count} high-risk target(s) were missed"]
+            if high_risk_miss_count
+            else []
+        ),
+        *(
+            [
+                f"{high_risk_auto_confirmed_count} high-risk target(s) "
+                "were auto-confirmed"
+            ]
+            if high_risk_auto_confirmed_count
+            else []
+        ),
+    ]
+    high_risk = {
+        "status": (
+            "unknown"
+            if high_risk_unknown
+            else "fail"
+            if high_risk_failures
+            else "pass"
+        ),
+        "target_count": high_risk_target_count,
+        "covered_count": high_risk_covered_count,
+        "miss_count": high_risk_miss_count,
+        "auto_confirmed_count": high_risk_auto_confirmed_count,
+        "denominator": high_risk_target_count,
+        "rate": (
+            high_risk_covered_count / high_risk_target_count
+            if high_risk_target_count
+            else None
+        ),
+        "applicability": (
+            "targets_present" if high_risk_target_count else "no_targets"
+        ),
+        "limits": {"miss_count": 0, "auto_confirmed_count": 0},
+        "exclusions": [],
+        "unknown_case_ids": high_risk_unknown,
+        "failed_case_ids": high_risk_failed_cases,
+        "failure_reasons": high_risk_failures,
+    }
+
+    external_unknown: list[str] = []
+    external_send_count = 0
+    for result, metrics in metrics_by_case:
+        dimension = metrics.get("external_send")
+        case_id = str(result.get("case_id") or "<unknown>")
+        count = (
+            dimension.get("external_send_count")
+            if isinstance(dimension, Mapping)
+            else None
+        )
+        if (
+            not isinstance(dimension, Mapping)
+            or dimension.get("status") not in {"pass", "fail"}
+            or not isinstance(count, int)
+            or isinstance(count, bool)
+        ):
+            external_unknown.append(case_id)
+            continue
+        external_send_count += count
+    external_failures = [
+        *(
+            ["external-send metrics missing for: " + ", ".join(external_unknown)]
+            if external_unknown
+            else []
+        ),
+        *(
+            [f"{external_send_count} external AI API send(s) were detected"]
+            if external_send_count
+            else []
+        ),
+    ]
+    external_send = {
+        "status": (
+            "unknown"
+            if external_unknown
+            else "fail"
+            if external_send_count
+            else "pass"
+        ),
+        "external_send_count": external_send_count,
+        "denominator": len(metrics_by_case),
+        "limit": 0,
+        "operator": "<=",
+        "exclusions": [],
+        "unknown_case_ids": external_unknown,
+        "failure_reasons": external_failures,
+    }
+
+    performance_unknown: list[str] = []
+    performance_failures: list[str] = []
+    maxima: dict[str, float | int] = {}
+    limits: dict[str, int] = {}
+    performance_fields = {
+        "input_size": ("input_size_bytes", "limit_bytes"),
+        "processing_time": ("processing_time_ms", "threshold_ms"),
+        "timeout": ("processing_time_ms", "timeout_ms"),
+    }
+    for dimension_name, (value_field, limit_field) in performance_fields.items():
+        observed_values: list[float | int] = []
+        observed_limits: set[int] = set()
+        for result, metrics in metrics_by_case:
+            performance = metrics.get("performance")
+            dimensions = (
+                performance.get("dimensions")
+                if isinstance(performance, Mapping)
+                else None
+            )
+            dimension = (
+                dimensions.get(dimension_name)
+                if isinstance(dimensions, Mapping)
+                else None
+            )
+            case_id = str(result.get("case_id") or "<unknown>")
+            if not isinstance(dimension, Mapping):
+                performance_unknown.append(f"{case_id}:{dimension_name}")
+                continue
+            value = dimension.get(value_field)
+            limit = dimension.get(limit_field)
+            if (
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not isinstance(limit, int)
+                or isinstance(limit, bool)
+                or dimension.get("status") not in {"pass", "fail"}
+            ):
+                performance_unknown.append(f"{case_id}:{dimension_name}")
+                continue
+            observed_values.append(value)
+            observed_limits.add(limit)
+            if dimension.get("status") != "pass":
+                performance_failures.append(
+                    str(
+                        dimension.get("reason")
+                        or f"{case_id} {dimension_name} did not pass"
+                    )
+                )
+        if observed_values:
+            maxima[dimension_name] = max(observed_values)
+        if len(observed_limits) == 1:
+            limits[dimension_name] = next(iter(observed_limits))
+        else:
+            performance_unknown.append(f"rollup:{dimension_name}:limit")
+    performance = {
+        "status": (
+            "unknown"
+            if performance_unknown
+            else "fail"
+            if performance_failures
+            else "pass"
+        ),
+        "maxima": maxima,
+        "limits": limits,
+        "denominator": len(metrics_by_case) * len(performance_fields),
+        "exclusions": [],
+        "unknown": performance_unknown,
+        "failure_reasons": performance_failures,
+    }
+
+    dimensions = {
+        "completeness": completeness,
+        "case_acceptance": case_acceptance,
+        "quality": quality,
+        "provenance": provenance,
+        "high_risk": high_risk,
+        "external_send": external_send,
+        "performance": performance,
+    }
+    if snapshot_metadata is not None:
+        snapshot_failures: list[str] = []
+        snapshot_unknown: list[str] = []
+        worktree_clean = snapshot_metadata.get("worktree_clean")
+        if worktree_clean is False:
+            snapshot_failures.append(
+                "worktree is dirty; HEAD does not fully identify the evaluated source"
+            )
+        elif worktree_clean is not True:
+            snapshot_unknown.append("worktree cleanliness is missing or unknown")
+        commit = snapshot_metadata.get("commit")
+        commit_is_valid = (
+            isinstance(commit, str)
+            and re.fullmatch(r"[0-9a-f]{40}", commit) is not None
+        )
+        if not commit_is_valid:
+            snapshot_unknown.append("commit is missing or malformed")
+        snapshot_integrity = {
+            "status": (
+                "fail"
+                if snapshot_failures
+                else "unknown"
+                if snapshot_unknown
+                else "pass"
+            ),
+            "commit": commit,
+            "worktree_clean": worktree_clean,
+            "numerator": int(worktree_clean is True) + int(commit_is_valid),
+            "denominator": 2,
+            "exclusions": [],
+            "unknown": snapshot_unknown,
+            "failure_reasons": [*snapshot_failures, *snapshot_unknown],
+        }
+        dimensions["snapshot_integrity"] = snapshot_integrity
+    rollup_status = mvp_acceptance_status(
+        str(dimension["status"]) for dimension in dimensions.values()
+    )
+    return {
+        "schema_version": MVP_METRICS_ROLLUP_SCHEMA_VERSION,
+        "status": rollup_status,
+        "dimensions": dimensions,
+        "case_results": [
+            {
+                "case_id": result.get("case_id"),
+                "category": result.get("category"),
+                "status": metrics.get("status"),
+                "acceptance_status": result.get("acceptance_status"),
+                "metrics": metrics,
+            }
+            for result, metrics in metrics_by_case
+        ],
+        "criteria_refs": {
+            "AC-TEMPLATE": [
+                "dimensions.completeness",
+                "dimensions.case_acceptance",
+                "case_results",
+            ],
+            "AC-QUALITY": ["dimensions.quality", "case_results[*].metrics.quality"],
+            "AC-PROVENANCE": [
+                "dimensions.provenance",
+                "case_results[*].metrics.provenance",
+            ],
+            "AC-REVIEW": [
+                "dimensions.high_risk",
+                "case_results[*].metrics.high_risk",
+            ],
+            "AC-PERFORMANCE": [
+                "dimensions.performance",
+                "case_results[*].metrics.performance",
+            ],
+            "FC-HIGH-RISK": [
+                "dimensions.high_risk",
+                "case_results[*].metrics.high_risk",
+            ],
+            "FC-EXTERNAL-SEND": [
+                "dimensions.external_send",
+                "case_results[*].metrics.external_send",
+            ],
+        },
+        "failure_reasons": [
+            reason
+            for dimension in dimensions.values()
+            for reason in dimension["failure_reasons"]
+        ],
+    }
 
 
 def mvp_fixture_manifest_path(manifest: dict[str, Any], repo_root: Path) -> Path:
@@ -6501,8 +7522,19 @@ def mvp_conversion_result(
             timeout_ms=acceptance_limits["timeout_ms"],
         ),
     }
+    case_metrics = mvp_case_metrics(
+        converted=converted,
+        fixture_content=fixture_content,
+        content_validation=content_validation,
+        review_items=review_items,
+        authoritative_decisions=authoritative_decisions,
+        evaluations=evaluations,
+    )
     acceptance_status = mvp_acceptance_status(
-        str(evaluation["status"]) for evaluation in evaluations.values()
+        (
+            *(str(evaluation["status"]) for evaluation in evaluations.values()),
+            str(case_metrics["status"]),
+        )
     )
     return {
         "case_id": case["case_id"],
@@ -6518,13 +7550,32 @@ def mvp_conversion_result(
         "audit_present": audit_present,
         "warnings": actual_warnings,
         "ocr_boundary": ocr_boundary_evaluation,
+        "metrics": case_metrics,
         "failure_reason": (
             None
             if acceptance_status != "fail"
             else "; ".join(
-                str(evaluation["reason"])
+                str(evaluation.get("reason") or evaluation.get("failure_reasons"))
                 for evaluation in evaluations.values()
                 if evaluation["status"] == "fail"
+            )
+            + (
+                (
+                    "; "
+                    + "; ".join(
+                        reason
+                        for dimension in (
+                            "quality",
+                            "provenance",
+                            "high_risk",
+                            "external_send",
+                            "performance",
+                        )
+                        for reason in case_metrics[dimension]["failure_reasons"]
+                    )
+                )
+                if case_metrics["status"] == "fail"
+                else ""
             )
         ),
         "evaluations": evaluations,
@@ -6817,16 +7868,34 @@ MVP_ACCEPTANCE_HARNESS_REFS = {
     ),
     "AC-TEMPLATE": (
         "evidence_snapshot.dataset_manifest",
-        "evidence_snapshot.harness_results[*].category",
+        "evidence_snapshot.metrics_rollup.dimensions.completeness",
+        "evidence_snapshot.metrics_rollup.case_results",
     ),
-    "AC-REVIEW": ("evidence_snapshot.harness_results[*].evaluations.review",),
+    "AC-QUALITY": (
+        "evidence_snapshot.metrics_rollup.dimensions.quality",
+        "evidence_snapshot.metrics_rollup.case_results[*].metrics.quality",
+    ),
+    "AC-PROVENANCE": (
+        "evidence_snapshot.metrics_rollup.dimensions.provenance",
+        "evidence_snapshot.metrics_rollup.case_results[*].metrics.provenance",
+    ),
+    "AC-REVIEW": (
+        "evidence_snapshot.harness_results[*].evaluations.review",
+        "evidence_snapshot.metrics_rollup.dimensions.high_risk",
+    ),
     "AC-PERFORMANCE": (
-        "evidence_snapshot.harness_results[*].evaluations.input_size",
-        "evidence_snapshot.harness_results[*].evaluations.processing_time",
-        "evidence_snapshot.harness_results[*].evaluations.timeout",
+        "evidence_snapshot.metrics_rollup.dimensions.performance",
+        "evidence_snapshot.metrics_rollup.case_results[*].metrics.performance",
     ),
     "AC-AUDIT": ("evidence_snapshot.harness_results[*].evaluations.audit",),
-    "FC-HIGH-RISK": ("evidence_snapshot.harness_results[*].evaluations.review",),
+    "FC-HIGH-RISK": (
+        "evidence_snapshot.metrics_rollup.dimensions.high_risk",
+        "evidence_snapshot.metrics_rollup.case_results[*].metrics.high_risk",
+    ),
+    "FC-EXTERNAL-SEND": (
+        "evidence_snapshot.metrics_rollup.dimensions.external_send",
+        "evidence_snapshot.metrics_rollup.case_results[*].metrics.external_send",
+    ),
     "FC-EVIDENCE": (
         "evidence_snapshot.harness_results[*].evaluations.artifact",
         "evidence_snapshot.harness_results[*].evaluations.audit",
@@ -6835,6 +7904,7 @@ MVP_ACCEPTANCE_HARNESS_REFS = {
     "FC-REPRODUCIBILITY": (
         "evidence_snapshot.sha256",
         "evidence_snapshot.dataset_manifest",
+        "evidence_snapshot.metadata",
     ),
     "EM-E2E": ("evidence_snapshot.harness_results",),
 }
@@ -7230,16 +8300,61 @@ def build_mvp_acceptance_report(
         role_permissions=role_permissions,
     )
     harness = evaluate_mvp_harness(manifest_path)
+    acceptance_items = mvp_acceptance_traceability_items(
+        traceability_text,
+        decision_input_failures=decision_input_failures,
+    )
+    dependency_set: dict[str, dict[str, object]] = {}
+    for dependency_path in MVP_SNAPSHOT_DEPENDENCY_PATHS:
+        resolved_dependency = repo_root / dependency_path
+        dependency_set[dependency_path.as_posix()] = {
+            "present": resolved_dependency.is_file(),
+            "sha256": (
+                hashlib.sha256(resolved_dependency.read_bytes()).hexdigest()
+                if resolved_dependency.is_file()
+                else None
+            ),
+        }
+    decision_set = {
+        "scope_decision_sha256": hashlib.sha256(
+            scope_decision_text.encode("utf-8")
+        ).hexdigest(),
+        "acceptance_items": [
+            {
+                "item_id": item["item_id"],
+                "decision": item["decision"],
+                "traceability_status": item["traceability_status"],
+            }
+            for item in acceptance_items
+        ],
+        "case_review_decisions": {
+            str(result["case_id"]): result.get("review_decisions", [])
+            for result in harness.results
+        },
+    }
     return MVPAcceptanceReport(
         harness=harness,
         traceability_source=traceability_source,
         traceability_text=traceability_text,
-        items=mvp_acceptance_traceability_items(
-            traceability_text,
-            decision_input_failures=decision_input_failures,
-        ),
+        items=acceptance_items,
         scope_decision_source=DEFAULT_MVP_SCOPE_DECISIONS,
         scope_decision_text=scope_decision_text,
+        snapshot_metadata={
+            "generated_at": datetime.now(UTC).isoformat(),
+            "commit": current_git_commit(repo_root),
+            "worktree_clean": current_git_worktree_clean(repo_root),
+            "manifest_revision": manifest.get("selection_revision"),
+            "manifest_sha256": hashlib.sha256(
+                manifest_path.resolve().read_bytes()
+            ).hexdigest(),
+            "dependency_set": dependency_set,
+            "dependency_set_sha256": _canonical_json_sha256(dependency_set),
+            "decision_set_sha256": _canonical_json_sha256(decision_set),
+            "runtime": {
+                "python": platform.python_version(),
+                "platform": platform.platform(),
+            },
+        },
     )
 
 

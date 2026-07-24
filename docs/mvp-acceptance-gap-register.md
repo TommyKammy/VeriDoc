@@ -14,9 +14,9 @@ Missing authoritative decisions or run evidence remain fail-closed.
 - Reproduction checkout:
   `git checkout --detach "$(git log -1 --format=%H -- docs/mvp-acceptance-gap-register.md)"`
 - Criteria source Git blob:
-  `63d7a6f226e397d35b63bb7e6495e81799a7339e`
+  `7843bf248fd85c0957ecdb4ffae903980eecb001`
 - Evaluator Git blob:
-  `85672ff4337ec18c2826a0dd5a74d367d1bb1595`
+  `c54aac39de48eedbe4d2aabb0c0690fdfd7a8b6f`
 - Generated at: `2026-07-24` (Asia/Tokyo)
 - PDF evaluation prerequisite:
   `python3 -m pip install -r requirements-pdf-eval.txt`
@@ -26,7 +26,7 @@ Missing authoritative decisions or run evidence remain fail-closed.
   `a9374c81d4ff83cfce405582affd1c001216680ee8c53fa4e6acd0ade04abbd4`
 - Criteria source: `docs/mvp-acceptance-traceability.md`
 - Report result: `item_count=20`, unique item IDs `20`,
-  `overall_decision=fail` (`pass=6`, `fail=14`)
+  `overall_decision=fail` (`pass=12`, `fail=8`)
 - Harness result: `case_count=5`, `acceptance_status=pass`
   (`pass=5`, `fail=0`, `unknown=0`)
 
@@ -57,16 +57,16 @@ to the extractor-level facts recorded below.
 | ID | Current status | Raw fact at the evidence snapshot | Gap class | Owner boundary | Evidence required | Follow-up P12G Issue |
 | --- | --- | --- | --- | --- | --- | --- |
 | AC-UI | 一部達成 / fail | `tests/test_mvp_browser_e2e.py` runs one real-browser upload, settings failure/retry, job, preview, approval, primary download, hash, and audit scenario under one `p12g03-...` correlation ID, then records keyboard-only warning-to-bbox and high-risk review state transitions with visible-focus evidence. | `e2e_gap` | codex | Carry the fixed browser evidence into the final accepted-scope rollup. | P12G-12 |
-| AC-TEMPLATE | 一部達成 / fail | `docs/mvp-scope-decisions.md` approves all five cases in manifest revision `phase12-mvp-v1`, and all five cases pass. The scanned case passes only as an explicit fail-closed OCR boundary with no fabricated text. | `e2e_gap` | codex | Produce one accepted-scope rollup from the approved manifest revision. | P12G-12 |
-| AC-QUALITY | 未達 / fail | All five cases pass artifact/review/audit evaluation, but no five-template 80%+ metric can yet be claimed. The scanned result publishes explicit-block, warning, review-guard, and source-link metrics without claiming OCR text accuracy. | `implementation_gap`, `e2e_gap` | codex | Publish per-template cell/content agreement from the accepted snapshot. | P12G-12 |
-| AC-PROVENANCE | 一部達成 / fail | The browser E2E now binds source page/bbox through review, artifact, and audit evidence under one correlation ID; no five-case source-link coverage result yet proves 95%+. | `e2e_gap` | codex | Snapshot-consistent five-case source-link metric. | P12G-12 |
-| AC-REVIEW | 一部達成 / fail | Word/Excel use persisted approver decisions and share decision/item versions across artifact, audit, and harness snapshots; missing/forbidden decisions and unresolved high-risk items are rejected. Outside the dedicated accepted OCR block, an authoritative review decision is required for every emitted review item. Browser evidence now records zero auto-confirmed high-risk targets plus keyboard edit/approve/reject/needs-fix and unresolved transitions; dataset-wide zero misses remain absent. | `e2e_gap`, `human_evidence_gap` | codex then manual | Prove zero high-risk misses across the final accepted dataset. | P12G-12 |
+| AC-TEMPLATE | 達成 / pass | The approved `phase12-mvp-v1` manifest and one report snapshot contain exactly five structured, passing case results across Word, Excel, text PDF, scanned PDF, and record PDF. The scanned result remains explicitly fail-closed without fabricated OCR text. | `none` | — | Preserve the fixed manifest, completeness gate, and per-case structured results. | — |
+| AC-QUALITY | 達成 / pass | The snapshot reports 56/56 cell/content matches (100%, threshold 80%) with recomputable per-case numerators and denominators. The scanned contribution is one explicit-review block, not an OCR-accuracy claim. | `none` | — | Preserve the per-case cell/block validators and fail-closed unknown handling. | — |
+| AC-PROVENANCE | 達成 / pass | The snapshot reports 12/12 source bindings (100%, threshold 95%): five audit source-hash bindings and seven direct source links across text/scanned/record PDF outputs. | `none` | — | Preserve direct source-link validation, audit source hashes, and per-case denominators. | — |
+| AC-REVIEW | 達成 / pass | Component/browser evidence forces actual high-risk targets through review, and the five accepted cases explicitly report `no_targets`, zero misses, and zero auto-confirms. Outside the accepted OCR block, `authoritative review decision is required`; a missing/unknown per-case metric or any miss/auto-confirm rejects the rollup. | `none` | — | Preserve the high-risk guards, browser target, and fail-closed rollup. | — |
 | AC-EFFICIENCY | 未達 / fail | `docs/mvp-scope-decisions.md` approves the baseline task, cohort, training, timing boundary, comparison method, and rejection conditions; no protocol/schema or measured 30%+ human result exists. | `human_evidence_gap` | manual/hybrid | Versioned protocol/schema followed by a real, reproducible manual-versus-VeriDoc comparison. | P12G-13 |
-| AC-PERFORMANCE | 一部達成 / fail | All five live results pass input-size, processing-time, and timeout evaluations, but no accepted five-case metrics rollup exists. | `e2e_gap` | codex | One committed rollup retaining the 10 s, 2 MiB, and 30 s limits for all accepted cases. | P12G-12 |
+| AC-PERFORMANCE | 達成 / pass | One snapshot retains 15 passing case/dimension observations and the existing 10 s processing, 2 MiB input, and 30 s timeout limits. Missing, unknown, or inconsistent values reject the rollup. | `none` | — | Preserve the limits, maxima, and per-case observations. | — |
 | AC-AUDIT | 達成 / pass | `tests/test_mvp_browser_e2e.py` binds browser run, harness result, artifact hashes, actor/decision, version lineage, timestamp, and complete job/review hash chains to one correlation ID and emits a fail-closed acceptance snapshot. | `none` | — | Preserve the correlated E2E and persistence audit contract tests. | — |
 | AC-AUTH | 達成 / pass | The product server fails closed when `VERIDOC_LOCAL_AUTH_TOKENS` is unset, approval requires a preceding distinct-reviewer edit, and `scripts/ci/mvp_browser_e2e.py` retains six-role read/sensitive allow-deny probes plus missing, rejected, forbidden, cleared, and re-authenticated UI states against decision revision `p12g-02-v1`. | `none` | — | Preserve the fail-closed product, role-matrix, token-lifecycle, and segregation evidence tests. | — |
 | AC-SECURITY | 一部達成 / fail | The harness and negative tests enforce the local-only boundary, but the clean checkout does not retain a concrete run `evidence.json` that the report can validate before claiming `external_ai_api_send_count=0`. | `e2e_gap` | codex | Retain and validate the machine-readable network observation for the reported acceptance run. | P12G-11 |
-| FC-HIGH-RISK | 一部達成 / fail | Component guards prevent auto-confirmation, but the five-case snapshot does not prove zero high-risk misses through the final review UI and gate. | `e2e_gap` | codex | Dataset-wide fail-closed gate plus browser review evidence for every high-risk item. | P12G-08, P12G-12 |
+| FC-HIGH-RISK | 達成 / pass | Component/browser guards cover actual high-risk targets; the accepted five-case snapshot explicitly records zero targets, zero misses, and zero auto-confirms, and refuses missing/unknown case metrics. | `none` | — | Preserve the high-risk target fixture and fail-closed zero-count rollup. | — |
 | FC-EVIDENCE | 達成 / pass | The browser E2E mutates provenance, audit-event, hash/version, and correlation boundaries and requires structured failure codes; an artifact alone cannot produce an acceptance pass. | `none` | — | Preserve the fail-closed negative scenarios in `tests/test_mvp_browser_e2e.py`. | — |
 | FC-EXTERNAL-SEND | 一部達成 / fail | External endpoint configuration plus HTTP, DNS, socket, and redirect cases fail closed in the harness, but no concrete retained run evidence is bound to this report snapshot. | `e2e_gap` | codex | Retain and validate the zero-attempt network observation together with the focused negative cases. | P12G-11 |
 | FC-REVIEW-UI | 一部達成 / fail | A browser trace records keyboard-only warning/remediation review, original bbox jump, visible focus, edit/needs-fix/reject transitions, and a fail-closed approval attempt for the committed high-risk fixture; the final accepted-scope rollup remains absent. | `e2e_gap` | codex | Carry the fixed keyboard/review-UI evidence into the final accepted-scope rollup. | P12G-12 |
