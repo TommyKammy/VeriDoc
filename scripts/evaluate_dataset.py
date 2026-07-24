@@ -3532,8 +3532,11 @@ class MVPAcceptanceReport:
 
     def as_dict(self) -> dict[str, object]:
         harness_payload = self.harness.as_dict()
-        metrics_rollup = mvp_metrics_rollup(harness_payload)
         snapshot_metadata = dict(self.snapshot_metadata or {})
+        metrics_rollup = mvp_metrics_rollup(
+            harness_payload,
+            snapshot_metadata=snapshot_metadata,
+        )
         snapshot_payload = {
             "harness": harness_payload,
             "metrics_rollup": metrics_rollup,
@@ -5880,16 +5883,39 @@ def mvp_case_metrics(
         high_risk_items = [
             item for item in review_items if mvp_review_item_is_high_risk(item)
         ]
-    persisted_high_risk_decisions = sum(
-        mvp_review_item_is_high_risk(review_item)
-        and isinstance(decision, Mapping)
-        and decision.get("decision") in {"approved", "rejected", "needs_fix"}
-        for review_item, decision in zip(
-            review_items if isinstance(review_items, list) else [],
-            authoritative_decisions,
+    review_item_values = review_items if isinstance(review_items, list) else []
+    persisted_high_risk_indices = {
+        index
+        for index, (review_item, decision) in enumerate(
+            zip(review_item_values, authoritative_decisions)
         )
         if isinstance(review_item, Mapping)
+        and mvp_review_item_is_high_risk(review_item)
+        and isinstance(decision, Mapping)
+        and decision.get("decision") in {"approved", "rejected", "needs_fix"}
+    }
+    high_risk_indices = {
+        index
+        for index, review_item in enumerate(review_item_values)
+        if isinstance(review_item, Mapping)
+        and mvp_review_item_is_high_risk(review_item)
+    }
+    explicitly_auto_confirmed_indices = {
+        index
+        for index, review_item in enumerate(review_item_values)
+        if index in high_risk_indices
+        and isinstance(review_item, Mapping)
+        and review_item.get("auto_confirmed") is True
+    }
+    implicitly_auto_confirmed_indices = (
+        high_risk_indices - persisted_high_risk_indices
+        if converted.get("status") == "converted"
+        else set()
     )
+    high_risk_auto_confirmed_indices = (
+        explicitly_auto_confirmed_indices | implicitly_auto_confirmed_indices
+    )
+    persisted_high_risk_decisions = len(persisted_high_risk_indices)
     ocr_boundary = evaluations.get("review", {}).get("ocr_boundary")
     fail_closed_high_risk = (
         len(high_risk_items)
@@ -5903,12 +5929,7 @@ def mvp_case_metrics(
         persisted_high_risk_decisions + fail_closed_high_risk,
     )
     high_risk_miss_count = len(high_risk_items) - covered_high_risk_count
-    high_risk_auto_confirmed_count = (
-        len(high_risk_items)
-        if converted.get("status") == "converted"
-        and persisted_high_risk_decisions < len(high_risk_items)
-        else 0
-    )
+    high_risk_auto_confirmed_count = len(high_risk_auto_confirmed_indices)
     high_risk_failures = [
         *high_risk_unknown,
         *(
@@ -6022,7 +6043,11 @@ def mvp_case_metrics(
     }
 
 
-def mvp_metrics_rollup(harness_payload: Mapping[str, object]) -> dict[str, object]:
+def mvp_metrics_rollup(
+    harness_payload: Mapping[str, object],
+    *,
+    snapshot_metadata: Mapping[str, object] | None = None,
+) -> dict[str, object]:
     results_value = harness_payload.get("results")
     results = (
         [result for result in results_value if isinstance(result, Mapping)]
@@ -6073,6 +6098,58 @@ def mvp_metrics_rollup(harness_payload: Mapping[str, object]) -> dict[str, objec
         "exclusions": [],
         "unknown": unknown_case_ids,
         "failure_reasons": completeness_failures,
+    }
+    failed_acceptance_case_ids = [
+        str(result.get("case_id") or "<unknown>")
+        for result in results
+        if result.get("acceptance_status") == "fail"
+    ]
+    unknown_acceptance_case_ids = [
+        str(result.get("case_id") or "<unknown>")
+        for result in results
+        if result.get("acceptance_status") not in ("pass", "fail")
+    ]
+    passing_acceptance_case_count = sum(
+        result.get("acceptance_status") == "pass" for result in results
+    )
+    case_acceptance_failures = [
+        *(
+            ["harness acceptance results are missing"]
+            if not results
+            else []
+        ),
+        *(
+            [
+                "harness acceptance failed for case(s): "
+                + ", ".join(failed_acceptance_case_ids)
+            ]
+            if failed_acceptance_case_ids
+            else []
+        ),
+        *(
+            [
+                "harness acceptance is missing or unknown for case(s): "
+                + ", ".join(unknown_acceptance_case_ids)
+            ]
+            if unknown_acceptance_case_ids
+            else []
+        ),
+    ]
+    case_acceptance = {
+        "status": (
+            "fail"
+            if failed_acceptance_case_ids
+            else "unknown"
+            if not results or unknown_acceptance_case_ids
+            else "pass"
+        ),
+        "numerator": passing_acceptance_case_count,
+        "denominator": len(results),
+        "failed_case_ids": failed_acceptance_case_ids,
+        "unknown_case_ids": unknown_acceptance_case_ids,
+        "exclusions": [],
+        "unknown": unknown_acceptance_case_ids,
+        "failure_reasons": case_acceptance_failures,
     }
 
     def aggregate_ratio(
@@ -6324,12 +6401,47 @@ def mvp_metrics_rollup(harness_payload: Mapping[str, object]) -> dict[str, objec
 
     dimensions = {
         "completeness": completeness,
+        "case_acceptance": case_acceptance,
         "quality": quality,
         "provenance": provenance,
         "high_risk": high_risk,
         "external_send": external_send,
         "performance": performance,
     }
+    if snapshot_metadata is not None:
+        snapshot_failures: list[str] = []
+        snapshot_unknown: list[str] = []
+        worktree_clean = snapshot_metadata.get("worktree_clean")
+        if worktree_clean is False:
+            snapshot_failures.append(
+                "worktree is dirty; HEAD does not fully identify the evaluated source"
+            )
+        elif worktree_clean is not True:
+            snapshot_unknown.append("worktree cleanliness is missing or unknown")
+        commit = snapshot_metadata.get("commit")
+        commit_is_valid = (
+            isinstance(commit, str)
+            and re.fullmatch(r"[0-9a-f]{40}", commit) is not None
+        )
+        if not commit_is_valid:
+            snapshot_unknown.append("commit is missing or malformed")
+        snapshot_integrity = {
+            "status": (
+                "fail"
+                if snapshot_failures
+                else "unknown"
+                if snapshot_unknown
+                else "pass"
+            ),
+            "commit": commit,
+            "worktree_clean": worktree_clean,
+            "numerator": int(worktree_clean is True) + int(commit_is_valid),
+            "denominator": 2,
+            "exclusions": [],
+            "unknown": snapshot_unknown,
+            "failure_reasons": [*snapshot_failures, *snapshot_unknown],
+        }
+        dimensions["snapshot_integrity"] = snapshot_integrity
     rollup_status = mvp_acceptance_status(
         str(dimension["status"]) for dimension in dimensions.values()
     )
@@ -6342,12 +6454,17 @@ def mvp_metrics_rollup(harness_payload: Mapping[str, object]) -> dict[str, objec
                 "case_id": result.get("case_id"),
                 "category": result.get("category"),
                 "status": metrics.get("status"),
+                "acceptance_status": result.get("acceptance_status"),
                 "metrics": metrics,
             }
             for result, metrics in metrics_by_case
         ],
         "criteria_refs": {
-            "AC-TEMPLATE": ["dimensions.completeness", "case_results"],
+            "AC-TEMPLATE": [
+                "dimensions.completeness",
+                "dimensions.case_acceptance",
+                "case_results",
+            ],
             "AC-QUALITY": ["dimensions.quality", "case_results[*].metrics.quality"],
             "AC-PROVENANCE": [
                 "dimensions.provenance",

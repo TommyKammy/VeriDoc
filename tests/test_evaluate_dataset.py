@@ -1083,11 +1083,19 @@ class EvaluateDatasetTest(unittest.TestCase):
         )
         self.assertRegex(payload["evidence_snapshot"]["sha256"], r"^[0-9a-f]{64}$")
         rollup = payload["evidence_snapshot"]["metrics_rollup"]
+        metadata = payload["evidence_snapshot"]["metadata"]
         self.assertEqual(
             "veridoc-mvp-metrics-rollup/v1",
             rollup["schema_version"],
         )
-        self.assertEqual("pass", rollup["status"])
+        self.assertEqual(
+            "pass" if metadata["worktree_clean"] else "fail",
+            rollup["status"],
+        )
+        self.assertEqual(
+            "pass" if metadata["worktree_clean"] else "fail",
+            rollup["dimensions"]["snapshot_integrity"]["status"],
+        )
         self.assertEqual(5, len(rollup["case_results"]))
         self.assertEqual(
             {"pass"},
@@ -1122,7 +1130,6 @@ class EvaluateDatasetTest(unittest.TestCase):
                 if "unknown" in dimension
             )
         )
-        metadata = payload["evidence_snapshot"]["metadata"]
         self.assertRegex(metadata["commit"], r"^[0-9a-f]{40}$")
         self.assertEqual("phase12-mvp-v1", metadata["manifest_revision"])
         self.assertRegex(metadata["manifest_sha256"], r"^[0-9a-f]{64}$")
@@ -1491,6 +1498,46 @@ class EvaluateDatasetTest(unittest.TestCase):
 
         self.assertEqual("fail", payload["summary"]["overall_decision"])
 
+    def test_mvp_acceptance_report_rejects_dirty_commit_bound_snapshot(self) -> None:
+        traceability = MVP_ACCEPTANCE_TRACEABILITY_PATH.read_text(encoding="utf-8")
+        items = tuple(
+            {**item, "decision": "pass"}
+            for item in evaluate_dataset.mvp_acceptance_traceability_items(
+                traceability
+            )
+        )
+        payload = evaluate_dataset.MVPAcceptanceReport(
+            harness=evaluate_dataset.evaluate_mvp_harness(
+                MVP_EVALUATION_MANIFEST_PATH
+            ),
+            traceability_source=evaluate_dataset.DEFAULT_MVP_ACCEPTANCE_TRACEABILITY,
+            traceability_text=traceability,
+            items=items,
+            snapshot_metadata={
+                "commit": "a" * 40,
+                "worktree_clean": False,
+            },
+        ).as_dict()
+
+        self.assertEqual("fail", payload["summary"]["overall_decision"])
+        rollup = payload["evidence_snapshot"]["metrics_rollup"]
+        self.assertEqual("fail", rollup["status"])
+        self.assertEqual(
+            "fail",
+            rollup["dimensions"]["snapshot_integrity"]["status"],
+        )
+        self.assertEqual(
+            (1, 2),
+            (
+                rollup["dimensions"]["snapshot_integrity"]["numerator"],
+                rollup["dimensions"]["snapshot_integrity"]["denominator"],
+            ),
+        )
+        self.assertIn(
+            "worktree is dirty",
+            rollup["dimensions"]["snapshot_integrity"]["failure_reasons"][0],
+        )
+
     def test_mvp_metrics_rollup_fails_closed_on_missing_or_low_quality_data(
         self,
     ) -> None:
@@ -1539,6 +1586,37 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertEqual(
             ["mvp-word-001"],
             hidden_case_failure_rollup["dimensions"]["quality"]["failed_case_ids"],
+        )
+
+        failed_harness_case = json.loads(json.dumps(harness_payload))
+        failed_harness_case["results"][0]["acceptance_status"] = "fail"
+        failed_harness_rollup = evaluate_dataset.mvp_metrics_rollup(
+            failed_harness_case
+        )
+        self.assertEqual("fail", failed_harness_rollup["status"])
+        self.assertEqual(
+            ["mvp-word-001"],
+            failed_harness_rollup["dimensions"]["case_acceptance"][
+                "failed_case_ids"
+            ],
+        )
+        self.assertEqual(
+            "pass",
+            failed_harness_case["results"][0]["metrics"]["status"],
+        )
+
+        empty_harness = json.loads(json.dumps(harness_payload))
+        empty_harness["results"] = []
+        empty_harness_rollup = evaluate_dataset.mvp_metrics_rollup(empty_harness)
+        self.assertEqual(
+            "unknown",
+            empty_harness_rollup["dimensions"]["case_acceptance"]["status"],
+        )
+        self.assertEqual(
+            ["harness acceptance results are missing"],
+            empty_harness_rollup["dimensions"]["case_acceptance"][
+                "failure_reasons"
+            ],
         )
 
         below_threshold = json.loads(json.dumps(harness_payload))
@@ -1622,6 +1700,21 @@ class EvaluateDatasetTest(unittest.TestCase):
                 )
             },
         )
+
+        auto_confirmed_metrics = evaluate_dataset.mvp_case_metrics(
+            converted=converted,
+            fixture_content=fixture_content,
+            content_validation=content_validation,
+            review_items=[{"high_risk": True, "auto_confirmed": True}],
+            authoritative_decisions=[{"decision": "approved"}],
+            evaluations=evaluations,
+        )
+        self.assertEqual("fail", auto_confirmed_metrics["status"])
+        self.assertEqual(
+            1,
+            auto_confirmed_metrics["high_risk"]["auto_confirmed_count"],
+        )
+        self.assertEqual(0, auto_confirmed_metrics["high_risk"]["miss_count"])
 
     def test_mvp_acceptance_report_rejects_unknown_traceability_row(self) -> None:
         traceability = MVP_ACCEPTANCE_TRACEABILITY_PATH.read_text(encoding="utf-8")
