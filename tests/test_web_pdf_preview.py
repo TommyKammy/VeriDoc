@@ -189,9 +189,13 @@ def test_review_item_exposes_edit_and_approve_audit_events() -> None:
     assert "item.source_page < 1" in html
     assert "function reviewSourcePages()" in html
     assert "reviewSourcePages().has(item.source_page)" in html
-    assert "function reviewActionBlockReason(item)" in html
+    assert "function reviewActionBlockReason(item, action)" in html
     assert 'state.latestResult.status === "blocked"' in html
     assert "Review actions are disabled for blocked conversions." in html
+    assert "item.trusted_ocr_required === true" in html
+    assert '(action === "edit" || action === "approve")' in html
+    assert "Trusted OCR evidence is required before editing or approving this item." in html
+    assert "edit.disabled = item.trusted_ocr_required === true" in html
     assert "result.available_review_actions" in html
     assert 'approve.dataset.reviewActionName = "approve"' in html
     assert 'approve.disabled = !reviewActionAvailable(item, "approve")' in html
@@ -267,7 +271,7 @@ def test_approve_review_action_refreshes_saved_server_edits() -> None:
     assert re.search(
         r"async function prepareSavedReviewEditApproval\(item\) \{\s+"
         r"const savedEditText = await loadLatestSavedReviewEditText\(item\);\s+"
-        r"const refreshedBlockReason = reviewActionBlockReason\(item\);\s+"
+        r'const refreshedBlockReason = reviewActionBlockReason\(item, "approve"\);\s+'
         r"if \(refreshedBlockReason\) \{\s+"
         r"reviewActionStatus\.textContent = refreshedBlockReason;\s+"
         r'reviewActionStatus\.className = "page-status error";\s+'
@@ -335,7 +339,7 @@ def test_review_actions_clear_and_reject_stale_file_selection() -> None:
     assert "!(state.latestResult.review_items || []).includes(item)" in html
     assert "Review result is no longer active." in html
     assert "state.pendingReviewActions.clear();" in html
-    assert "const postResponseBlockReason = reviewActionBlockReason(item)" in html
+    assert "const postResponseBlockReason = reviewActionBlockReason(item, action)" in html
     assert "if (postResponseBlockReason) throw" not in html
 
 
@@ -410,7 +414,7 @@ def test_review_actions_ignore_stale_failures_after_result_changes() -> None:
 
     assert re.search(
         r"\} catch \(error\) \{\s+"
-        r"if \(actionStarted && reviewActionBlockReason\(item\)\) return;\s+"
+        r"if \(actionStarted && reviewActionBlockReason\(item, action\)\) return;\s+"
         r"reviewActionStatus\.textContent =",
         html,
         flags=re.S,

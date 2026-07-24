@@ -202,8 +202,22 @@ class PocProcessingTimeoutError(TimeoutError):
 class ReviewAuditEventStore:
     def __init__(self) -> None:
         self._events: list[dict[str, Any]] = []
+        self._conversion_ocr_policies: dict[tuple[str, str, str], bool] = {}
+        self._trusted_ocr_blocked_targets: set[tuple[str, str]] = set()
         self._integrity_checkpoint = _audit_event_integrity_checkpoint(self._events)
         self._lock = Lock()
+
+    def register_conversion_result(self, result: dict[str, Any]) -> None:
+        policies = _review_ocr_policies_from_conversion_result(result)
+        with self._lock:
+            self._conversion_ocr_policies.update(policies)
+            for (
+                _conversion_id,
+                document_id,
+                block_id,
+            ), trusted_ocr_required in policies.items():
+                if trusted_ocr_required:
+                    self._trusted_ocr_blocked_targets.add((document_id, block_id))
 
     def record(self, audit_event: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
@@ -234,6 +248,47 @@ class ReviewAuditEventStore:
             self._events.append(event)
             self._integrity_checkpoint = _audit_event_integrity_checkpoint(self._events)
         return deepcopy(event)
+
+    def record_review_event(self, audit_event: dict[str, Any]) -> dict[str, Any]:
+        event = deepcopy(audit_event)
+        with self._lock:
+            self._require_integrity_locked()
+            self._require_trusted_ocr_boundary_locked(event)
+            if event["action"] == "approve":
+                _validate_review_workflow_event(
+                    event,
+                    [_review_workflow_event_view(item) for item in self._events],
+                )
+            event = _audit_event_with_integrity(
+                event,
+                previous_events=self._events,
+                checkpoint=self._integrity_checkpoint,
+            )
+            self._events.append(event)
+            self._integrity_checkpoint = _audit_event_integrity_checkpoint(self._events)
+        return deepcopy(event)
+
+    def _require_trusted_ocr_boundary_locked(self, event: dict[str, Any]) -> None:
+        if event["action"] not in {"edit", "approve"}:
+            return
+        document_id = event["document_id"]
+        block_id = event["block_id"]
+        conversion_id = event.get("conversion_id")
+        exact_policy = (
+            self._conversion_ocr_policies.get((conversion_id, document_id, block_id))
+            if isinstance(conversion_id, str)
+            else None
+        )
+        if exact_policy is False:
+            return
+        target_has_blocked_policy = (
+            document_id,
+            block_id,
+        ) in self._trusted_ocr_blocked_targets
+        if exact_policy is True or target_has_blocked_policy:
+            raise RuntimeError(
+                "trusted OCR evidence is required before editing or approving this review item"
+            )
 
     def _require_integrity_locked(self) -> None:
         _raise_for_audit_event_integrity_violation(
@@ -1505,9 +1560,18 @@ def run(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> None:
         artifact_store_root=default_artifact_store_root(),
     )
     job_event_store = JobAuditEventStore(database_path=database_path)
+    review_event_store = ReviewAuditEventStore()
+    for job in job_queue.list_jobs(status="succeeded"):
+        try:
+            _job_download(job)
+        except (RuntimeError, ValueError):
+            continue
+        if isinstance(job.result, dict):
+            review_event_store.register_conversion_result(job.result)
     server = ThreadingHTTPServer((host, port), PocWebRequestHandler)
     server.job_queue = job_queue
     server.job_event_store = job_event_store
+    server.review_event_store = review_event_store
     server.require_local_auth = True
     print(f"VeriDoc PoC web API listening on http://{host}:{port}")
     server.serve_forever()
@@ -1694,6 +1758,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 template_id=request.get("template_id"),
                 template_store=self._template_store(),
             )
+            self._review_event_store().register_conversion_result(result)
         except PocProcessingTimeoutError:
             self._send_json(_processing_timeout_payload(), status=504)
             return
@@ -1917,6 +1982,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 )
                 result = _persistable_artifact_manifest(job.job_id, result)
                 job = job_queue.mark_succeeded(job.job_id, result=result)
+                self._review_event_store().register_conversion_result(result)
             except PocProcessingTimeoutError:
                 if job_queue.get_job(job.job_id).status == "running":
                     job = job_queue.mark_failed(
@@ -2090,14 +2156,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 return
             accepted_event = _validate_review_event(raw_audit_event)
             stored_event = _review_event_with_auth_context(accepted_event, auth_context)
-            event_store = self._review_event_store()
-            if stored_event["action"] == "approve":
-                stored_event = event_store.record_validated(
-                    stored_event,
-                    _validate_review_workflow_event,
-                )
-            else:
-                stored_event = event_store.record(stored_event)
+            stored_event = self._review_event_store().record_review_event(stored_event)
         except RuntimeError as exc:
             self._send_json({"error": "review_conflict", "message": str(exc)}, status=409)
             return
@@ -2205,6 +2264,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             _job_download(job)
             if not isinstance(job.result, dict):
                 raise ValueError("job result is missing")
+            self._review_event_store().register_conversion_result(job.result)
         except KeyError:
             self._send_json({"error": "job_not_found"}, status=404)
             return
@@ -4664,6 +4724,65 @@ def _attach_ocr_boundary_to_review_items(
             *warning_details(item["warnings"]),
             boundary_warning,
         ]
+        item["trusted_ocr_required"] = True
+
+
+def _review_ocr_policies_from_conversion_result(
+    result: dict[str, Any],
+) -> dict[tuple[str, str, str], bool]:
+    conversion_id = result.get("conversion_id")
+    review_items = result.get("review_items")
+    if not isinstance(conversion_id, str) or not conversion_id:
+        return {}
+    if not isinstance(review_items, list):
+        review_items = []
+    ocr_boundary = result.get("ocr_boundary")
+    affected_block_ids = (
+        {
+            block_id
+            for block_id in ocr_boundary.get("affected_block_ids", [])
+            if isinstance(block_id, str) and block_id
+        }
+        if isinstance(ocr_boundary, dict)
+        and ocr_boundary.get("trusted_ocr_required") is True
+        and isinstance(ocr_boundary.get("affected_block_ids"), list)
+        else set()
+    )
+    document_ir = result.get("document_ir")
+    document = document_ir.get("document") if isinstance(document_ir, dict) else None
+    boundary_document_id = (
+        document.get("id") if isinstance(document, dict) else None
+    )
+    policies: dict[tuple[str, str, str], bool] = {}
+    if isinstance(boundary_document_id, str) and boundary_document_id:
+        policies.update(
+            {
+                (conversion_id, boundary_document_id, block_id): True
+                for block_id in affected_block_ids
+            }
+        )
+    for item in review_items:
+        if not isinstance(item, dict):
+            continue
+        document_id = item.get("document_id")
+        block_id = item.get("block_id")
+        if (
+            not isinstance(document_id, str)
+            or not document_id
+            or not isinstance(block_id, str)
+            or not block_id
+        ):
+            continue
+        policy_key = (conversion_id, document_id, block_id)
+        policies.setdefault(
+            policy_key,
+            block_id in affected_block_ids
+            and (
+                not isinstance(boundary_document_id, str)
+                or document_id == boundary_document_id
+            ),
+        )
+    return policies
 
 
 def _review_items(document_ir: DocumentIRV1) -> list[dict[str, Any]]:

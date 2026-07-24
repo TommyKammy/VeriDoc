@@ -3144,6 +3144,7 @@
         edit.dataset.reviewEditFor = blockId;
         edit.value = item.text;
         edit.setAttribute("aria-label", `${blockId} revised text`);
+        edit.disabled = item.trusted_ocr_required === true;
         const jump = document.createElement("button");
         jump.className = "secondary";
         jump.type = "button";
@@ -3450,7 +3451,7 @@
 
       async function prepareSavedReviewEditApproval(item) {
         const savedEditText = await loadLatestSavedReviewEditText(item);
-        const refreshedBlockReason = reviewActionBlockReason(item);
+        const refreshedBlockReason = reviewActionBlockReason(item, "approve");
         if (refreshedBlockReason) {
           reviewActionStatus.textContent = refreshedBlockReason;
           reviewActionStatus.className = "page-status error";
@@ -3497,12 +3498,18 @@
         );
       }
 
-      function reviewActionBlockReason(item) {
+      function reviewActionBlockReason(item, action) {
         if (!state.latestResult || !(state.latestResult.review_items || []).includes(item)) {
           return "Review result is no longer active.";
         }
         if (state.latestResult.status === "blocked") {
           return "Review actions are disabled for blocked conversions.";
+        }
+        if (
+          item.trusted_ocr_required === true &&
+          (action === "edit" || action === "approve")
+        ) {
+          return "Trusted OCR evidence is required before editing or approving this item.";
         }
         if (!reviewAuditSourcePage(item)) {
           return "Review item source page is invalid.";
@@ -3511,7 +3518,10 @@
       }
 
       function reviewActionAvailable(item, action) {
-        return !reviewActionBlockReason(item) && state.availableReviewActions.includes(action);
+        return (
+          !reviewActionBlockReason(item, action) &&
+          state.availableReviewActions.includes(action)
+        );
       }
 
       function reviewActionKey(item) {
@@ -3541,7 +3551,7 @@
         let actionStarted = false;
         let savedEditText = null;
         try {
-          const blockReason = reviewActionBlockReason(item);
+          const blockReason = reviewActionBlockReason(item, action);
           if (blockReason) throw new Error(blockReason);
           if (state.pendingReviewActions.has(actionKey)) return;
           state.pendingReviewActions.set(actionKey, pendingOwner);
@@ -3571,7 +3581,7 @@
           if (!body.audit_event) {
             throw new Error("Review action response did not include an audit event.");
           }
-          const postResponseBlockReason = reviewActionBlockReason(item);
+          const postResponseBlockReason = reviewActionBlockReason(item, action);
           if (postResponseBlockReason) {
             reviewActionStatus.textContent =
               "Review action accepted; current review result changed before the response returned.";
@@ -3591,7 +3601,7 @@
           reviewActionStatus.textContent = "Review action event queued for audit.";
           reviewActionStatus.className = "page-status";
         } catch (error) {
-          if (actionStarted && reviewActionBlockReason(item)) return;
+          if (actionStarted && reviewActionBlockReason(item, action)) return;
           reviewActionStatus.textContent =
             error instanceof Error && error.message ? error.message : "Review action failed.";
           reviewActionStatus.className = "page-status error";

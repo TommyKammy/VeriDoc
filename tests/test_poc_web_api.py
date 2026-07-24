@@ -5164,6 +5164,7 @@ def test_convert_scanned_pdf_exposes_trusted_ocr_fail_closed_boundary() -> None:
     }
     assert result["warning_details"] == warning_details(result["warnings"])
     review_item = result["review_items"][0]
+    assert review_item["trusted_ocr_required"] is True
     assert expected_warning in review_item["warning_details"]
     assert all(isinstance(warning, str) for warning in review_item["warnings"])
     assert expected_warning not in review_item["warnings"]
@@ -5190,6 +5191,73 @@ def test_convert_scanned_pdf_exposes_trusted_ocr_fail_closed_boundary() -> None:
     download_payload = json.loads(result["download"]["content"])
     assert download_payload["ocr_boundary"] == result["ocr_boundary"]
     assert download_payload["warning_details"] == result["warning_details"]
+
+
+def test_direct_conversion_registers_ocr_boundary_for_review_api(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture_path = (
+        REPO_ROOT
+        / "datasets"
+        / "fixtures"
+        / "pdf"
+        / "scanned-pdf-representative.pdf"
+    )
+    monkeypatch.setattr(
+        poc_web,
+        "_convert_uploaded_document_with_timeout",
+        poc_web.convert_uploaded_document,
+    )
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.local_auth_tokens = _local_auth_tokens()
+    server.review_event_store = ReviewAuditEventStore()
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=10)
+        payload = json.dumps(
+            {
+                "filename": fixture_path.name,
+                "content_base64": base64.b64encode(fixture_path.read_bytes()).decode("ascii"),
+                "conversion_mode": "pdf_to_word",
+            }
+        ).encode("utf-8")
+        connection.request(
+            "POST",
+            "/api/convert",
+            body=payload,
+            headers={
+                "Authorization": "Bearer approver-token",
+                "Content-Type": "application/json",
+                "Content-Length": str(len(payload)),
+            },
+        )
+        conversion_response = connection.getresponse()
+        conversion_body = json.loads(conversion_response.read().decode("utf-8"))
+        review_item = conversion_body["review_items"][0]
+        review_status, review_body = _post_review_event_on_connection(
+            connection,
+            _review_audit_event(
+                action="edit",
+                conversion_id=conversion_body["conversion_id"],
+                document_id=review_item["document_id"],
+                block_id=review_item["block_id"],
+                source_page=review_item["source_page"],
+                source_bbox=review_item.get("source_bbox"),
+                original_text=review_item["text"],
+                revised_text="Untrusted replacement text",
+                warnings=review_item["warnings"],
+            ),
+            role_token="approver-token",
+        )
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert conversion_response.status == 200
+    assert review_status == 409
+    assert review_body["error"] == "review_conflict"
+    assert server.review_event_store.list_events() == []
 
 
 def test_binary_pdf_parser_output_adapts_blocks_before_v1_conversion(monkeypatch) -> None:
@@ -6541,6 +6609,80 @@ def test_poc_http_api_persists_review_action_audit_event_server_side() -> None:
     assert status == 202
     assert events == [body["audit_event"]]
     assert events[0]["revised_text"] == "Lot: SAMPLE-001 corrected"
+
+
+@pytest.mark.parametrize("action", ["edit", "approve"])
+@pytest.mark.parametrize("conversion_id", ["conversion-ocr-blocked", None, "forged"])
+def test_poc_http_api_rejects_ocr_blocked_acceptance_actions(
+    action: str,
+    conversion_id: str | None,
+) -> None:
+    audit_event = _review_audit_event(action=action)
+    if conversion_id is None:
+        audit_event.pop("conversion_id", None)
+    else:
+        audit_event["conversion_id"] = conversion_id
+
+    status, body, events = _post_review_audit_event_with_store(
+        audit_event,
+        conversion_results=[_ocr_boundary_conversion_result()],
+    )
+
+    assert status == 409
+    assert body == {
+        "error": "review_conflict",
+        "message": (
+            "trusted OCR evidence is required before editing or approving this review item"
+        ),
+    }
+    assert events == []
+
+
+@pytest.mark.parametrize("action", ["needs_fix", "reject"])
+def test_poc_http_api_allows_fail_closed_ocr_review_actions(action: str) -> None:
+    status, body, events = _post_review_audit_event_with_store(
+        _review_audit_event(
+            action=action,
+            conversion_id="conversion-ocr-blocked",
+        ),
+        role_token="approver-token",
+        conversion_results=[_ocr_boundary_conversion_result()],
+    )
+
+    assert status == 202
+    assert body["audit_event"]["action"] == action
+    assert events == [body["audit_event"]]
+
+
+def test_poc_http_api_allows_known_non_ocr_conversion_for_same_review_target() -> None:
+    status, body, events = _post_review_audit_event_with_store(
+        _review_audit_event(conversion_id="conversion-text-layer"),
+        conversion_results=[
+            _ocr_boundary_conversion_result(),
+            _review_conversion_result(conversion_id="conversion-text-layer"),
+        ],
+    )
+
+    assert status == 202
+    assert body["audit_event"]["conversion_id"] == "conversion-text-layer"
+    assert events == [body["audit_event"]]
+
+
+def test_poc_http_api_enforces_ocr_boundary_without_generated_review_item() -> None:
+    conversion_result = _ocr_boundary_conversion_result()
+    conversion_result["document_ir"] = {
+        "document": {"id": "phase0-output"},
+    }
+    conversion_result["review_items"] = []
+
+    status, body, events = _post_review_audit_event_with_store(
+        _review_audit_event(conversion_id="conversion-ocr-blocked"),
+        conversion_results=[conversion_result],
+    )
+
+    assert status == 409
+    assert body["error"] == "review_conflict"
+    assert events == []
 
 
 def test_review_audit_event_store_records_hash_chain_metadata() -> None:
@@ -8245,6 +8387,35 @@ def _review_audit_event(**overrides: object) -> dict[str, object]:
     return event
 
 
+def _review_conversion_result(
+    *,
+    conversion_id: str,
+    trusted_ocr_required: bool = False,
+) -> dict[str, object]:
+    result: dict[str, object] = {
+        "conversion_id": conversion_id,
+        "review_items": [
+            {
+                "document_id": "phase0-output",
+                "block_id": "block-0001",
+            }
+        ],
+    }
+    if trusted_ocr_required:
+        result["ocr_boundary"] = {
+            "trusted_ocr_required": True,
+            "affected_block_ids": ["block-0001"],
+        }
+    return result
+
+
+def _ocr_boundary_conversion_result() -> dict[str, object]:
+    return _review_conversion_result(
+        conversion_id="conversion-ocr-blocked",
+        trusted_ocr_required=True,
+    )
+
+
 def _review_bbox(**overrides: object) -> dict[str, object]:
     bbox: dict[str, object] = {
         "x": 10,
@@ -8298,9 +8469,12 @@ def _post_review_audit_event_with_store(
     audit_event: dict[str, object],
     *,
     role_token: Optional[str] = "auto",
+    conversion_results: Optional[list[dict[str, object]]] = None,
 ) -> tuple[int, dict[str, object], list[dict[str, object]]]:
     server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
     store = ReviewAuditEventStore()
+    for conversion_result in conversion_results or []:
+        store.register_conversion_result(conversion_result)
     server.review_event_store = store
     server.local_auth_tokens = _local_auth_tokens()
     thread = Thread(target=server.serve_forever, daemon=True)
@@ -8658,6 +8832,92 @@ def test_poc_http_api_job_submission_reaches_status_and_result() -> None:
     assert isinstance(result_body["validation"], dict)
     assert result_body["artifacts"][0]["id"] == "debug-json"
     assert isinstance(result_body["download"]["content_text"], str)
+
+
+def test_job_conversion_registers_ocr_boundary_for_review_api(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture_path = (
+        REPO_ROOT
+        / "datasets"
+        / "fixtures"
+        / "pdf"
+        / "scanned-pdf-representative.pdf"
+    )
+    uploaded_content = fixture_path.read_bytes()
+    monkeypatch.setattr(
+        poc_web,
+        "_convert_uploaded_document_with_timeout",
+        poc_web.convert_uploaded_document,
+    )
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PocWebRequestHandler)
+    server.job_queue = JobQueue()
+    server.job_event_store = JobAuditEventStore()
+    server.review_event_store = ReviewAuditEventStore()
+    server.local_auth_tokens = _local_auth_tokens()
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=10)
+        payload = json.dumps(
+            {
+                "idempotency_key": "job-ocr-boundary",
+                "filename": fixture_path.name,
+                "content_type": "application/pdf",
+                "content_base64": base64.b64encode(uploaded_content).decode("ascii"),
+                "size_bytes": len(uploaded_content),
+                "source_sha256": hashlib.sha256(uploaded_content).hexdigest(),
+                "mode": "standard",
+                "conversion_mode": "pdf_to_word",
+                "use_llm": False,
+                "use_ocr": False,
+            }
+        ).encode("utf-8")
+        connection.request(
+            "POST",
+            "/api/jobs",
+            body=payload,
+            headers={
+                "Authorization": "Bearer approver-token",
+                "Content-Type": "application/json",
+                "Content-Length": str(len(payload)),
+            },
+        )
+        submit_response = connection.getresponse()
+        submitted = json.loads(submit_response.read().decode("utf-8"))
+        job_id = submitted["job"]["job_id"]
+        connection.request(
+            "GET",
+            f"/api/jobs/{job_id}/result",
+            headers={"Authorization": "Bearer approver-token"},
+        )
+        result_response = connection.getresponse()
+        result_body = json.loads(result_response.read().decode("utf-8"))
+        review_item = result_body["review_items"][0]
+        review_status, review_body = _post_review_event_on_connection(
+            connection,
+            _review_audit_event(
+                action="approve",
+                conversion_id=result_body["conversion_id"],
+                document_id=review_item["document_id"],
+                block_id=review_item["block_id"],
+                source_page=review_item["source_page"],
+                source_bbox=review_item.get("source_bbox"),
+                original_text=review_item["text"],
+                revised_text="Untrusted replacement text",
+                warnings=review_item["warnings"],
+            ),
+            role_token="approver-token",
+        )
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert submit_response.status == 202
+    assert result_response.status == 200
+    assert review_status == 409
+    assert review_body["error"] == "review_conflict"
+    assert server.review_event_store.list_events() == []
 
 
 def test_poc_http_api_converts_with_stored_job_template_snapshot() -> None:
