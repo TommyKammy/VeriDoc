@@ -2069,6 +2069,7 @@ def evaluate_acceptance_evidence(
                 "document_id": review.get("document_id"),
                 "block_id": review.get("block_id"),
                 "actor": review.get("actor"),
+                "source_sha256": provenance.get("source_sha256"),
                 "source_page": provenance.get("source_page"),
                 "source_bbox": provenance.get("source_bbox"),
             },
@@ -2087,6 +2088,7 @@ def evaluate_acceptance_evidence(
                 "document_id": review.get("document_id"),
                 "block_id": review.get("block_id"),
                 "actor": reviewer_actor,
+                "source_sha256": provenance.get("source_sha256"),
                 "source_page": provenance.get("source_page"),
                 "source_bbox": provenance.get("source_bbox"),
             },
@@ -2867,6 +2869,7 @@ def run_browser_e2e(
                             ),
                             "action": "edit",
                             "conversion_id": conversion_id,
+                            "source_sha256": source_sha256,
                             "document_id": review_document_id,
                             "block_id": review_block_id,
                             "source_page": review_source_page,
@@ -3277,6 +3280,7 @@ def run_browser_e2e(
                             "document_id": review_document_id,
                             "block_id": review_block_id,
                             "actor": expected_preceding_reviewer_actor,
+                            "source_sha256": source_sha256,
                             "source_page": review_source_page,
                             "source_bbox": review_source_bbox,
                         },
@@ -3291,12 +3295,14 @@ def run_browser_e2e(
                         "document_id": review_document_id,
                         "block_id": review_block_id,
                         "actor": expected_review_actor,
+                        "source_sha256": source_sha256,
                         "source_page": review_source_page,
                         "source_bbox": review_source_bbox,
                     },
                     description="browser approval audit event",
                 )
                 high_risk_conversion_id = high_risk_result["audit"]["conversion_id"]
+                high_risk_source_sha256 = high_risk_audit["source_sha256"]
                 for action, target in (
                     ("edit", first_high_risk_item),
                     ("needs_fix", first_high_risk_item),
@@ -3310,6 +3316,7 @@ def run_browser_e2e(
                             "document_id": target["document_id"],
                             "block_id": target["block_id"],
                             "actor": expected_review_actor,
+                            "source_sha256": high_risk_source_sha256,
                         },
                         description=f"keyboard {action} audit event",
                     )
@@ -3365,6 +3372,7 @@ def run_browser_e2e(
                             "block_id": review_event.get("block_id"),
                             "action": review_event.get("action"),
                             "actor": review_actor,
+                            "source_sha256": review_event.get("source_sha256"),
                         },
                         "provenance": {
                             "source_filename": result_audit.get("source_filename"),

@@ -3417,6 +3417,9 @@
         if (state.latestResult && state.latestResult.conversion_id) {
           event.conversion_id = state.latestResult.conversion_id;
         }
+        if (state.latestResult?.hashes?.source_sha256) {
+          event.source_sha256 = state.latestResult.hashes.source_sha256;
+        }
         if (action === "edit") {
           event.revised_text = revisedText;
         } else if (action === "approve") {

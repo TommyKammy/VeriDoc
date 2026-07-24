@@ -6668,6 +6668,95 @@ def test_poc_http_api_allows_known_non_ocr_conversion_for_same_review_target() -
     assert events == [body["audit_event"]]
 
 
+def test_poc_http_api_rejects_ocr_event_claiming_clean_conversion_id() -> None:
+    status, body, events = _post_review_audit_event_with_store(
+        _review_audit_event(
+            conversion_id="conversion-text-layer",
+            source_sha256="a" * 64,
+        ),
+        conversion_results=[
+            _ocr_boundary_conversion_result(),
+            _review_conversion_result(
+                conversion_id="conversion-text-layer",
+                source_sha256="b" * 64,
+            ),
+        ],
+    )
+
+    assert status == 409
+    assert body == {
+        "error": "review_conflict",
+        "message": "review event does not match its registered conversion result",
+    }
+    assert events == []
+
+
+@pytest.mark.parametrize(
+    ("field_name", "field_value"),
+    [
+        ("source_sha256", None),
+        ("source_page", 2),
+        ("source_bbox", None),
+        ("original_text", "text from a different conversion"),
+        ("warnings", ["warning from a different conversion"]),
+    ],
+)
+def test_poc_http_api_rejects_tampered_registered_conversion_source(
+    field_name: str,
+    field_value: object,
+) -> None:
+    audit_event = _review_audit_event(conversion_id="conversion-text-layer")
+    if field_value is None:
+        audit_event.pop(field_name)
+    else:
+        audit_event[field_name] = field_value
+
+    status, body, events = _post_review_audit_event_with_store(
+        audit_event,
+        conversion_results=[
+            _review_conversion_result(conversion_id="conversion-text-layer"),
+        ],
+    )
+
+    assert status == 409
+    assert body["error"] == "review_conflict"
+    assert events == []
+
+
+def test_review_workflow_does_not_reuse_edit_from_different_source_hash() -> None:
+    store = ReviewAuditEventStore()
+    store.record_review_event(
+        {
+            **_review_audit_event(
+                action="edit",
+                conversion_id="conversion-first",
+                source_sha256="a" * 64,
+                revised_text="Shared revised text",
+            ),
+            "actor": {"id": "reviewer-first", "role": "reviewer"},
+        }
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="review approval requires a preceding review edit",
+    ):
+        store.record_review_event(
+            {
+                **_review_audit_event(
+                    action="approve",
+                    conversion_id="conversion-second",
+                    source_sha256="b" * 64,
+                    original_text="Shared revised text",
+                    revised_text="Shared revised text",
+                ),
+                "actor": {"id": "approver-second", "role": "approver"},
+            }
+        )
+
+    assert [event["action"] for event in store.list_events()] == ["edit"]
+
+
 def test_poc_http_api_enforces_ocr_boundary_without_generated_review_item() -> None:
     conversion_result = _ocr_boundary_conversion_result()
     conversion_result["document_ir"] = {
@@ -8368,6 +8457,7 @@ def _review_audit_event(**overrides: object) -> dict[str, object]:
     event: dict[str, object] = {
         "event_type": "conversion_review.action_requested",
         "action": "edit",
+        "source_sha256": "a" * 64,
         "document_id": "phase0-output",
         "block_id": "block-0001",
         "source_page": 1,
@@ -8391,13 +8481,26 @@ def _review_conversion_result(
     *,
     conversion_id: str,
     trusted_ocr_required: bool = False,
+    source_sha256: str = "a" * 64,
 ) -> dict[str, object]:
     result: dict[str, object] = {
         "conversion_id": conversion_id,
+        "hashes": {"source_sha256": source_sha256},
         "review_items": [
             {
                 "document_id": "phase0-output",
                 "block_id": "block-0001",
+                "source_page": 1,
+                "source_bbox": {
+                    "x": 10,
+                    "y": 20,
+                    "width": 120,
+                    "height": 16,
+                    "unit": "pt",
+                    "origin": "top-left",
+                },
+                "text": "Lot: SAMPLE-001",
+                "warnings": [],
             }
         ],
     }

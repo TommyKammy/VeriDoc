@@ -120,6 +120,7 @@ def _write_complete_evidence_package(run_dir: Path) -> dict[str, object]:
             "event_type": "conversion_review.action_requested",
             "action": "edit",
             "conversion_id": conversion_id,
+            "source_sha256": source_sha256,
             "document_id": document_id,
             "block_id": block_id,
             "actor": reviewer_actor,
@@ -133,6 +134,7 @@ def _write_complete_evidence_package(run_dir: Path) -> dict[str, object]:
             "event_type": "conversion_review.action_requested",
             "action": "approve",
             "conversion_id": conversion_id,
+            "source_sha256": source_sha256,
             "document_id": document_id,
             "block_id": block_id,
             "actor": actor,
@@ -323,6 +325,7 @@ def _write_complete_evidence_package(run_dir: Path) -> dict[str, object]:
                 "block_id": block_id,
                 "action": "approve",
                 "actor": actor,
+                "source_sha256": source_sha256,
             },
             "provenance": {
                 "source_filename": source_filename,

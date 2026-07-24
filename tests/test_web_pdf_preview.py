@@ -183,6 +183,7 @@ def test_review_item_exposes_edit_and_approve_audit_events() -> None:
     assert "block_id: item.block_id" in html
     assert "original_text: item.text" in html
     assert "event.conversion_id = state.latestResult.conversion_id" in html
+    assert "event.source_sha256 = state.latestResult.hashes.source_sha256" in html
     assert "source_page: reviewAuditSourcePage(item)" in html
     assert "function reviewAuditSourcePage(item)" in html
     assert "Number.isInteger(item.source_page)" in html

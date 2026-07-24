@@ -203,14 +203,19 @@ class ReviewAuditEventStore:
     def __init__(self) -> None:
         self._events: list[dict[str, Any]] = []
         self._conversion_ocr_policies: dict[tuple[str, str, str], bool] = {}
+        self._conversion_review_targets: dict[
+            tuple[str, str, str], dict[str, Any]
+        ] = {}
         self._trusted_ocr_blocked_targets: set[tuple[str, str]] = set()
         self._integrity_checkpoint = _audit_event_integrity_checkpoint(self._events)
         self._lock = Lock()
 
     def register_conversion_result(self, result: dict[str, Any]) -> None:
         policies = _review_ocr_policies_from_conversion_result(result)
+        review_targets = _review_targets_from_conversion_result(result)
         with self._lock:
             self._conversion_ocr_policies.update(policies)
+            self._conversion_review_targets.update(review_targets)
             for (
                 _conversion_id,
                 document_id,
@@ -280,6 +285,7 @@ class ReviewAuditEventStore:
             else None
         )
         if exact_policy is False:
+            self._require_review_event_matches_conversion_locked(event)
             return
         target_has_blocked_policy = (
             document_id,
@@ -289,6 +295,22 @@ class ReviewAuditEventStore:
             raise RuntimeError(
                 "trusted OCR evidence is required before editing or approving this review item"
             )
+
+    def _require_review_event_matches_conversion_locked(
+        self,
+        event: dict[str, Any],
+    ) -> None:
+        conversion_id = event.get("conversion_id")
+        if not isinstance(conversion_id, str):
+            raise RuntimeError("review event is not bound to a registered conversion result")
+        target = self._conversion_review_targets.get(
+            (conversion_id, event["document_id"], event["block_id"])
+        )
+        if target is None or any(
+            event.get(field_name) != expected_value
+            for field_name, expected_value in target.items()
+        ):
+            raise RuntimeError("review event does not match its registered conversion result")
 
     def _require_integrity_locked(self) -> None:
         _raise_for_audit_event_integrity_violation(
@@ -879,6 +901,7 @@ def _review_workflow_event_view(audit_event: dict[str, Any]) -> dict[str, Any]:
     return {
         "action": audit_event.get("action"),
         "conversion_id": audit_event.get("conversion_id"),
+        "source_sha256": audit_event.get("source_sha256"),
         "document_id": audit_event.get("document_id"),
         "block_id": audit_event.get("block_id"),
         "original_text": audit_event.get("original_text"),
@@ -3110,6 +3133,11 @@ def _validate_review_event(audit_event: Any) -> dict[str, Any]:
         if not isinstance(conversion_id, str) or not conversion_id.strip():
             raise ValueError("audit_event.conversion_id must be a non-empty string")
         conversion_id = conversion_id.strip()
+    source_sha256 = audit_event.get("source_sha256")
+    if source_sha256 is not None:
+        source_sha256 = _sha256_value(source_sha256)
+        if source_sha256 is None:
+            raise ValueError("audit_event.source_sha256 must be a SHA-256 hex digest")
     block_id = audit_event.get("block_id")
     if not isinstance(block_id, str) or not block_id.strip():
         raise ValueError("audit_event.block_id is required")
@@ -3137,6 +3165,7 @@ def _validate_review_event(audit_event: Any) -> dict[str, Any]:
         "event_type": "conversion_review.action_requested",
         "action": action,
         "conversion_id": conversion_id,
+        "source_sha256": source_sha256,
         "document_id": document_id,
         "block_id": block_id,
         "source_page": source_page,
@@ -3279,6 +3308,14 @@ def _same_review_workflow_target_base(
     if stored_event.get("document_id") != audit_event["document_id"]:
         return False
     if stored_event.get("block_id") != audit_event["block_id"]:
+        return False
+    stored_source_sha256 = stored_event.get("source_sha256")
+    audit_source_sha256 = audit_event.get("source_sha256")
+    if (
+        stored_source_sha256
+        and audit_source_sha256
+        and stored_source_sha256 != audit_source_sha256
+    ):
         return False
     return True
 
@@ -4783,6 +4820,62 @@ def _review_ocr_policies_from_conversion_result(
             ),
         )
     return policies
+
+
+def _review_targets_from_conversion_result(
+    result: dict[str, Any],
+) -> dict[tuple[str, str, str], dict[str, Any]]:
+    conversion_id = result.get("conversion_id")
+    review_items = result.get("review_items")
+    hashes = result.get("hashes")
+    source_sha256 = (
+        _sha256_value(hashes.get("source_sha256"))
+        if isinstance(hashes, dict)
+        else None
+    )
+    if (
+        not isinstance(conversion_id, str)
+        or not conversion_id
+        or not isinstance(review_items, list)
+        or source_sha256 is None
+    ):
+        return {}
+    targets: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for item in review_items:
+        if not isinstance(item, dict):
+            continue
+        document_id = item.get("document_id")
+        block_id = item.get("block_id")
+        source_page = item.get("source_page")
+        original_text = item.get("text")
+        warnings = item.get("warnings", [])
+        source_bbox = item.get("source_bbox")
+        if (
+            not isinstance(document_id, str)
+            or not document_id
+            or not isinstance(block_id, str)
+            or not block_id
+            or not isinstance(source_page, int)
+            or isinstance(source_page, bool)
+            or source_page < 1
+            or not isinstance(original_text, str)
+            or not isinstance(warnings, list)
+            or not all(isinstance(warning, str) for warning in warnings)
+        ):
+            continue
+        if source_bbox is not None:
+            try:
+                source_bbox = _validate_review_event_bbox(source_bbox)
+            except ValueError:
+                continue
+        targets[(conversion_id, document_id, block_id)] = {
+            "source_sha256": source_sha256,
+            "source_page": source_page,
+            "source_bbox": source_bbox,
+            "original_text": original_text,
+            "warnings": list(warnings),
+        }
+    return targets
 
 
 def _review_items(document_ir: DocumentIRV1) -> list[dict[str, Any]]:
