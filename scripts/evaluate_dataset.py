@@ -57,6 +57,14 @@ MVP_PROVENANCE_COVERAGE_THRESHOLD = 0.95
 MVP_REQUIRED_CATEGORIES = frozenset(
     {"word", "excel", "text_pdf", "scanned_pdf", "record_pdf"}
 )
+MVP_METRIC_BACKED_ITEM_DIMENSIONS = {
+    "AC-TEMPLATE": ("completeness", "case_acceptance"),
+    "AC-QUALITY": ("quality",),
+    "AC-PROVENANCE": ("provenance",),
+    "AC-REVIEW": ("high_risk",),
+    "AC-PERFORMANCE": ("performance",),
+    "FC-HIGH-RISK": ("high_risk",),
+}
 MVP_SNAPSHOT_DEPENDENCY_PATHS = (
     Path("requirements.txt"),
     Path("requirements-pdf-eval.txt"),
@@ -3537,6 +3545,7 @@ class MVPAcceptanceReport:
             harness_payload,
             snapshot_metadata=snapshot_metadata,
         )
+        items = mvp_acceptance_items_with_rollup(self.items, metrics_rollup)
         snapshot_payload = {
             "harness": harness_payload,
             "metrics_rollup": metrics_rollup,
@@ -3549,7 +3558,7 @@ class MVPAcceptanceReport:
                 else None
             ),
             "scope_decision_text": self.scope_decision_text,
-            "items": self.items,
+            "items": items,
         }
         snapshot_sha256 = hashlib.sha256(
             json.dumps(
@@ -3559,15 +3568,15 @@ class MVPAcceptanceReport:
                 sort_keys=True,
             ).encode("utf-8")
         ).hexdigest()
-        decisions = Counter(str(item["decision"]) for item in self.items)
+        decisions = Counter(str(item["decision"]) for item in items)
         phase13 = [
             item["item_id"]
-            for item in self.items
+            for item in items
             if "phase13" in item["carryover_phases"]
         ]
         phase14 = [
             item["item_id"]
-            for item in self.items
+            for item in items
             if "phase14" in item["carryover_phases"]
         ]
         return {
@@ -3577,7 +3586,7 @@ class MVPAcceptanceReport:
                 "overall_decision": (
                     "pass"
                     if (
-                        self.items
+                        items
                         and decisions.get("fail", 0) == 0
                         and harness_payload["acceptance_handoff"]["overall_status"]
                         == "pass"
@@ -3585,7 +3594,7 @@ class MVPAcceptanceReport:
                     )
                     else "fail"
                 ),
-                "item_count": len(self.items),
+                "item_count": len(items),
                 "decision_counts": {
                     "pass": decisions.get("pass", 0),
                     "fail": decisions.get("fail", 0),
@@ -3610,7 +3619,7 @@ class MVPAcceptanceReport:
                 "metadata": snapshot_metadata,
                 "metrics_rollup": metrics_rollup,
             },
-            "items": list(self.items),
+            "items": list(items),
             "carryovers": {
                 "phase13": phase13,
                 "phase14": phase14,
@@ -5763,6 +5772,66 @@ def mvp_acceptance_status(statuses: Iterable[str]) -> str:
     return "unknown"
 
 
+def mvp_acceptance_items_with_rollup(
+    items: Iterable[Mapping[str, object]],
+    metrics_rollup: Mapping[str, object],
+) -> tuple[dict[str, object], ...]:
+    dimensions_value = metrics_rollup.get("dimensions")
+    dimensions = (
+        dimensions_value if isinstance(dimensions_value, Mapping) else {}
+    )
+    criteria_refs_value = metrics_rollup.get("criteria_refs")
+    criteria_refs = (
+        criteria_refs_value if isinstance(criteria_refs_value, Mapping) else {}
+    )
+    effective_items: list[dict[str, object]] = []
+    for item in items:
+        effective_item = dict(item)
+        item_id = str(item.get("item_id") or "")
+        required_dimensions = MVP_METRIC_BACKED_ITEM_DIMENSIONS.get(item_id)
+        if required_dimensions is None:
+            effective_items.append(effective_item)
+            continue
+
+        dimension_statuses: dict[str, str] = {}
+        for dimension_name in required_dimensions:
+            dimension = dimensions.get(dimension_name)
+            status = (
+                dimension.get("status")
+                if isinstance(dimension, Mapping)
+                else None
+            )
+            dimension_statuses[dimension_name] = (
+                str(status) if status in {"pass", "fail"} else "unknown"
+            )
+        validation_status = mvp_acceptance_status(dimension_statuses.values())
+        evidence_value = item.get("evidence")
+        evidence = (
+            dict(evidence_value)
+            if isinstance(evidence_value, Mapping)
+            else {}
+        )
+        refs_value = criteria_refs.get(item_id)
+        evidence["metrics_rollup_validation"] = {
+            "status": validation_status,
+            "required_dimensions": list(required_dimensions),
+            "dimension_statuses": dimension_statuses,
+            "refs": list(refs_value) if isinstance(refs_value, list) else [],
+        }
+        effective_item["evidence"] = evidence
+        if item.get("decision") == "pass" and validation_status != "pass":
+            effective_item["decision"] = "fail"
+            effective_item["unmet"] = (
+                "live metrics rollup validation is non-passing: "
+                + ", ".join(
+                    f"{name}={status}"
+                    for name, status in dimension_statuses.items()
+                )
+            )
+        effective_items.append(effective_item)
+    return tuple(effective_items)
+
+
 def _mvp_ratio_metric(
     *,
     numerator: object,
@@ -6211,7 +6280,9 @@ def mvp_metrics_rollup(
     )
 
     high_risk_unknown: list[str] = []
+    high_risk_failed_cases: list[str] = []
     high_risk_target_count = 0
+    high_risk_covered_count = 0
     high_risk_miss_count = 0
     high_risk_auto_confirmed_count = 0
     for result, metrics in metrics_by_case:
@@ -6225,19 +6296,44 @@ def mvp_metrics_rollup(
             continue
         counts = (
             dimension.get("target_count"),
+            dimension.get("covered_count"),
             dimension.get("miss_count"),
             dimension.get("auto_confirmed_count"),
         )
         if any(not isinstance(value, int) or isinstance(value, bool) for value in counts):
             high_risk_unknown.append(case_id)
             continue
-        high_risk_target_count += counts[0]
-        high_risk_miss_count += counts[1]
-        high_risk_auto_confirmed_count += counts[2]
+        target_count, covered_count, miss_count, auto_confirmed_count = counts
+        if (
+            target_count < 0
+            or not 0 <= covered_count <= target_count
+            or not 0 <= miss_count <= target_count
+            or not 0 <= auto_confirmed_count <= target_count
+            or covered_count + miss_count != target_count
+        ):
+            high_risk_unknown.append(case_id)
+            continue
+        if dimension.get("status") == "fail":
+            high_risk_failed_cases.append(case_id)
+        high_risk_target_count += target_count
+        high_risk_covered_count += covered_count
+        high_risk_miss_count += miss_count
+        high_risk_auto_confirmed_count += auto_confirmed_count
     high_risk_failures = [
         *(
-            ["high-risk metrics missing for: " + ", ".join(high_risk_unknown)]
+            [
+                "high-risk metrics missing or invalid for: "
+                + ", ".join(high_risk_unknown)
+            ]
             if high_risk_unknown
+            else []
+        ),
+        *(
+            [
+                "high-risk metric failed for case(s): "
+                + ", ".join(high_risk_failed_cases)
+            ]
+            if high_risk_failed_cases
             else []
         ),
         *(
@@ -6263,12 +6359,12 @@ def mvp_metrics_rollup(
             else "pass"
         ),
         "target_count": high_risk_target_count,
+        "covered_count": high_risk_covered_count,
         "miss_count": high_risk_miss_count,
         "auto_confirmed_count": high_risk_auto_confirmed_count,
         "denominator": high_risk_target_count,
         "rate": (
-            (high_risk_target_count - high_risk_miss_count)
-            / high_risk_target_count
+            high_risk_covered_count / high_risk_target_count
             if high_risk_target_count
             else None
         ),
@@ -6278,6 +6374,7 @@ def mvp_metrics_rollup(
         "limits": {"miss_count": 0, "auto_confirmed_count": 0},
         "exclusions": [],
         "unknown_case_ids": high_risk_unknown,
+        "failed_case_ids": high_risk_failed_cases,
         "failure_reasons": high_risk_failures,
     }
 

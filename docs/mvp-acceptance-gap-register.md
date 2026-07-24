@@ -16,7 +16,7 @@ Missing authoritative decisions or run evidence remain fail-closed.
 - Criteria source Git blob:
   `7843bf248fd85c0957ecdb4ffae903980eecb001`
 - Evaluator Git blob:
-  `12ec8a21c7afeb04a2b3bd5cc28952fc86459821`
+  `c54aac39de48eedbe4d2aabb0c0690fdfd7a8b6f`
 - Generated at: `2026-07-24` (Asia/Tokyo)
 - PDF evaluation prerequisite:
   `python3 -m pip install -r requirements-pdf-eval.txt`
@@ -26,7 +26,7 @@ Missing authoritative decisions or run evidence remain fail-closed.
   `a9374c81d4ff83cfce405582affd1c001216680ee8c53fa4e6acd0ade04abbd4`
 - Criteria source: `docs/mvp-acceptance-traceability.md`
 - Report result: `item_count=20`, unique item IDs `20`,
-  `overall_decision=fail` (`pass=6`, `fail=14`)
+  `overall_decision=fail` (`pass=12`, `fail=8`)
 - Harness result: `case_count=5`, `acceptance_status=pass`
   (`pass=5`, `fail=0`, `unknown=0`)
 

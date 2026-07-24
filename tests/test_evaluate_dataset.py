@@ -1538,6 +1538,93 @@ class EvaluateDatasetTest(unittest.TestCase):
             rollup["dimensions"]["snapshot_integrity"]["failure_reasons"][0],
         )
 
+    def test_mvp_acceptance_report_downgrades_live_metric_failure(self) -> None:
+        traceability = MVP_ACCEPTANCE_TRACEABILITY_PATH.read_text(encoding="utf-8")
+        items = evaluate_dataset.mvp_acceptance_traceability_items(traceability)
+        harness_payload = evaluate_dataset.evaluate_mvp_harness(
+            MVP_EVALUATION_MANIFEST_PATH
+        ).as_dict()
+        for result in harness_payload["results"]:
+            result["metrics"]["quality"]["numerator"] = 0
+
+        payload = evaluate_dataset.MVPAcceptanceReport(
+            harness=evaluate_dataset.MVPHarnessReport(
+                manifest=MVP_EVALUATION_MANIFEST_PATH,
+                results=tuple(harness_payload["results"]),
+            ),
+            traceability_source=evaluate_dataset.DEFAULT_MVP_ACCEPTANCE_TRACEABILITY,
+            traceability_text=traceability,
+            items=items,
+            snapshot_metadata={
+                "commit": "a" * 40,
+                "worktree_clean": True,
+            },
+        ).as_dict()
+
+        items_by_id = {item["item_id"]: item for item in payload["items"]}
+        self.assertEqual("fail", items_by_id["AC-QUALITY"]["decision"])
+        self.assertEqual(
+            {
+                "status": "fail",
+                "required_dimensions": ["quality"],
+                "dimension_statuses": {"quality": "fail"},
+                "refs": [
+                    "dimensions.quality",
+                    "case_results[*].metrics.quality",
+                ],
+            },
+            items_by_id["AC-QUALITY"]["evidence"][
+                "metrics_rollup_validation"
+            ],
+        )
+        self.assertIn("quality=fail", items_by_id["AC-QUALITY"]["unmet"])
+        self.assertEqual("pass", items_by_id["AC-PROVENANCE"]["decision"])
+        self.assertEqual(
+            {"pass": 11, "fail": 9},
+            payload["summary"]["decision_counts"],
+        )
+
+    def test_metric_backed_acceptance_items_require_all_live_dimensions(
+        self,
+    ) -> None:
+        traceability = MVP_ACCEPTANCE_TRACEABILITY_PATH.read_text(encoding="utf-8")
+        items = evaluate_dataset.mvp_acceptance_traceability_items(traceability)
+        harness_payload = evaluate_dataset.evaluate_mvp_harness(
+            MVP_EVALUATION_MANIFEST_PATH
+        ).as_dict()
+        rollup = evaluate_dataset.mvp_metrics_rollup(harness_payload)
+
+        for item_id, required_dimensions in (
+            evaluate_dataset.MVP_METRIC_BACKED_ITEM_DIMENSIONS.items()
+        ):
+            for dimension_status in ("fail", "unknown"):
+                with self.subTest(
+                    item_id=item_id,
+                    dimension_status=dimension_status,
+                ):
+                    failing_rollup = json.loads(json.dumps(rollup))
+                    failing_rollup["dimensions"][required_dimensions[0]][
+                        "status"
+                    ] = dimension_status
+                    effective_items = (
+                        evaluate_dataset.mvp_acceptance_items_with_rollup(
+                            items,
+                            failing_rollup,
+                        )
+                    )
+                    effective_item = next(
+                        item
+                        for item in effective_items
+                        if item["item_id"] == item_id
+                    )
+                    self.assertEqual("fail", effective_item["decision"])
+                    self.assertEqual(
+                        dimension_status,
+                        effective_item["evidence"][
+                            "metrics_rollup_validation"
+                        ]["status"],
+                    )
+
     def test_mvp_metrics_rollup_fails_closed_on_missing_or_low_quality_data(
         self,
     ) -> None:
@@ -1603,6 +1690,62 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertEqual(
             "pass",
             failed_harness_case["results"][0]["metrics"]["status"],
+        )
+
+        valid_high_risk = {
+            "status": "pass",
+            "target_count": 1,
+            "covered_count": 1,
+            "miss_count": 0,
+            "auto_confirmed_count": 0,
+        }
+        invalid_high_risk_counts = (
+            {"target_count": -1},
+            {"covered_count": -1},
+            {"covered_count": 2},
+            {"miss_count": -1},
+            {"miss_count": 2},
+            {"auto_confirmed_count": -1},
+            {"auto_confirmed_count": 2},
+            {"covered_count": 0},
+        )
+        for invalid_counts in invalid_high_risk_counts:
+            with self.subTest(invalid_high_risk_counts=invalid_counts):
+                invalid_high_risk = json.loads(json.dumps(harness_payload))
+                dimension = invalid_high_risk["results"][0]["metrics"]["high_risk"]
+                dimension.update(valid_high_risk)
+                dimension.update(invalid_counts)
+                invalid_rollup = evaluate_dataset.mvp_metrics_rollup(
+                    invalid_high_risk
+                )
+                self.assertEqual(
+                    "unknown",
+                    invalid_rollup["dimensions"]["high_risk"]["status"],
+                )
+                self.assertEqual(
+                    ["mvp-word-001"],
+                    invalid_rollup["dimensions"]["high_risk"][
+                        "unknown_case_ids"
+                    ],
+                )
+                self.assertNotEqual("pass", invalid_rollup["status"])
+
+        failed_high_risk = json.loads(json.dumps(harness_payload))
+        failed_dimension = failed_high_risk["results"][0]["metrics"]["high_risk"]
+        failed_dimension.update(valid_high_risk)
+        failed_dimension["status"] = "fail"
+        failed_high_risk_rollup = evaluate_dataset.mvp_metrics_rollup(
+            failed_high_risk
+        )
+        self.assertEqual(
+            "fail",
+            failed_high_risk_rollup["dimensions"]["high_risk"]["status"],
+        )
+        self.assertEqual(
+            ["mvp-word-001"],
+            failed_high_risk_rollup["dimensions"]["high_risk"][
+                "failed_case_ids"
+            ],
         )
 
         empty_harness = json.loads(json.dumps(harness_payload))

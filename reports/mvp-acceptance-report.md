@@ -30,7 +30,10 @@ revision-bound decision pins; scope drift fails the affected item until renewed
 approval. A passing harness case does not promote a broader 15.3 item whose
 required evidence remains incomplete. Missing/unknown metrics and case-level
 failures cannot be hidden by the aggregate rate and reject the rollup. The
-overall decision also remains `fail` whenever the live harness or metrics
+six metric-backed rows are also revalidated from their live rollup dimensions,
+so a non-passing dimension downgrades that item instead of leaving a static
+traceability `pass` in the emitted snapshot. The overall decision also remains
+`fail` whenever the live harness or metrics
 rollup is not `pass`; a dirty worktree or missing commit identity makes the
 commit-bound snapshot integrity dimension non-passing.
 
