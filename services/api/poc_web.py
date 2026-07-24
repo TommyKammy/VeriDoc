@@ -53,7 +53,11 @@ from core.llm.conversion_plan import (
 from core.llm.audit_parameters import sanitize_audit_parameters
 from core.parsers.docx_extraction import extract_docx_structure
 from core.parsers.pdf_table_extraction import compare_pdf_table_extractors
-from core.parsers.pdf_text_extraction import MissingPdfExtractorDependency, parse_text_pdf_to_document_ir
+from core.parsers.pdf_text_extraction import (
+    EMPTY_PAGE_REVIEW_TEXT,
+    MissingPdfExtractorDependency,
+    parse_text_pdf_to_document_ir,
+)
 from core.parsers.xlsx_extraction import extract_xlsx_structure
 from core.render.ooxml import (
     render_docx_from_ir,
@@ -63,7 +67,12 @@ from core.render.ooxml import (
 from services.api.artifact_store import default_artifact_store_root
 from services.api.job_queue import JobQueue, JobRecord
 from services.api.persistence_repository import default_database_path
-from services.api.warning_catalog import warning_details
+from services.api.warning_catalog import (
+    OCR_TEXT_LAYER_UNAVAILABLE_MESSAGE,
+    OCR_TRUSTED_WORKFLOW_REMEDIATION,
+    warning_detail,
+    warning_details,
+)
 
 WEB_ROOT = REPO_ROOT / "apps" / "web"
 PDFJS_ROOT = WEB_ROOT / "vendor" / "pdfjs"
@@ -193,8 +202,27 @@ class PocProcessingTimeoutError(TimeoutError):
 class ReviewAuditEventStore:
     def __init__(self) -> None:
         self._events: list[dict[str, Any]] = []
+        self._conversion_ocr_policies: dict[tuple[str, str, str], bool] = {}
+        self._conversion_review_targets: dict[
+            tuple[str, str, str], dict[str, Any]
+        ] = {}
+        self._trusted_ocr_blocked_targets: set[tuple[str, str]] = set()
         self._integrity_checkpoint = _audit_event_integrity_checkpoint(self._events)
         self._lock = Lock()
+
+    def register_conversion_result(self, result: dict[str, Any]) -> None:
+        policies = _review_ocr_policies_from_conversion_result(result)
+        review_targets = _review_targets_from_conversion_result(result)
+        with self._lock:
+            self._conversion_ocr_policies.update(policies)
+            self._conversion_review_targets.update(review_targets)
+            for (
+                _conversion_id,
+                document_id,
+                block_id,
+            ), trusted_ocr_required in policies.items():
+                if trusted_ocr_required:
+                    self._trusted_ocr_blocked_targets.add((document_id, block_id))
 
     def record(self, audit_event: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
@@ -225,6 +253,64 @@ class ReviewAuditEventStore:
             self._events.append(event)
             self._integrity_checkpoint = _audit_event_integrity_checkpoint(self._events)
         return deepcopy(event)
+
+    def record_review_event(self, audit_event: dict[str, Any]) -> dict[str, Any]:
+        event = deepcopy(audit_event)
+        with self._lock:
+            self._require_integrity_locked()
+            self._require_trusted_ocr_boundary_locked(event)
+            if event["action"] == "approve":
+                _validate_review_workflow_event(
+                    event,
+                    [_review_workflow_event_view(item) for item in self._events],
+                )
+            event = _audit_event_with_integrity(
+                event,
+                previous_events=self._events,
+                checkpoint=self._integrity_checkpoint,
+            )
+            self._events.append(event)
+            self._integrity_checkpoint = _audit_event_integrity_checkpoint(self._events)
+        return deepcopy(event)
+
+    def _require_trusted_ocr_boundary_locked(self, event: dict[str, Any]) -> None:
+        if event["action"] not in {"edit", "approve"}:
+            return
+        document_id = event["document_id"]
+        block_id = event["block_id"]
+        conversion_id = event.get("conversion_id")
+        exact_policy = (
+            self._conversion_ocr_policies.get((conversion_id, document_id, block_id))
+            if isinstance(conversion_id, str)
+            else None
+        )
+        if exact_policy is False:
+            self._require_review_event_matches_conversion_locked(event)
+            return
+        target_has_blocked_policy = (
+            document_id,
+            block_id,
+        ) in self._trusted_ocr_blocked_targets
+        if exact_policy is True or target_has_blocked_policy:
+            raise RuntimeError(
+                "trusted OCR evidence is required before editing or approving this review item"
+            )
+
+    def _require_review_event_matches_conversion_locked(
+        self,
+        event: dict[str, Any],
+    ) -> None:
+        conversion_id = event.get("conversion_id")
+        if not isinstance(conversion_id, str):
+            raise RuntimeError("review event is not bound to a registered conversion result")
+        target = self._conversion_review_targets.get(
+            (conversion_id, event["document_id"], event["block_id"])
+        )
+        if target is None or any(
+            event.get(field_name) != expected_value
+            for field_name, expected_value in target.items()
+        ):
+            raise RuntimeError("review event does not match its registered conversion result")
 
     def _require_integrity_locked(self) -> None:
         _raise_for_audit_event_integrity_violation(
@@ -815,6 +901,7 @@ def _review_workflow_event_view(audit_event: dict[str, Any]) -> dict[str, Any]:
     return {
         "action": audit_event.get("action"),
         "conversion_id": audit_event.get("conversion_id"),
+        "source_sha256": audit_event.get("source_sha256"),
         "document_id": audit_event.get("document_id"),
         "block_id": audit_event.get("block_id"),
         "original_text": audit_event.get("original_text"),
@@ -835,6 +922,7 @@ LLM_FALLBACK_WARNING_CODES = {
     "missing_required_model": "llm_fallback_missing_model",
     "schema_invalid": "llm_fallback_schema_invalid",
 }
+OCR_TEXT_LAYER_UNAVAILABLE_REASON = "text_layer_unavailable"
 
 
 def convert_uploaded_document(
@@ -899,7 +987,12 @@ def convert_uploaded_document(
         use_llm=use_llm,
     )
     conversion_settings["use_llm"] = conversion_plan_state["setting"]
+    ocr_boundary = _ocr_fail_closed_boundary(document_ir)
+    if ocr_boundary is not None:
+        conversion_settings["use_ocr"] = _ocr_boundary_conversion_setting(use_ocr)
     review_items = _review_items(document_ir)
+    if ocr_boundary is not None:
+        _attach_ocr_boundary_to_review_items(review_items, ocr_boundary)
     if template_mapping is not None:
         review_items.extend(
             _template_mapping_review_items(
@@ -935,6 +1028,7 @@ def convert_uploaded_document(
     if primary_warning is not None:
         warnings.append(primary_warning)
     review_items.extend(_pdf_table_warning_review_items(document_ir, warnings))
+    structured_warning_details = warning_details(warnings)
     audit = {
         "schema_version": CONVERSION_AUDIT_SCHEMA_VERSION,
         "conversion_id": conversion_id,
@@ -971,6 +1065,8 @@ def convert_uploaded_document(
         "warnings": {"count": len(warnings)},
         "review_items": {"count": len(review_items)},
     }
+    if ocr_boundary is not None:
+        audit["ocr_boundary"] = ocr_boundary
     if requested_output_format is not None:
         audit["requested_output_format"] = requested_output_format
     if requested_template_id is not None:
@@ -981,9 +1077,11 @@ def convert_uploaded_document(
         "validation": asdict(validation),
         "review_items": review_items,
         "warnings": warnings,
-        "warning_details": warning_details(warnings),
+        "warning_details": structured_warning_details,
         "audit": audit,
     }
+    if ocr_boundary is not None:
+        download_payload["ocr_boundary"] = ocr_boundary
     if template_mapping is not None:
         download_payload["template_mapping"] = asdict(template_mapping)
     download_content = _strict_json_bytes(download_payload, indent=2)
@@ -1485,9 +1583,18 @@ def run(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> None:
         artifact_store_root=default_artifact_store_root(),
     )
     job_event_store = JobAuditEventStore(database_path=database_path)
+    review_event_store = ReviewAuditEventStore()
+    for job in job_queue.list_jobs(status="succeeded"):
+        try:
+            _job_download(job)
+        except (RuntimeError, ValueError):
+            continue
+        if isinstance(job.result, dict):
+            review_event_store.register_conversion_result(job.result)
     server = ThreadingHTTPServer((host, port), PocWebRequestHandler)
     server.job_queue = job_queue
     server.job_event_store = job_event_store
+    server.review_event_store = review_event_store
     server.require_local_auth = True
     print(f"VeriDoc PoC web API listening on http://{host}:{port}")
     server.serve_forever()
@@ -1674,6 +1781,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 template_id=request.get("template_id"),
                 template_store=self._template_store(),
             )
+            self._review_event_store().register_conversion_result(result)
         except PocProcessingTimeoutError:
             self._send_json(_processing_timeout_payload(), status=504)
             return
@@ -1897,6 +2005,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 )
                 result = _persistable_artifact_manifest(job.job_id, result)
                 job = job_queue.mark_succeeded(job.job_id, result=result)
+                self._review_event_store().register_conversion_result(result)
             except PocProcessingTimeoutError:
                 if job_queue.get_job(job.job_id).status == "running":
                     job = job_queue.mark_failed(
@@ -2070,14 +2179,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
                 return
             accepted_event = _validate_review_event(raw_audit_event)
             stored_event = _review_event_with_auth_context(accepted_event, auth_context)
-            event_store = self._review_event_store()
-            if stored_event["action"] == "approve":
-                stored_event = event_store.record_validated(
-                    stored_event,
-                    _validate_review_workflow_event,
-                )
-            else:
-                stored_event = event_store.record(stored_event)
+            stored_event = self._review_event_store().record_review_event(stored_event)
         except RuntimeError as exc:
             self._send_json({"error": "review_conflict", "message": str(exc)}, status=409)
             return
@@ -2185,6 +2287,7 @@ class PocWebRequestHandler(BaseHTTPRequestHandler):
             _job_download(job)
             if not isinstance(job.result, dict):
                 raise ValueError("job result is missing")
+            self._review_event_store().register_conversion_result(job.result)
         except KeyError:
             self._send_json({"error": "job_not_found"}, status=404)
             return
@@ -3030,6 +3133,11 @@ def _validate_review_event(audit_event: Any) -> dict[str, Any]:
         if not isinstance(conversion_id, str) or not conversion_id.strip():
             raise ValueError("audit_event.conversion_id must be a non-empty string")
         conversion_id = conversion_id.strip()
+    source_sha256 = audit_event.get("source_sha256")
+    if source_sha256 is not None:
+        source_sha256 = _sha256_value(source_sha256)
+        if source_sha256 is None:
+            raise ValueError("audit_event.source_sha256 must be a SHA-256 hex digest")
     block_id = audit_event.get("block_id")
     if not isinstance(block_id, str) or not block_id.strip():
         raise ValueError("audit_event.block_id is required")
@@ -3057,6 +3165,7 @@ def _validate_review_event(audit_event: Any) -> dict[str, Any]:
         "event_type": "conversion_review.action_requested",
         "action": action,
         "conversion_id": conversion_id,
+        "source_sha256": source_sha256,
         "document_id": document_id,
         "block_id": block_id,
         "source_page": source_page,
@@ -3199,6 +3308,14 @@ def _same_review_workflow_target_base(
     if stored_event.get("document_id") != audit_event["document_id"]:
         return False
     if stored_event.get("block_id") != audit_event["block_id"]:
+        return False
+    stored_source_sha256 = stored_event.get("source_sha256")
+    audit_source_sha256 = audit_event.get("source_sha256")
+    if (
+        stored_source_sha256
+        and audit_source_sha256
+        and stored_source_sha256 != audit_source_sha256
+    ):
         return False
     return True
 
@@ -4588,6 +4705,177 @@ def _plain_text_parser_output(text: str) -> dict[str, Any]:
             }
         ]
     }
+
+
+def _ocr_fail_closed_boundary(document_ir: DocumentIRV1) -> dict[str, Any] | None:
+    if document_ir.document.source_type != "pdf":
+        return None
+    affected_blocks = [
+        block
+        for block in document_ir.blocks
+        if (
+            block.text == EMPTY_PAGE_REVIEW_TEXT
+            and block.confidence == 0.0
+            and block.review.requires_review
+        )
+    ]
+    if not affected_blocks:
+        return None
+    return {
+        "status": "blocked",
+        "reason": OCR_TEXT_LAYER_UNAVAILABLE_REASON,
+        "trusted_ocr_required": True,
+        "affected_block_ids": [block.id for block in affected_blocks],
+        "source_pages": sorted({block.source_page for block in affected_blocks}),
+        "warning": warning_detail(
+            {
+                "code": "OCR_TEXT_LAYER_UNAVAILABLE",
+                "message": OCR_TEXT_LAYER_UNAVAILABLE_MESSAGE,
+            }
+        ),
+    }
+
+
+def _ocr_boundary_conversion_setting(requested: bool) -> dict[str, Any]:
+    return {
+        "requested": requested,
+        "enabled": False,
+        "status": "blocked",
+        "support_status": "unsupported",
+        "reason": OCR_TEXT_LAYER_UNAVAILABLE_REASON,
+        "message": OCR_TEXT_LAYER_UNAVAILABLE_MESSAGE,
+        "remediation": OCR_TRUSTED_WORKFLOW_REMEDIATION,
+    }
+
+
+def _attach_ocr_boundary_to_review_items(
+    review_items: list[dict[str, Any]],
+    ocr_boundary: dict[str, Any],
+) -> None:
+    affected_block_ids = set(ocr_boundary["affected_block_ids"])
+    boundary_warning = ocr_boundary["warning"]
+    for item in review_items:
+        if item.get("block_id") not in affected_block_ids:
+            continue
+        item["warning_details"] = [
+            *warning_details(item["warnings"]),
+            boundary_warning,
+        ]
+        item["trusted_ocr_required"] = True
+
+
+def _review_ocr_policies_from_conversion_result(
+    result: dict[str, Any],
+) -> dict[tuple[str, str, str], bool]:
+    conversion_id = result.get("conversion_id")
+    review_items = result.get("review_items")
+    if not isinstance(conversion_id, str) or not conversion_id:
+        return {}
+    if not isinstance(review_items, list):
+        review_items = []
+    ocr_boundary = result.get("ocr_boundary")
+    affected_block_ids = (
+        {
+            block_id
+            for block_id in ocr_boundary.get("affected_block_ids", [])
+            if isinstance(block_id, str) and block_id
+        }
+        if isinstance(ocr_boundary, dict)
+        and ocr_boundary.get("trusted_ocr_required") is True
+        and isinstance(ocr_boundary.get("affected_block_ids"), list)
+        else set()
+    )
+    document_ir = result.get("document_ir")
+    document = document_ir.get("document") if isinstance(document_ir, dict) else None
+    boundary_document_id = (
+        document.get("id") if isinstance(document, dict) else None
+    )
+    policies: dict[tuple[str, str, str], bool] = {}
+    if isinstance(boundary_document_id, str) and boundary_document_id:
+        policies.update(
+            {
+                (conversion_id, boundary_document_id, block_id): True
+                for block_id in affected_block_ids
+            }
+        )
+    for item in review_items:
+        if not isinstance(item, dict):
+            continue
+        document_id = item.get("document_id")
+        block_id = item.get("block_id")
+        if (
+            not isinstance(document_id, str)
+            or not document_id
+            or not isinstance(block_id, str)
+            or not block_id
+        ):
+            continue
+        policy_key = (conversion_id, document_id, block_id)
+        policies.setdefault(
+            policy_key,
+            block_id in affected_block_ids
+            and (
+                not isinstance(boundary_document_id, str)
+                or document_id == boundary_document_id
+            ),
+        )
+    return policies
+
+
+def _review_targets_from_conversion_result(
+    result: dict[str, Any],
+) -> dict[tuple[str, str, str], dict[str, Any]]:
+    conversion_id = result.get("conversion_id")
+    review_items = result.get("review_items")
+    hashes = result.get("hashes")
+    source_sha256 = (
+        _sha256_value(hashes.get("source_sha256"))
+        if isinstance(hashes, dict)
+        else None
+    )
+    if (
+        not isinstance(conversion_id, str)
+        or not conversion_id
+        or not isinstance(review_items, list)
+        or source_sha256 is None
+    ):
+        return {}
+    targets: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for item in review_items:
+        if not isinstance(item, dict):
+            continue
+        document_id = item.get("document_id")
+        block_id = item.get("block_id")
+        source_page = item.get("source_page")
+        original_text = item.get("text")
+        warnings = item.get("warnings", [])
+        source_bbox = item.get("source_bbox")
+        if (
+            not isinstance(document_id, str)
+            or not document_id
+            or not isinstance(block_id, str)
+            or not block_id
+            or not isinstance(source_page, int)
+            or isinstance(source_page, bool)
+            or source_page < 1
+            or not isinstance(original_text, str)
+            or not isinstance(warnings, list)
+            or not all(isinstance(warning, str) for warning in warnings)
+        ):
+            continue
+        if source_bbox is not None:
+            try:
+                source_bbox = _validate_review_event_bbox(source_bbox)
+            except ValueError:
+                continue
+        targets[(conversion_id, document_id, block_id)] = {
+            "source_sha256": source_sha256,
+            "source_page": source_page,
+            "source_bbox": source_bbox,
+            "original_text": original_text,
+            "warnings": list(warnings),
+        }
+    return targets
 
 
 def _review_items(document_ir: DocumentIRV1) -> list[dict[str, Any]]:

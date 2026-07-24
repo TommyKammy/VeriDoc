@@ -14,10 +14,10 @@ Missing authoritative decisions or run evidence remain fail-closed.
 - Reproduction checkout:
   `git checkout --detach "$(git log -1 --format=%H -- docs/mvp-acceptance-gap-register.md)"`
 - Criteria source Git blob:
-  `1c2669997cd08025bb799007f0bccd87dc442e8a`
+  `63d7a6f226e397d35b63bb7e6495e81799a7339e`
 - Evaluator Git blob:
-  `64d8901cedf438d500cedeccc02dad45a2a94977`
-- Generated at: `2026-07-23` (Asia/Tokyo)
+  `85672ff4337ec18c2826a0dd5a74d367d1bb1595`
+- Generated at: `2026-07-24` (Asia/Tokyo)
 - PDF evaluation prerequisite:
   `python3 -m pip install -r requirements-pdf-eval.txt`
 - Command: `python3 scripts/evaluate_dataset.py --mvp-acceptance-report`
@@ -27,8 +27,8 @@ Missing authoritative decisions or run evidence remain fail-closed.
 - Criteria source: `docs/mvp-acceptance-traceability.md`
 - Report result: `item_count=20`, unique item IDs `20`,
   `overall_decision=fail` (`pass=6`, `fail=14`)
-- Harness result: `case_count=5`, `acceptance_status=fail`
-  (`pass=4`, `fail=1`, `unknown=0`)
+- Harness result: `case_count=5`, `acceptance_status=pass`
+  (`pass=5`, `fail=0`, `unknown=0`)
 
 The containing revision above was checked out, the criteria and evaluator blob
 IDs were verified with `git rev-parse HEAD:<repo-relative-path>`, and the PDF
@@ -57,10 +57,10 @@ to the extractor-level facts recorded below.
 | ID | Current status | Raw fact at the evidence snapshot | Gap class | Owner boundary | Evidence required | Follow-up P12G Issue |
 | --- | --- | --- | --- | --- | --- | --- |
 | AC-UI | 一部達成 / fail | `tests/test_mvp_browser_e2e.py` runs one real-browser upload, settings failure/retry, job, preview, approval, primary download, hash, and audit scenario under one `p12g03-...` correlation ID, then records keyboard-only warning-to-bbox and high-risk review state transitions with visible-focus evidence. | `e2e_gap` | codex | Carry the fixed browser evidence into the final accepted-scope rollup. | P12G-12 |
-| AC-TEMPLATE | 一部達成 / fail | `docs/mvp-scope-decisions.md` approves all five cases in manifest revision `phase12-mvp-v1`; Word, Excel, text PDF, and record PDF pass, but the remaining scanned-PDF case fails. | `implementation_gap`, `e2e_gap` | codex/hybrid | Passing results and one accepted-scope rollup from the approved manifest revision. | P12G-06, P12G-12 |
-| AC-QUALITY | 未達 / fail | Word, Excel, text PDF, and record PDF pass artifact/review/audit evaluation; scanned PDF remains `fail`, so no five-template 80%+ metric can be claimed. | `implementation_gap`, `e2e_gap` | codex/hybrid | Fix or explicitly validate the remaining scanned PDF boundary, then publish per-template cell/content agreement. | P12G-05, P12G-06, P12G-12 |
+| AC-TEMPLATE | 一部達成 / fail | `docs/mvp-scope-decisions.md` approves all five cases in manifest revision `phase12-mvp-v1`, and all five cases pass. The scanned case passes only as an explicit fail-closed OCR boundary with no fabricated text. | `e2e_gap` | codex | Produce one accepted-scope rollup from the approved manifest revision. | P12G-12 |
+| AC-QUALITY | 未達 / fail | All five cases pass artifact/review/audit evaluation, but no five-template 80%+ metric can yet be claimed. The scanned result publishes explicit-block, warning, review-guard, and source-link metrics without claiming OCR text accuracy. | `implementation_gap`, `e2e_gap` | codex | Publish per-template cell/content agreement from the accepted snapshot. | P12G-12 |
 | AC-PROVENANCE | 一部達成 / fail | The browser E2E now binds source page/bbox through review, artifact, and audit evidence under one correlation ID; no five-case source-link coverage result yet proves 95%+. | `e2e_gap` | codex | Snapshot-consistent five-case source-link metric. | P12G-12 |
-| AC-REVIEW | 一部達成 / fail | Word/Excel use persisted approver decisions and share decision/item versions across artifact, audit, and harness snapshots; missing/forbidden decisions and unresolved high-risk items are rejected. Browser evidence now records zero auto-confirmed high-risk targets plus keyboard edit/approve/reject/needs-fix and unresolved transitions; dataset-wide zero misses remain absent. | `e2e_gap`, `human_evidence_gap` | codex then manual | Prove zero high-risk misses across the final accepted dataset. | P12G-12 |
+| AC-REVIEW | 一部達成 / fail | Word/Excel use persisted approver decisions and share decision/item versions across artifact, audit, and harness snapshots; missing/forbidden decisions and unresolved high-risk items are rejected. Outside the dedicated accepted OCR block, an authoritative review decision is required for every emitted review item. Browser evidence now records zero auto-confirmed high-risk targets plus keyboard edit/approve/reject/needs-fix and unresolved transitions; dataset-wide zero misses remain absent. | `e2e_gap`, `human_evidence_gap` | codex then manual | Prove zero high-risk misses across the final accepted dataset. | P12G-12 |
 | AC-EFFICIENCY | 未達 / fail | `docs/mvp-scope-decisions.md` approves the baseline task, cohort, training, timing boundary, comparison method, and rejection conditions; no protocol/schema or measured 30%+ human result exists. | `human_evidence_gap` | manual/hybrid | Versioned protocol/schema followed by a real, reproducible manual-versus-VeriDoc comparison. | P12G-13 |
 | AC-PERFORMANCE | 一部達成 / fail | All five live results pass input-size, processing-time, and timeout evaluations, but no accepted five-case metrics rollup exists. | `e2e_gap` | codex | One committed rollup retaining the 10 s, 2 MiB, and 30 s limits for all accepted cases. | P12G-12 |
 | AC-AUDIT | 達成 / pass | `tests/test_mvp_browser_e2e.py` binds browser run, harness result, artifact hashes, actor/decision, version lineage, timestamp, and complete job/review hash chains to one correlation ID and emits a fail-closed acceptance snapshot. | `none` | — | Preserve the correlated E2E and persistence audit contract tests. | — |
@@ -72,7 +72,7 @@ to the extractor-level facts recorded below.
 | FC-REVIEW-UI | 一部達成 / fail | A browser trace records keyboard-only warning/remediation review, original bbox jump, visible focus, edit/needs-fix/reject transitions, and a fail-closed approval attempt for the committed high-risk fixture; the final accepted-scope rollup remains absent. | `e2e_gap` | codex | Carry the fixed keyboard/review-UI evidence into the final accepted-scope rollup. | P12G-12 |
 | FC-REPRODUCIBILITY | 一部達成 / fail | The harness can seal and validate a package that pins commit, inputs, inference/browser configuration, dependencies, versions, and commands, but this report snapshot does not retain a concrete package plus successful equivalence result. | `e2e_gap` | codex | Retain and validate the sealed package and successful equivalence result for the reported run. | P12G-11 |
 | EM-USER-REVIEW | 未達 / fail | The task, cohort, training, timing, and comparison scope is approved in `docs/mvp-scope-decisions.md`; no versioned execution protocol/schema, miss/over-detection result, or reviewer record exists. | `human_evidence_gap` | manual/hybrid | Versioned protocol and evidence schema ready for the later human execution. | P12G-13 |
-| EM-E2E | 一部達成 / fail | A repo-owned browser run emits screenshots, trace, API result, downloaded artifact, audit artifact, and correlation metadata for one representative case; the versioned five-case report is one `fail`, zero `unknown`, and four `pass`, with persisted review decisions for Word and Excel and structured text-PDF/record-PDF evidence. | `implementation_gap`, `e2e_gap` | codex/hybrid | P12G-05 through P12G-12 evidence from one committed snapshot with all intended cases passing. | P12G-05–P12G-12 |
+| EM-E2E | 一部達成 / fail | A repo-owned browser run emits screenshots, trace, API result, downloaded artifact, audit artifact, and correlation metadata for one representative case; the versioned five-case report is zero `fail`, zero `unknown`, and five `pass`, with persisted review decisions for Word and Excel plus structured text-PDF/scanned-PDF/record-PDF evidence. | `e2e_gap` | codex | Retain the rerun package and aggregate all accepted evidence from one committed snapshot. | P12G-11, P12G-12 |
 | OD-TEMPLATES | 達成 / pass | `TommyKammy` approved all five manifest cases at product commit `584ef2db12a6676abb65f75de1ec38145e06b487` and manifest revision `phase12-mvp-v1`; the report recomputes the approved case, fixture, source-policy, and expectation contract hash. | `none` | — | Preserve `docs/mvp-scope-decisions.md`; contract drift fails this item until renewed approval. | — |
 | OD-EFFICIENCY-SCOPE | 達成 / pass | Decision revision `p12g-02-v1` fixes the baseline task, minimum three-person pseudonymous cohort, training, timing boundaries, paired median comparison, 30% target, and invalidation conditions; the report validates the revision-bound canonical section hash. | `none` | — | Preserve the approved scope; protocol-scope drift fails this item until renewed approval, while P12G-13 defines its versioned protocol and evidence schema. | — |
 | OD-SEGREGATION | 達成 / pass | Decision revision `p12g-02-v1` fixes the six-role `ROLE_PERMISSIONS` target matrix, mandatory authentication and preceding distinct-actor review boundaries, known implementation gaps, and explicit Phase13 carryover; the report validates the revision-bound canonical section and matrix hashes, while P12G-10 implements and proves the MVP deny paths. | `none` | — | Preserve the approved scope; any deny-path, carryover, or matrix drift fails this item. | — |
@@ -88,8 +88,8 @@ warnings, or review-item count.
 | --- | --- | --- | --- | --- | --- |
 | mvp-word-001 | Word | `pass` | artifact/pass; audit/pass; input_size/pass; processing_time/pass; timeout/pass; review/pass | none | persisted approver decisions for 2 review items; artifact/audit/result share each decision ID and item/decision version |
 | mvp-excel-001 | Excel | `pass` | artifact/pass; audit/pass; input_size/pass; processing_time/pass; timeout/pass; review/pass | none | persisted approver decisions for 3 review items; artifact/audit/result share each decision ID and item/decision version |
-| mvp-text-pdf-001 | text PDF | `pass` | artifact/pass; audit/pass; input_size/pass; processing_time/pass; timeout/pass; review/pass | none; expected table boundaries, blank-cell preservation, and source evidence pass. | not required because the conversion emitted no review item |
-| mvp-scanned-pdf-001 | scanned PDF | `fail` | artifact/pass; audit/pass; input_size/pass; processing_time/pass; timeout/pass; review/fail | Explicit-review block, review guard, and source linkage pass; authoritative review decision is required. | absent (`null`) |
+| mvp-text-pdf-001 | text PDF | `pass` | artifact/pass; audit/pass; input_size/pass; processing_time/pass; timeout/pass; review/pass | none; expected table boundaries, blank-cell preservation, editable cells, and source evidence pass. | not required because the conversion emitted no review item |
+| mvp-scanned-pdf-001 | scanned PDF | `pass` | artifact/pass; audit/pass; input_size/pass; processing_time/pass; timeout/pass; review/pass | none; dedicated validator proves the explicit placeholder, review guard, structured warning/reason/remediation, and per-block source linkage without invented OCR text. | not applicable; accepted fail-closed OCR boundary remains `requires_review` and does not fabricate human approval |
 | mvp-record-pdf-001 | record PDF | `pass` | artifact/pass; audit/pass; input_size/pass; processing_time/pass; timeout/pass; review/pass | none; section order, body completeness, expected content, and per-block source linkage all pass. | not required because the conversion emitted no review item |
 
 ## P12G-02 through P12G-13 handoff

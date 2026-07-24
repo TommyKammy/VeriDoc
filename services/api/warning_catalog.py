@@ -6,6 +6,15 @@ import re
 from typing import Any
 
 
+OCR_TEXT_LAYER_UNAVAILABLE_MESSAGE = (
+    "PDF page has no extractable text layer; OCR is unavailable in the MVP"
+)
+OCR_TRUSTED_WORKFLOW_REMEDIATION = (
+    "Route the source through a separately approved trusted OCR workflow "
+    "before accepting extracted text."
+)
+
+
 WARNING_DEFINITIONS: dict[str, dict[str, str]] = {
     "DOCUMENT_BBOX_MISSING": {"severity": "warning", "remediation": "Confirm the source location and enter the missing bounding box."},
     "DOCUMENT_LOW_CONFIDENCE": {"severity": "warning", "remediation": "Compare the extracted value with the source document before approval."},
@@ -23,6 +32,10 @@ WARNING_DEFINITIONS: dict[str, dict[str, str]] = {
     "LLM_CONFIGURATION_MODEL_REQUIRED": {"severity": "error", "remediation": "Configure the required local LLM model before retrying."},
     "LLM_CONFIGURATION_INVALID": {"severity": "error", "remediation": "Correct the local LLM profile configuration before retrying."},
     "CONVERSION_SETTING_UNSUPPORTED": {"severity": "warning", "remediation": "Disable the unsupported setting or use a supported conversion path."},
+    "OCR_TEXT_LAYER_UNAVAILABLE": {
+        "severity": "error",
+        "remediation": OCR_TRUSTED_WORKFLOW_REMEDIATION,
+    },
     "UNCLASSIFIED_WARNING": {"severity": "warning", "remediation": "Review the warning and source evidence before approval."},
 }
 

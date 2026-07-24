@@ -109,7 +109,7 @@ class MvpAcceptanceTraceabilityDocsTest(unittest.TestCase):
             "python3 -m pip install -r requirements-pdf-eval.txt",
             "python3 -m unittest tests.test_mvp_acceptance_traceability",
             "python3 scripts/ci/repo_hygiene.py",
-            "one `fail`, zero `unknown`, and four `pass`",
+            "zero `fail`, zero `unknown`, and five `pass`",
             "未達",
             "一部達成",
             "Phase13以降",
@@ -328,7 +328,7 @@ class MvpAcceptanceTraceabilityDocsTest(unittest.TestCase):
             "mvp-scanned-pdf-001",
             "mvp-record-pdf-001",
             "authoritative review decision is required",
-            "one `fail`, zero `unknown`, and four `pass`",
+            "zero `fail`, zero `unknown`, and five `pass`",
             "P12G-02",
             "P12G-13",
         ):
@@ -360,9 +360,9 @@ class MvpAcceptanceTraceabilityDocsTest(unittest.TestCase):
         self,
     ) -> None:
         sample = REPORT_SAMPLE_PATH.read_text(encoding="utf-8")
-        self.assertIn("five `pass` and fifteen `fail`", sample)
-        self.assertIn('"decision_counts": {"pass": 5, "fail": 15}', sample)
-        self.assertIn('"phase13": ["AC-AUTH", "OD-SEGREGATION"]', sample)
+        self.assertIn("six `pass` and fourteen `fail`", sample)
+        self.assertIn('"decision_counts": {"pass": 6, "fail": 14}', sample)
+        self.assertIn('"phase13": ["OD-SEGREGATION"]', sample)
         self.assertIn("decision_input_validation", sample)
         self.assertNotIn("all 20 are `fail`", sample)
         self.assertNotIn('"decision_counts": {"pass": 0, "fail": 20}', sample)

@@ -19,7 +19,7 @@ pinned in this sample.
 ## Current Sample Outcome
 
 With the committed default inputs, the report contains 20 acceptance items and
-fails closed with five `pass` and fifteen `fail`. The three approved `OD-*`
+fails closed with six `pass` and fourteen `fail`. The three approved `OD-*`
 items pass only while the live manifest, canonical efficiency- and
 segregation-scope sections, and `ROLE_PERMISSIONS` contracts match the
 revision-bound decision pins; scope drift fails the affected item until renewed
@@ -34,10 +34,10 @@ whenever the live harness overall status is `fail` or `unknown`.
   "summary": {
     "overall_decision": "fail",
     "item_count": 20,
-    "decision_counts": {"pass": 5, "fail": 15}
+    "decision_counts": {"pass": 6, "fail": 14}
   },
   "carryovers": {
-    "phase13": ["AC-AUTH", "OD-SEGREGATION"],
+    "phase13": ["OD-SEGREGATION"],
     "phase14": []
   }
 }

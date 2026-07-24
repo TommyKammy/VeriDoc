@@ -2165,6 +2165,125 @@ class EvaluateDatasetTest(unittest.TestCase):
             "section_order",
             {check["id"] for check in content_validation["checks"]},
         )
+        self.assertEqual("pass", result["acceptance_status"])
+        self.assertEqual("pass", result["evaluations"]["review"]["status"])
+        self.assertEqual([], result["review_decisions"])
+        self.assertEqual(
+            "pass",
+            result["evaluations"]["review"]["ocr_boundary"]["status"],
+        )
+        self.assertEqual(
+            1.0,
+            result["evaluations"]["review"]["ocr_boundary"]["metrics"][
+                "source_linkage_rate"
+            ],
+        )
+
+    @unittest.skipUnless(PYMUPDF_AVAILABLE, "PyMuPDF eval dependency is not installed")
+    def test_scanned_pdf_boundary_rejects_missing_warning_and_invented_text(
+        self,
+    ) -> None:
+        from services.api.poc_web import convert_uploaded_document
+
+        case = self.valid_mvp_case(3)
+        fixture_path = REPO_ROOT / str(case["fixture_path"])
+        converted = convert_uploaded_document(
+            filename=fixture_path.name,
+            content=fixture_path.read_bytes(),
+            conversion_mode="pdf_to_word",
+        )
+        content_validation: dict[str, object] = {}
+        failures = evaluate_dataset.p9_validate_artifact_expectations(
+            fixture=case,
+            conversion_mode="pdf_to_word",
+            representative_mode="scanned_pdf_ocr",
+            primary_artifact=evaluate_dataset.p9_primary_artifact(
+                converted["artifacts"]
+            ),
+            warnings=converted["warnings"],
+            require_content_validation=True,
+            content_validation=content_validation,
+        )
+        self.assertEqual([], failures)
+
+        scenarios = (
+            (
+                "missing structured warning",
+                lambda payload: payload["ocr_boundary"].pop("warning"),
+                "structured_warning",
+            ),
+            (
+                "invented extracted text",
+                lambda payload: payload["document_ir"]["blocks"][0].__setitem__(
+                    "text",
+                    "Invented OCR output",
+                ),
+                "placeholder_guard",
+            ),
+            (
+                "missing trusted OCR remediation",
+                lambda payload: payload["audit"]["conversion_settings"][
+                    "use_ocr"
+                ].pop("remediation"),
+                "conversion_setting",
+            ),
+            (
+                "incorrect OCR boundary source page",
+                lambda payload: payload["ocr_boundary"].__setitem__(
+                    "source_pages",
+                    [2],
+                ),
+                "source_linkage",
+            ),
+            (
+                "incorrect OCR review item source page",
+                lambda payload: payload["review_items"][0].__setitem__(
+                    "source_page",
+                    2,
+                ),
+                "source_linkage",
+            ),
+        )
+        for name, mutate, expected_failed_check in scenarios:
+            with self.subTest(name=name):
+                payload = copy.deepcopy(converted)
+                mutate(payload)
+                boundary = evaluate_dataset.mvp_scanned_pdf_boundary_evaluation(
+                    case,
+                    payload,
+                    content_validation=content_validation,
+                )
+                self.assertEqual("fail", boundary["status"])
+                self.assertEqual(
+                    "fail",
+                    {
+                        check["id"]: check["status"]
+                        for check in boundary["checks"]
+                    }[expected_failed_check],
+                )
+
+    def test_scanned_pdf_artifact_validation_rejects_empty_primary_artifact(
+        self,
+    ) -> None:
+        case = self.valid_mvp_case(3)
+        content_validation: dict[str, object] = {}
+
+        failures = evaluate_dataset.p9_validate_artifact_expectations(
+            fixture=case,
+            conversion_mode="pdf_to_word",
+            representative_mode="scanned_pdf_ocr",
+            primary_artifact={
+                "kind": "primary",
+                "format": "docx",
+                "content": b"",
+            },
+            warnings=case["expected_warnings"],
+            require_content_validation=True,
+            content_validation=content_validation,
+        )
+
+        self.assertEqual(["primary artifact content is missing"], failures)
+        self.assertEqual({}, content_validation)
 
     def test_pdf_to_word_content_validation_fails_closed_without_expectations(
         self,
@@ -10105,6 +10224,28 @@ class EvaluateDatasetTest(unittest.TestCase):
             result["artifact_expectation_failures"],
         )
         self.assertIn("artifact expectation mismatch", str(result["failure_reason"]))
+
+    @unittest.skipUnless(PYMUPDF_AVAILABLE, "PyMuPDF eval dependency is not installed")
+    def test_p9_harness_accepts_valid_scanned_pdf_fail_closed_boundary(self) -> None:
+        manifest = json.loads(
+            (REPO_ROOT / "datasets" / "fixtures" / "manifest.json").read_text()
+        )
+        fixture = next(
+            fixture
+            for fixture in manifest["fixtures"]
+            if fixture["id"] == "scanned-pdf-representative"
+        )
+        result = evaluate_dataset.p9_conversion_result(
+            {**fixture, "sample_id": "p9-scanned-ocr-boundary"},
+            fixture_path=REPO_ROOT / fixture["path"],
+            mode="scanned_pdf_ocr",
+            llm_scenario="no_llm",
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("blocked", result["use_ocr_status"])
+        self.assertIsNone(result["failure_reason"])
+        self.assertEqual([], result["artifact_expectation_failures"])
 
     def test_p9_harness_validates_declared_pdf_table_size_expectations(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".pdf") as fixture_file:

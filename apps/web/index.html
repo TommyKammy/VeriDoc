@@ -1106,7 +1106,7 @@
 
         <div
           data-poc-ui-region="conversion-settings"
-          data-api-fields="conversion_mode output_format template_id use_llm use_ocr gmp_notice unsupported_settings conversion_settings conversion_settings.use_llm conversion_settings.use_llm.status conversion_settings.use_llm.support_status conversion_settings.use_llm.reason conversion_settings.use_ocr conversion_settings.use_ocr.status conversion_settings.use_ocr.support_status conversion_settings.use_ocr.reason llm llm.status llm.support_status llm.reason"
+          data-api-fields="conversion_mode output_format template_id use_llm use_ocr gmp_notice unsupported_settings conversion_settings conversion_settings.use_llm conversion_settings.use_llm.status conversion_settings.use_llm.support_status conversion_settings.use_llm.reason conversion_settings.use_ocr conversion_settings.use_ocr.status conversion_settings.use_ocr.support_status conversion_settings.use_ocr.reason conversion_settings.use_ocr.message conversion_settings.use_ocr.remediation llm llm.status llm.support_status llm.reason"
         >
           <h3 id="direct-title" style="margin-top: 16px">Conversion settings</h3>
           <div class="form-grid" style="margin-top: 14px">
@@ -1185,7 +1185,7 @@
         </div>
         <div
           data-poc-ui-region="review"
-          data-api-fields="review_items warnings document_ir"
+          data-api-fields="review_items review_items.warning_details warnings warning_details ocr_boundary ocr_boundary.status ocr_boundary.reason ocr_boundary.warning ocr_boundary.warning.code ocr_boundary.warning.message ocr_boundary.warning.remediation document_ir"
         >
           <div id="result-panel" class="empty" hidden>
             <span id="status" class="status"></span>
@@ -1204,7 +1204,7 @@
             <div
               id="top-level-warnings"
               class="top-level-warnings"
-              data-api-fields="warnings"
+              data-api-fields="warnings warning_details ocr_boundary.warning ocr_boundary.warning.code ocr_boundary.warning.message ocr_boundary.warning.remediation"
               role="status"
               aria-live="polite"
               aria-label="Conversion warnings"
@@ -1255,7 +1255,7 @@
         <div
           id="raw-panel"
           data-poc-ui-region="detail-json"
-          data-api-fields="conversion_id document_ir review_items warnings artifacts[] audit"
+          data-api-fields="conversion_id document_ir review_items warnings warning_details ocr_boundary audit.ocr_boundary artifacts[] audit"
           hidden
         >
           <div class="page-status">
@@ -2462,7 +2462,11 @@
         renderConversionSettingStatus(result.audit?.conversion_settings, result.audit?.llm);
         status.textContent = result.status;
         status.className = `status ${result.status}`;
-        renderTopLevelWarnings(result.warning_details || result.warnings || []);
+        const resultWarnings = result.warning_details || result.warnings || [];
+        const ocrBoundaryWarning = result.ocr_boundary?.warning;
+        renderTopLevelWarnings(
+          ocrBoundaryWarning ? [...resultWarnings, ocrBoundaryWarning] : resultWarnings,
+        );
         renderReviewItems(result.review_items || []);
         clearDownload();
         renderDownloadLinks(
@@ -2817,7 +2821,19 @@
         const statusText = setting.status || "unknown";
         const supportStatus = setting.support_status || "unknown";
         const reason = setting.reason || statusText;
-        wrapper.textContent = `${label}: ${conversionSupportLabel(supportStatus, reason)} (${statusText})`;
+        const summary = document.createElement("div");
+        summary.textContent = `${label}: ${conversionSupportLabel(supportStatus, reason)} (${statusText})`;
+        wrapper.append(summary);
+        if (setting.message) {
+          const message = document.createElement("div");
+          message.textContent = setting.message;
+          wrapper.append(message);
+        }
+        if (setting.remediation) {
+          const remediation = document.createElement("div");
+          remediation.textContent = `Next step: ${setting.remediation}`;
+          wrapper.append(remediation);
+        }
         return wrapper;
       }
 
@@ -3128,6 +3144,7 @@
         edit.dataset.reviewEditFor = blockId;
         edit.value = item.text;
         edit.setAttribute("aria-label", `${blockId} revised text`);
+        edit.disabled = item.trusted_ocr_required === true;
         const jump = document.createElement("button");
         jump.className = "secondary";
         jump.type = "button";
@@ -3400,6 +3417,9 @@
         if (state.latestResult && state.latestResult.conversion_id) {
           event.conversion_id = state.latestResult.conversion_id;
         }
+        if (state.latestResult?.hashes?.source_sha256) {
+          event.source_sha256 = state.latestResult.hashes.source_sha256;
+        }
         if (action === "edit") {
           event.revised_text = revisedText;
         } else if (action === "approve") {
@@ -3434,7 +3454,7 @@
 
       async function prepareSavedReviewEditApproval(item) {
         const savedEditText = await loadLatestSavedReviewEditText(item);
-        const refreshedBlockReason = reviewActionBlockReason(item);
+        const refreshedBlockReason = reviewActionBlockReason(item, "approve");
         if (refreshedBlockReason) {
           reviewActionStatus.textContent = refreshedBlockReason;
           reviewActionStatus.className = "page-status error";
@@ -3481,12 +3501,18 @@
         );
       }
 
-      function reviewActionBlockReason(item) {
+      function reviewActionBlockReason(item, action) {
         if (!state.latestResult || !(state.latestResult.review_items || []).includes(item)) {
           return "Review result is no longer active.";
         }
         if (state.latestResult.status === "blocked") {
           return "Review actions are disabled for blocked conversions.";
+        }
+        if (
+          item.trusted_ocr_required === true &&
+          (action === "edit" || action === "approve")
+        ) {
+          return "Trusted OCR evidence is required before editing or approving this item.";
         }
         if (!reviewAuditSourcePage(item)) {
           return "Review item source page is invalid.";
@@ -3495,7 +3521,10 @@
       }
 
       function reviewActionAvailable(item, action) {
-        return !reviewActionBlockReason(item) && state.availableReviewActions.includes(action);
+        return (
+          !reviewActionBlockReason(item, action) &&
+          state.availableReviewActions.includes(action)
+        );
       }
 
       function reviewActionKey(item) {
@@ -3525,7 +3554,7 @@
         let actionStarted = false;
         let savedEditText = null;
         try {
-          const blockReason = reviewActionBlockReason(item);
+          const blockReason = reviewActionBlockReason(item, action);
           if (blockReason) throw new Error(blockReason);
           if (state.pendingReviewActions.has(actionKey)) return;
           state.pendingReviewActions.set(actionKey, pendingOwner);
@@ -3555,7 +3584,7 @@
           if (!body.audit_event) {
             throw new Error("Review action response did not include an audit event.");
           }
-          const postResponseBlockReason = reviewActionBlockReason(item);
+          const postResponseBlockReason = reviewActionBlockReason(item, action);
           if (postResponseBlockReason) {
             reviewActionStatus.textContent =
               "Review action accepted; current review result changed before the response returned.";
@@ -3575,7 +3604,7 @@
           reviewActionStatus.textContent = "Review action event queued for audit.";
           reviewActionStatus.className = "page-status";
         } catch (error) {
-          if (actionStarted && reviewActionBlockReason(item)) return;
+          if (actionStarted && reviewActionBlockReason(item, action)) return;
           reviewActionStatus.textContent =
             error instanceof Error && error.message ? error.message : "Review action failed.";
           reviewActionStatus.className = "page-status error";
