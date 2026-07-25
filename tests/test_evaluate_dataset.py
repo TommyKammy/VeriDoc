@@ -1680,7 +1680,9 @@ class EvaluateDatasetTest(unittest.TestCase):
             MVP_EVALUATION_MANIFEST_PATH
         ).as_dict()
         for result in harness_payload["results"]:
-            result["metrics"]["quality"]["numerator"] = 0
+            quality = result["metrics"]["quality"]
+            quality["status"] = "fail"
+            quality["numerator"] = 0
 
         payload = evaluate_dataset.MVPAcceptanceReport(
             harness=evaluate_dataset.MVPHarnessReport(
@@ -1973,7 +1975,9 @@ class EvaluateDatasetTest(unittest.TestCase):
 
         below_threshold = json.loads(json.dumps(harness_payload))
         for result in below_threshold["results"]:
-            result["metrics"]["quality"]["numerator"] = 0
+            quality = result["metrics"]["quality"]
+            quality["status"] = "fail"
+            quality["numerator"] = 0
         below_threshold_rollup = evaluate_dataset.mvp_metrics_rollup(
             below_threshold
         )
