@@ -6001,19 +6001,39 @@ def mvp_case_metrics(
     high_risk_auto_confirmed_indices = (
         explicitly_auto_confirmed_indices | implicitly_auto_confirmed_indices
     )
-    persisted_high_risk_decisions = len(persisted_high_risk_indices)
     ocr_boundary = evaluations.get("review", {}).get("ocr_boundary")
-    fail_closed_high_risk = (
-        len(high_risk_items)
+    ocr_boundary_evidence = (
+        ocr_boundary.get("evidence")
+        if isinstance(ocr_boundary, Mapping)
+        else None
+    )
+    ocr_boundary_block_ids = (
+        {
+            block_id
+            for block_id in ocr_boundary_evidence.get("affected_block_ids", [])
+            if isinstance(block_id, str) and block_id
+        }
+        if isinstance(ocr_boundary_evidence, Mapping)
+        and isinstance(ocr_boundary_evidence.get("affected_block_ids"), list)
+        else set()
+    )
+    ocr_boundary_high_risk_indices = (
+        {
+            index
+            for index, review_item in enumerate(review_item_values)
+            if index in high_risk_indices
+            and isinstance(review_item, Mapping)
+            and review_item.get("block_id") in ocr_boundary_block_ids
+        }
         if isinstance(ocr_boundary, Mapping)
         and ocr_boundary.get("status") == "pass"
         and converted.get("status") == "requires_review"
-        else 0
+        else set()
     )
-    covered_high_risk_count = min(
-        len(high_risk_items),
-        persisted_high_risk_decisions + fail_closed_high_risk,
+    covered_high_risk_indices = (
+        persisted_high_risk_indices | ocr_boundary_high_risk_indices
     )
+    covered_high_risk_count = len(covered_high_risk_indices)
     high_risk_miss_count = len(high_risk_items) - covered_high_risk_count
     high_risk_auto_confirmed_count = len(high_risk_auto_confirmed_indices)
     high_risk_failures = [
@@ -6649,6 +6669,27 @@ def mvp_metrics_rollup(
         )
         if not commit_is_valid:
             snapshot_unknown.append("commit is missing or malformed")
+        evaluator_commit_is_clean = snapshot_metadata.get(
+            "evaluator_commit_is_clean"
+        )
+        if evaluator_commit_is_clean is False:
+            snapshot_failures.append(
+                "evaluator worktree is dirty; evaluator HEAD does not fully "
+                "identify the executed source"
+            )
+        elif evaluator_commit_is_clean is not True:
+            snapshot_unknown.append(
+                "evaluator worktree cleanliness is missing or unknown"
+            )
+        evaluator_commit = snapshot_metadata.get("evaluator_commit")
+        evaluator_commit_is_valid = (
+            isinstance(evaluator_commit, str)
+            and re.fullmatch(r"[0-9a-f]{40}", evaluator_commit) is not None
+        )
+        if not evaluator_commit_is_valid:
+            snapshot_unknown.append(
+                "evaluator commit is missing or malformed"
+            )
         snapshot_integrity = {
             "status": (
                 "fail"
@@ -6659,8 +6700,15 @@ def mvp_metrics_rollup(
             ),
             "commit": commit,
             "worktree_clean": worktree_clean,
-            "numerator": int(worktree_clean is True) + int(commit_is_valid),
-            "denominator": 2,
+            "evaluator_commit": evaluator_commit,
+            "evaluator_commit_is_clean": evaluator_commit_is_clean,
+            "numerator": (
+                int(worktree_clean is True)
+                + int(commit_is_valid)
+                + int(evaluator_commit_is_clean is True)
+                + int(evaluator_commit_is_valid)
+            ),
+            "denominator": 4,
             "exclusions": [],
             "unknown": snapshot_unknown,
             "failure_reasons": [*snapshot_failures, *snapshot_unknown],
@@ -8568,6 +8616,11 @@ def build_mvp_acceptance_report(
             "commit": current_git_commit(repo_root),
             "worktree_clean": current_git_worktree_clean(
                 repo_root,
+                ignored_paths=ignored_cleanliness_paths,
+            ),
+            "evaluator_commit": current_git_commit(REPO_ROOT),
+            "evaluator_commit_is_clean": current_git_worktree_clean(
+                REPO_ROOT,
                 ignored_paths=ignored_cleanliness_paths,
             ),
             "manifest_revision": manifest.get("selection_revision"),

@@ -1089,11 +1089,25 @@ class EvaluateDatasetTest(unittest.TestCase):
             rollup["schema_version"],
         )
         self.assertEqual(
-            "pass" if metadata["worktree_clean"] else "fail",
+            (
+                "pass"
+                if (
+                    metadata["worktree_clean"]
+                    and metadata["evaluator_commit_is_clean"]
+                )
+                else "fail"
+            ),
             rollup["status"],
         )
         self.assertEqual(
-            "pass" if metadata["worktree_clean"] else "fail",
+            (
+                "pass"
+                if (
+                    metadata["worktree_clean"]
+                    and metadata["evaluator_commit_is_clean"]
+                )
+                else "fail"
+            ),
             rollup["dimensions"]["snapshot_integrity"]["status"],
         )
         self.assertEqual(5, len(rollup["case_results"]))
@@ -1237,9 +1251,18 @@ class EvaluateDatasetTest(unittest.TestCase):
                 MVP_EVALUATION_MANIFEST_PATH
             )
 
-        mocked_clean.assert_called_once_with(
-            REPO_ROOT,
-            ignored_paths=(generated_report,),
+        self.assertEqual(
+            [
+                mock.call(
+                    REPO_ROOT,
+                    ignored_paths=(generated_report,),
+                ),
+                mock.call(
+                    REPO_ROOT,
+                    ignored_paths=(generated_report,),
+                ),
+            ],
+            mocked_clean.call_args_list,
         )
         self.assertTrue(
             report.as_dict()["evidence_snapshot"]["metadata"][
@@ -1651,6 +1674,8 @@ class EvaluateDatasetTest(unittest.TestCase):
             snapshot_metadata={
                 "commit": "a" * 40,
                 "worktree_clean": False,
+                "evaluator_commit": "b" * 40,
+                "evaluator_commit_is_clean": True,
             },
         ).as_dict()
 
@@ -1662,7 +1687,7 @@ class EvaluateDatasetTest(unittest.TestCase):
             rollup["dimensions"]["snapshot_integrity"]["status"],
         )
         self.assertEqual(
-            (1, 2),
+            (3, 4),
             (
                 rollup["dimensions"]["snapshot_integrity"]["numerator"],
                 rollup["dimensions"]["snapshot_integrity"]["denominator"],
@@ -1695,6 +1720,8 @@ class EvaluateDatasetTest(unittest.TestCase):
             snapshot_metadata={
                 "commit": "a" * 40,
                 "worktree_clean": True,
+                "evaluator_commit": "b" * 40,
+                "evaluator_commit_is_clean": True,
             },
         ).as_dict()
 
@@ -2350,6 +2377,35 @@ class EvaluateDatasetTest(unittest.TestCase):
         )
         self.assertEqual(0, auto_confirmed_metrics["high_risk"]["miss_count"])
 
+        ocr_evaluations = copy.deepcopy(evaluations)
+        ocr_evaluations["review"]["ocr_boundary"] = {
+            "status": "pass",
+            "evidence": {"affected_block_ids": ["ocr-block"]},
+        }
+        ocr_boundary_metrics = evaluate_dataset.mvp_case_metrics(
+            converted=converted,
+            fixture_content=fixture_content,
+            content_validation=content_validation,
+            review_items=[
+                {"high_risk": True, "block_id": "ocr-block"},
+                {"high_risk": True, "block_id": "unrelated-block"},
+            ],
+            authoritative_decisions=[],
+            evaluations=ocr_evaluations,
+        )
+        self.assertEqual("fail", ocr_boundary_metrics["status"])
+        self.assertEqual(
+            {
+                "target_count": 2,
+                "covered_count": 1,
+                "miss_count": 1,
+            },
+            {
+                key: ocr_boundary_metrics["high_risk"][key]
+                for key in ("target_count", "covered_count", "miss_count")
+            },
+        )
+
     def test_mvp_acceptance_report_rejects_unknown_traceability_row(self) -> None:
         traceability = MVP_ACCEPTANCE_TRACEABILITY_PATH.read_text(encoding="utf-8")
         unknown_row = (
@@ -2458,10 +2514,32 @@ class EvaluateDatasetTest(unittest.TestCase):
                 results=(),
             )
 
-            with mock.patch.object(
-                evaluate_dataset,
-                "evaluate_mvp_harness",
-                return_value=harness,
+            def fake_commit(repo_root: Path) -> str:
+                return (
+                    "a" * 40
+                    if repo_root.resolve() == checkout.resolve()
+                    else "b" * 40
+                )
+
+            def fake_clean(repo_root: Path, **_: object) -> bool:
+                return repo_root.resolve() == checkout.resolve()
+
+            with (
+                mock.patch.object(
+                    evaluate_dataset,
+                    "evaluate_mvp_harness",
+                    return_value=harness,
+                ),
+                mock.patch.object(
+                    evaluate_dataset,
+                    "current_git_commit",
+                    side_effect=fake_commit,
+                ),
+                mock.patch.object(
+                    evaluate_dataset,
+                    "current_git_worktree_clean",
+                    side_effect=fake_clean,
+                ),
             ):
                 report = evaluate_dataset.build_mvp_acceptance_report(manifest_path)
 
@@ -2477,6 +2555,21 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertEqual(
             "fail",
             template_item["evidence"]["decision_input_validation"]["status"],
+        )
+        metadata = report.snapshot_metadata
+        self.assertIsNotNone(metadata)
+        assert metadata is not None
+        self.assertEqual("a" * 40, metadata["commit"])
+        self.assertTrue(metadata["worktree_clean"])
+        self.assertEqual("b" * 40, metadata["evaluator_commit"])
+        self.assertFalse(metadata["evaluator_commit_is_clean"])
+        snapshot_integrity = report.as_dict()["evidence_snapshot"][
+            "metrics_rollup"
+        ]["dimensions"]["snapshot_integrity"]
+        self.assertEqual("fail", snapshot_integrity["status"])
+        self.assertIn(
+            "evaluator worktree is dirty",
+            snapshot_integrity["failure_reasons"][0],
         )
 
     def test_mvp_processing_time_evaluation_enforces_manifest_threshold(self) -> None:
