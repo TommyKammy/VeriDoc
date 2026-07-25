@@ -23,8 +23,9 @@ With the committed default inputs, the report contains 20 acceptance items and
 fails closed with twelve `pass` and eight `fail`. The five-case metrics rollup
 passes with 56/56 quality matches, 12/12 provenance bindings, zero high-risk
 misses/auto-confirms, zero audit-level external-send guard violations, and all
-15 performance/size/timeout observations within the existing limits. The three approved `OD-*`
-items pass only while the live manifest, canonical efficiency- and
+15 performance/size/timeout observations within the existing limits. Non-finite
+or negative observations and non-positive limits fail closed. The three
+approved `OD-*` items pass only while the live manifest, canonical efficiency- and
 segregation-scope sections, and `ROLE_PERMISSIONS` contracts match the
 revision-bound decision pins; scope drift fails the affected item until renewed
 approval. A passing harness case does not promote a broader 15.3 item whose

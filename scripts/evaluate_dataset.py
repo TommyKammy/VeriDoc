@@ -6459,8 +6459,11 @@ def mvp_metrics_rollup(
             if (
                 not isinstance(value, (int, float))
                 or isinstance(value, bool)
+                or value < 0
+                or (isinstance(value, float) and not math.isfinite(value))
                 or not isinstance(limit, int)
                 or isinstance(limit, bool)
+                or limit <= 0
                 or dimension.get("status") not in {"pass", "fail"}
             ):
                 performance_unknown.append(f"{case_id}:{dimension_name}")

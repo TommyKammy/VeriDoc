@@ -1775,6 +1775,62 @@ class EvaluateDatasetTest(unittest.TestCase):
         )
         self.assertEqual(0.0, below_threshold_rollup["dimensions"]["quality"]["rate"])
 
+    def test_mvp_metrics_rollup_rejects_invalid_performance_values(self) -> None:
+        harness_payload = evaluate_dataset.evaluate_mvp_harness(
+            MVP_EVALUATION_MANIFEST_PATH
+        ).as_dict()
+        performance_fields = {
+            "input_size": ("input_size_bytes", "limit_bytes"),
+            "processing_time": ("processing_time_ms", "threshold_ms"),
+            "timeout": ("processing_time_ms", "timeout_ms"),
+        }
+
+        for dimension_name, (value_field, limit_field) in performance_fields.items():
+            for invalid_value in (
+                float("nan"),
+                float("inf"),
+                float("-inf"),
+                -1,
+            ):
+                with self.subTest(
+                    dimension=dimension_name,
+                    invalid_value=invalid_value,
+                ):
+                    malformed = json.loads(json.dumps(harness_payload))
+                    malformed["results"][0]["metrics"]["performance"][
+                        "dimensions"
+                    ][dimension_name][value_field] = invalid_value
+                    rollup = evaluate_dataset.mvp_metrics_rollup(malformed)
+                    self.assertEqual(
+                        "unknown",
+                        rollup["dimensions"]["performance"]["status"],
+                    )
+                    self.assertIn(
+                        f"mvp-word-001:{dimension_name}",
+                        rollup["dimensions"]["performance"]["unknown"],
+                    )
+                    self.assertNotEqual("pass", rollup["status"])
+
+            for invalid_limit in (0, -1):
+                with self.subTest(
+                    dimension=dimension_name,
+                    invalid_limit=invalid_limit,
+                ):
+                    malformed = json.loads(json.dumps(harness_payload))
+                    malformed["results"][0]["metrics"]["performance"][
+                        "dimensions"
+                    ][dimension_name][limit_field] = invalid_limit
+                    rollup = evaluate_dataset.mvp_metrics_rollup(malformed)
+                    self.assertEqual(
+                        "unknown",
+                        rollup["dimensions"]["performance"]["status"],
+                    )
+                    self.assertIn(
+                        f"mvp-word-001:{dimension_name}",
+                        rollup["dimensions"]["performance"]["unknown"],
+                    )
+                    self.assertNotEqual("pass", rollup["status"])
+
     def test_mvp_case_metrics_counts_persisted_high_risk_decisions_by_item(
         self,
     ) -> None:
