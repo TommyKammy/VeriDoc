@@ -5902,6 +5902,7 @@ def mvp_case_metrics(
     fixture_content: bytes,
     content_validation: Mapping[str, Any],
     review_items: object,
+    expected_high_risk_targets: object,
     authoritative_decisions: list[dict[str, object]],
     evaluations: Mapping[str, Mapping[str, object]],
 ) -> dict[str, object]:
@@ -5960,41 +5961,74 @@ def mvp_case_metrics(
     }
 
     high_risk_unknown: list[str] = []
+    expected_high_risk_target_keys: set[tuple[str, str]] = set()
+    expected_high_risk_target_ids: dict[tuple[str, str], str] = {}
+    if not isinstance(expected_high_risk_targets, list):
+        high_risk_unknown.append(
+            "expected high-risk targets are missing or malformed"
+        )
+    else:
+        for target in expected_high_risk_targets:
+            target_key = mvp_high_risk_target_key(target)
+            target_id = target.get("id") if isinstance(target, Mapping) else None
+            if target_key is None or not isinstance(target_id, str) or not target_id:
+                high_risk_unknown.append(
+                    "expected high-risk target identifiers are missing or malformed"
+                )
+                continue
+            if (
+                target_key in expected_high_risk_target_keys
+                or target_id in expected_high_risk_target_ids.values()
+            ):
+                high_risk_unknown.append(
+                    "expected high-risk targets contain duplicate identifiers"
+                )
+                continue
+            expected_high_risk_target_keys.add(target_key)
+            expected_high_risk_target_ids[target_key] = target_id
+
     if not isinstance(review_items, list) or not all(
         isinstance(item, Mapping) for item in review_items
     ):
-        high_risk_items: list[Mapping[str, Any]] = []
         high_risk_unknown.append("review items are missing or malformed")
-    else:
-        high_risk_items = [
-            item for item in review_items if mvp_review_item_is_high_risk(item)
-        ]
     review_item_values = review_items if isinstance(review_items, list) else []
+    review_item_indices_by_target: dict[tuple[str, str], int] = {}
+    for index, review_item in enumerate(review_item_values):
+        if not isinstance(review_item, Mapping):
+            continue
+        target_key = mvp_high_risk_target_key(review_item)
+        if target_key in review_item_indices_by_target:
+            high_risk_unknown.append(
+                "review items contain duplicate high-risk target identifiers"
+            )
+            continue
+        if target_key in expected_high_risk_target_keys:
+            review_item_indices_by_target[target_key] = index
+        elif mvp_review_item_is_high_risk(review_item):
+            high_risk_unknown.append(
+                "emitted high-risk review item is absent from expected targets"
+            )
+
+    expected_high_risk_indices = set(review_item_indices_by_target.values())
     persisted_high_risk_indices = {
         index
         for index, (review_item, decision) in enumerate(
             zip(review_item_values, authoritative_decisions)
         )
         if isinstance(review_item, Mapping)
-        and mvp_review_item_is_high_risk(review_item)
+        and index in expected_high_risk_indices
         and isinstance(decision, Mapping)
         and decision.get("decision") in {"approved", "rejected", "needs_fix"}
-    }
-    high_risk_indices = {
-        index
-        for index, review_item in enumerate(review_item_values)
-        if isinstance(review_item, Mapping)
-        and mvp_review_item_is_high_risk(review_item)
     }
     explicitly_auto_confirmed_indices = {
         index
         for index, review_item in enumerate(review_item_values)
-        if index in high_risk_indices
+        if index in expected_high_risk_indices
         and isinstance(review_item, Mapping)
         and review_item.get("auto_confirmed") is True
     }
     implicitly_auto_confirmed_indices = (
-        high_risk_indices - persisted_high_risk_indices
+        expected_high_risk_indices - persisted_high_risk_indices
         if converted.get("status") == "converted"
         else set()
     )
@@ -6021,7 +6055,7 @@ def mvp_case_metrics(
         {
             index
             for index, review_item in enumerate(review_item_values)
-            if index in high_risk_indices
+            if index in expected_high_risk_indices
             and isinstance(review_item, Mapping)
             and review_item.get("block_id") in ocr_boundary_block_ids
         }
@@ -6033,9 +6067,23 @@ def mvp_case_metrics(
     covered_high_risk_indices = (
         persisted_high_risk_indices | ocr_boundary_high_risk_indices
     )
-    covered_high_risk_count = len(covered_high_risk_indices)
-    high_risk_miss_count = len(high_risk_items) - covered_high_risk_count
-    high_risk_auto_confirmed_count = len(high_risk_auto_confirmed_indices)
+    covered_high_risk_target_keys = {
+        target_key
+        for target_key, index in review_item_indices_by_target.items()
+        if index in covered_high_risk_indices
+    }
+    auto_confirmed_high_risk_target_keys = {
+        target_key
+        for target_key, index in review_item_indices_by_target.items()
+        if index in high_risk_auto_confirmed_indices
+    }
+    covered_high_risk_count = len(covered_high_risk_target_keys)
+    high_risk_miss_count = (
+        len(expected_high_risk_target_keys) - covered_high_risk_count
+    )
+    high_risk_auto_confirmed_count = len(
+        auto_confirmed_high_risk_target_keys
+    )
     high_risk_failures = [
         *high_risk_unknown,
         *(
@@ -6060,17 +6108,31 @@ def mvp_case_metrics(
             if high_risk_failures
             else "pass"
         ),
-        "target_count": len(high_risk_items),
+        "target_count": len(expected_high_risk_target_keys),
         "covered_count": covered_high_risk_count,
         "miss_count": high_risk_miss_count,
         "auto_confirmed_count": high_risk_auto_confirmed_count,
-        "denominator": len(high_risk_items),
+        "denominator": len(expected_high_risk_target_keys),
         "rate": (
-            covered_high_risk_count / len(high_risk_items)
-            if high_risk_items
+            covered_high_risk_count / len(expected_high_risk_target_keys)
+            if expected_high_risk_target_keys
             else None
         ),
-        "applicability": "targets_present" if high_risk_items else "no_targets",
+        "applicability": (
+            "targets_present" if expected_high_risk_target_keys else "no_targets"
+        ),
+        "basis": {
+            "source": "manifest_expected_high_risk_targets",
+            "target_ids": sorted(expected_high_risk_target_ids.values()),
+            "detected_target_ids": sorted(
+                expected_high_risk_target_ids[target_key]
+                for target_key in review_item_indices_by_target
+            ),
+            "covered_target_ids": sorted(
+                expected_high_risk_target_ids[target_key]
+                for target_key in covered_high_risk_target_keys
+            ),
+        },
         "exclusions": [],
         "unknown": high_risk_unknown,
         "failure_reasons": high_risk_failures,
@@ -6906,6 +6968,30 @@ def mvp_evaluation_cases(
                 raise EvaluationCaseError(
                     f"MVP case {case_id!r} must define a {field} string list"
                 )
+        expected_high_risk_targets = case.get("expected_high_risk_targets")
+        if not isinstance(expected_high_risk_targets, list):
+            raise EvaluationCaseError(
+                f"MVP case {case_id!r} must define expected_high_risk_targets"
+            )
+        target_ids: set[str] = set()
+        target_keys: set[tuple[str, str]] = set()
+        for target in expected_high_risk_targets:
+            target_id = target.get("id") if isinstance(target, Mapping) else None
+            target_key = mvp_high_risk_target_key(target)
+            if (
+                not isinstance(target_id, str)
+                or not target_id
+                or target_key is None
+            ):
+                raise EvaluationCaseError(
+                    f"MVP case {case_id!r} has a malformed expected high-risk target"
+                )
+            if target_id in target_ids or target_key in target_keys:
+                raise EvaluationCaseError(
+                    f"MVP case {case_id!r} has duplicate expected high-risk targets"
+                )
+            target_ids.add(target_id)
+            target_keys.add(target_key)
 
         merged = dict(case)
         merged.update(fixture)
@@ -7704,6 +7790,7 @@ def mvp_conversion_result(
         fixture_content=fixture_content,
         content_validation=content_validation,
         review_items=review_items,
+        expected_high_risk_targets=case["expected_high_risk_targets"],
         authoritative_decisions=authoritative_decisions,
         evaluations=evaluations,
     )
@@ -7928,6 +8015,21 @@ def mvp_review_item_version(review_item: Mapping[str, Any]) -> str:
     ).hexdigest()
 
 
+def mvp_high_risk_target_key(value: object) -> tuple[str, str] | None:
+    if not isinstance(value, Mapping):
+        return None
+    document_id = value.get("document_id")
+    block_id = value.get("block_id")
+    if (
+        not isinstance(document_id, str)
+        or not document_id
+        or not isinstance(block_id, str)
+        or not block_id
+    ):
+        return None
+    return document_id, block_id
+
+
 def mvp_review_item_is_high_risk(review_item: Mapping[str, Any]) -> bool:
     if review_item.get("high_risk") is True:
         return True
@@ -8026,7 +8128,7 @@ MVP_MANIFEST_DECISION_CONTRACT_FIELDS = (
 MVP_SCOPE_DECISION_APPROVED_CONTRACTS = {
     "p12g-02-v1": {
         "Approved manifest contract SHA-256": (
-            "14d0c5f63008d22e6843860b054bc2add220f5433af85b56a2e20425ce9ecf64"
+            "26ec6520f197b72b8ff94cfe8e47c6cc2ab6c9d597632e24c48397c19ba7a80d"
         ),
         "Approved OD-EFFICIENCY-SCOPE contract SHA-256": (
             "3d9d05671895ec8d6e8b14f44b6a8dd7f99aa17b7b65871b78fb56a49966b6fb"
@@ -8779,7 +8881,9 @@ def git_status_exclude_pathspecs(
             continue
         if git_path_is_tracked(repo_root, ignored_path):
             continue
-        pathspecs.append(f":(exclude){relative_ignored.as_posix()}")
+        pathspecs.append(
+            f":(exclude,literal){relative_ignored.as_posix()}"
+        )
     return pathspecs
 
 

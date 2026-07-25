@@ -1199,7 +1199,7 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertEqual([], payload["carryovers"]["phase14"])
         self.assertEqual("fail", payload["summary"]["overall_decision"])
         self.assertEqual(
-            {"pass": 12, "fail": 8},
+            {"pass": 11, "fail": 9},
             payload["summary"]["decision_counts"],
         )
         self.assertEqual(
@@ -1223,10 +1223,17 @@ class EvaluateDatasetTest(unittest.TestCase):
             },
             set(open_decisions),
         )
-        for item in open_decisions.values():
+        self.assertEqual("fail", open_decisions["OD-TEMPLATES"]["decision"])
+        self.assertEqual(
+            "fail",
+            open_decisions["OD-TEMPLATES"]["evidence"][
+                "decision_input_validation"
+            ]["status"],
+        )
+        for item_id in ("OD-EFFICIENCY-SCOPE", "OD-SEGREGATION"):
             self.assertEqual(
                 {"status": "pass", "failures": []},
-                item["evidence"]["decision_input_validation"],
+                open_decisions[item_id]["evidence"]["decision_input_validation"],
             )
 
     def test_mvp_acceptance_report_ignores_only_redirected_stdout_path(
@@ -1301,14 +1308,17 @@ class EvaluateDatasetTest(unittest.TestCase):
             role_permissions=ROLE_PERMISSIONS,
             fixture_contract=fixture_contract,
         )
-        self.assertEqual(
-            {
-                "OD-TEMPLATES": (),
-                "OD-EFFICIENCY-SCOPE": (),
-                "OD-SEGREGATION": (),
-            },
-            current,
+        baseline_template_failures = current["OD-TEMPLATES"]
+        self.assertTrue(baseline_template_failures)
+        self.assertTrue(
+            any(
+                "manifest case, fixture, source-policy, or expectation contract "
+                "drifted" in failure
+                for failure in baseline_template_failures
+            )
         )
+        self.assertEqual((), current["OD-EFFICIENCY-SCOPE"])
+        self.assertEqual((), current["OD-SEGREGATION"])
 
         for label, original, replacement in (
             (
@@ -1351,7 +1361,10 @@ class EvaluateDatasetTest(unittest.TestCase):
                         role_permissions=ROLE_PERMISSIONS,
                     )
                 )
-                self.assertEqual((), efficiency_failures["OD-TEMPLATES"])
+                self.assertEqual(
+                    baseline_template_failures,
+                    efficiency_failures["OD-TEMPLATES"],
+                )
                 self.assertTrue(efficiency_failures["OD-EFFICIENCY-SCOPE"])
                 self.assertEqual((), efficiency_failures["OD-SEGREGATION"])
 
@@ -1365,7 +1378,10 @@ class EvaluateDatasetTest(unittest.TestCase):
             manifest_source="datasets/mvp_evaluation_manifest_v1.json",
             role_permissions=ROLE_PERMISSIONS,
         )
-        self.assertEqual((), pin_failures["OD-TEMPLATES"])
+        self.assertEqual(
+            baseline_template_failures,
+            pin_failures["OD-TEMPLATES"],
+        )
         self.assertTrue(pin_failures["OD-EFFICIENCY-SCOPE"])
         self.assertEqual((), pin_failures["OD-SEGREGATION"])
 
@@ -1506,7 +1522,10 @@ class EvaluateDatasetTest(unittest.TestCase):
                         role_permissions=ROLE_PERMISSIONS,
                     )
                 )
-                self.assertEqual((), segregation_failures["OD-TEMPLATES"])
+                self.assertEqual(
+                    baseline_template_failures,
+                    segregation_failures["OD-TEMPLATES"],
+                )
                 self.assertEqual(
                     (),
                     segregation_failures["OD-EFFICIENCY-SCOPE"],
@@ -1525,7 +1544,10 @@ class EvaluateDatasetTest(unittest.TestCase):
                 role_permissions=ROLE_PERMISSIONS,
             )
         )
-        self.assertEqual((), segregation_pin_failures["OD-TEMPLATES"])
+        self.assertEqual(
+            baseline_template_failures,
+            segregation_pin_failures["OD-TEMPLATES"],
+        )
         self.assertEqual(
             (),
             segregation_pin_failures["OD-EFFICIENCY-SCOPE"],
@@ -1543,7 +1565,10 @@ class EvaluateDatasetTest(unittest.TestCase):
             manifest_source="datasets/mvp_evaluation_manifest_v1.json",
             role_permissions=drifted_roles,
         )
-        self.assertEqual((), role_failures["OD-TEMPLATES"])
+        self.assertEqual(
+            baseline_template_failures,
+            role_failures["OD-TEMPLATES"],
+        )
         self.assertEqual((), role_failures["OD-EFFICIENCY-SCOPE"])
         self.assertTrue(role_failures["OD-SEGREGATION"])
 
@@ -2298,12 +2323,24 @@ class EvaluateDatasetTest(unittest.TestCase):
                 "provenance_denominator": 0,
             }
         }
+        expected_high_risk_targets = [
+            {
+                "id": "high-risk-block",
+                "document_id": "synthetic-document",
+                "block_id": "high-risk-block",
+            }
+        ]
+        high_risk_review_item = {
+            "document_id": "synthetic-document",
+            "block_id": "high-risk-block",
+        }
 
         metrics = evaluate_dataset.mvp_case_metrics(
             converted=converted,
             fixture_content=fixture_content,
             content_validation=content_validation,
-            review_items=[{"high_risk": True}],
+            review_items=[high_risk_review_item],
+            expected_high_risk_targets=expected_high_risk_targets,
             authoritative_decisions=[{"decision": "approved"}],
             evaluations=evaluations,
         )
@@ -2315,7 +2352,8 @@ class EvaluateDatasetTest(unittest.TestCase):
             converted=missing_llm_audit,
             fixture_content=fixture_content,
             content_validation=content_validation,
-            review_items=[{"high_risk": True}],
+            review_items=[high_risk_review_item],
+            expected_high_risk_targets=expected_high_risk_targets,
             authoritative_decisions=[{"decision": "approved"}],
             evaluations=evaluations,
         )
@@ -2333,7 +2371,8 @@ class EvaluateDatasetTest(unittest.TestCase):
             converted=converted,
             fixture_content=fixture_content,
             content_validation=missing_provenance,
-            review_items=[{"high_risk": True}],
+            review_items=[high_risk_review_item],
+            expected_high_risk_targets=expected_high_risk_targets,
             authoritative_decisions=[{"decision": "approved"}],
             evaluations=evaluations,
         )
@@ -2366,7 +2405,8 @@ class EvaluateDatasetTest(unittest.TestCase):
             converted=converted,
             fixture_content=fixture_content,
             content_validation=content_validation,
-            review_items=[{"high_risk": True, "auto_confirmed": True}],
+            review_items=[{**high_risk_review_item, "auto_confirmed": True}],
+            expected_high_risk_targets=expected_high_risk_targets,
             authoritative_decisions=[{"decision": "approved"}],
             evaluations=evaluations,
         )
@@ -2387,8 +2427,26 @@ class EvaluateDatasetTest(unittest.TestCase):
             fixture_content=fixture_content,
             content_validation=content_validation,
             review_items=[
-                {"high_risk": True, "block_id": "ocr-block"},
-                {"high_risk": True, "block_id": "unrelated-block"},
+                {
+                    "document_id": "synthetic-document",
+                    "block_id": "ocr-block",
+                },
+                {
+                    "document_id": "synthetic-document",
+                    "block_id": "unrelated-block",
+                },
+            ],
+            expected_high_risk_targets=[
+                {
+                    "id": "ocr-block",
+                    "document_id": "synthetic-document",
+                    "block_id": "ocr-block",
+                },
+                {
+                    "id": "unrelated-block",
+                    "document_id": "synthetic-document",
+                    "block_id": "unrelated-block",
+                },
             ],
             authoritative_decisions=[],
             evaluations=ocr_evaluations,
@@ -2404,6 +2462,50 @@ class EvaluateDatasetTest(unittest.TestCase):
                 key: ocr_boundary_metrics["high_risk"][key]
                 for key in ("target_count", "covered_count", "miss_count")
             },
+        )
+
+        omitted_target_metrics = evaluate_dataset.mvp_case_metrics(
+            converted=converted,
+            fixture_content=fixture_content,
+            content_validation=content_validation,
+            review_items=[high_risk_review_item],
+            expected_high_risk_targets=[
+                *expected_high_risk_targets,
+                {
+                    "id": "omitted-high-risk-block",
+                    "document_id": "synthetic-document",
+                    "block_id": "omitted-high-risk-block",
+                },
+            ],
+            authoritative_decisions=[{"decision": "approved"}],
+            evaluations=evaluations,
+        )
+        self.assertEqual("fail", omitted_target_metrics["status"])
+        self.assertEqual(
+            {
+                "target_count": 2,
+                "covered_count": 1,
+                "miss_count": 1,
+            },
+            {
+                key: omitted_target_metrics["high_risk"][key]
+                for key in ("target_count", "covered_count", "miss_count")
+            },
+        )
+
+        undeclared_target_metrics = evaluate_dataset.mvp_case_metrics(
+            converted=converted,
+            fixture_content=fixture_content,
+            content_validation=content_validation,
+            review_items=[{**high_risk_review_item, "high_risk": True}],
+            expected_high_risk_targets=[],
+            authoritative_decisions=[{"decision": "approved"}],
+            evaluations=evaluations,
+        )
+        self.assertEqual("unknown", undeclared_target_metrics["status"])
+        self.assertIn(
+            "emitted high-risk review item is absent from expected targets",
+            undeclared_target_metrics["high_risk"]["unknown"],
         )
 
     def test_mvp_acceptance_report_rejects_unknown_traceability_row(self) -> None:
@@ -9693,6 +9795,26 @@ class EvaluateDatasetTest(unittest.TestCase):
                 evaluate_dataset.current_git_worktree_clean(
                     temp_root,
                     ignored_paths=(report_output,),
+                )
+            )
+            (temp_root / "other.json").unlink()
+            report_output.unlink()
+            literal_report_output = temp_root / "reports" / "[abc].json"
+            literal_report_output.write_text("{}", encoding="utf-8")
+            self.assertTrue(
+                evaluate_dataset.current_git_worktree_clean(
+                    temp_root,
+                    ignored_paths=(literal_report_output,),
+                )
+            )
+            (temp_root / "reports" / "a.json").write_text(
+                "{}",
+                encoding="utf-8",
+            )
+            self.assertFalse(
+                evaluate_dataset.current_git_worktree_clean(
+                    temp_root,
+                    ignored_paths=(literal_report_output,),
                 )
             )
 

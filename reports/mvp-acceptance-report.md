@@ -20,9 +20,10 @@ pinned in this sample.
 ## Current Sample Outcome
 
 With the committed default inputs, the report contains 20 acceptance items and
-fails closed with twelve `pass` and eight `fail`. The five-case metrics rollup
-passes with 56/56 quality matches, 12/12 provenance bindings, zero high-risk
-misses/auto-confirms, zero audit-level external-send guard violations, and all
+fails closed with eleven `pass` and nine `fail`. The five-case metrics rollup
+passes with 56/56 quality matches, 12/12 provenance bindings, one independently
+declared and covered high-risk target with zero misses/auto-confirms, zero
+audit-level external-send guard violations, and all
 15 performance/size/timeout observations within the existing limits. Non-finite
 or negative observations and non-positive limits fail closed. Missing case
 metrics invalidate every rollup dimension; observations and limits are compared
@@ -30,11 +31,11 @@ with the fixed approved contract; and failed or negative external-send metrics
 cannot pass. Missing LLM guard evidence is unknown, and AC-REVIEW requires both
 the live review evaluation and high-risk guard to pass. A redirected report
 output is excluded from cleanliness while every other change remains
-fail-closed. The three approved `OD-*` items pass only while the live manifest,
-canonical efficiency- and segregation-scope sections, and `ROLE_PERMISSIONS`
-contracts match the
-revision-bound decision pins; scope drift fails the affected item until renewed
-approval. A passing harness case does not promote a broader 15.3 item whose
+fail-closed. The efficiency and segregation `OD-*` items pass because their
+live contracts match the revision-bound decision pins. `OD-TEMPLATES` fails
+because fixture expectations changed after the recorded approval; it remains
+failed until the decision owner supplies a new revision and approval. A passing
+harness case does not promote a broader 15.3 item whose
 required evidence remains incomplete. Missing/unknown metrics and case-level
 failures cannot be hidden by the aggregate rate and reject the rollup. The
 six metric-backed rows are also revalidated from their live rollup dimensions,
@@ -51,7 +52,7 @@ commit-bound snapshot integrity dimension non-passing.
   "summary": {
     "overall_decision": "fail",
     "item_count": 20,
-    "decision_counts": {"pass": 12, "fail": 8}
+    "decision_counts": {"pass": 11, "fail": 9}
   },
   "carryovers": {
     "phase13": ["OD-SEGREGATION"],

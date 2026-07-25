@@ -255,10 +255,58 @@ class MvpAcceptanceTraceabilityDocsTest(unittest.TestCase):
                 sort_keys=True,
             ).encode("utf-8")
         ).hexdigest()
-        self.assertEqual(
-            _required_record_value(record, "Approved manifest contract SHA-256"),
-            manifest_contract_sha256,
+        approved_manifest_hash = _required_record_value(
+            record,
+            "Approved manifest contract SHA-256",
         )
+        self.assertNotEqual(approved_manifest_hash, manifest_contract_sha256)
+
+        def git_show(path: str) -> bytes:
+            return subprocess.run(
+                ["git", "show", f"{target_commit}:{path}"],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+            ).stdout
+
+        approved_manifest = json.loads(
+            git_show(target_manifest).decode("utf-8")
+        )
+        approved_fixture_manifest = json.loads(
+            git_show(approved_manifest["fixture_manifest"]).decode("utf-8")
+        )
+        approved_fixture_by_id = {
+            fixture["id"]: fixture
+            for fixture in approved_fixture_manifest["fixtures"]
+        }
+        approved_fixture_contents = {}
+        for fixture_id in sorted(
+            {case["fixture_id"] for case in approved_manifest["cases"]}
+        ):
+            fixture_path_value = approved_fixture_by_id[fixture_id]["path"]
+            fixture_content = git_show(fixture_path_value)
+            approved_fixture_contents[fixture_id] = {
+                "path": fixture_path_value,
+                "present": True,
+                "sha256": hashlib.sha256(fixture_content).hexdigest(),
+            }
+        approved_manifest_contract = {
+            field: approved_manifest.get(field)
+            for field in contract_fields
+        }
+        approved_manifest_contract["fixture_approval_contract"] = {
+            "fixture_manifest": approved_fixture_manifest,
+            "selected_fixture_contents": approved_fixture_contents,
+        }
+        derived_approved_manifest_hash = hashlib.sha256(
+            json.dumps(
+                approved_manifest_contract,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()
+        self.assertEqual(approved_manifest_hash, derived_approved_manifest_hash)
         self.assertEqual(
             _required_record_value(
                 record,
@@ -298,7 +346,7 @@ class MvpAcceptanceTraceabilityDocsTest(unittest.TestCase):
 
         traceability = DOC_PATH.read_text(encoding="utf-8")
         gap_register = GAP_REGISTER_PATH.read_text(encoding="utf-8")
-        for item_id in ("OD-TEMPLATES", "OD-EFFICIENCY-SCOPE", "OD-SEGREGATION"):
+        for item_id in ("OD-EFFICIENCY-SCOPE", "OD-SEGREGATION"):
             traceability_row = re.search(
                 rf"^\| {re.escape(item_id)} \|.*$",
                 traceability,
@@ -313,6 +361,20 @@ class MvpAcceptanceTraceabilityDocsTest(unittest.TestCase):
             self.assertIsNotNone(gap_register_row)
             self.assertIn("**達成**", traceability_row.group(0))
             self.assertIn("達成 / pass", gap_register_row.group(0))
+        template_traceability_row = re.search(
+            r"^\| OD-TEMPLATES \|.*$",
+            traceability,
+            flags=re.MULTILINE,
+        )
+        template_gap_register_row = re.search(
+            r"^\| OD-TEMPLATES \|.*$",
+            gap_register,
+            flags=re.MULTILINE,
+        )
+        self.assertIsNotNone(template_traceability_row)
+        self.assertIsNotNone(template_gap_register_row)
+        self.assertIn("**未達**", template_traceability_row.group(0))
+        self.assertIn("未達 / fail", template_gap_register_row.group(0))
 
     def test_gap_register_matches_report_scope_and_records_current_failures(self) -> None:
         self.assertTrue(
@@ -353,7 +415,7 @@ class MvpAcceptanceTraceabilityDocsTest(unittest.TestCase):
             "mvp-record-pdf-001",
             "authoritative review decision is required",
             "zero `fail`, zero `unknown`, and five `pass`",
-            "`overall_decision=fail` (`pass=12`, `fail=8`)",
+            "`overall_decision=fail` (`pass=11`, `fail=9`)",
             "P12G-02",
             "P12G-13",
         ):
@@ -385,8 +447,8 @@ class MvpAcceptanceTraceabilityDocsTest(unittest.TestCase):
         self,
     ) -> None:
         sample = REPORT_SAMPLE_PATH.read_text(encoding="utf-8")
-        self.assertIn("twelve `pass` and eight `fail`", sample)
-        self.assertIn('"decision_counts": {"pass": 12, "fail": 8}', sample)
+        self.assertIn("eleven `pass` and nine `fail`", sample)
+        self.assertIn('"decision_counts": {"pass": 11, "fail": 9}', sample)
         self.assertIn('"phase13": ["OD-SEGREGATION"]', sample)
         self.assertIn("decision_input_validation", sample)
         self.assertNotIn("all 20 are `fail`", sample)

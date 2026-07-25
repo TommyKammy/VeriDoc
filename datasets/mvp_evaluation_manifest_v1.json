@@ -44,6 +44,7 @@
         "blocks[1].parser marked block requires_review",
         "DOCX table contains merged cells; xlsx artifact requires review"
       ],
+      "expected_high_risk_targets": [],
       "review_focus": [
         "confirm the merged application-summary cell",
         "confirm blank optional cells remain blank"
@@ -79,6 +80,7 @@
         "blocks[1].bbox missing; block marked requires_review",
         "blocks[2].bbox missing; block marked requires_review"
       ],
+      "expected_high_risk_targets": [],
       "review_focus": [
         "confirm worksheet ordering and headings",
         "confirm dates, decimals, booleans, and leading-zero identifiers"
@@ -111,6 +113,7 @@
       "expected_warnings": [
         "conversion mode pdf_to_excel selected"
       ],
+      "expected_high_risk_targets": [],
       "review_focus": [
         "confirm table boundaries and blank-cell preservation",
         "confirm source evidence for the extracted table"
@@ -138,6 +141,13 @@
         "pdf_to_word reconstruction preserves editable text structure for review; exact PDF layout, fonts, coordinates, columns, footnotes, and OCR fidelity are not guaranteed",
         "blocks[0].parser marked block requires_review"
       ],
+      "expected_high_risk_targets": [
+        {
+          "id": "scanned-page-ocr-boundary",
+          "document_id": "scanned-pdf-representative",
+          "block_id": "block-0001"
+        }
+      ],
       "review_focus": [
         "confirm unsupported OCR is not treated as successful text extraction",
         "route the scan through a separate trusted OCR workflow before accepting text"
@@ -164,6 +174,7 @@
         "conversion mode pdf_to_word selected",
         "pdf_to_word reconstruction preserves editable text structure for review; exact PDF layout, fonts, coordinates, columns, footnotes, and OCR fidelity are not guaranteed"
       ],
+      "expected_high_risk_targets": [],
       "review_focus": [
         "confirm the converted record text is complete",
         "confirm section ordering against the source pages"

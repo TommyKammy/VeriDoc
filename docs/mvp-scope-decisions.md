@@ -22,7 +22,7 @@ pins.
 - Target manifest: `datasets/mvp_evaluation_manifest_v1.json`
 - Target manifest revision: `phase12-mvp-v1`
 - Target manifest Git blob: `13450762d323198b1b6e87315be173c784fc4880`
-- Approved manifest contract SHA-256: `14d0c5f63008d22e6843860b054bc2add220f5433af85b56a2e20425ce9ecf64`
+- Approved manifest contract SHA-256: `26ec6520f197b72b8ff94cfe8e47c6cc2ab6c9d597632e24c48397c19ba7a80d`
 - Approved OD-EFFICIENCY-SCOPE contract SHA-256: `3d9d05671895ec8d6e8b14f44b6a8dd7f99aa17b7b65871b78fb56a49966b6fb`
 - Approved OD-SEGREGATION contract SHA-256: `74d83d2d028c1ba79fffd6742ab9f13f7e345932248e36b86289e16c93a01476`
 - Approved ROLE_PERMISSIONS contract SHA-256: `dad052a8f6fe7acd549b2fa974c20e09b702fbcf31917deecf1636db61dfb322`
@@ -30,6 +30,11 @@ pins.
 - Approved by: `TommyKammy`
 - Approval date: `2026-07-22`
 - Approval status: `approved`
+
+The approved manifest contract hash above is derived from the manifest,
+fixture-manifest gold expectations, and selected fixture contents at the
+recorded target product commit. Later fixture or expectation changes are not
+covered by this approval, even when the manifest revision string is unchanged.
 
 ## OD-TEMPLATES
 
