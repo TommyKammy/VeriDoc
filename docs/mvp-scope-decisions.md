@@ -22,7 +22,7 @@ pins.
 - Target manifest: `datasets/mvp_evaluation_manifest_v1.json`
 - Target manifest revision: `phase12-mvp-v1`
 - Target manifest Git blob: `13450762d323198b1b6e87315be173c784fc4880`
-- Approved manifest contract SHA-256: `9ba5fef2143e67739f6b6afca62f5670dbefc6c56493f9ba1d158b077731f1ca`
+- Approved manifest contract SHA-256: `14d0c5f63008d22e6843860b054bc2add220f5433af85b56a2e20425ce9ecf64`
 - Approved OD-EFFICIENCY-SCOPE contract SHA-256: `3d9d05671895ec8d6e8b14f44b6a8dd7f99aa17b7b65871b78fb56a49966b6fb`
 - Approved OD-SEGREGATION contract SHA-256: `74d83d2d028c1ba79fffd6742ab9f13f7e345932248e36b86289e16c93a01476`
 - Approved ROLE_PERMISSIONS contract SHA-256: `dad052a8f6fe7acd549b2fa974c20e09b702fbcf31917deecf1636db61dfb322`
@@ -42,8 +42,10 @@ pins.
   all five preserves the existing fail-closed OCR boundary instead of removing
   the currently failing scanned-PDF case from the denominator.
 - Rejection conditions: any change to the manifest revision, required category
-  set, case ID, fixture binding, source policy, expected status, or confidential
-  source policy requires a new decision revision and renewed approval.
+  set, case ID, fixture binding, fixture-manifest gold expectations, selected
+  fixture contents, source policy, expected status, acceptance limits, or
+  confidential source policy requires a new decision revision and renewed
+  approval.
 
 ## OD-EFFICIENCY-SCOPE
 

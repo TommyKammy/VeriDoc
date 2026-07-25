@@ -1250,6 +1250,14 @@ class EvaluateDatasetTest(unittest.TestCase):
     def test_mvp_scope_decision_input_validation_fails_closed_on_drift(self) -> None:
         decision_record = MVP_SCOPE_DECISIONS_PATH.read_text(encoding="utf-8")
         manifest = json.loads(MVP_EVALUATION_MANIFEST_PATH.read_text(encoding="utf-8"))
+        fixture_manifest = json.loads(
+            FIXTURE_MANIFEST_PATH.read_text(encoding="utf-8")
+        )
+        fixture_contract = evaluate_dataset.mvp_fixture_approval_contract(
+            manifest=manifest,
+            fixture_manifest=fixture_manifest,
+            repo_root=REPO_ROOT,
+        )
         from services.api.poc_web import ROLE_PERMISSIONS
 
         parsed_role_permissions = evaluate_dataset.mvp_role_permissions_from_source(
@@ -1268,6 +1276,7 @@ class EvaluateDatasetTest(unittest.TestCase):
             manifest=manifest,
             manifest_source="datasets/mvp_evaluation_manifest_v1.json",
             role_permissions=ROLE_PERMISSIONS,
+            fixture_contract=fixture_contract,
         )
         self.assertEqual(
             {
@@ -1399,6 +1408,50 @@ class EvaluateDatasetTest(unittest.TestCase):
                 self.assertEqual((), manifest_failures["OD-SEGREGATION"])
         self.assertIsNotNone(manifest_failures)
 
+        drifted_fixture_manifest = copy.deepcopy(fixture_manifest)
+        word_fixture = next(
+            fixture
+            for fixture in drifted_fixture_manifest["fixtures"]
+            if fixture["id"] == "word-to-excel-application"
+        )
+        word_fixture["word_to_excel_expectations"]["row_count"] = 999
+        fixture_manifest_failures = (
+            evaluate_dataset.mvp_scope_decision_input_failures(
+                decision_record=decision_record,
+                manifest=manifest,
+                manifest_source="datasets/mvp_evaluation_manifest_v1.json",
+                role_permissions=ROLE_PERMISSIONS,
+                fixture_contract=evaluate_dataset.mvp_fixture_approval_contract(
+                    manifest=manifest,
+                    fixture_manifest=drifted_fixture_manifest,
+                    repo_root=REPO_ROOT,
+                ),
+            )
+        )
+        self.assertTrue(fixture_manifest_failures["OD-TEMPLATES"])
+        self.assertEqual(
+            (),
+            fixture_manifest_failures["OD-EFFICIENCY-SCOPE"],
+        )
+        self.assertEqual((), fixture_manifest_failures["OD-SEGREGATION"])
+
+        drifted_fixture_content = copy.deepcopy(fixture_contract)
+        drifted_fixture_content["selected_fixture_contents"][
+            "word-to-excel-application"
+        ]["sha256"] = "0" * 64
+        fixture_content_failures = (
+            evaluate_dataset.mvp_scope_decision_input_failures(
+                decision_record=decision_record,
+                manifest=manifest,
+                manifest_source="datasets/mvp_evaluation_manifest_v1.json",
+                role_permissions=ROLE_PERMISSIONS,
+                fixture_contract=drifted_fixture_content,
+            )
+        )
+        self.assertTrue(fixture_content_failures["OD-TEMPLATES"])
+        self.assertEqual((), fixture_content_failures["OD-EFFICIENCY-SCOPE"])
+        self.assertEqual((), fixture_content_failures["OD-SEGREGATION"])
+
         for label, original, replacement in (
             (
                 "unauthenticated deny path",
@@ -1495,6 +1548,49 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertEqual(
             "fail",
             template_item["evidence"]["decision_input_validation"]["status"],
+        )
+
+    def test_mvp_fixture_approval_contract_hashes_selected_fixture_content(
+        self,
+    ) -> None:
+        manifest = {"cases": [{"fixture_id": "selected-fixture"}]}
+        fixture_manifest = {
+            "fixtures": [
+                {
+                    "id": "selected-fixture",
+                    "path": "datasets/fixtures/selected.bin",
+                },
+                {
+                    "id": "unselected-fixture",
+                    "path": "datasets/fixtures/unselected.bin",
+                },
+            ]
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_root = Path(temp_dir)
+            fixture_root = repo_root / "datasets" / "fixtures"
+            fixture_root.mkdir(parents=True)
+            selected_path = fixture_root / "selected.bin"
+            selected_path.write_bytes(b"approved fixture")
+            first = evaluate_dataset.mvp_fixture_approval_contract(
+                manifest=manifest,
+                fixture_manifest=fixture_manifest,
+                repo_root=repo_root,
+            )
+            selected_path.write_bytes(b"drifted fixture")
+            second = evaluate_dataset.mvp_fixture_approval_contract(
+                manifest=manifest,
+                fixture_manifest=fixture_manifest,
+                repo_root=repo_root,
+            )
+
+        self.assertNotEqual(
+            first["selected_fixture_contents"]["selected-fixture"]["sha256"],
+            second["selected_fixture_contents"]["selected-fixture"]["sha256"],
+        )
+        self.assertNotIn(
+            "unselected-fixture",
+            first["selected_fixture_contents"],
         )
 
     def test_mvp_acceptance_report_rejects_missing_traceability_row(self) -> None:
@@ -1668,6 +1764,73 @@ class EvaluateDatasetTest(unittest.TestCase):
                         ]["status"],
                     )
 
+    def test_mvp_metrics_rollup_rejects_inconsistent_case_ratio_status(
+        self,
+    ) -> None:
+        harness_payload = evaluate_dataset.evaluate_mvp_harness(
+            MVP_EVALUATION_MANIFEST_PATH
+        ).as_dict()
+        for result in harness_payload["results"]:
+            result["acceptance_status"] = "pass"
+            metrics = result["metrics"]
+            metrics["status"] = "pass"
+            metrics["quality"] = {
+                "status": "pass",
+                "numerator": 1,
+                "denominator": 1,
+            }
+            metrics["provenance"] = {
+                "status": "pass",
+                "numerator": 1,
+                "denominator": 1,
+            }
+            metrics["review"] = {"status": "pass"}
+            metrics["high_risk"] = {
+                "status": "pass",
+                "target_count": 0,
+                "covered_count": 0,
+                "miss_count": 0,
+                "auto_confirmed_count": 0,
+            }
+            metrics["external_send"] = {
+                "status": "pass",
+                "external_send_count": 0,
+            }
+            metrics["performance"] = {
+                "status": "pass",
+                "dimensions": {
+                    "input_size": {
+                        "status": "pass",
+                        "input_size_bytes": 1,
+                        "limit_bytes": 2 * 1024 * 1024,
+                    },
+                    "processing_time": {
+                        "status": "pass",
+                        "processing_time_ms": 1,
+                        "threshold_ms": 10_000,
+                    },
+                    "timeout": {
+                        "status": "pass",
+                        "processing_time_ms": 1,
+                        "timeout_ms": 30_000,
+                    },
+                },
+            }
+
+        inconsistent_quality = harness_payload["results"][0]["metrics"][
+            "quality"
+        ]
+        inconsistent_quality["status"] = "pass"
+        inconsistent_quality["numerator"] = 0
+        inconsistent_quality["denominator"] = 1
+        rollup = evaluate_dataset.mvp_metrics_rollup(harness_payload)
+        self.assertEqual("unknown", rollup["dimensions"]["quality"]["status"])
+        self.assertEqual(
+            ["mvp-word-001"],
+            rollup["dimensions"]["quality"]["unknown_case_ids"],
+        )
+        self.assertNotEqual("pass", rollup["status"])
+
     def test_mvp_metrics_rollup_fails_closed_on_missing_or_low_quality_data(
         self,
     ) -> None:
@@ -1704,7 +1867,10 @@ class EvaluateDatasetTest(unittest.TestCase):
                 )
 
         hidden_case_failure = json.loads(json.dumps(harness_payload))
-        hidden_case_failure["results"][0]["metrics"]["quality"]["status"] = "fail"
+        hidden_quality = hidden_case_failure["results"][0]["metrics"]["quality"]
+        hidden_quality["status"] = "fail"
+        hidden_quality["numerator"] = 0
+        hidden_quality["denominator"] = 1
         hidden_case_failure_rollup = evaluate_dataset.mvp_metrics_rollup(
             hidden_case_failure
         )
@@ -2128,6 +2294,24 @@ class EvaluateDatasetTest(unittest.TestCase):
             missing_llm_metrics["external_send"]["status"],
         )
         self.assertTrue(missing_llm_metrics["external_send"]["unknown"])
+
+        missing_provenance = copy.deepcopy(content_validation)
+        del missing_provenance["evidence"]["provenance_numerator"]
+        del missing_provenance["evidence"]["provenance_denominator"]
+        missing_provenance_metrics = evaluate_dataset.mvp_case_metrics(
+            converted=converted,
+            fixture_content=fixture_content,
+            content_validation=missing_provenance,
+            review_items=[{"high_risk": True}],
+            authoritative_decisions=[{"decision": "approved"}],
+            evaluations=evaluations,
+        )
+        self.assertEqual("unknown", missing_provenance_metrics["status"])
+        self.assertEqual(
+            "unknown",
+            missing_provenance_metrics["provenance"]["status"],
+        )
+        self.assertTrue(missing_provenance_metrics["provenance"]["unknown"])
 
         self.assertEqual(
             {
@@ -9381,6 +9565,12 @@ class EvaluateDatasetTest(unittest.TestCase):
                     ignored_paths=(report_output,),
                 )
             )
+            self.assertFalse(
+                evaluate_dataset.current_git_worktree_clean(
+                    temp_root,
+                    ignored_paths=(report_output, temp_root / "tracked.txt"),
+                )
+            )
             self.assertTrue(
                 evaluate_dataset.current_git_worktree_clean(
                     temp_root,
@@ -9392,6 +9582,12 @@ class EvaluateDatasetTest(unittest.TestCase):
                 evaluate_dataset.current_git_worktree_clean(
                     temp_root,
                     include_untracked=False,
+                )
+            )
+            self.assertFalse(
+                evaluate_dataset.current_git_worktree_clean(
+                    temp_root,
+                    ignored_paths=(temp_root / "tracked.txt",),
                 )
             )
             (temp_root / "tracked.txt").write_text("tracked\n", encoding="utf-8")

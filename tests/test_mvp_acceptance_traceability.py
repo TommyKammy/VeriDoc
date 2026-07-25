@@ -13,6 +13,7 @@ DOC_PATH = REPO_ROOT / "docs" / "mvp-acceptance-traceability.md"
 GAP_REGISTER_PATH = REPO_ROOT / "docs" / "mvp-acceptance-gap-register.md"
 SCOPE_DECISIONS_PATH = REPO_ROOT / "docs" / "mvp-scope-decisions.md"
 MANIFEST_PATH = REPO_ROOT / "datasets" / "mvp_evaluation_manifest_v1.json"
+FIXTURE_MANIFEST_PATH = REPO_ROOT / "datasets" / "fixtures" / "manifest.json"
 REPORT_SAMPLE_PATH = REPO_ROOT / "reports" / "mvp-acceptance-report.md"
 
 EXPECTED_ITEM_IDS = (
@@ -224,6 +225,28 @@ class MvpAcceptanceTraceabilityDocsTest(unittest.TestCase):
             "cases",
         )
         manifest_contract = {field: manifest.get(field) for field in contract_fields}
+        fixture_manifest = json.loads(
+            FIXTURE_MANIFEST_PATH.read_text(encoding="utf-8")
+        )
+        fixture_by_id = {
+            fixture["id"]: fixture
+            for fixture in fixture_manifest["fixtures"]
+        }
+        selected_fixture_contents = {}
+        for fixture_id in sorted(
+            {case["fixture_id"] for case in manifest["cases"]}
+        ):
+            fixture_path_value = fixture_by_id[fixture_id]["path"]
+            fixture_path = REPO_ROOT / fixture_path_value
+            selected_fixture_contents[fixture_id] = {
+                "path": fixture_path_value,
+                "present": fixture_path.is_file(),
+                "sha256": hashlib.sha256(fixture_path.read_bytes()).hexdigest(),
+            }
+        manifest_contract["fixture_approval_contract"] = {
+            "fixture_manifest": fixture_manifest,
+            "selected_fixture_contents": selected_fixture_contents,
+        }
         manifest_contract_sha256 = hashlib.sha256(
             json.dumps(
                 manifest_contract,

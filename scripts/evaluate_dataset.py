@@ -5915,10 +5915,10 @@ def mvp_case_metrics(
     )
 
     direct_provenance_numerator = validation_evidence.get(
-        "provenance_numerator", 0
+        "provenance_numerator"
     )
     direct_provenance_denominator = validation_evidence.get(
-        "provenance_denominator", 0
+        "provenance_denominator"
     )
     hashes = converted.get("hashes")
     audit_source_bound = (
@@ -6287,8 +6287,6 @@ def mvp_metrics_rollup(
             if case_status not in {"pass", "fail"}:
                 invalid_cases.append(case_id)
                 continue
-            if case_status == "fail":
-                failed_cases.append(case_id)
             case_numerator = dimension.get("numerator")
             case_denominator = dimension.get("denominator")
             if (
@@ -6301,6 +6299,16 @@ def mvp_metrics_rollup(
             ):
                 invalid_cases.append(case_id)
                 continue
+            expected_status = (
+                "pass"
+                if case_numerator / case_denominator >= threshold
+                else "fail"
+            )
+            if case_status != expected_status:
+                invalid_cases.append(case_id)
+                continue
+            if case_status == "fail":
+                failed_cases.append(case_id)
             numerator += case_numerator
             denominator += case_denominator
         metric = _mvp_ratio_metric(
@@ -7970,7 +7978,7 @@ MVP_MANIFEST_DECISION_CONTRACT_FIELDS = (
 MVP_SCOPE_DECISION_APPROVED_CONTRACTS = {
     "p12g-02-v1": {
         "Approved manifest contract SHA-256": (
-            "9ba5fef2143e67739f6b6afca62f5670dbefc6c56493f9ba1d158b077731f1ca"
+            "14d0c5f63008d22e6843860b054bc2add220f5433af85b56a2e20425ce9ecf64"
         ),
         "Approved OD-EFFICIENCY-SCOPE contract SHA-256": (
             "3d9d05671895ec8d6e8b14f44b6a8dd7f99aa17b7b65871b78fb56a49966b6fb"
@@ -8040,6 +8048,85 @@ def _canonical_json_sha256(value: object) -> str:
         sort_keys=True,
     ).encode("utf-8")
     return hashlib.sha256(canonical).hexdigest()
+
+
+def mvp_fixture_approval_contract(
+    *,
+    manifest: Mapping[str, object],
+    fixture_manifest: Mapping[str, object],
+    repo_root: Path,
+) -> dict[str, object]:
+    cases = manifest.get("cases")
+    case_values = cases if isinstance(cases, list) else []
+    selected_fixture_ids = sorted(
+        {
+            fixture_id
+            for case in case_values
+            if isinstance(case, Mapping)
+            for fixture_id in (case.get("fixture_id"),)
+            if isinstance(fixture_id, str) and fixture_id
+        }
+    )
+    fixtures = fixture_manifest.get("fixtures")
+    fixture_values = fixtures if isinstance(fixtures, list) else []
+    fixture_by_id = {
+        fixture_id: fixture
+        for fixture in fixture_values
+        if isinstance(fixture, Mapping)
+        for fixture_id in (fixture.get("id"),)
+        if isinstance(fixture_id, str) and fixture_id
+    }
+    selected_fixture_contents: dict[str, dict[str, object]] = {}
+    resolved_root = repo_root.resolve()
+    for fixture_id in selected_fixture_ids:
+        fixture = fixture_by_id.get(fixture_id)
+        fixture_path_value = (
+            fixture.get("path") if isinstance(fixture, Mapping) else None
+        )
+        fixture_path: Path | None = None
+        if isinstance(fixture_path_value, str) and fixture_path_value:
+            candidate = (repo_root / fixture_path_value).resolve()
+            try:
+                candidate.relative_to(resolved_root)
+            except ValueError:
+                pass
+            else:
+                fixture_path = candidate
+        present = fixture_path is not None and fixture_path.is_file()
+        selected_fixture_contents[fixture_id] = {
+            "path": fixture_path_value,
+            "present": present,
+            "sha256": (
+                hashlib.sha256(fixture_path.read_bytes()).hexdigest()
+                if present and fixture_path is not None
+                else None
+            ),
+        }
+    return {
+        "fixture_manifest": dict(fixture_manifest),
+        "selected_fixture_contents": selected_fixture_contents,
+    }
+
+
+def mvp_fixture_approval_contract_for_manifest(
+    manifest: Mapping[str, object],
+    repo_root: Path,
+) -> dict[str, object]:
+    try:
+        fixture_manifest_path = mvp_fixture_manifest_path(
+            dict(manifest),
+            repo_root,
+        )
+        fixture_manifest = load_json(fixture_manifest_path)
+        return mvp_fixture_approval_contract(
+            manifest=manifest,
+            fixture_manifest=fixture_manifest,
+            repo_root=repo_root,
+        )
+    except (OSError, json.JSONDecodeError, EvaluationCaseError) as exc:
+        return {
+            "error": f"fixture approval contract unavailable: {exc}"
+        }
 
 
 def _mvp_scope_record_value(decision_record: str, label: str) -> str | None:
@@ -8121,6 +8208,7 @@ def mvp_scope_decision_input_failures(
     manifest: Mapping[str, object],
     manifest_source: str,
     role_permissions: Mapping[str, Iterable[str]],
+    fixture_contract: Mapping[str, object] | None = None,
 ) -> dict[str, tuple[str, ...]]:
     failures: dict[str, list[str]] = {
         "OD-TEMPLATES": [],
@@ -8189,10 +8277,16 @@ def mvp_scope_decision_input_failures(
         decision_record,
         "Approved manifest contract SHA-256",
     )
+    if fixture_contract is None:
+        fixture_contract = mvp_fixture_approval_contract_for_manifest(
+            manifest,
+            REPO_ROOT,
+        )
     manifest_contract = {
         field: manifest.get(field)
         for field in MVP_MANIFEST_DECISION_CONTRACT_FIELDS
     }
+    manifest_contract["fixture_approval_contract"] = dict(fixture_contract)
     actual_manifest_hash = _canonical_json_sha256(manifest_contract)
     if approved_manifest_hash != actual_manifest_hash:
         failures["OD-TEMPLATES"].append(
@@ -8407,6 +8501,10 @@ def build_mvp_acceptance_report(
     scope_decision_path = repo_root / DEFAULT_MVP_SCOPE_DECISIONS
     scope_decision_text = scope_decision_path.read_text(encoding="utf-8")
     manifest = load_json(manifest_path.resolve())
+    fixture_contract = mvp_fixture_approval_contract_for_manifest(
+        manifest,
+        repo_root,
+    )
     role_permissions = mvp_role_permissions_from_source(
         repo_root / "services" / "api" / "poc_web.py"
     )
@@ -8420,6 +8518,7 @@ def build_mvp_acceptance_report(
         manifest=manifest,
         manifest_source=manifest_source,
         role_permissions=role_permissions,
+        fixture_contract=fixture_contract,
     )
     harness = evaluate_mvp_harness(manifest_path)
     acceptance_items = mvp_acceptance_traceability_items(
@@ -8475,6 +8574,9 @@ def build_mvp_acceptance_report(
             "manifest_sha256": hashlib.sha256(
                 manifest_path.resolve().read_bytes()
             ).hexdigest(),
+            "fixture_approval_contract_sha256": _canonical_json_sha256(
+                fixture_contract
+            ),
             "dependency_set": dependency_set,
             "dependency_set_sha256": _canonical_json_sha256(dependency_set),
             "decision_set_sha256": _canonical_json_sha256(decision_set),
@@ -8586,6 +8688,30 @@ def current_stdout_path() -> Path | None:
     return None
 
 
+def git_path_is_tracked(repo_root: Path, path: Path) -> bool:
+    resolved_root = repo_root.resolve()
+    try:
+        relative_path = path.resolve().relative_to(resolved_root)
+    except (OSError, ValueError):
+        return False
+    try:
+        return subprocess.run(
+            [
+                "git",
+                "ls-files",
+                "--error-unmatch",
+                "--",
+                relative_path.as_posix(),
+            ],
+            cwd=repo_root,
+            check=False,
+            capture_output=True,
+            text=True,
+        ).returncode == 0
+    except OSError:
+        return True
+
+
 def git_status_exclude_pathspecs(
     repo_root: Path,
     ignored_paths: Iterable[Path],
@@ -8598,6 +8724,8 @@ def git_status_exclude_pathspecs(
             relative_ignored = resolved_ignored.relative_to(resolved_root)
         except (OSError, ValueError):
             continue
+        if git_path_is_tracked(repo_root, ignored_path):
+            continue
         pathspecs.append(f":(exclude){relative_ignored.as_posix()}")
     return pathspecs
 
@@ -8608,13 +8736,22 @@ def current_git_worktree_clean(
     ignored_paths: Iterable[Path] = (),
     include_untracked: bool = True,
 ) -> bool:
+    ignored_path_values = tuple(ignored_paths)
+    if any(
+        git_path_is_tracked(repo_root, path)
+        for path in ignored_path_values
+    ):
+        return False
     command = [
         "git",
         "status",
         "--porcelain",
         "--untracked-files=all" if include_untracked else "--untracked-files=no",
     ]
-    exclude_pathspecs = git_status_exclude_pathspecs(repo_root, ignored_paths)
+    exclude_pathspecs = git_status_exclude_pathspecs(
+        repo_root,
+        ignored_path_values,
+    )
     if exclude_pathspecs:
         command.extend(["--", ".", *exclude_pathspecs])
     try:
