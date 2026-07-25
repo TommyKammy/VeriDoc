@@ -24,9 +24,13 @@ fails closed with twelve `pass` and eight `fail`. The five-case metrics rollup
 passes with 56/56 quality matches, 12/12 provenance bindings, zero high-risk
 misses/auto-confirms, zero audit-level external-send guard violations, and all
 15 performance/size/timeout observations within the existing limits. Non-finite
-or negative observations and non-positive limits fail closed. The three
-approved `OD-*` items pass only while the live manifest, canonical efficiency- and
-segregation-scope sections, and `ROLE_PERMISSIONS` contracts match the
+or negative observations and non-positive limits fail closed. Missing case
+metrics invalidate every rollup dimension; observations are compared with their
+limits; and failed or negative external-send metrics cannot pass. A redirected
+report output is excluded from cleanliness while every other change remains
+fail-closed. The three approved `OD-*` items pass only while the live manifest,
+canonical efficiency- and segregation-scope sections, and `ROLE_PERMISSIONS`
+contracts match the
 revision-bound decision pins; scope drift fails the affected item until renewed
 approval. A passing harness case does not promote a broader 15.3 item whose
 required evidence remains incomplete. Missing/unknown metrics and case-level

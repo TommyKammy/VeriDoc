@@ -6226,7 +6226,7 @@ def mvp_metrics_rollup(
     ) -> dict[str, object]:
         numerator = 0
         denominator = 0
-        invalid_cases: list[str] = []
+        invalid_cases: list[str] = list(unknown_case_ids)
         failed_cases: list[str] = []
         for result, metrics in metrics_by_case:
             dimension = metrics.get(dimension_name)
@@ -6279,7 +6279,7 @@ def mvp_metrics_rollup(
         "provenance coverage",
     )
 
-    high_risk_unknown: list[str] = []
+    high_risk_unknown: list[str] = list(unknown_case_ids)
     high_risk_failed_cases: list[str] = []
     high_risk_target_count = 0
     high_risk_covered_count = 0
@@ -6378,7 +6378,8 @@ def mvp_metrics_rollup(
         "failure_reasons": high_risk_failures,
     }
 
-    external_unknown: list[str] = []
+    external_unknown: list[str] = list(unknown_case_ids)
+    external_failed_cases: list[str] = []
     external_send_count = 0
     for result, metrics in metrics_by_case:
         dimension = metrics.get("external_send")
@@ -6393,14 +6394,25 @@ def mvp_metrics_rollup(
             or dimension.get("status") not in {"pass", "fail"}
             or not isinstance(count, int)
             or isinstance(count, bool)
+            or count < 0
         ):
             external_unknown.append(case_id)
             continue
+        if dimension.get("status") == "fail":
+            external_failed_cases.append(case_id)
         external_send_count += count
     external_failures = [
         *(
             ["external-send metrics missing for: " + ", ".join(external_unknown)]
             if external_unknown
+            else []
+        ),
+        *(
+            [
+                "external-send metrics failed for: "
+                + ", ".join(external_failed_cases)
+            ]
+            if external_failed_cases
             else []
         ),
         *(
@@ -6414,7 +6426,7 @@ def mvp_metrics_rollup(
             "unknown"
             if external_unknown
             else "fail"
-            if external_send_count
+            if external_failed_cases or external_send_count
             else "pass"
         ),
         "external_send_count": external_send_count,
@@ -6423,10 +6435,11 @@ def mvp_metrics_rollup(
         "operator": "<=",
         "exclusions": [],
         "unknown_case_ids": external_unknown,
+        "failed_case_ids": external_failed_cases,
         "failure_reasons": external_failures,
     }
 
-    performance_unknown: list[str] = []
+    performance_unknown: list[str] = list(unknown_case_ids)
     performance_failures: list[str] = []
     maxima: dict[str, float | int] = {}
     limits: dict[str, int] = {}
@@ -6470,7 +6483,12 @@ def mvp_metrics_rollup(
                 continue
             observed_values.append(value)
             observed_limits.add(limit)
-            if dimension.get("status") != "pass":
+            if value > limit:
+                performance_failures.append(
+                    f"{case_id} {dimension_name} observation {value} "
+                    f"exceeds limit {limit}"
+                )
+            elif dimension.get("status") != "pass":
                 performance_failures.append(
                     str(
                         dimension.get("reason")
@@ -8335,6 +8353,9 @@ def build_mvp_acceptance_report(
             for result in harness.results
         },
     }
+    ignored_cleanliness_paths = tuple(
+        path for path in (current_stdout_path(),) if path is not None
+    )
     return MVPAcceptanceReport(
         harness=harness,
         traceability_source=traceability_source,
@@ -8345,7 +8366,10 @@ def build_mvp_acceptance_report(
         snapshot_metadata={
             "generated_at": datetime.now(UTC).isoformat(),
             "commit": current_git_commit(repo_root),
-            "worktree_clean": current_git_worktree_clean(repo_root),
+            "worktree_clean": current_git_worktree_clean(
+                repo_root,
+                ignored_paths=ignored_cleanliness_paths,
+            ),
             "manifest_revision": manifest.get("selection_revision"),
             "manifest_sha256": hashlib.sha256(
                 manifest_path.resolve().read_bytes()

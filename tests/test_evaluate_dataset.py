@@ -1215,6 +1215,38 @@ class EvaluateDatasetTest(unittest.TestCase):
                 item["evidence"]["decision_input_validation"],
             )
 
+    def test_mvp_acceptance_report_ignores_only_redirected_stdout_path(
+        self,
+    ) -> None:
+        generated_report = (
+            REPO_ROOT / "reports" / "mvp-acceptance-run.json"
+        )
+        with (
+            mock.patch.object(
+                evaluate_dataset,
+                "current_stdout_path",
+                return_value=generated_report,
+            ),
+            mock.patch.object(
+                evaluate_dataset,
+                "current_git_worktree_clean",
+                return_value=True,
+            ) as mocked_clean,
+        ):
+            report = evaluate_dataset.build_mvp_acceptance_report(
+                MVP_EVALUATION_MANIFEST_PATH
+            )
+
+        mocked_clean.assert_called_once_with(
+            REPO_ROOT,
+            ignored_paths=(generated_report,),
+        )
+        self.assertTrue(
+            report.as_dict()["evidence_snapshot"]["metadata"][
+                "worktree_clean"
+            ]
+        )
+
     def test_mvp_scope_decision_input_validation_fails_closed_on_drift(self) -> None:
         decision_record = MVP_SCOPE_DECISIONS_PATH.read_text(encoding="utf-8")
         manifest = json.loads(MVP_EVALUATION_MANIFEST_PATH.read_text(encoding="utf-8"))
@@ -1830,6 +1862,114 @@ class EvaluateDatasetTest(unittest.TestCase):
                         rollup["dimensions"]["performance"]["unknown"],
                     )
                     self.assertNotEqual("pass", rollup["status"])
+
+            with self.subTest(
+                dimension=dimension_name,
+                over_limit_status="pass",
+            ):
+                malformed = json.loads(json.dumps(harness_payload))
+                dimension = malformed["results"][0]["metrics"]["performance"][
+                    "dimensions"
+                ][dimension_name]
+                dimension[value_field] = dimension[limit_field] + 1
+                dimension["status"] = "pass"
+                rollup = evaluate_dataset.mvp_metrics_rollup(malformed)
+                self.assertEqual(
+                    "fail",
+                    rollup["dimensions"]["performance"]["status"],
+                )
+                self.assertTrue(
+                    any(
+                        "exceeds limit" in reason
+                        for reason in rollup["dimensions"]["performance"][
+                            "failure_reasons"
+                        ]
+                    )
+                )
+                self.assertNotEqual("pass", rollup["status"])
+
+    def test_mvp_metrics_rollup_invalidates_dimensions_without_case_metrics(
+        self,
+    ) -> None:
+        harness_payload = evaluate_dataset.evaluate_mvp_harness(
+            MVP_EVALUATION_MANIFEST_PATH
+        ).as_dict()
+        missing_metrics = json.loads(json.dumps(harness_payload))
+        del missing_metrics["results"][0]["metrics"]
+
+        rollup = evaluate_dataset.mvp_metrics_rollup(missing_metrics)
+        dimensions = rollup["dimensions"]
+        for dimension_name in (
+            "quality",
+            "provenance",
+            "high_risk",
+            "external_send",
+            "performance",
+        ):
+            with self.subTest(dimension=dimension_name):
+                dimension = dimensions[dimension_name]
+                self.assertEqual("unknown", dimension["status"])
+                unknown_key = (
+                    "unknown"
+                    if dimension_name == "performance"
+                    else "unknown_case_ids"
+                )
+                self.assertIn("mvp-word-001", dimension[unknown_key])
+
+        traceability = MVP_ACCEPTANCE_TRACEABILITY_PATH.read_text(
+            encoding="utf-8"
+        )
+        items = evaluate_dataset.mvp_acceptance_traceability_items(traceability)
+        effective_items = evaluate_dataset.mvp_acceptance_items_with_rollup(
+            items,
+            rollup,
+        )
+        effective_by_id = {
+            item["item_id"]: item for item in effective_items
+        }
+        for item_id in evaluate_dataset.MVP_METRIC_BACKED_ITEM_DIMENSIONS:
+            with self.subTest(item_id=item_id):
+                self.assertEqual("fail", effective_by_id[item_id]["decision"])
+
+    def test_mvp_metrics_rollup_rejects_invalid_external_send_values(
+        self,
+    ) -> None:
+        harness_payload = evaluate_dataset.evaluate_mvp_harness(
+            MVP_EVALUATION_MANIFEST_PATH
+        ).as_dict()
+
+        failed_status = json.loads(json.dumps(harness_payload))
+        failed_dimension = failed_status["results"][0]["metrics"][
+            "external_send"
+        ]
+        failed_dimension["status"] = "fail"
+        failed_dimension["external_send_count"] = 0
+        failed_rollup = evaluate_dataset.mvp_metrics_rollup(failed_status)
+        self.assertEqual(
+            "fail",
+            failed_rollup["dimensions"]["external_send"]["status"],
+        )
+        self.assertEqual(
+            ["mvp-word-001"],
+            failed_rollup["dimensions"]["external_send"]["failed_case_ids"],
+        )
+
+        negative_count = json.loads(json.dumps(harness_payload))
+        negative_count["results"][0]["metrics"]["external_send"][
+            "external_send_count"
+        ] = -1
+        negative_rollup = evaluate_dataset.mvp_metrics_rollup(negative_count)
+        self.assertEqual(
+            "unknown",
+            negative_rollup["dimensions"]["external_send"]["status"],
+        )
+        self.assertEqual(
+            ["mvp-word-001"],
+            negative_rollup["dimensions"]["external_send"][
+                "unknown_case_ids"
+            ],
+        )
+        self.assertNotEqual("pass", negative_rollup["status"])
 
     def test_mvp_case_metrics_counts_persisted_high_risk_decisions_by_item(
         self,
