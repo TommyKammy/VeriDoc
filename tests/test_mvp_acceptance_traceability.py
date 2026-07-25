@@ -219,6 +219,7 @@ class MvpAcceptanceTraceabilityDocsTest(unittest.TestCase):
             "fixture_manifest",
             "source_policy",
             "confidential_source_documents_allowed",
+            "acceptance_limits",
             "required_categories",
             "cases",
         )

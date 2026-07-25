@@ -25,9 +25,11 @@ passes with 56/56 quality matches, 12/12 provenance bindings, zero high-risk
 misses/auto-confirms, zero audit-level external-send guard violations, and all
 15 performance/size/timeout observations within the existing limits. Non-finite
 or negative observations and non-positive limits fail closed. Missing case
-metrics invalidate every rollup dimension; observations are compared with their
-limits; and failed or negative external-send metrics cannot pass. A redirected
-report output is excluded from cleanliness while every other change remains
+metrics invalidate every rollup dimension; observations and limits are compared
+with the fixed approved contract; and failed or negative external-send metrics
+cannot pass. Missing LLM guard evidence is unknown, and AC-REVIEW requires both
+the live review evaluation and high-risk guard to pass. A redirected report
+output is excluded from cleanliness while every other change remains
 fail-closed. The three approved `OD-*` items pass only while the live manifest,
 canonical efficiency- and segregation-scope sections, and `ROLE_PERMISSIONS`
 contracts match the

@@ -54,6 +54,11 @@ MVP_ACCEPTANCE_REPORT_SCHEMA_VERSION = "veridoc-mvp-acceptance-report/v1"
 MVP_METRICS_ROLLUP_SCHEMA_VERSION = "veridoc-mvp-metrics-rollup/v1"
 MVP_QUALITY_AGREEMENT_THRESHOLD = 0.80
 MVP_PROVENANCE_COVERAGE_THRESHOLD = 0.95
+MVP_APPROVED_PERFORMANCE_LIMITS = {
+    "input_size": 2 * 1024 * 1024,
+    "processing_time": 10_000,
+    "timeout": 30_000,
+}
 MVP_REQUIRED_CATEGORIES = frozenset(
     {"word", "excel", "text_pdf", "scanned_pdf", "record_pdf"}
 )
@@ -61,7 +66,7 @@ MVP_METRIC_BACKED_ITEM_DIMENSIONS = {
     "AC-TEMPLATE": ("completeness", "case_acceptance"),
     "AC-QUALITY": ("quality",),
     "AC-PROVENANCE": ("provenance",),
-    "AC-REVIEW": ("high_risk",),
+    "AC-REVIEW": ("review", "high_risk"),
     "AC-PERFORMANCE": ("performance",),
     "FC-HIGH-RISK": ("high_risk",),
 }
@@ -4609,15 +4614,27 @@ def p9_result_for_unavailable_fixture(
     }
 
 
-def p9_external_ai_api_guard_violation(audit: dict[str, Any] | None) -> bool:
+def p9_external_ai_api_guard_observation(
+    audit: dict[str, Any] | None,
+) -> bool | None:
     if not isinstance(audit, dict):
-        return False
+        return None
     llm_audit = audit.get("llm")
     if not isinstance(llm_audit, dict):
+        return None
+    enabled = llm_audit.get("enabled")
+    if enabled is False:
         return False
-    if llm_audit.get("enabled") is not True:
-        return False
-    return llm_audit.get("base_url_type") != "local"
+    if enabled is not True:
+        return None
+    base_url_type = llm_audit.get("base_url_type")
+    if not isinstance(base_url_type, str) or not base_url_type:
+        return None
+    return base_url_type != "local"
+
+
+def p9_external_ai_api_guard_violation(audit: dict[str, Any] | None) -> bool:
+    return p9_external_ai_api_guard_observation(audit) is True
 
 
 def p9_expectations_for_mode(
@@ -6040,7 +6057,11 @@ def mvp_case_metrics(
     }
 
     audit = converted.get("audit")
-    if not isinstance(audit, dict):
+    guard_observation = p9_external_ai_api_guard_observation(
+        audit if isinstance(audit, dict) else None
+    )
+    if guard_observation is None:
+        reason = "conversion audit LLM guard is missing or malformed"
         external_send = {
             "status": "unknown",
             "external_send_count": None,
@@ -6048,12 +6069,12 @@ def mvp_case_metrics(
             "limit": 0,
             "operator": "<=",
             "exclusions": [],
-            "unknown": ["conversion audit is missing or malformed"],
-            "failure_reasons": ["conversion audit is missing or malformed"],
+            "unknown": [reason],
+            "failure_reasons": [reason],
             "basis": "conversion_audit_external_ai_api_guard",
         }
     else:
-        external_send_count = int(p9_external_ai_api_guard_violation(audit))
+        external_send_count = int(guard_observation)
         external_send = {
             "status": "pass" if external_send_count == 0 else "fail",
             "external_send_count": external_send_count,
@@ -6069,6 +6090,33 @@ def mvp_case_metrics(
             ),
             "basis": "conversion_audit_external_ai_api_guard",
         }
+
+    review_evaluation = evaluations.get("review")
+    review_status = (
+        review_evaluation.get("status")
+        if isinstance(review_evaluation, Mapping)
+        else None
+    )
+    review_reason = (
+        str(review_evaluation.get("reason") or "review evaluation did not pass")
+        if isinstance(review_evaluation, Mapping)
+        else "review evaluation is missing or malformed"
+    )
+    review = {
+        "status": (
+            str(review_status)
+            if review_status in {"pass", "fail"}
+            else "unknown"
+        ),
+        "denominator": 1,
+        "exclusions": [],
+        "unknown": (
+            [] if review_status in {"pass", "fail"} else [review_reason]
+        ),
+        "failure_reasons": (
+            [review_reason] if review_status == "fail" else []
+        ),
+    }
 
     performance_dimensions = {
         key: dict(evaluations.get(key, {}))
@@ -6099,6 +6147,7 @@ def mvp_case_metrics(
     dimensions = {
         "quality": quality,
         "provenance": provenance,
+        "review": review,
         "high_risk": high_risk,
         "external_send": external_send,
         "performance": performance,
@@ -6278,6 +6327,47 @@ def mvp_metrics_rollup(
         MVP_PROVENANCE_COVERAGE_THRESHOLD,
         "provenance coverage",
     )
+
+    review_unknown: list[str] = list(unknown_case_ids)
+    review_failed_cases: list[str] = []
+    for result, metrics in metrics_by_case:
+        dimension = metrics.get("review")
+        case_id = str(result.get("case_id") or "<unknown>")
+        if (
+            not isinstance(dimension, Mapping)
+            or dimension.get("status") not in {"pass", "fail"}
+        ):
+            review_unknown.append(case_id)
+            continue
+        if dimension.get("status") == "fail":
+            review_failed_cases.append(case_id)
+    review_failures = [
+        *(
+            ["review metrics missing for: " + ", ".join(review_unknown)]
+            if review_unknown
+            else []
+        ),
+        *(
+            ["review failed for: " + ", ".join(review_failed_cases)]
+            if review_failed_cases
+            else []
+        ),
+    ]
+    review = {
+        "status": (
+            "unknown"
+            if review_unknown
+            else "fail"
+            if review_failed_cases
+            else "pass"
+        ),
+        "denominator": len(metrics_by_case),
+        "exclusions": [],
+        "unknown": review_unknown,
+        "unknown_case_ids": review_unknown,
+        "failed_case_ids": review_failed_cases,
+        "failure_reasons": review_failures,
+    }
 
     high_risk_unknown: list[str] = list(unknown_case_ids)
     high_risk_failed_cases: list[str] = []
@@ -6498,7 +6588,14 @@ def mvp_metrics_rollup(
         if observed_values:
             maxima[dimension_name] = max(observed_values)
         if len(observed_limits) == 1:
-            limits[dimension_name] = next(iter(observed_limits))
+            observed_limit = next(iter(observed_limits))
+            limits[dimension_name] = observed_limit
+            approved_limit = MVP_APPROVED_PERFORMANCE_LIMITS[dimension_name]
+            if observed_limit != approved_limit:
+                performance_failures.append(
+                    f"{dimension_name} limit {observed_limit} does not match "
+                    f"approved limit {approved_limit}"
+                )
         else:
             performance_unknown.append(f"rollup:{dimension_name}:limit")
     performance = {
@@ -6522,6 +6619,7 @@ def mvp_metrics_rollup(
         "case_acceptance": case_acceptance,
         "quality": quality,
         "provenance": provenance,
+        "review": review,
         "high_risk": high_risk,
         "external_send": external_send,
         "performance": performance,
@@ -6965,6 +7063,8 @@ def mvp_audit_failures(
         return ["conversion audit missing"]
 
     failures: list[str] = []
+    if p9_external_ai_api_guard_observation(audit) is None:
+        failures.append("conversion audit LLM guard is missing or malformed")
     expected_sha256 = hashlib.sha256(fixture_content).hexdigest()
     expected_conversion_id = converted.get("conversion_id")
     if not isinstance(expected_conversion_id, str) or not expected_conversion_id:
@@ -7863,13 +7963,14 @@ MVP_MANIFEST_DECISION_CONTRACT_FIELDS = (
     "fixture_manifest",
     "source_policy",
     "confidential_source_documents_allowed",
+    "acceptance_limits",
     "required_categories",
     "cases",
 )
 MVP_SCOPE_DECISION_APPROVED_CONTRACTS = {
     "p12g-02-v1": {
         "Approved manifest contract SHA-256": (
-            "18996f997b7f6f9909ae2cd9f98a992713f76e7d95057ca5116f365bc8a88a75"
+            "9ba5fef2143e67739f6b6afca62f5670dbefc6c56493f9ba1d158b077731f1ca"
         ),
         "Approved OD-EFFICIENCY-SCOPE contract SHA-256": (
             "3d9d05671895ec8d6e8b14f44b6a8dd7f99aa17b7b65871b78fb56a49966b6fb"

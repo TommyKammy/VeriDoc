@@ -22,7 +22,7 @@ pins.
 - Target manifest: `datasets/mvp_evaluation_manifest_v1.json`
 - Target manifest revision: `phase12-mvp-v1`
 - Target manifest Git blob: `13450762d323198b1b6e87315be173c784fc4880`
-- Approved manifest contract SHA-256: `18996f997b7f6f9909ae2cd9f98a992713f76e7d95057ca5116f365bc8a88a75`
+- Approved manifest contract SHA-256: `9ba5fef2143e67739f6b6afca62f5670dbefc6c56493f9ba1d158b077731f1ca`
 - Approved OD-EFFICIENCY-SCOPE contract SHA-256: `3d9d05671895ec8d6e8b14f44b6a8dd7f99aa17b7b65871b78fb56a49966b6fb`
 - Approved OD-SEGREGATION contract SHA-256: `74d83d2d028c1ba79fffd6742ab9f13f7e345932248e36b86289e16c93a01476`
 - Approved ROLE_PERMISSIONS contract SHA-256: `dad052a8f6fe7acd549b2fa974c20e09b702fbcf31917deecf1636db61dfb322`

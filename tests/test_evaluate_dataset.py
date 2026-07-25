@@ -1375,6 +1375,13 @@ class EvaluateDatasetTest(unittest.TestCase):
                     "datasets/fixtures/word/changed.docx",
                 ),
             ),
+            (
+                "acceptance limit",
+                lambda changed: changed["acceptance_limits"].__setitem__(
+                    "representative_processing_time_ms",
+                    60 * 60 * 1000,
+                ),
+            ),
         ):
             with self.subTest(drift=label):
                 drifted_manifest = copy.deepcopy(manifest)
@@ -1635,6 +1642,10 @@ class EvaluateDatasetTest(unittest.TestCase):
                     dimension_status=dimension_status,
                 ):
                     failing_rollup = json.loads(json.dumps(rollup))
+                    for required_dimension in required_dimensions:
+                        failing_rollup["dimensions"][required_dimension][
+                            "status"
+                        ] = "pass"
                     failing_rollup["dimensions"][required_dimensions[0]][
                         "status"
                     ] = dimension_status
@@ -1888,6 +1899,35 @@ class EvaluateDatasetTest(unittest.TestCase):
                 )
                 self.assertNotEqual("pass", rollup["status"])
 
+            with self.subTest(
+                dimension=dimension_name,
+                unapproved_limit=True,
+            ):
+                malformed = json.loads(json.dumps(harness_payload))
+                approved_limit = (
+                    evaluate_dataset.MVP_APPROVED_PERFORMANCE_LIMITS[
+                        dimension_name
+                    ]
+                )
+                for result in malformed["results"]:
+                    result["metrics"]["performance"]["dimensions"][
+                        dimension_name
+                    ][limit_field] = approved_limit * 2
+                rollup = evaluate_dataset.mvp_metrics_rollup(malformed)
+                self.assertEqual(
+                    "fail",
+                    rollup["dimensions"]["performance"]["status"],
+                )
+                self.assertTrue(
+                    any(
+                        "does not match approved limit" in reason
+                        for reason in rollup["dimensions"]["performance"][
+                            "failure_reasons"
+                        ]
+                    )
+                )
+                self.assertNotEqual("pass", rollup["status"])
+
     def test_mvp_metrics_rollup_invalidates_dimensions_without_case_metrics(
         self,
     ) -> None:
@@ -1930,6 +1970,52 @@ class EvaluateDatasetTest(unittest.TestCase):
         for item_id in evaluate_dataset.MVP_METRIC_BACKED_ITEM_DIMENSIONS:
             with self.subTest(item_id=item_id):
                 self.assertEqual("fail", effective_by_id[item_id]["decision"])
+
+    def test_mvp_metrics_rollup_requires_live_review_success(
+        self,
+    ) -> None:
+        harness_payload = evaluate_dataset.evaluate_mvp_harness(
+            MVP_EVALUATION_MANIFEST_PATH
+        ).as_dict()
+        failed_review = json.loads(json.dumps(harness_payload))
+        for result in failed_review["results"]:
+            result["metrics"]["review"]["status"] = "pass"
+        failed_review["results"][0]["metrics"]["review"]["status"] = "fail"
+        failed_review["results"][0]["metrics"]["review"][
+            "failure_reasons"
+        ] = ["authoritative review decision is required"]
+
+        rollup = evaluate_dataset.mvp_metrics_rollup(failed_review)
+        self.assertEqual("fail", rollup["dimensions"]["review"]["status"])
+        self.assertEqual(
+            ["mvp-word-001"],
+            rollup["dimensions"]["review"]["failed_case_ids"],
+        )
+        self.assertEqual(
+            "pass",
+            rollup["dimensions"]["high_risk"]["status"],
+        )
+
+        traceability = MVP_ACCEPTANCE_TRACEABILITY_PATH.read_text(
+            encoding="utf-8"
+        )
+        items = evaluate_dataset.mvp_acceptance_traceability_items(traceability)
+        effective_items = evaluate_dataset.mvp_acceptance_items_with_rollup(
+            items,
+            rollup,
+        )
+        review_item = next(
+            item
+            for item in effective_items
+            if item["item_id"] == "AC-REVIEW"
+        )
+        self.assertEqual("fail", review_item["decision"])
+        validation = review_item["evidence"]["metrics_rollup_validation"]
+        self.assertEqual("fail", validation["dimension_statuses"]["review"])
+        self.assertEqual(
+            "pass",
+            validation["dimension_statuses"]["high_risk"],
+        )
 
     def test_mvp_metrics_rollup_rejects_invalid_external_send_values(
         self,
@@ -1995,7 +2081,10 @@ class EvaluateDatasetTest(unittest.TestCase):
                 "timeout_ms": 30_000,
                 "reason": None,
             },
-            "review": {"ocr_boundary": {"status": "not_applicable"}},
+            "review": {
+                "status": "pass",
+                "ocr_boundary": {"status": "not_applicable"},
+            },
         }
         converted = {
             "status": "requires_review",
@@ -2022,6 +2111,24 @@ class EvaluateDatasetTest(unittest.TestCase):
             evaluations=evaluations,
         )
         self.assertEqual("pass", metrics["status"])
+
+        missing_llm_audit = copy.deepcopy(converted)
+        del missing_llm_audit["audit"]["llm"]
+        missing_llm_metrics = evaluate_dataset.mvp_case_metrics(
+            converted=missing_llm_audit,
+            fixture_content=fixture_content,
+            content_validation=content_validation,
+            review_items=[{"high_risk": True}],
+            authoritative_decisions=[{"decision": "approved"}],
+            evaluations=evaluations,
+        )
+        self.assertEqual("unknown", missing_llm_metrics["status"])
+        self.assertEqual(
+            "unknown",
+            missing_llm_metrics["external_send"]["status"],
+        )
+        self.assertTrue(missing_llm_metrics["external_send"]["unknown"])
+
         self.assertEqual(
             {
                 "target_count": 1,
