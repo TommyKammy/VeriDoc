@@ -5905,6 +5905,9 @@ def mvp_case_metrics(
     expected_high_risk_targets: object,
     authoritative_decisions: list[dict[str, object]],
     evaluations: Mapping[str, Mapping[str, object]],
+    authoritative_decisions_by_index: (
+        Mapping[int, Mapping[str, object]] | None
+    ) = None,
 ) -> dict[str, object]:
     evidence = content_validation.get("evidence")
     validation_evidence = evidence if isinstance(evidence, Mapping) else {}
@@ -6010,15 +6013,22 @@ def mvp_case_metrics(
             )
 
     expected_high_risk_indices = set(review_item_indices_by_target.values())
+    decisions_by_index = (
+        {
+            index: decision
+            for index, decision in enumerate(authoritative_decisions)
+        }
+        if authoritative_decisions_by_index is None
+        else authoritative_decisions_by_index
+    )
     persisted_high_risk_indices = {
         index
-        for index, (review_item, decision) in enumerate(
-            zip(review_item_values, authoritative_decisions)
-        )
+        for index, review_item in enumerate(review_item_values)
         if isinstance(review_item, Mapping)
         and index in expected_high_risk_indices
-        and isinstance(decision, Mapping)
-        and decision.get("decision") in {"approved", "rejected", "needs_fix"}
+        and isinstance(decisions_by_index.get(index), Mapping)
+        and decisions_by_index[index].get("decision")
+        in {"approved", "rejected", "needs_fix"}
     }
     explicitly_auto_confirmed_indices = {
         index
@@ -7422,7 +7432,6 @@ def mvp_scanned_pdf_boundary_evaluation(
     review_item_warning_matches = (
         bool(affected_ids)
         and isinstance(review_items, list)
-        and len(review_items) == len(affected_ids)
         and len(affected_review_items) == len(affected_ids)
         and set(affected_review_item_ids) == affected_ids
         and all(
@@ -7560,6 +7569,36 @@ def mvp_scanned_pdf_boundary_evaluation(
             "content_validator": content_validation.get("validator"),
         },
         "failures": failures,
+    }
+
+
+def mvp_accepted_ocr_boundary_review_item_indices(
+    review_items: object,
+    ocr_boundary_evaluation: Mapping[str, Any],
+) -> set[int]:
+    if (
+        not isinstance(review_items, list)
+        or ocr_boundary_evaluation.get("status") != "pass"
+    ):
+        return set()
+    evidence = ocr_boundary_evaluation.get("evidence")
+    affected_block_ids = (
+        evidence.get("affected_block_ids")
+        if isinstance(evidence, Mapping)
+        else None
+    )
+    if not isinstance(affected_block_ids, list):
+        return set()
+    affected_ids = {
+        block_id
+        for block_id in affected_block_ids
+        if isinstance(block_id, str) and block_id
+    }
+    return {
+        index
+        for index, review_item in enumerate(review_items)
+        if isinstance(review_item, Mapping)
+        and review_item.get("block_id") in affected_ids
     }
 
 
@@ -7706,23 +7745,48 @@ def mvp_conversion_result(
     if ocr_boundary_evaluation["status"] == "fail":
         review_failures.extend(ocr_boundary_evaluation["failures"])
     authoritative_decisions: list[dict[str, object]] = []
-    uses_accepted_ocr_boundary = ocr_boundary_evaluation["status"] == "pass"
-    if not review_failures and review_items_count and not uses_accepted_ocr_boundary:
+    authoritative_decisions_by_index: dict[int, dict[str, object]] = {}
+    ocr_boundary_review_item_indices = (
+        mvp_accepted_ocr_boundary_review_item_indices(
+            review_items,
+            ocr_boundary_evaluation,
+        )
+    )
+    decision_required_review_items = (
+        [
+            review_item
+            for index, review_item in enumerate(review_items)
+            if index not in ocr_boundary_review_item_indices
+        ]
+        if isinstance(review_items, list)
+        else []
+    )
+    if not review_failures and decision_required_review_items:
         try:
             authoritative_decisions = mvp_record_authoritative_review_decisions(
                 case,
                 converted=converted,
                 fixture_path=fixture_path,
                 fixture_content=fixture_content,
-                review_items=review_items,
+                review_items=decision_required_review_items,
                 artifacts=artifact_list,
             )
+            authoritative_decisions_by_index = {
+                review_item_index: decision
+                for review_item_index, decision in zip(
+                    (
+                        index
+                        for index in range(review_items_count)
+                        if index not in ocr_boundary_review_item_indices
+                    ),
+                    authoritative_decisions,
+                )
+            }
         except (PermissionError, RuntimeError, ValueError) as exc:
             review_failures.append(str(exc))
     if (
         not review_failures
-        and not uses_accepted_ocr_boundary
-        and review_items_count != len(authoritative_decisions)
+        and len(decision_required_review_items) != len(authoritative_decisions)
     ):
         review_failures.append(
             "authoritative decision missing for one or more review items"
@@ -7793,6 +7857,7 @@ def mvp_conversion_result(
         expected_high_risk_targets=case["expected_high_risk_targets"],
         authoritative_decisions=authoritative_decisions,
         evaluations=evaluations,
+        authoritative_decisions_by_index=authoritative_decisions_by_index,
     )
     acceptance_status = mvp_acceptance_status(
         (

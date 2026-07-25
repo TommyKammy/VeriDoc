@@ -2422,32 +2422,34 @@ class EvaluateDatasetTest(unittest.TestCase):
             "status": "pass",
             "evidence": {"affected_block_ids": ["ocr-block"]},
         }
+        ocr_review_items = [
+            {
+                "document_id": "synthetic-document",
+                "block_id": "ocr-block",
+            },
+            {
+                "document_id": "synthetic-document",
+                "block_id": "unrelated-block",
+            },
+        ]
+        ocr_expected_high_risk_targets = [
+            {
+                "id": "ocr-block",
+                "document_id": "synthetic-document",
+                "block_id": "ocr-block",
+            },
+            {
+                "id": "unrelated-block",
+                "document_id": "synthetic-document",
+                "block_id": "unrelated-block",
+            },
+        ]
         ocr_boundary_metrics = evaluate_dataset.mvp_case_metrics(
             converted=converted,
             fixture_content=fixture_content,
             content_validation=content_validation,
-            review_items=[
-                {
-                    "document_id": "synthetic-document",
-                    "block_id": "ocr-block",
-                },
-                {
-                    "document_id": "synthetic-document",
-                    "block_id": "unrelated-block",
-                },
-            ],
-            expected_high_risk_targets=[
-                {
-                    "id": "ocr-block",
-                    "document_id": "synthetic-document",
-                    "block_id": "ocr-block",
-                },
-                {
-                    "id": "unrelated-block",
-                    "document_id": "synthetic-document",
-                    "block_id": "unrelated-block",
-                },
-            ],
+            review_items=ocr_review_items,
+            expected_high_risk_targets=ocr_expected_high_risk_targets,
             authoritative_decisions=[],
             evaluations=ocr_evaluations,
         )
@@ -2460,6 +2462,31 @@ class EvaluateDatasetTest(unittest.TestCase):
             },
             {
                 key: ocr_boundary_metrics["high_risk"][key]
+                for key in ("target_count", "covered_count", "miss_count")
+            },
+        )
+        ocr_boundary_decided_metrics = evaluate_dataset.mvp_case_metrics(
+            converted=converted,
+            fixture_content=fixture_content,
+            content_validation=content_validation,
+            review_items=ocr_review_items,
+            expected_high_risk_targets=ocr_expected_high_risk_targets,
+            authoritative_decisions=[{"decision": "approved"}],
+            authoritative_decisions_by_index={1: {"decision": "approved"}},
+            evaluations=ocr_evaluations,
+        )
+        self.assertEqual(
+            "pass",
+            ocr_boundary_decided_metrics["high_risk"]["status"],
+        )
+        self.assertEqual(
+            {
+                "target_count": 2,
+                "covered_count": 2,
+                "miss_count": 0,
+            },
+            {
+                key: ocr_boundary_decided_metrics["high_risk"][key]
                 for key in ("target_count", "covered_count", "miss_count")
             },
         )
@@ -3304,6 +3331,92 @@ class EvaluateDatasetTest(unittest.TestCase):
             result["evaluations"]["review"]["ocr_boundary"]["metrics"][
                 "source_linkage_rate"
             ],
+        )
+
+    @unittest.skipUnless(PYMUPDF_AVAILABLE, "PyMuPDF eval dependency is not installed")
+    def test_scanned_pdf_ocr_boundary_only_exempts_affected_review_items(
+        self,
+    ) -> None:
+        from services.api.poc_web import convert_uploaded_document
+
+        case = self.valid_mvp_case(3)
+        fixture_path = REPO_ROOT / str(case["fixture_path"])
+        converted = convert_uploaded_document(
+            filename=fixture_path.name,
+            content=fixture_path.read_bytes(),
+            conversion_mode=str(case["conversion_mode"]),
+        )
+        converted["review_items"].append(
+            {
+                "id": "review-item-outside-ocr-boundary",
+                "document_id": "scanned-pdf-representative",
+                "block_id": "block-outside-ocr-boundary",
+                "reason": "unrelated content requires manual review",
+            }
+        )
+        converted["audit"]["review_items"]["count"] = len(
+            converted["review_items"]
+        )
+
+        with mock.patch(
+            "services.api.poc_web.convert_uploaded_document",
+            return_value=converted,
+        ):
+            missing_decision_result = evaluate_dataset.mvp_conversion_result(
+                case,
+                fixture_path=fixture_path,
+                acceptance_limits=self.valid_mvp_acceptance_limits(),
+            )
+
+        self.assertEqual(
+            "pass",
+            missing_decision_result["evaluations"]["review"]["ocr_boundary"][
+                "status"
+            ],
+        )
+        self.assertEqual(
+            "fail",
+            missing_decision_result["evaluations"]["review"]["status"],
+        )
+        self.assertIn(
+            "authoritative review decision is required",
+            missing_decision_result["evaluations"]["review"]["reason"],
+        )
+        self.assertEqual([], missing_decision_result["review_decisions"])
+
+        approved_case = copy.deepcopy(case)
+        approved_case["review_decision"] = copy.deepcopy(
+            self.valid_mvp_case(0)["review_decision"]
+        )
+        with mock.patch(
+            "services.api.poc_web.convert_uploaded_document",
+            return_value=copy.deepcopy(converted),
+        ):
+            approved_result = evaluate_dataset.mvp_conversion_result(
+                approved_case,
+                fixture_path=fixture_path,
+                acceptance_limits=self.valid_mvp_acceptance_limits(),
+            )
+
+        self.assertEqual("pass", approved_result["acceptance_status"])
+        self.assertEqual(
+            "pass",
+            approved_result["evaluations"]["review"]["status"],
+        )
+        self.assertEqual(1, len(approved_result["review_decisions"]))
+        self.assertEqual(
+            "approved",
+            approved_result["review_decisions"][0]["decision"],
+        )
+        self.assertEqual(
+            evaluate_dataset.mvp_review_item_version(
+                converted["review_items"][1]
+            ),
+            approved_result["review_decisions"][0]["item_version"],
+        )
+        self.assertEqual(
+            1,
+            approved_result["metrics"]["high_risk"]["covered_count"],
         )
 
     @unittest.skipUnless(PYMUPDF_AVAILABLE, "PyMuPDF eval dependency is not installed")
