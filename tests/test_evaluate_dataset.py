@@ -1769,7 +1769,7 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertIn("quality=fail", items_by_id["AC-QUALITY"]["unmet"])
         self.assertEqual("pass", items_by_id["AC-PROVENANCE"]["decision"])
         self.assertEqual(
-            {"pass": 11, "fail": 9},
+            {"pass": 10, "fail": 10},
             payload["summary"]["decision_counts"],
         )
 
