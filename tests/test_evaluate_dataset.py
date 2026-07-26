@@ -1082,6 +1082,81 @@ class EvaluateDatasetTest(unittest.TestCase):
             payload["evidence_snapshot"]["harness_schema_version"],
         )
         self.assertRegex(payload["evidence_snapshot"]["sha256"], r"^[0-9a-f]{64}$")
+        rollup = payload["evidence_snapshot"]["metrics_rollup"]
+        metadata = payload["evidence_snapshot"]["metadata"]
+        self.assertEqual(
+            "veridoc-mvp-metrics-rollup/v1",
+            rollup["schema_version"],
+        )
+        self.assertEqual(
+            (
+                "pass"
+                if (
+                    metadata["worktree_clean"]
+                    and metadata["evaluator_commit_is_clean"]
+                )
+                else "fail"
+            ),
+            rollup["status"],
+        )
+        self.assertEqual(
+            (
+                "pass"
+                if (
+                    metadata["worktree_clean"]
+                    and metadata["evaluator_commit_is_clean"]
+                )
+                else "fail"
+            ),
+            rollup["dimensions"]["snapshot_integrity"]["status"],
+        )
+        self.assertEqual(5, len(rollup["case_results"]))
+        self.assertEqual(
+            {"pass"},
+            {case_result["status"] for case_result in rollup["case_results"]},
+        )
+        dimensions = rollup["dimensions"]
+        self.assertEqual((56, 56), (
+            dimensions["quality"]["numerator"],
+            dimensions["quality"]["denominator"],
+        ))
+        self.assertGreaterEqual(dimensions["quality"]["rate"], 0.80)
+        self.assertEqual((12, 12), (
+            dimensions["provenance"]["numerator"],
+            dimensions["provenance"]["denominator"],
+        ))
+        self.assertGreaterEqual(dimensions["provenance"]["rate"], 0.95)
+        self.assertEqual(0, dimensions["high_risk"]["miss_count"])
+        self.assertEqual(0, dimensions["high_risk"]["auto_confirmed_count"])
+        self.assertEqual(0, dimensions["external_send"]["external_send_count"])
+        self.assertEqual(
+            {
+                "input_size": 2 * 1024 * 1024,
+                "processing_time": 10_000,
+                "timeout": 30_000,
+            },
+            dimensions["performance"]["limits"],
+        )
+        self.assertTrue(
+            all(
+                not dimension["unknown"]
+                for dimension in dimensions.values()
+                if "unknown" in dimension
+            )
+        )
+        self.assertRegex(metadata["commit"], r"^[0-9a-f]{40}$")
+        self.assertEqual("phase12-mvp-v1", metadata["manifest_revision"])
+        self.assertRegex(metadata["manifest_sha256"], r"^[0-9a-f]{64}$")
+        self.assertRegex(metadata["dependency_set_sha256"], r"^[0-9a-f]{64}$")
+        self.assertRegex(metadata["decision_set_sha256"], r"^[0-9a-f]{64}$")
+        self.assertEqual(
+            {
+                "requirements.txt",
+                "requirements-pdf-eval.txt",
+                "requirements-browser-e2e.txt",
+            },
+            set(metadata["dependency_set"]),
+        )
         self.assertEqual(
             "docs/mvp-scope-decisions.md",
             payload["evidence_snapshot"]["scope_decision_source"],
@@ -1124,7 +1199,7 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertEqual([], payload["carryovers"]["phase14"])
         self.assertEqual("fail", payload["summary"]["overall_decision"])
         self.assertEqual(
-            {"pass": 6, "fail": 14},
+            {"pass": 11, "fail": 9},
             payload["summary"]["decision_counts"],
         )
         self.assertEqual(
@@ -1148,15 +1223,81 @@ class EvaluateDatasetTest(unittest.TestCase):
             },
             set(open_decisions),
         )
-        for item in open_decisions.values():
+        self.assertEqual("fail", open_decisions["OD-TEMPLATES"]["decision"])
+        self.assertEqual(
+            "fail",
+            open_decisions["OD-TEMPLATES"]["evidence"][
+                "decision_input_validation"
+            ]["status"],
+        )
+        for item_id in ("OD-EFFICIENCY-SCOPE", "OD-SEGREGATION"):
             self.assertEqual(
                 {"status": "pass", "failures": []},
-                item["evidence"]["decision_input_validation"],
+                open_decisions[item_id]["evidence"]["decision_input_validation"],
             )
+
+    def test_mvp_acceptance_report_ignores_only_redirected_stdout_path(
+        self,
+    ) -> None:
+        generated_report = (
+            REPO_ROOT / "reports" / "mvp-acceptance-run.json"
+        )
+        with (
+            mock.patch.object(
+                evaluate_dataset,
+                "current_stdout_path",
+                return_value=generated_report,
+            ),
+            mock.patch.object(
+                evaluate_dataset,
+                "current_git_worktree_clean",
+                return_value=True,
+            ) as mocked_clean,
+        ):
+            report = evaluate_dataset.build_mvp_acceptance_report(
+                MVP_EVALUATION_MANIFEST_PATH
+            )
+
+        self.assertEqual(
+            [
+                mock.call(
+                    REPO_ROOT,
+                    ignored_paths=(generated_report,),
+                ),
+                mock.call(
+                    REPO_ROOT,
+                    ignored_paths=(generated_report,),
+                ),
+            ],
+            mocked_clean.call_args_list,
+        )
+        self.assertTrue(
+            report.as_dict()["evidence_snapshot"]["metadata"][
+                "worktree_clean"
+            ]
+        )
 
     def test_mvp_scope_decision_input_validation_fails_closed_on_drift(self) -> None:
         decision_record = MVP_SCOPE_DECISIONS_PATH.read_text(encoding="utf-8")
         manifest = json.loads(MVP_EVALUATION_MANIFEST_PATH.read_text(encoding="utf-8"))
+        fixture_manifest = json.loads(
+            FIXTURE_MANIFEST_PATH.read_text(encoding="utf-8")
+        )
+        fixture_contract = evaluate_dataset.mvp_fixture_approval_contract(
+            manifest=manifest,
+            fixture_manifest=fixture_manifest,
+            repo_root=REPO_ROOT,
+        )
+        selected_fixture_ids = {
+            case["fixture_id"] for case in manifest["cases"]
+        }
+        self.assertEqual(
+            selected_fixture_ids,
+            {
+                fixture["id"]
+                for fixture in fixture_contract["fixture_manifest"]["fixtures"]
+            },
+        )
         from services.api.poc_web import ROLE_PERMISSIONS
 
         parsed_role_permissions = evaluate_dataset.mvp_role_permissions_from_source(
@@ -1175,15 +1316,19 @@ class EvaluateDatasetTest(unittest.TestCase):
             manifest=manifest,
             manifest_source="datasets/mvp_evaluation_manifest_v1.json",
             role_permissions=ROLE_PERMISSIONS,
+            fixture_contract=fixture_contract,
         )
-        self.assertEqual(
-            {
-                "OD-TEMPLATES": (),
-                "OD-EFFICIENCY-SCOPE": (),
-                "OD-SEGREGATION": (),
-            },
-            current,
+        baseline_template_failures = current["OD-TEMPLATES"]
+        self.assertTrue(baseline_template_failures)
+        self.assertTrue(
+            any(
+                "manifest case, fixture, source-policy, or expectation contract "
+                "drifted" in failure
+                for failure in baseline_template_failures
+            )
         )
+        self.assertEqual((), current["OD-EFFICIENCY-SCOPE"])
+        self.assertEqual((), current["OD-SEGREGATION"])
 
         for label, original, replacement in (
             (
@@ -1226,7 +1371,10 @@ class EvaluateDatasetTest(unittest.TestCase):
                         role_permissions=ROLE_PERMISSIONS,
                     )
                 )
-                self.assertEqual((), efficiency_failures["OD-TEMPLATES"])
+                self.assertEqual(
+                    baseline_template_failures,
+                    efficiency_failures["OD-TEMPLATES"],
+                )
                 self.assertTrue(efficiency_failures["OD-EFFICIENCY-SCOPE"])
                 self.assertEqual((), efficiency_failures["OD-SEGREGATION"])
 
@@ -1240,7 +1388,10 @@ class EvaluateDatasetTest(unittest.TestCase):
             manifest_source="datasets/mvp_evaluation_manifest_v1.json",
             role_permissions=ROLE_PERMISSIONS,
         )
-        self.assertEqual((), pin_failures["OD-TEMPLATES"])
+        self.assertEqual(
+            baseline_template_failures,
+            pin_failures["OD-TEMPLATES"],
+        )
         self.assertTrue(pin_failures["OD-EFFICIENCY-SCOPE"])
         self.assertEqual((), pin_failures["OD-SEGREGATION"])
 
@@ -1282,6 +1433,13 @@ class EvaluateDatasetTest(unittest.TestCase):
                     "datasets/fixtures/word/changed.docx",
                 ),
             ),
+            (
+                "acceptance limit",
+                lambda changed: changed["acceptance_limits"].__setitem__(
+                    "representative_processing_time_ms",
+                    60 * 60 * 1000,
+                ),
+            ),
         ):
             with self.subTest(drift=label):
                 drifted_manifest = copy.deepcopy(manifest)
@@ -1298,6 +1456,105 @@ class EvaluateDatasetTest(unittest.TestCase):
                 self.assertEqual((), manifest_failures["OD-EFFICIENCY-SCOPE"])
                 self.assertEqual((), manifest_failures["OD-SEGREGATION"])
         self.assertIsNotNone(manifest_failures)
+
+        drifted_fixture_manifest = copy.deepcopy(fixture_manifest)
+        word_fixture = next(
+            fixture
+            for fixture in drifted_fixture_manifest["fixtures"]
+            if fixture["id"] == "word-to-excel-application"
+        )
+        word_fixture["word_to_excel_expectations"]["row_count"] = 999
+        fixture_manifest_failures = (
+            evaluate_dataset.mvp_scope_decision_input_failures(
+                decision_record=decision_record,
+                manifest=manifest,
+                manifest_source="datasets/mvp_evaluation_manifest_v1.json",
+                role_permissions=ROLE_PERMISSIONS,
+                fixture_contract=evaluate_dataset.mvp_fixture_approval_contract(
+                    manifest=manifest,
+                    fixture_manifest=drifted_fixture_manifest,
+                    repo_root=REPO_ROOT,
+                ),
+            )
+        )
+        self.assertTrue(fixture_manifest_failures["OD-TEMPLATES"])
+        self.assertEqual(
+            (),
+            fixture_manifest_failures["OD-EFFICIENCY-SCOPE"],
+        )
+        self.assertEqual((), fixture_manifest_failures["OD-SEGREGATION"])
+
+        unrelated_fixture_manifest = copy.deepcopy(fixture_manifest)
+        unrelated_fixture = next(
+            fixture
+            for fixture in unrelated_fixture_manifest["fixtures"]
+            if fixture["id"] == "sample-document-ir-v0"
+        )
+        unrelated_fixture["title"] = "out-of-scope fixture maintenance"
+        unrelated_fixture_failures = (
+            evaluate_dataset.mvp_scope_decision_input_failures(
+                decision_record=decision_record,
+                manifest=manifest,
+                manifest_source="datasets/mvp_evaluation_manifest_v1.json",
+                role_permissions=ROLE_PERMISSIONS,
+                fixture_contract=evaluate_dataset.mvp_fixture_approval_contract(
+                    manifest=manifest,
+                    fixture_manifest=unrelated_fixture_manifest,
+                    repo_root=REPO_ROOT,
+                ),
+            )
+        )
+        self.assertEqual(
+            baseline_template_failures,
+            unrelated_fixture_failures["OD-TEMPLATES"],
+        )
+        self.assertEqual(
+            (),
+            unrelated_fixture_failures["OD-EFFICIENCY-SCOPE"],
+        )
+        self.assertEqual((), unrelated_fixture_failures["OD-SEGREGATION"])
+
+        drifted_fixture_policy = copy.deepcopy(fixture_manifest)
+        drifted_fixture_policy["policy"]["public_only"] = False
+        fixture_policy_failures = (
+            evaluate_dataset.mvp_scope_decision_input_failures(
+                decision_record=decision_record,
+                manifest=manifest,
+                manifest_source="datasets/mvp_evaluation_manifest_v1.json",
+                role_permissions=ROLE_PERMISSIONS,
+                fixture_contract=evaluate_dataset.mvp_fixture_approval_contract(
+                    manifest=manifest,
+                    fixture_manifest=drifted_fixture_policy,
+                    repo_root=REPO_ROOT,
+                ),
+            )
+        )
+        self.assertNotEqual(
+            baseline_template_failures,
+            fixture_policy_failures["OD-TEMPLATES"],
+        )
+        self.assertEqual(
+            (),
+            fixture_policy_failures["OD-EFFICIENCY-SCOPE"],
+        )
+        self.assertEqual((), fixture_policy_failures["OD-SEGREGATION"])
+
+        drifted_fixture_content = copy.deepcopy(fixture_contract)
+        drifted_fixture_content["selected_fixture_contents"][
+            "word-to-excel-application"
+        ]["sha256"] = "0" * 64
+        fixture_content_failures = (
+            evaluate_dataset.mvp_scope_decision_input_failures(
+                decision_record=decision_record,
+                manifest=manifest,
+                manifest_source="datasets/mvp_evaluation_manifest_v1.json",
+                role_permissions=ROLE_PERMISSIONS,
+                fixture_contract=drifted_fixture_content,
+            )
+        )
+        self.assertTrue(fixture_content_failures["OD-TEMPLATES"])
+        self.assertEqual((), fixture_content_failures["OD-EFFICIENCY-SCOPE"])
+        self.assertEqual((), fixture_content_failures["OD-SEGREGATION"])
 
         for label, original, replacement in (
             (
@@ -1330,7 +1587,10 @@ class EvaluateDatasetTest(unittest.TestCase):
                         role_permissions=ROLE_PERMISSIONS,
                     )
                 )
-                self.assertEqual((), segregation_failures["OD-TEMPLATES"])
+                self.assertEqual(
+                    baseline_template_failures,
+                    segregation_failures["OD-TEMPLATES"],
+                )
                 self.assertEqual(
                     (),
                     segregation_failures["OD-EFFICIENCY-SCOPE"],
@@ -1349,7 +1609,10 @@ class EvaluateDatasetTest(unittest.TestCase):
                 role_permissions=ROLE_PERMISSIONS,
             )
         )
-        self.assertEqual((), segregation_pin_failures["OD-TEMPLATES"])
+        self.assertEqual(
+            baseline_template_failures,
+            segregation_pin_failures["OD-TEMPLATES"],
+        )
         self.assertEqual(
             (),
             segregation_pin_failures["OD-EFFICIENCY-SCOPE"],
@@ -1367,7 +1630,10 @@ class EvaluateDatasetTest(unittest.TestCase):
             manifest_source="datasets/mvp_evaluation_manifest_v1.json",
             role_permissions=drifted_roles,
         )
-        self.assertEqual((), role_failures["OD-TEMPLATES"])
+        self.assertEqual(
+            baseline_template_failures,
+            role_failures["OD-TEMPLATES"],
+        )
         self.assertEqual((), role_failures["OD-EFFICIENCY-SCOPE"])
         self.assertTrue(role_failures["OD-SEGREGATION"])
 
@@ -1395,6 +1661,49 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertEqual(
             "fail",
             template_item["evidence"]["decision_input_validation"]["status"],
+        )
+
+    def test_mvp_fixture_approval_contract_hashes_selected_fixture_content(
+        self,
+    ) -> None:
+        manifest = {"cases": [{"fixture_id": "selected-fixture"}]}
+        fixture_manifest = {
+            "fixtures": [
+                {
+                    "id": "selected-fixture",
+                    "path": "datasets/fixtures/selected.bin",
+                },
+                {
+                    "id": "unselected-fixture",
+                    "path": "datasets/fixtures/unselected.bin",
+                },
+            ]
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_root = Path(temp_dir)
+            fixture_root = repo_root / "datasets" / "fixtures"
+            fixture_root.mkdir(parents=True)
+            selected_path = fixture_root / "selected.bin"
+            selected_path.write_bytes(b"approved fixture")
+            first = evaluate_dataset.mvp_fixture_approval_contract(
+                manifest=manifest,
+                fixture_manifest=fixture_manifest,
+                repo_root=repo_root,
+            )
+            selected_path.write_bytes(b"drifted fixture")
+            second = evaluate_dataset.mvp_fixture_approval_contract(
+                manifest=manifest,
+                fixture_manifest=fixture_manifest,
+                repo_root=repo_root,
+            )
+
+        self.assertNotEqual(
+            first["selected_fixture_contents"]["selected-fixture"]["sha256"],
+            second["selected_fixture_contents"]["selected-fixture"]["sha256"],
+        )
+        self.assertNotIn(
+            "unselected-fixture",
+            first["selected_fixture_contents"],
         )
 
     def test_mvp_acceptance_report_rejects_missing_traceability_row(self) -> None:
@@ -1436,6 +1745,860 @@ class EvaluateDatasetTest(unittest.TestCase):
         ).as_dict()
 
         self.assertEqual("fail", payload["summary"]["overall_decision"])
+
+    def test_mvp_acceptance_report_rejects_dirty_commit_bound_snapshot(self) -> None:
+        traceability = MVP_ACCEPTANCE_TRACEABILITY_PATH.read_text(encoding="utf-8")
+        items = tuple(
+            {**item, "decision": "pass"}
+            for item in evaluate_dataset.mvp_acceptance_traceability_items(
+                traceability
+            )
+        )
+        payload = evaluate_dataset.MVPAcceptanceReport(
+            harness=evaluate_dataset.evaluate_mvp_harness(
+                MVP_EVALUATION_MANIFEST_PATH
+            ),
+            traceability_source=evaluate_dataset.DEFAULT_MVP_ACCEPTANCE_TRACEABILITY,
+            traceability_text=traceability,
+            items=items,
+            snapshot_metadata={
+                "commit": "a" * 40,
+                "worktree_clean": False,
+                "evaluator_commit": "b" * 40,
+                "evaluator_commit_is_clean": True,
+            },
+        ).as_dict()
+
+        self.assertEqual("fail", payload["summary"]["overall_decision"])
+        rollup = payload["evidence_snapshot"]["metrics_rollup"]
+        self.assertEqual("fail", rollup["status"])
+        self.assertEqual(
+            "fail",
+            rollup["dimensions"]["snapshot_integrity"]["status"],
+        )
+        self.assertEqual(
+            (3, 4),
+            (
+                rollup["dimensions"]["snapshot_integrity"]["numerator"],
+                rollup["dimensions"]["snapshot_integrity"]["denominator"],
+            ),
+        )
+        self.assertIn(
+            "worktree is dirty",
+            rollup["dimensions"]["snapshot_integrity"]["failure_reasons"][0],
+        )
+
+    def test_mvp_acceptance_report_downgrades_live_metric_failure(self) -> None:
+        traceability = MVP_ACCEPTANCE_TRACEABILITY_PATH.read_text(encoding="utf-8")
+        items = evaluate_dataset.mvp_acceptance_traceability_items(traceability)
+        harness_payload = evaluate_dataset.evaluate_mvp_harness(
+            MVP_EVALUATION_MANIFEST_PATH
+        ).as_dict()
+        for result in harness_payload["results"]:
+            quality = result["metrics"]["quality"]
+            quality["status"] = "fail"
+            quality["numerator"] = 0
+
+        payload = evaluate_dataset.MVPAcceptanceReport(
+            harness=evaluate_dataset.MVPHarnessReport(
+                manifest=MVP_EVALUATION_MANIFEST_PATH,
+                results=tuple(harness_payload["results"]),
+            ),
+            traceability_source=evaluate_dataset.DEFAULT_MVP_ACCEPTANCE_TRACEABILITY,
+            traceability_text=traceability,
+            items=items,
+            snapshot_metadata={
+                "commit": "a" * 40,
+                "worktree_clean": True,
+                "evaluator_commit": "b" * 40,
+                "evaluator_commit_is_clean": True,
+            },
+        ).as_dict()
+
+        items_by_id = {item["item_id"]: item for item in payload["items"]}
+        self.assertEqual("fail", items_by_id["AC-QUALITY"]["decision"])
+        self.assertEqual(
+            {
+                "status": "fail",
+                "required_dimensions": ["quality"],
+                "dimension_statuses": {"quality": "fail"},
+                "refs": [
+                    "dimensions.quality",
+                    "case_results[*].metrics.quality",
+                ],
+            },
+            items_by_id["AC-QUALITY"]["evidence"][
+                "metrics_rollup_validation"
+            ],
+        )
+        self.assertIn("quality=fail", items_by_id["AC-QUALITY"]["unmet"])
+        self.assertEqual("pass", items_by_id["AC-PROVENANCE"]["decision"])
+        self.assertEqual(
+            {"pass": 10, "fail": 10},
+            payload["summary"]["decision_counts"],
+        )
+
+    def test_metric_backed_acceptance_items_require_all_live_dimensions(
+        self,
+    ) -> None:
+        traceability = MVP_ACCEPTANCE_TRACEABILITY_PATH.read_text(encoding="utf-8")
+        items = evaluate_dataset.mvp_acceptance_traceability_items(traceability)
+        harness_payload = evaluate_dataset.evaluate_mvp_harness(
+            MVP_EVALUATION_MANIFEST_PATH
+        ).as_dict()
+        rollup = evaluate_dataset.mvp_metrics_rollup(harness_payload)
+
+        for item_id, required_dimensions in (
+            evaluate_dataset.MVP_METRIC_BACKED_ITEM_DIMENSIONS.items()
+        ):
+            for dimension_status in ("fail", "unknown"):
+                with self.subTest(
+                    item_id=item_id,
+                    dimension_status=dimension_status,
+                ):
+                    failing_rollup = json.loads(json.dumps(rollup))
+                    for required_dimension in required_dimensions:
+                        failing_rollup["dimensions"][required_dimension][
+                            "status"
+                        ] = "pass"
+                    failing_rollup["dimensions"][required_dimensions[0]][
+                        "status"
+                    ] = dimension_status
+                    effective_items = (
+                        evaluate_dataset.mvp_acceptance_items_with_rollup(
+                            items,
+                            failing_rollup,
+                        )
+                    )
+                    effective_item = next(
+                        item
+                        for item in effective_items
+                        if item["item_id"] == item_id
+                    )
+                    self.assertEqual("fail", effective_item["decision"])
+                    self.assertEqual(
+                        dimension_status,
+                        effective_item["evidence"][
+                            "metrics_rollup_validation"
+                        ]["status"],
+                    )
+
+    def test_mvp_metrics_rollup_rejects_inconsistent_case_ratio_status(
+        self,
+    ) -> None:
+        harness_payload = evaluate_dataset.evaluate_mvp_harness(
+            MVP_EVALUATION_MANIFEST_PATH
+        ).as_dict()
+        for result in harness_payload["results"]:
+            result["acceptance_status"] = "pass"
+            metrics = result["metrics"]
+            metrics["status"] = "pass"
+            metrics["quality"] = {
+                "status": "pass",
+                "numerator": 1,
+                "denominator": 1,
+            }
+            metrics["provenance"] = {
+                "status": "pass",
+                "numerator": 1,
+                "denominator": 1,
+            }
+            metrics["review"] = {"status": "pass"}
+            metrics["high_risk"] = {
+                "status": "pass",
+                "target_count": 0,
+                "covered_count": 0,
+                "miss_count": 0,
+                "auto_confirmed_count": 0,
+            }
+            metrics["external_send"] = {
+                "status": "pass",
+                "external_send_count": 0,
+            }
+            metrics["performance"] = {
+                "status": "pass",
+                "dimensions": {
+                    "input_size": {
+                        "status": "pass",
+                        "input_size_bytes": 1,
+                        "limit_bytes": 2 * 1024 * 1024,
+                    },
+                    "processing_time": {
+                        "status": "pass",
+                        "processing_time_ms": 1,
+                        "threshold_ms": 10_000,
+                    },
+                    "timeout": {
+                        "status": "pass",
+                        "processing_time_ms": 1,
+                        "timeout_ms": 30_000,
+                    },
+                },
+            }
+
+        inconsistent_quality = harness_payload["results"][0]["metrics"][
+            "quality"
+        ]
+        inconsistent_quality["status"] = "pass"
+        inconsistent_quality["numerator"] = 0
+        inconsistent_quality["denominator"] = 1
+        rollup = evaluate_dataset.mvp_metrics_rollup(harness_payload)
+        self.assertEqual("unknown", rollup["dimensions"]["quality"]["status"])
+        self.assertEqual(
+            ["mvp-word-001"],
+            rollup["dimensions"]["quality"]["unknown_case_ids"],
+        )
+        self.assertNotEqual("pass", rollup["status"])
+
+    def test_mvp_metrics_rollup_fails_closed_on_missing_or_low_quality_data(
+        self,
+    ) -> None:
+        harness_payload = evaluate_dataset.evaluate_mvp_harness(
+            MVP_EVALUATION_MANIFEST_PATH
+        ).as_dict()
+
+        missing = json.loads(json.dumps(harness_payload))
+        del missing["results"][0]["metrics"]["quality"]["denominator"]
+        missing_rollup = evaluate_dataset.mvp_metrics_rollup(missing)
+        self.assertEqual("unknown", missing_rollup["status"])
+        self.assertEqual(
+            ["mvp-word-001"],
+            missing_rollup["dimensions"]["quality"]["unknown_case_ids"],
+        )
+        self.assertTrue(
+            missing_rollup["dimensions"]["quality"]["failure_reasons"]
+        )
+        for dimension_name in (
+            "quality",
+            "provenance",
+            "high_risk",
+            "external_send",
+            "performance",
+        ):
+            with self.subTest(missing_dimension=dimension_name):
+                missing_dimension = json.loads(json.dumps(harness_payload))
+                del missing_dimension["results"][0]["metrics"][dimension_name]
+                self.assertNotEqual(
+                    "pass",
+                    evaluate_dataset.mvp_metrics_rollup(missing_dimension)[
+                        "status"
+                    ],
+                )
+
+        hidden_case_failure = json.loads(json.dumps(harness_payload))
+        hidden_quality = hidden_case_failure["results"][0]["metrics"]["quality"]
+        hidden_quality["status"] = "fail"
+        hidden_quality["numerator"] = 0
+        hidden_quality["denominator"] = 1
+        hidden_case_failure_rollup = evaluate_dataset.mvp_metrics_rollup(
+            hidden_case_failure
+        )
+        self.assertGreaterEqual(
+            hidden_case_failure_rollup["dimensions"]["quality"]["rate"],
+            0.80,
+        )
+        self.assertEqual("fail", hidden_case_failure_rollup["status"])
+        self.assertEqual(
+            ["mvp-word-001"],
+            hidden_case_failure_rollup["dimensions"]["quality"]["failed_case_ids"],
+        )
+
+        failed_harness_case = json.loads(json.dumps(harness_payload))
+        failed_harness_case["results"][0]["acceptance_status"] = "fail"
+        failed_harness_rollup = evaluate_dataset.mvp_metrics_rollup(
+            failed_harness_case
+        )
+        self.assertEqual("fail", failed_harness_rollup["status"])
+        self.assertEqual(
+            ["mvp-word-001"],
+            failed_harness_rollup["dimensions"]["case_acceptance"][
+                "failed_case_ids"
+            ],
+        )
+        self.assertEqual(
+            "pass",
+            failed_harness_case["results"][0]["metrics"]["status"],
+        )
+
+        valid_high_risk = {
+            "status": "pass",
+            "target_count": 1,
+            "covered_count": 1,
+            "miss_count": 0,
+            "auto_confirmed_count": 0,
+        }
+        invalid_high_risk_counts = (
+            {"target_count": -1},
+            {"covered_count": -1},
+            {"covered_count": 2},
+            {"miss_count": -1},
+            {"miss_count": 2},
+            {"auto_confirmed_count": -1},
+            {"auto_confirmed_count": 2},
+            {"covered_count": 0},
+        )
+        for invalid_counts in invalid_high_risk_counts:
+            with self.subTest(invalid_high_risk_counts=invalid_counts):
+                invalid_high_risk = json.loads(json.dumps(harness_payload))
+                dimension = invalid_high_risk["results"][0]["metrics"]["high_risk"]
+                dimension.update(valid_high_risk)
+                dimension.update(invalid_counts)
+                invalid_rollup = evaluate_dataset.mvp_metrics_rollup(
+                    invalid_high_risk
+                )
+                self.assertEqual(
+                    "unknown",
+                    invalid_rollup["dimensions"]["high_risk"]["status"],
+                )
+                self.assertEqual(
+                    ["mvp-word-001"],
+                    invalid_rollup["dimensions"]["high_risk"][
+                        "unknown_case_ids"
+                    ],
+                )
+                self.assertNotEqual("pass", invalid_rollup["status"])
+
+        failed_high_risk = json.loads(json.dumps(harness_payload))
+        failed_dimension = failed_high_risk["results"][0]["metrics"]["high_risk"]
+        failed_dimension.update(valid_high_risk)
+        failed_dimension["status"] = "fail"
+        failed_high_risk_rollup = evaluate_dataset.mvp_metrics_rollup(
+            failed_high_risk
+        )
+        self.assertEqual(
+            "fail",
+            failed_high_risk_rollup["dimensions"]["high_risk"]["status"],
+        )
+        self.assertEqual(
+            ["mvp-word-001"],
+            failed_high_risk_rollup["dimensions"]["high_risk"][
+                "failed_case_ids"
+            ],
+        )
+
+        empty_harness = json.loads(json.dumps(harness_payload))
+        empty_harness["results"] = []
+        empty_harness_rollup = evaluate_dataset.mvp_metrics_rollup(empty_harness)
+        self.assertEqual(
+            "unknown",
+            empty_harness_rollup["dimensions"]["case_acceptance"]["status"],
+        )
+        self.assertEqual(
+            ["harness acceptance results are missing"],
+            empty_harness_rollup["dimensions"]["case_acceptance"][
+                "failure_reasons"
+            ],
+        )
+
+        below_threshold = json.loads(json.dumps(harness_payload))
+        for result in below_threshold["results"]:
+            quality = result["metrics"]["quality"]
+            quality["status"] = "fail"
+            quality["numerator"] = 0
+        below_threshold_rollup = evaluate_dataset.mvp_metrics_rollup(
+            below_threshold
+        )
+        self.assertEqual("fail", below_threshold_rollup["status"])
+        self.assertEqual(
+            "fail",
+            below_threshold_rollup["dimensions"]["quality"]["status"],
+        )
+        self.assertEqual(0.0, below_threshold_rollup["dimensions"]["quality"]["rate"])
+
+    def test_mvp_metrics_rollup_rejects_invalid_performance_values(self) -> None:
+        harness_payload = evaluate_dataset.evaluate_mvp_harness(
+            MVP_EVALUATION_MANIFEST_PATH
+        ).as_dict()
+        performance_fields = {
+            "input_size": ("input_size_bytes", "limit_bytes"),
+            "processing_time": ("processing_time_ms", "threshold_ms"),
+            "timeout": ("processing_time_ms", "timeout_ms"),
+        }
+
+        for dimension_name, (value_field, limit_field) in performance_fields.items():
+            for invalid_value in (
+                float("nan"),
+                float("inf"),
+                float("-inf"),
+                -1,
+            ):
+                with self.subTest(
+                    dimension=dimension_name,
+                    invalid_value=invalid_value,
+                ):
+                    malformed = json.loads(json.dumps(harness_payload))
+                    malformed["results"][0]["metrics"]["performance"][
+                        "dimensions"
+                    ][dimension_name][value_field] = invalid_value
+                    rollup = evaluate_dataset.mvp_metrics_rollup(malformed)
+                    self.assertEqual(
+                        "unknown",
+                        rollup["dimensions"]["performance"]["status"],
+                    )
+                    self.assertIn(
+                        f"mvp-word-001:{dimension_name}",
+                        rollup["dimensions"]["performance"]["unknown"],
+                    )
+                    self.assertNotEqual("pass", rollup["status"])
+
+            for invalid_limit in (0, -1):
+                with self.subTest(
+                    dimension=dimension_name,
+                    invalid_limit=invalid_limit,
+                ):
+                    malformed = json.loads(json.dumps(harness_payload))
+                    malformed["results"][0]["metrics"]["performance"][
+                        "dimensions"
+                    ][dimension_name][limit_field] = invalid_limit
+                    rollup = evaluate_dataset.mvp_metrics_rollup(malformed)
+                    self.assertEqual(
+                        "unknown",
+                        rollup["dimensions"]["performance"]["status"],
+                    )
+                    self.assertIn(
+                        f"mvp-word-001:{dimension_name}",
+                        rollup["dimensions"]["performance"]["unknown"],
+                    )
+                    self.assertNotEqual("pass", rollup["status"])
+
+            with self.subTest(
+                dimension=dimension_name,
+                over_limit_status="pass",
+            ):
+                malformed = json.loads(json.dumps(harness_payload))
+                dimension = malformed["results"][0]["metrics"]["performance"][
+                    "dimensions"
+                ][dimension_name]
+                dimension[value_field] = dimension[limit_field] + 1
+                dimension["status"] = "pass"
+                rollup = evaluate_dataset.mvp_metrics_rollup(malformed)
+                self.assertEqual(
+                    "fail",
+                    rollup["dimensions"]["performance"]["status"],
+                )
+                self.assertTrue(
+                    any(
+                        "exceeds limit" in reason
+                        for reason in rollup["dimensions"]["performance"][
+                            "failure_reasons"
+                        ]
+                    )
+                )
+                self.assertNotEqual("pass", rollup["status"])
+
+            with self.subTest(
+                dimension=dimension_name,
+                unapproved_limit=True,
+            ):
+                malformed = json.loads(json.dumps(harness_payload))
+                approved_limit = (
+                    evaluate_dataset.MVP_APPROVED_PERFORMANCE_LIMITS[
+                        dimension_name
+                    ]
+                )
+                for result in malformed["results"]:
+                    result["metrics"]["performance"]["dimensions"][
+                        dimension_name
+                    ][limit_field] = approved_limit * 2
+                rollup = evaluate_dataset.mvp_metrics_rollup(malformed)
+                self.assertEqual(
+                    "fail",
+                    rollup["dimensions"]["performance"]["status"],
+                )
+                self.assertTrue(
+                    any(
+                        "does not match approved limit" in reason
+                        for reason in rollup["dimensions"]["performance"][
+                            "failure_reasons"
+                        ]
+                    )
+                )
+                self.assertNotEqual("pass", rollup["status"])
+
+    def test_mvp_metrics_rollup_invalidates_dimensions_without_case_metrics(
+        self,
+    ) -> None:
+        harness_payload = evaluate_dataset.evaluate_mvp_harness(
+            MVP_EVALUATION_MANIFEST_PATH
+        ).as_dict()
+        missing_metrics = json.loads(json.dumps(harness_payload))
+        del missing_metrics["results"][0]["metrics"]
+
+        rollup = evaluate_dataset.mvp_metrics_rollup(missing_metrics)
+        dimensions = rollup["dimensions"]
+        for dimension_name in (
+            "quality",
+            "provenance",
+            "high_risk",
+            "external_send",
+            "performance",
+        ):
+            with self.subTest(dimension=dimension_name):
+                dimension = dimensions[dimension_name]
+                self.assertEqual("unknown", dimension["status"])
+                unknown_key = (
+                    "unknown"
+                    if dimension_name == "performance"
+                    else "unknown_case_ids"
+                )
+                self.assertIn("mvp-word-001", dimension[unknown_key])
+
+        traceability = MVP_ACCEPTANCE_TRACEABILITY_PATH.read_text(
+            encoding="utf-8"
+        )
+        items = evaluate_dataset.mvp_acceptance_traceability_items(traceability)
+        effective_items = evaluate_dataset.mvp_acceptance_items_with_rollup(
+            items,
+            rollup,
+        )
+        effective_by_id = {
+            item["item_id"]: item for item in effective_items
+        }
+        for item_id in evaluate_dataset.MVP_METRIC_BACKED_ITEM_DIMENSIONS:
+            with self.subTest(item_id=item_id):
+                self.assertEqual("fail", effective_by_id[item_id]["decision"])
+
+    def test_mvp_metrics_rollup_requires_live_review_success(
+        self,
+    ) -> None:
+        harness_payload = evaluate_dataset.evaluate_mvp_harness(
+            MVP_EVALUATION_MANIFEST_PATH
+        ).as_dict()
+        failed_review = json.loads(json.dumps(harness_payload))
+        for result in failed_review["results"]:
+            result["metrics"]["review"]["status"] = "pass"
+        failed_review["results"][0]["metrics"]["review"]["status"] = "fail"
+        failed_review["results"][0]["metrics"]["review"][
+            "failure_reasons"
+        ] = ["authoritative review decision is required"]
+
+        rollup = evaluate_dataset.mvp_metrics_rollup(failed_review)
+        self.assertEqual("fail", rollup["dimensions"]["review"]["status"])
+        self.assertEqual(
+            ["mvp-word-001"],
+            rollup["dimensions"]["review"]["failed_case_ids"],
+        )
+        self.assertEqual(
+            "pass",
+            rollup["dimensions"]["high_risk"]["status"],
+        )
+
+        traceability = MVP_ACCEPTANCE_TRACEABILITY_PATH.read_text(
+            encoding="utf-8"
+        )
+        items = evaluate_dataset.mvp_acceptance_traceability_items(traceability)
+        effective_items = evaluate_dataset.mvp_acceptance_items_with_rollup(
+            items,
+            rollup,
+        )
+        review_item = next(
+            item
+            for item in effective_items
+            if item["item_id"] == "AC-REVIEW"
+        )
+        self.assertEqual("fail", review_item["decision"])
+        validation = review_item["evidence"]["metrics_rollup_validation"]
+        self.assertEqual("fail", validation["dimension_statuses"]["review"])
+        self.assertEqual(
+            "pass",
+            validation["dimension_statuses"]["high_risk"],
+        )
+
+    def test_mvp_metrics_rollup_rejects_invalid_external_send_values(
+        self,
+    ) -> None:
+        harness_payload = evaluate_dataset.evaluate_mvp_harness(
+            MVP_EVALUATION_MANIFEST_PATH
+        ).as_dict()
+
+        failed_status = json.loads(json.dumps(harness_payload))
+        failed_dimension = failed_status["results"][0]["metrics"][
+            "external_send"
+        ]
+        failed_dimension["status"] = "fail"
+        failed_dimension["external_send_count"] = 0
+        failed_rollup = evaluate_dataset.mvp_metrics_rollup(failed_status)
+        self.assertEqual(
+            "fail",
+            failed_rollup["dimensions"]["external_send"]["status"],
+        )
+        self.assertEqual(
+            ["mvp-word-001"],
+            failed_rollup["dimensions"]["external_send"]["failed_case_ids"],
+        )
+
+        negative_count = json.loads(json.dumps(harness_payload))
+        negative_count["results"][0]["metrics"]["external_send"][
+            "external_send_count"
+        ] = -1
+        negative_rollup = evaluate_dataset.mvp_metrics_rollup(negative_count)
+        self.assertEqual(
+            "unknown",
+            negative_rollup["dimensions"]["external_send"]["status"],
+        )
+        self.assertEqual(
+            ["mvp-word-001"],
+            negative_rollup["dimensions"]["external_send"][
+                "unknown_case_ids"
+            ],
+        )
+        self.assertNotEqual("pass", negative_rollup["status"])
+
+    def test_mvp_case_metrics_counts_persisted_high_risk_decisions_by_item(
+        self,
+    ) -> None:
+        fixture_content = b"synthetic fixture"
+        evaluations = {
+            "audit": {"status": "pass"},
+            "input_size": {
+                "status": "pass",
+                "input_size_bytes": len(fixture_content),
+                "limit_bytes": 2 * 1024 * 1024,
+                "reason": None,
+            },
+            "processing_time": {
+                "status": "pass",
+                "processing_time_ms": 1.0,
+                "threshold_ms": 10_000,
+                "reason": None,
+            },
+            "timeout": {
+                "status": "pass",
+                "processing_time_ms": 1.0,
+                "timeout_ms": 30_000,
+                "reason": None,
+            },
+            "review": {
+                "status": "pass",
+                "ocr_boundary": {"status": "not_applicable"},
+            },
+        }
+        converted = {
+            "status": "requires_review",
+            "hashes": {
+                "source_sha256": hashlib.sha256(fixture_content).hexdigest()
+            },
+            "audit": {"llm": {"enabled": False}},
+        }
+        content_validation = {
+            "evidence": {
+                "quality_numerator": 1,
+                "quality_denominator": 1,
+                "provenance_numerator": 0,
+                "provenance_denominator": 0,
+            }
+        }
+        expected_high_risk_targets = [
+            {
+                "id": "high-risk-block",
+                "document_id": "synthetic-document",
+                "block_id": "high-risk-block",
+            }
+        ]
+        high_risk_review_item = {
+            "document_id": "synthetic-document",
+            "block_id": "high-risk-block",
+        }
+
+        metrics = evaluate_dataset.mvp_case_metrics(
+            converted=converted,
+            fixture_content=fixture_content,
+            content_validation=content_validation,
+            review_items=[high_risk_review_item],
+            expected_high_risk_targets=expected_high_risk_targets,
+            authoritative_decisions=[{"decision": "approved"}],
+            evaluations=evaluations,
+        )
+        self.assertEqual("pass", metrics["status"])
+
+        missing_llm_audit = copy.deepcopy(converted)
+        del missing_llm_audit["audit"]["llm"]
+        missing_llm_metrics = evaluate_dataset.mvp_case_metrics(
+            converted=missing_llm_audit,
+            fixture_content=fixture_content,
+            content_validation=content_validation,
+            review_items=[high_risk_review_item],
+            expected_high_risk_targets=expected_high_risk_targets,
+            authoritative_decisions=[{"decision": "approved"}],
+            evaluations=evaluations,
+        )
+        self.assertEqual("unknown", missing_llm_metrics["status"])
+        self.assertEqual(
+            "unknown",
+            missing_llm_metrics["external_send"]["status"],
+        )
+        self.assertTrue(missing_llm_metrics["external_send"]["unknown"])
+
+        missing_provenance = copy.deepcopy(content_validation)
+        del missing_provenance["evidence"]["provenance_numerator"]
+        del missing_provenance["evidence"]["provenance_denominator"]
+        missing_provenance_metrics = evaluate_dataset.mvp_case_metrics(
+            converted=converted,
+            fixture_content=fixture_content,
+            content_validation=missing_provenance,
+            review_items=[high_risk_review_item],
+            expected_high_risk_targets=expected_high_risk_targets,
+            authoritative_decisions=[{"decision": "approved"}],
+            evaluations=evaluations,
+        )
+        self.assertEqual("unknown", missing_provenance_metrics["status"])
+        self.assertEqual(
+            "unknown",
+            missing_provenance_metrics["provenance"]["status"],
+        )
+        self.assertTrue(missing_provenance_metrics["provenance"]["unknown"])
+
+        self.assertEqual(
+            {
+                "target_count": 1,
+                "covered_count": 1,
+                "miss_count": 0,
+                "auto_confirmed_count": 0,
+            },
+            {
+                key: metrics["high_risk"][key]
+                for key in (
+                    "target_count",
+                    "covered_count",
+                    "miss_count",
+                    "auto_confirmed_count",
+                )
+            },
+        )
+
+        auto_confirmed_metrics = evaluate_dataset.mvp_case_metrics(
+            converted=converted,
+            fixture_content=fixture_content,
+            content_validation=content_validation,
+            review_items=[{**high_risk_review_item, "auto_confirmed": True}],
+            expected_high_risk_targets=expected_high_risk_targets,
+            authoritative_decisions=[{"decision": "approved"}],
+            evaluations=evaluations,
+        )
+        self.assertEqual("fail", auto_confirmed_metrics["status"])
+        self.assertEqual(
+            1,
+            auto_confirmed_metrics["high_risk"]["auto_confirmed_count"],
+        )
+        self.assertEqual(0, auto_confirmed_metrics["high_risk"]["miss_count"])
+
+        ocr_evaluations = copy.deepcopy(evaluations)
+        ocr_evaluations["review"]["ocr_boundary"] = {
+            "status": "pass",
+            "evidence": {"affected_block_ids": ["ocr-block"]},
+        }
+        ocr_review_items = [
+            {
+                "document_id": "synthetic-document",
+                "block_id": "ocr-block",
+            },
+            {
+                "document_id": "synthetic-document",
+                "block_id": "unrelated-block",
+            },
+        ]
+        ocr_expected_high_risk_targets = [
+            {
+                "id": "ocr-block",
+                "document_id": "synthetic-document",
+                "block_id": "ocr-block",
+            },
+            {
+                "id": "unrelated-block",
+                "document_id": "synthetic-document",
+                "block_id": "unrelated-block",
+            },
+        ]
+        ocr_boundary_metrics = evaluate_dataset.mvp_case_metrics(
+            converted=converted,
+            fixture_content=fixture_content,
+            content_validation=content_validation,
+            review_items=ocr_review_items,
+            expected_high_risk_targets=ocr_expected_high_risk_targets,
+            authoritative_decisions=[],
+            evaluations=ocr_evaluations,
+        )
+        self.assertEqual("fail", ocr_boundary_metrics["status"])
+        self.assertEqual(
+            {
+                "target_count": 2,
+                "covered_count": 1,
+                "miss_count": 1,
+            },
+            {
+                key: ocr_boundary_metrics["high_risk"][key]
+                for key in ("target_count", "covered_count", "miss_count")
+            },
+        )
+        ocr_boundary_decided_metrics = evaluate_dataset.mvp_case_metrics(
+            converted=converted,
+            fixture_content=fixture_content,
+            content_validation=content_validation,
+            review_items=ocr_review_items,
+            expected_high_risk_targets=ocr_expected_high_risk_targets,
+            authoritative_decisions=[{"decision": "approved"}],
+            authoritative_decisions_by_index={1: {"decision": "approved"}},
+            evaluations=ocr_evaluations,
+        )
+        self.assertEqual(
+            "pass",
+            ocr_boundary_decided_metrics["high_risk"]["status"],
+        )
+        self.assertEqual(
+            {
+                "target_count": 2,
+                "covered_count": 2,
+                "miss_count": 0,
+            },
+            {
+                key: ocr_boundary_decided_metrics["high_risk"][key]
+                for key in ("target_count", "covered_count", "miss_count")
+            },
+        )
+
+        omitted_target_metrics = evaluate_dataset.mvp_case_metrics(
+            converted=converted,
+            fixture_content=fixture_content,
+            content_validation=content_validation,
+            review_items=[high_risk_review_item],
+            expected_high_risk_targets=[
+                *expected_high_risk_targets,
+                {
+                    "id": "omitted-high-risk-block",
+                    "document_id": "synthetic-document",
+                    "block_id": "omitted-high-risk-block",
+                },
+            ],
+            authoritative_decisions=[{"decision": "approved"}],
+            evaluations=evaluations,
+        )
+        self.assertEqual("fail", omitted_target_metrics["status"])
+        self.assertEqual(
+            {
+                "target_count": 2,
+                "covered_count": 1,
+                "miss_count": 1,
+            },
+            {
+                key: omitted_target_metrics["high_risk"][key]
+                for key in ("target_count", "covered_count", "miss_count")
+            },
+        )
+
+        undeclared_target_metrics = evaluate_dataset.mvp_case_metrics(
+            converted=converted,
+            fixture_content=fixture_content,
+            content_validation=content_validation,
+            review_items=[{**high_risk_review_item, "high_risk": True}],
+            expected_high_risk_targets=[],
+            authoritative_decisions=[{"decision": "approved"}],
+            evaluations=evaluations,
+        )
+        self.assertEqual("unknown", undeclared_target_metrics["status"])
+        self.assertIn(
+            "emitted high-risk review item is absent from expected targets",
+            undeclared_target_metrics["high_risk"]["unknown"],
+        )
 
     def test_mvp_acceptance_report_rejects_unknown_traceability_row(self) -> None:
         traceability = MVP_ACCEPTANCE_TRACEABILITY_PATH.read_text(encoding="utf-8")
@@ -1545,10 +2708,32 @@ class EvaluateDatasetTest(unittest.TestCase):
                 results=(),
             )
 
-            with mock.patch.object(
-                evaluate_dataset,
-                "evaluate_mvp_harness",
-                return_value=harness,
+            def fake_commit(repo_root: Path) -> str:
+                return (
+                    "a" * 40
+                    if repo_root.resolve() == checkout.resolve()
+                    else "b" * 40
+                )
+
+            def fake_clean(repo_root: Path, **_: object) -> bool:
+                return repo_root.resolve() == checkout.resolve()
+
+            with (
+                mock.patch.object(
+                    evaluate_dataset,
+                    "evaluate_mvp_harness",
+                    return_value=harness,
+                ),
+                mock.patch.object(
+                    evaluate_dataset,
+                    "current_git_commit",
+                    side_effect=fake_commit,
+                ),
+                mock.patch.object(
+                    evaluate_dataset,
+                    "current_git_worktree_clean",
+                    side_effect=fake_clean,
+                ),
             ):
                 report = evaluate_dataset.build_mvp_acceptance_report(manifest_path)
 
@@ -1564,6 +2749,21 @@ class EvaluateDatasetTest(unittest.TestCase):
         self.assertEqual(
             "fail",
             template_item["evidence"]["decision_input_validation"]["status"],
+        )
+        metadata = report.snapshot_metadata
+        self.assertIsNotNone(metadata)
+        assert metadata is not None
+        self.assertEqual("a" * 40, metadata["commit"])
+        self.assertTrue(metadata["worktree_clean"])
+        self.assertEqual("b" * 40, metadata["evaluator_commit"])
+        self.assertFalse(metadata["evaluator_commit_is_clean"])
+        snapshot_integrity = report.as_dict()["evidence_snapshot"][
+            "metrics_rollup"
+        ]["dimensions"]["snapshot_integrity"]
+        self.assertEqual("fail", snapshot_integrity["status"])
+        self.assertIn(
+            "evaluator worktree is dirty",
+            snapshot_integrity["failure_reasons"][0],
         )
 
     def test_mvp_processing_time_evaluation_enforces_manifest_threshold(self) -> None:
@@ -2119,7 +3319,7 @@ class EvaluateDatasetTest(unittest.TestCase):
             content_validation["evidence"]["audit_schema_version"],
         )
 
-    def test_mvp_harness_omits_non_applicable_docx_content_validation(self) -> None:
+    def test_mvp_harness_structures_excel_to_word_content_validation(self) -> None:
         case = self.valid_mvp_case(1)
         fixture_path = REPO_ROOT / str(case["fixture_path"])
 
@@ -2131,7 +3331,26 @@ class EvaluateDatasetTest(unittest.TestCase):
 
         artifact_evaluation = result["evaluations"]["artifact"]
         self.assertEqual("pass", artifact_evaluation["status"])
-        self.assertIsNone(artifact_evaluation["content_validation"])
+        content_validation = artifact_evaluation["content_validation"]
+        self.assertEqual("docx_expectations_v1", content_validation["validator"])
+        self.assertEqual("pass", content_validation["status"])
+        self.assertEqual(
+            {
+                "quality_numerator": 29,
+                "quality_denominator": 29,
+                "provenance_numerator": 0,
+                "provenance_denominator": 0,
+            },
+            {
+                key: content_validation["evidence"][key]
+                for key in (
+                    "quality_numerator",
+                    "quality_denominator",
+                    "provenance_numerator",
+                    "provenance_denominator",
+                )
+            },
+        )
 
     @unittest.skipUnless(PYMUPDF_AVAILABLE, "PyMuPDF eval dependency is not installed")
     def test_mvp_harness_uses_separate_scanned_pdf_docx_validator(self) -> None:
@@ -2177,6 +3396,92 @@ class EvaluateDatasetTest(unittest.TestCase):
             result["evaluations"]["review"]["ocr_boundary"]["metrics"][
                 "source_linkage_rate"
             ],
+        )
+
+    @unittest.skipUnless(PYMUPDF_AVAILABLE, "PyMuPDF eval dependency is not installed")
+    def test_scanned_pdf_ocr_boundary_only_exempts_affected_review_items(
+        self,
+    ) -> None:
+        from services.api.poc_web import convert_uploaded_document
+
+        case = self.valid_mvp_case(3)
+        fixture_path = REPO_ROOT / str(case["fixture_path"])
+        converted = convert_uploaded_document(
+            filename=fixture_path.name,
+            content=fixture_path.read_bytes(),
+            conversion_mode=str(case["conversion_mode"]),
+        )
+        converted["review_items"].append(
+            {
+                "id": "review-item-outside-ocr-boundary",
+                "document_id": "scanned-pdf-representative",
+                "block_id": "block-outside-ocr-boundary",
+                "reason": "unrelated content requires manual review",
+            }
+        )
+        converted["audit"]["review_items"]["count"] = len(
+            converted["review_items"]
+        )
+
+        with mock.patch(
+            "services.api.poc_web.convert_uploaded_document",
+            return_value=converted,
+        ):
+            missing_decision_result = evaluate_dataset.mvp_conversion_result(
+                case,
+                fixture_path=fixture_path,
+                acceptance_limits=self.valid_mvp_acceptance_limits(),
+            )
+
+        self.assertEqual(
+            "pass",
+            missing_decision_result["evaluations"]["review"]["ocr_boundary"][
+                "status"
+            ],
+        )
+        self.assertEqual(
+            "fail",
+            missing_decision_result["evaluations"]["review"]["status"],
+        )
+        self.assertIn(
+            "authoritative review decision is required",
+            missing_decision_result["evaluations"]["review"]["reason"],
+        )
+        self.assertEqual([], missing_decision_result["review_decisions"])
+
+        approved_case = copy.deepcopy(case)
+        approved_case["review_decision"] = copy.deepcopy(
+            self.valid_mvp_case(0)["review_decision"]
+        )
+        with mock.patch(
+            "services.api.poc_web.convert_uploaded_document",
+            return_value=copy.deepcopy(converted),
+        ):
+            approved_result = evaluate_dataset.mvp_conversion_result(
+                approved_case,
+                fixture_path=fixture_path,
+                acceptance_limits=self.valid_mvp_acceptance_limits(),
+            )
+
+        self.assertEqual("pass", approved_result["acceptance_status"])
+        self.assertEqual(
+            "pass",
+            approved_result["evaluations"]["review"]["status"],
+        )
+        self.assertEqual(1, len(approved_result["review_decisions"]))
+        self.assertEqual(
+            "approved",
+            approved_result["review_decisions"][0]["decision"],
+        )
+        self.assertEqual(
+            evaluate_dataset.mvp_review_item_version(
+                converted["review_items"][1]
+            ),
+            approved_result["review_decisions"][0]["item_version"],
+        )
+        self.assertEqual(
+            1,
+            approved_result["metrics"]["high_risk"]["covered_count"],
         )
 
     @unittest.skipUnless(PYMUPDF_AVAILABLE, "PyMuPDF eval dependency is not installed")
@@ -8637,6 +9942,12 @@ class EvaluateDatasetTest(unittest.TestCase):
                     ignored_paths=(report_output,),
                 )
             )
+            self.assertFalse(
+                evaluate_dataset.current_git_worktree_clean(
+                    temp_root,
+                    ignored_paths=(report_output, temp_root / "tracked.txt"),
+                )
+            )
             self.assertTrue(
                 evaluate_dataset.current_git_worktree_clean(
                     temp_root,
@@ -8650,12 +9961,38 @@ class EvaluateDatasetTest(unittest.TestCase):
                     include_untracked=False,
                 )
             )
+            self.assertFalse(
+                evaluate_dataset.current_git_worktree_clean(
+                    temp_root,
+                    ignored_paths=(temp_root / "tracked.txt",),
+                )
+            )
             (temp_root / "tracked.txt").write_text("tracked\n", encoding="utf-8")
             (temp_root / "other.json").write_text("{}", encoding="utf-8")
             self.assertFalse(
                 evaluate_dataset.current_git_worktree_clean(
                     temp_root,
                     ignored_paths=(report_output,),
+                )
+            )
+            (temp_root / "other.json").unlink()
+            report_output.unlink()
+            literal_report_output = temp_root / "reports" / "[abc].json"
+            literal_report_output.write_text("{}", encoding="utf-8")
+            self.assertTrue(
+                evaluate_dataset.current_git_worktree_clean(
+                    temp_root,
+                    ignored_paths=(literal_report_output,),
+                )
+            )
+            (temp_root / "reports" / "a.json").write_text(
+                "{}",
+                encoding="utf-8",
+            )
+            self.assertFalse(
+                evaluate_dataset.current_git_worktree_clean(
+                    temp_root,
+                    ignored_paths=(literal_report_output,),
                 )
             )
 

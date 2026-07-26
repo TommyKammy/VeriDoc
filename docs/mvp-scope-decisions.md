@@ -22,7 +22,7 @@ pins.
 - Target manifest: `datasets/mvp_evaluation_manifest_v1.json`
 - Target manifest revision: `phase12-mvp-v1`
 - Target manifest Git blob: `13450762d323198b1b6e87315be173c784fc4880`
-- Approved manifest contract SHA-256: `18996f997b7f6f9909ae2cd9f98a992713f76e7d95057ca5116f365bc8a88a75`
+- Approved manifest contract SHA-256: `5d91a67915d79c649954c5c8af02e74d08d94d0b97e7e673a7db690df61ebfff`
 - Approved OD-EFFICIENCY-SCOPE contract SHA-256: `3d9d05671895ec8d6e8b14f44b6a8dd7f99aa17b7b65871b78fb56a49966b6fb`
 - Approved OD-SEGREGATION contract SHA-256: `74d83d2d028c1ba79fffd6742ab9f13f7e345932248e36b86289e16c93a01476`
 - Approved ROLE_PERMISSIONS contract SHA-256: `dad052a8f6fe7acd549b2fa974c20e09b702fbcf31917deecf1636db61dfb322`
@@ -30,6 +30,12 @@ pins.
 - Approved by: `TommyKammy`
 - Approval date: `2026-07-22`
 - Approval status: `approved`
+
+The approved manifest contract hash above is derived from the manifest,
+fixture-manifest policy and schema, selected fixture entries and gold
+expectations, and selected fixture contents at the recorded target product
+commit. Later selected-fixture or expectation changes are not covered by this
+approval, even when the manifest revision string is unchanged.
 
 ## OD-TEMPLATES
 
@@ -42,8 +48,10 @@ pins.
   all five preserves the existing fail-closed OCR boundary instead of removing
   the currently failing scanned-PDF case from the denominator.
 - Rejection conditions: any change to the manifest revision, required category
-  set, case ID, fixture binding, source policy, expected status, or confidential
-  source policy requires a new decision revision and renewed approval.
+  set, case ID, fixture binding, fixture-manifest gold expectations, selected
+  fixture contents, source policy, expected status, acceptance limits, or
+  confidential source policy requires a new decision revision and renewed
+  approval.
 
 ## OD-EFFICIENCY-SCOPE
 
