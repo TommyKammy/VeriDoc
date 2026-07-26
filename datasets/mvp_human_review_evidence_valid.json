@@ -25,9 +25,12 @@
   "participants": [
     {
       "participant_id": "P001",
+      "participation_status": "completed",
       "relevant_experience_attested": true,
       "manual_practice_completed": true,
+      "manual_practice_completed_at": "2026-07-26T00:10:00Z",
       "veridoc_practice_completed": true,
+      "veridoc_practice_completed_at": "2026-07-26T00:20:00Z",
       "arm_order": [
         "manual",
         "veridoc"
@@ -35,9 +38,12 @@
     },
     {
       "participant_id": "P002",
+      "participation_status": "completed",
       "relevant_experience_attested": true,
       "manual_practice_completed": true,
+      "manual_practice_completed_at": "2026-07-26T00:10:00Z",
       "veridoc_practice_completed": true,
+      "veridoc_practice_completed_at": "2026-07-26T00:20:00Z",
       "arm_order": [
         "veridoc",
         "manual"
@@ -45,9 +51,12 @@
     },
     {
       "participant_id": "P003",
+      "participation_status": "completed",
       "relevant_experience_attested": true,
       "manual_practice_completed": true,
+      "manual_practice_completed_at": "2026-07-26T00:10:00Z",
       "veridoc_practice_completed": true,
+      "veridoc_practice_completed_at": "2026-07-26T00:20:00Z",
       "arm_order": [
         "manual",
         "veridoc"
@@ -64,6 +73,8 @@
       "task_revision": "task-phase12-v1",
       "gold_answer_revision": "gold-phase12-v1",
       "gold_answer_hidden_until_ended_at": true,
+      "gold_answer_compared_by_role": "independent_assessor",
+      "gold_answer_comparison_withheld_from_participant": true,
       "started_at": "2026-07-26T01:00:00Z",
       "ended_at": "2026-07-26T01:20:00Z",
       "excluded_pause_seconds": 0,
@@ -85,6 +96,8 @@
       "task_revision": "task-phase12-v1",
       "gold_answer_revision": "gold-phase12-v1",
       "gold_answer_hidden_until_ended_at": true,
+      "gold_answer_compared_by_role": "independent_assessor",
+      "gold_answer_comparison_withheld_from_participant": true,
       "started_at": "2026-07-26T02:00:00Z",
       "ended_at": "2026-07-26T02:13:00Z",
       "excluded_pause_seconds": 60,
@@ -106,6 +119,8 @@
       "task_revision": "task-phase12-v1",
       "gold_answer_revision": "gold-phase12-v1",
       "gold_answer_hidden_until_ended_at": true,
+      "gold_answer_compared_by_role": "independent_assessor",
+      "gold_answer_comparison_withheld_from_participant": true,
       "started_at": "2026-07-26T03:00:00Z",
       "ended_at": "2026-07-26T03:12:00Z",
       "excluded_pause_seconds": 0,
@@ -127,6 +142,8 @@
       "task_revision": "task-phase12-v1",
       "gold_answer_revision": "gold-phase12-v1",
       "gold_answer_hidden_until_ended_at": true,
+      "gold_answer_compared_by_role": "independent_assessor",
+      "gold_answer_comparison_withheld_from_participant": true,
       "started_at": "2026-07-26T04:00:00Z",
       "ended_at": "2026-07-26T04:18:00Z",
       "excluded_pause_seconds": 0,
@@ -148,6 +165,8 @@
       "task_revision": "task-phase12-v1",
       "gold_answer_revision": "gold-phase12-v1",
       "gold_answer_hidden_until_ended_at": true,
+      "gold_answer_compared_by_role": "independent_assessor",
+      "gold_answer_comparison_withheld_from_participant": true,
       "started_at": "2026-07-26T05:00:00Z",
       "ended_at": "2026-07-26T05:22:00Z",
       "excluded_pause_seconds": 120,
@@ -169,6 +188,8 @@
       "task_revision": "task-phase12-v1",
       "gold_answer_revision": "gold-phase12-v1",
       "gold_answer_hidden_until_ended_at": true,
+      "gold_answer_compared_by_role": "independent_assessor",
+      "gold_answer_comparison_withheld_from_participant": true,
       "started_at": "2026-07-26T06:00:00Z",
       "ended_at": "2026-07-26T06:14:00Z",
       "excluded_pause_seconds": 0,

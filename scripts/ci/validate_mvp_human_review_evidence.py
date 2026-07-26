@@ -233,7 +233,11 @@ def validate_record(record: Any) -> list[str]:
 
     participants = record.get("participants")
     participant_ids: set[str] = set()
+    participant_statuses: dict[str, str] = {}
     participant_orders: dict[str, tuple[str, str]] = {}
+    practice_completed_at_by_participant: dict[
+        str, dict[str, datetime]
+    ] = defaultdict(dict)
     if not isinstance(participants, list):
         errors.append("participants must be an array")
         participants = []
@@ -267,6 +271,14 @@ def validate_record(record: Any) -> list[str]:
             errors.append(f"duplicate participant_id: {participant_id}")
         else:
             participant_ids.add(participant_id)
+        participation_status = participant.get("participation_status")
+        if (
+            not isinstance(participation_status, str)
+            or participation_status not in {"completed", "withdrawn"}
+        ):
+            errors.append(f"{label}.participation_status is invalid")
+        elif isinstance(participant_id, str):
+            participant_statuses[participant_id] = participation_status
         for field in (
             "relevant_experience_attested",
             "manual_practice_completed",
@@ -274,6 +286,19 @@ def validate_record(record: Any) -> list[str]:
         ):
             if participant.get(field) is not True:
                 errors.append(f"{label}.{field} must be true")
+        for field in (
+            "manual_practice_completed_at",
+            "veridoc_practice_completed_at",
+        ):
+            completed_at = _parse_utc(
+                participant.get(field),
+                f"{label}.{field}",
+                errors,
+            )
+            if completed_at is not None and isinstance(participant_id, str):
+                practice_completed_at_by_participant[participant_id][
+                    field
+                ] = completed_at
         arm_order = participant.get("arm_order")
         if arm_order not in (
             ["manual", "veridoc"],
@@ -283,8 +308,22 @@ def validate_record(record: Any) -> list[str]:
         elif isinstance(participant_id, str):
             participant_orders[participant_id] = (arm_order[0], arm_order[1])
 
-    order_counts = Counter(participant_orders.values())
-    if participant_orders:
+    completed_participant_ids = {
+        participant_id
+        for participant_id, status in participant_statuses.items()
+        if status == "completed" and participant_id in participant_ids
+    }
+    if len(completed_participant_ids) < 3:
+        errors.append(
+            "completed participant cohort must contain at least three reviewers"
+        )
+    completed_orders = {
+        participant_id: participant_orders[participant_id]
+        for participant_id in completed_participant_ids
+        if participant_id in participant_orders
+    }
+    order_counts = Counter(completed_orders.values())
+    if completed_participant_ids:
         manual_first = order_counts[("manual", "veridoc")]
         veridoc_first = order_counts[("veridoc", "manual")]
         if manual_first == 0 or veridoc_first == 0:
@@ -296,7 +335,7 @@ def validate_record(record: Any) -> list[str]:
     if not isinstance(runs, list):
         errors.append("runs must be an array")
         runs = []
-    elif len(runs) < 2 * len(participants) * len(declared_cases):
+    elif len(runs) < 2 * len(completed_participant_ids) * len(declared_cases):
         errors.append("runs do not account for every participant/case/arm")
 
     run_schema = schema["$defs"]["run"]
@@ -321,6 +360,7 @@ def validate_record(record: Any) -> list[str]:
     times_by_participant: dict[
         str, list[tuple[datetime, datetime, str]]
     ] = defaultdict(list)
+    withdrawal_markers: set[str] = set()
     all_started_at: list[datetime] = []
 
     for index, run in enumerate(runs):
@@ -394,6 +434,19 @@ def validate_record(record: Any) -> list[str]:
             errors.append(
                 f"{label}.gold_answer_hidden_until_ended_at must be true"
             )
+        if run.get("gold_answer_compared_by_role") != "independent_assessor":
+            errors.append(
+                f"{label}.gold_answer_compared_by_role must be "
+                "independent_assessor"
+            )
+        if (
+            run.get("gold_answer_comparison_withheld_from_participant")
+            is not True
+        ):
+            errors.append(
+                f"{label}.gold_answer_comparison_withheld_from_participant "
+                "must be true"
+            )
 
         started_at = _parse_utc(run.get("started_at"), f"{label}.started_at", errors)
         ended_at = _parse_utc(run.get("ended_at"), f"{label}.ended_at", errors)
@@ -461,6 +514,12 @@ def validate_record(record: Any) -> list[str]:
             errors.append(f"{label}.exclusion_reason_code is required when excluded")
         elif not excluded and exclusion_reason is not None:
             errors.append(f"{label}.exclusion_reason_code must be null when included")
+        if (
+            excluded is True
+            and exclusion_reason == "participant_withdrew"
+            and participant_is_declared
+        ):
+            withdrawal_markers.add(participant_id)
 
         checklist_complete = run.get("checklist_complete")
         if not isinstance(checklist_complete, bool):
@@ -517,6 +576,18 @@ def validate_record(record: Any) -> list[str]:
         and quality_approved_at >= min(all_started_at)
     ):
         errors.append("quality approval must precede every timed run")
+    for participant_id, practice_times in sorted(
+        practice_completed_at_by_participant.items()
+    ):
+        participant_runs = times_by_participant[participant_id]
+        if not participant_runs:
+            continue
+        earliest_run = min(start for start, _, _ in participant_runs)
+        for field, completed_at in sorted(practice_times.items()):
+            if completed_at >= earliest_run:
+                errors.append(
+                    f"{participant_id}.{field} must precede every timed run"
+                )
 
     for group, attempt_numbers in sorted(attempt_numbers_by_group.items()):
         expected_numbers = set(range(1, max(attempt_numbers) + 1))
@@ -555,6 +626,17 @@ def validate_record(record: Any) -> list[str]:
                 )
 
     for participant_id in sorted(participant_ids):
+        participation_status = participant_statuses.get(participant_id)
+        if (
+            participation_status == "completed"
+            and participant_id in withdrawal_markers
+        ):
+            errors.append(
+                f"{participant_id} completed participant cannot have a "
+                "participant_withdrew exclusion"
+            )
+        if participation_status != "completed":
+            continue
         for case_id in sorted(declared_cases):
             for arm in ("manual", "veridoc"):
                 included = included_by_pair[(participant_id, case_id, arm)]
@@ -593,7 +675,11 @@ def summarize_record(record: dict[str, Any]) -> dict[str, Any]:
     if errors:
         raise ValueError("record is invalid: " + "; ".join(errors))
 
-    participants = [item["participant_id"] for item in record["participants"]]
+    participants = [
+        item["participant_id"]
+        for item in record["participants"]
+        if item["participation_status"] == "completed"
+    ]
     included = [run for run in record["runs"] if not run["excluded"]]
     by_pair = {
         (run["participant_id"], run["case_id"], run["arm"]): run
@@ -654,7 +740,6 @@ def summarize_record(record: dict[str, Any]) -> dict[str, Any]:
     arm_metrics: dict[str, dict[str, int]] = {}
     for arm in ("manual", "veridoc"):
         all_arm_runs = [run for run in record["runs"] if run["arm"] == arm]
-        included_arm_runs = [run for run in included if run["arm"] == arm]
         arm_metrics[arm] = {
             "high_risk_misses": sum(
                 run["high_risk_miss_count"] for run in all_arm_runs
@@ -663,7 +748,8 @@ def summarize_record(record: dict[str, Any]) -> dict[str, Any]:
                 run["over_detection_count"] for run in all_arm_runs
             ),
             "approved_completions": sum(
-                run["outcome"] == "approved" for run in included_arm_runs
+                run["outcome"] == "approved" and run["checklist_complete"]
+                for run in all_arm_runs
             ),
             "blockers": sum(
                 run["outcome"] == "blocked" for run in all_arm_runs

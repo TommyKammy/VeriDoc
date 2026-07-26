@@ -16,26 +16,37 @@ efficiency target has been met. A completed record is valid only when it passes
 
 ## Study design
 
-Use a within-participant comparison. Every participant performs the same five
-tasks once in the `manual` arm and once in the `veridoc` arm. Both arms use the
-same source fixture, task instructions, gold-answer revision, completion
-checklist, and timing boundary. The gold answer remains hidden until the timed
-run has stopped.
+Use a within-participant comparison. Every completed participant performs the
+same five tasks once in the `manual` arm and once in the `veridoc` arm. Both
+arms use the same source fixture, task instructions, gold-answer revision,
+completion checklist, and timing boundary. The gold answer remains hidden until
+the timed run has stopped.
 Every run attests this boundary with
 `gold_answer_hidden_until_ended_at: true`; a procedure note alone is not
 evidence that the gold remained hidden.
+The participant never performs the gold comparison. An `independent_assessor`
+compares sealed artifacts with the gold outside the participant's view and
+withholds the result from that participant. Every run records
+`gold_answer_compared_by_role: independent_assessor` and
+`gold_answer_comparison_withheld_from_participant: true`. This separation keeps
+the second paired run blinded even if assessment of the first artifact occurs
+before that second run.
 
-Recruit at least three designated document reviewers with relevant experience.
-Assign repository-safe pseudonyms matching `P[0-9]{3,}`. Keep the mapping from
-pseudonym to identity outside the repository and outside the evidence record.
-Do not retain direct participant identity: names, email addresses, employee IDs,
-free-text biographies, or other direct identifiers are prohibited.
+Retain at least three completed designated document reviewers with relevant
+experience. Assign repository-safe pseudonyms matching `P[0-9]{3,}`. Keep the
+mapping from pseudonym to identity outside the repository and outside the
+evidence record. Do not retain direct participant identity: names, email
+addresses, employee IDs, free-text biographies, or other direct identifiers are
+prohibited.
 
 Before timed work, each participant completes one fixed, unscored practice task
 for each arm. Record the fixed task, training material, and assistance contract
 as one study-level `practice_revision`; it must not vary between participants or
-arms. Counterbalance arm order: both `manual`-first and `veridoc`-first orders
-must occur, and their participant counts may differ by at most one.
+arms. Record `manual_practice_completed_at` and
+`veridoc_practice_completed_at`; both UTC timestamps must strictly precede that
+participant's earliest timed run. Counterbalance arm order among completed
+participants: both `manual`-first and `veridoc`-first orders must occur, and
+their participant counts may differ by at most one.
 
 ## Timing and run accounting
 
@@ -65,11 +76,16 @@ attempt sets `excluded` to `true` and uses one predeclared
 - `participant_withdrew`
 - `invalid_timing`
 
-Each participant/case/arm must have exactly one non-excluded attempt in a
-completed study. Excluded attempts remain in the record. A blocked non-excluded
-attempt is accounted for and makes its pair ineligible for the 30% calculation;
-it is not an exclusion. Attempt numbers for each participant/case/arm are
-contiguous from 1, and no two timed runs for one participant may overlap.
+At least three participants must have `participation_status: completed`. Each
+completed participant/case/arm must have exactly one non-excluded attempt.
+Participants who withdraw remain declared with
+`participation_status: withdrawn`; their existing attempts remain in the record,
+including any `participant_withdrew` exclusion, but their unstarted future
+participant/case/arm groups are not required and they are excluded from the
+paired cohort median. A blocked non-excluded attempt is accounted for and makes
+its pair ineligible for the 30% calculation; it is not an exclusion. Attempt
+numbers for each recorded participant/case/arm are contiguous from 1, and no
+two timed runs for one participant may overlap.
 Within each participant/case/arm, attempt timestamps must also advance in
 `attempt_number` order; a retry cannot occur before the attempt it retries.
 
@@ -92,7 +108,11 @@ For each retained run, including excluded attempts, record:
 - `outcome`: `approved` or `blocked`;
 - `blocker_code`: a controlled reason for a blocked outcome;
 - `gold_answer_hidden_until_ended_at`: the controlled attestation that the gold
-  answer remained hidden until timing stopped; and
+  answer remained hidden until timing stopped;
+- `gold_answer_compared_by_role` and
+  `gold_answer_comparison_withheld_from_participant`: controlled attestations
+  that an independent assessor performed the comparison without disclosing the
+  gold or result to the participant; and
 - the timing fields used by the correction-time formula.
 
 For participant `p` and case `c`, form a pair only when both arms are
@@ -114,8 +134,8 @@ fails or cannot be calculated.
 
 `high_risk_miss_count` is bounded by `high_risk_expected_count`.
 `over_detection_count` is a non-negative count, not a rate. A completion is an
-`approved` outcome with `checklist_complete: true`. A blocker is a `blocked`
-outcome with a non-null `blocker_code`.
+`approved` outcome with `checklist_complete: true`, including an excluded
+attempt. A blocker is a `blocked` outcome with a non-null `blocker_code`.
 
 ## Privacy and approval boundary
 

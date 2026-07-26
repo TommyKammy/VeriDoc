@@ -97,6 +97,8 @@ def _completed_record(base_record: dict[str, object]) -> dict[str, object]:
                         "task_revision": APPROVED_TASK_REVISION,
                         "gold_answer_revision": APPROVED_GOLD_ANSWER_REVISION,
                         "gold_answer_hidden_until_ended_at": True,
+                        "gold_answer_compared_by_role": "independent_assessor",
+                        "gold_answer_comparison_withheld_from_participant": True,
                         "started_at": _utc_text(started_at),
                         "ended_at": _utc_text(ended_at),
                         "excluded_pause_seconds": 0,
@@ -150,6 +152,45 @@ def _add_excluded_veridoc_retry_with_miss(record: dict[str, object]) -> None:
     runs.append(retry)
 
 
+def _add_withdrawn_participant(record: dict[str, object]) -> None:
+    participants = record["participants"]
+    runs = record["runs"]
+    assert isinstance(participants, list)
+    assert isinstance(runs, list)
+    participants.append(
+        {
+            "participant_id": "P004",
+            "participation_status": "withdrawn",
+            "relevant_experience_attested": True,
+            "manual_practice_completed": True,
+            "manual_practice_completed_at": "2026-07-26T00:10:00Z",
+            "veridoc_practice_completed": True,
+            "veridoc_practice_completed_at": "2026-07-26T00:20:00Z",
+            "arm_order": ["manual", "veridoc"],
+        }
+    )
+    source = next(
+        run
+        for run in runs
+        if isinstance(run, dict)
+        and run["participant_id"] == "P001"
+        and run["case_id"] == "mvp-word-001"
+        and run["arm"] == "manual"
+    )
+    withdrawn_attempt = copy.deepcopy(source)
+    withdrawn_attempt.update(
+        {
+            "run_id": "RUN-P004-WORD-MANUAL-1",
+            "participant_id": "P004",
+            "started_at": "2026-08-10T01:00:00Z",
+            "ended_at": "2026-08-10T01:02:00Z",
+            "excluded": True,
+            "exclusion_reason_code": "participant_withdrew",
+        }
+    )
+    runs.append(withdrawn_attempt)
+
+
 class MvpHumanReviewProtocolTest(unittest.TestCase):
     def setUp(self) -> None:
         self.valid_record = json.loads(VALID_EXAMPLE_PATH.read_text(encoding="utf-8"))
@@ -169,6 +210,8 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             "high-risk miss",
             "over_detection_count",
             "direct participant identity",
+            "independent_assessor",
+            "participation_status",
             "P12G-14",
         ):
             self.assertIn(marker, protocol)
@@ -200,6 +243,18 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertIn(
             "gold_answer_hidden_until_ended_at",
             schema["$defs"]["run"]["required"],
+        )
+        self.assertIn(
+            "gold_answer_comparison_withheld_from_participant",
+            schema["$defs"]["run"]["required"],
+        )
+        self.assertIn(
+            "participation_status",
+            schema["$defs"]["participant"]["required"],
+        )
+        self.assertIn(
+            "manual_practice_completed_at",
+            schema["$defs"]["participant"]["required"],
         )
         self.assertEqual(
             "p12g-13-human-review-v1",
@@ -360,6 +415,25 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             validate_record(record),
         )
 
+    def test_gold_comparison_is_independent_and_withheld_from_participant(
+        self,
+    ) -> None:
+        record = copy.deepcopy(self.valid_record)
+        record["runs"][0]["gold_answer_compared_by_role"] = "participant"
+        record["runs"][0][
+            "gold_answer_comparison_withheld_from_participant"
+        ] = False
+        errors = validate_record(record)
+        self.assertIn(
+            "run[0].gold_answer_compared_by_role must be independent_assessor",
+            errors,
+        )
+        self.assertIn(
+            "run[0].gold_answer_comparison_withheld_from_participant "
+            "must be true",
+            errors,
+        )
+
     def test_run_revisions_must_match_the_approved_protocol_contract(self) -> None:
         record = copy.deepcopy(self.valid_record)
         record["runs"][0]["task_revision"] = "unapproved-task-v2"
@@ -452,10 +526,37 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertEqual(1, summary["arm_metrics"]["veridoc"]["retry_runs"])
         self.assertEqual(1, summary["arm_metrics"]["veridoc"]["excluded_runs"])
         self.assertEqual(1, summary["arm_metrics"]["veridoc"]["high_risk_misses"])
+        self.assertEqual(
+            16,
+            summary["arm_metrics"]["veridoc"]["approved_completions"],
+        )
         self.assertEqual(1, summary["totals"]["retry_runs"])
         self.assertEqual(1, summary["totals"]["excluded_runs"])
         self.assertEqual(1, summary["totals"]["high_risk_misses"])
+        self.assertEqual(31, summary["totals"]["approved_completions"])
         self.assertFalse(summary["efficiency_target_met"])
+
+    def test_withdrawn_participant_attempts_remain_outside_completed_cohort(
+        self,
+    ) -> None:
+        record = _completed_record(self.valid_record)
+        _add_withdrawn_participant(record)
+        self.assertEqual([], validate_record(record))
+        summary = summarize_record(record)
+        self.assertEqual(30, summary["required_runs"])
+        self.assertEqual(31, summary["recorded_runs"])
+        self.assertEqual(15, summary["eligible_pair_count"])
+        self.assertEqual(1, summary["totals"]["excluded_runs"])
+        self.assertEqual(31, summary["totals"]["approved_completions"])
+        self.assertTrue(summary["efficiency_target_met"])
+
+    def test_completed_cohort_still_requires_three_reviewers(self) -> None:
+        record = copy.deepcopy(self.valid_record)
+        record["participants"][2]["participation_status"] = "withdrawn"
+        self.assertIn(
+            "completed participant cohort must contain at least three reviewers",
+            validate_record(record),
+        )
 
     def test_controlled_blocker_is_accounted_but_excluded_from_median(self) -> None:
         record = _completed_record(self.valid_record)
@@ -483,6 +584,16 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertIn("missing record field: practice_revision", errors)
         self.assertIn("practice_revision is invalid", errors)
 
+    def test_practice_must_precede_participants_earliest_timed_run(self) -> None:
+        record = copy.deepcopy(self.valid_record)
+        record["participants"][0]["manual_practice_completed_at"] = record[
+            "runs"
+        ][0]["started_at"]
+        self.assertIn(
+            "P001.manual_practice_completed_at must precede every timed run",
+            validate_record(record),
+        )
+
     def test_validator_fails_closed_on_wrong_json_types(self) -> None:
         mutations = (
             (
@@ -496,12 +607,29 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                 "consent_approval.approved_by_role must be study_owner",
             ),
             (
+                "/participants/0/participation_status",
+                [],
+                "participant[0].participation_status is invalid",
+            ),
+            (
+                "/participants/0/manual_practice_completed_at",
+                [],
+                "participant[0].manual_practice_completed_at must be a UTC "
+                "RFC 3339 timestamp",
+            ),
+            (
                 "/runs/0/participant_id",
                 [],
                 "run[0].participant_id is not declared",
             ),
             ("/runs/0/case_id", {}, "run[0].case_id is not declared"),
             ("/runs/0/arm", [], "run[0].arm is invalid"),
+            (
+                "/runs/0/gold_answer_compared_by_role",
+                [],
+                "run[0].gold_answer_compared_by_role must be "
+                "independent_assessor",
+            ),
             (
                 "/runs/0/exclusion_reason_code",
                 [],

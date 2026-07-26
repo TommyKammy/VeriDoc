@@ -21,6 +21,8 @@ employee IDs, or free-text participant notes in the repository.
       on a different revision is not accepted.
 - [ ] Gold answers are hidden until each timed run stops.
 - [ ] Each participant completed one fixed, unscored practice task per arm.
+- [ ] Each arm's practice completion timestamp precedes that participant's
+      earliest timed run.
 - [ ] One `practice_revision` fixes the practice task, training material, and
       assistance contract for the whole cohort.
 - [ ] Arm order is assigned before timed work and is counterbalanced.
@@ -37,8 +39,13 @@ employee IDs, or free-text participant notes in the repository.
       that the gold answer stayed hidden through `ended_at`.
 - [ ] Stop timing only at approved artifact plus completed checklist, or at an
       explicit blocked outcome.
-- [ ] Compare the stopped artifact with the gold answer.
-- [ ] Record high-risk expected targets, high-risk misses, and over-detections.
+- [ ] Seal the stopped artifact without exposing the gold answer to the
+      participant.
+- [ ] An independent assessor compares sealed artifacts with the gold outside
+      the participant's view and does not disclose the gold or comparison
+      result to that participant.
+- [ ] Record the independent-assessor and non-disclosure attestations,
+      high-risk expected targets, high-risk misses, and over-detections.
 - [ ] For a blocked run, select a controlled blocker code.
 - [ ] For an excluded attempt, retain the attempt and select a controlled
       exclusion reason; otherwise record no exclusion reason.
@@ -51,12 +58,17 @@ employee IDs, or free-text participant notes in the repository.
 | --- | --- |
 | `run_id` | `RUN-...` |
 | `participant_id` | `P...` |
+| participant `participation_status` | `completed` / `withdrawn` |
+| participant `manual_practice_completed_at` | UTC RFC 3339 timestamp |
+| participant `veridoc_practice_completed_at` | UTC RFC 3339 timestamp |
 | `case_id` | one declared Phase 12 case |
 | `arm` | `manual` / `veridoc` |
 | `attempt_number` | positive integer |
 | `task_revision` | `task-phase12-v1` |
 | `gold_answer_revision` | `gold-phase12-v1` |
 | `gold_answer_hidden_until_ended_at` | `true` attestation |
+| `gold_answer_compared_by_role` | `independent_assessor` |
+| `gold_answer_comparison_withheld_from_participant` | `true` attestation |
 | `started_at` | UTC RFC 3339 timestamp |
 | `ended_at` | UTC RFC 3339 timestamp |
 | `excluded_pause_seconds` | non-negative whole seconds |
@@ -71,10 +83,14 @@ employee IDs, or free-text participant notes in the repository.
 
 ## Study closeout
 
-- [ ] Every participant has one non-excluded record for every case and arm.
+- [ ] At least three participants have `participation_status: completed`.
+- [ ] Every completed participant has one non-excluded record for every case
+      and arm.
+- [ ] Withdrawn participants and their existing attempts remain recorded; their
+      unstarted future groups are not fabricated.
 - [ ] All retries and exclusions remain in the evidence.
-- [ ] Both arm orders are represented and participant counts differ by at most
-      one.
+- [ ] Both arm orders are represented among completed participants and their
+      counts differ by at most one.
 - [ ] Paired arms use identical task and gold-answer revisions.
 - [ ] Every retained attempt for a case uses the same cohort-wide task and
       gold-answer revisions.
@@ -84,11 +100,14 @@ employee IDs, or free-text participant notes in the repository.
       participant/case/arm.
 - [ ] Expected high-risk counts match the pinned manifest.
 - [ ] Correction time is recomputed from timestamps minus recorded pauses.
-- [ ] Every participant/case reduction and the paired cohort median are reported.
+- [ ] Every completed-participant/case reduction and the paired cohort median
+      are reported.
 - [ ] Per-arm misses, over-detections, completions, blockers, retries, and
       exclusions are reported.
 - [ ] Overall totals report misses, over-detections, approved completions,
       blockers, retries, and exclusions.
+- [ ] Approved completions include excluded attempts whose outcome is
+      `approved` and whose checklist is complete.
 - [ ] The 30%+ claim is made only for a valid completed record whose paired
       median is at least 30% and whose VeriDoc arm introduced zero high-risk
       misses.

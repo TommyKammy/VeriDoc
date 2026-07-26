@@ -142,9 +142,12 @@
       "additionalProperties": false,
       "required": [
         "participant_id",
+        "participation_status",
         "relevant_experience_attested",
         "manual_practice_completed",
+        "manual_practice_completed_at",
         "veridoc_practice_completed",
+        "veridoc_practice_completed_at",
         "arm_order"
       ],
       "properties": {
@@ -152,14 +155,28 @@
           "type": "string",
           "pattern": "^P[0-9]{3,}$"
         },
+        "participation_status": {
+          "enum": [
+            "completed",
+            "withdrawn"
+          ]
+        },
         "relevant_experience_attested": {
           "const": true
         },
         "manual_practice_completed": {
           "const": true
         },
+        "manual_practice_completed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
         "veridoc_practice_completed": {
           "const": true
+        },
+        "veridoc_practice_completed_at": {
+          "type": "string",
+          "format": "date-time"
         },
         "arm_order": {
           "oneOf": [
@@ -191,6 +208,8 @@
         "task_revision",
         "gold_answer_revision",
         "gold_answer_hidden_until_ended_at",
+        "gold_answer_compared_by_role",
+        "gold_answer_comparison_withheld_from_participant",
         "started_at",
         "ended_at",
         "excluded_pause_seconds",
@@ -232,6 +251,12 @@
           "const": "gold-phase12-v1"
         },
         "gold_answer_hidden_until_ended_at": {
+          "const": true
+        },
+        "gold_answer_compared_by_role": {
+          "const": "independent_assessor"
+        },
+        "gold_answer_comparison_withheld_from_participant": {
           "const": true
         },
         "started_at": {
