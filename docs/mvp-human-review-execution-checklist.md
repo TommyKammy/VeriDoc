@@ -6,13 +6,19 @@ employee IDs, or free-text participant notes in the repository.
 
 ## Study setup
 
-- [ ] Approval is complete before any timed work.
-- [ ] Consent form version and approval role/timestamp are recorded.
+- [ ] Consent approval and independent quality approval are complete before any
+      timed work.
+- [ ] Consent form version, study-owner role, and approval timestamp are
+      recorded in `consent_approval`.
+- [ ] Quality-approver role, approval status/timestamp, and external-record
+      version are recorded in `quality_approval`.
 - [ ] At least three relevant document reviewers have repository-safe IDs
       matching `P[0-9]{3,}`.
 - [ ] The identity-to-pseudonym mapping is outside the repository.
 - [ ] The five `phase12-mvp-v1` cases, task revisions, gold revisions, target
       formats, and completion checklist are fixed for both arms.
+- [ ] Every case uses `task-phase12-v1` and `gold-phase12-v1`; cohort agreement
+      on a different revision is not accepted.
 - [ ] Gold answers are hidden until each timed run stops.
 - [ ] Each participant completed one fixed, unscored practice task per arm.
 - [ ] One `practice_revision` fixes the practice task, training material, and
@@ -27,6 +33,8 @@ employee IDs, or free-text participant notes in the repository.
 - [ ] Start timing only when source, target format, and checklist are available.
 - [ ] Record every pause/interrupt in whole seconds.
 - [ ] Do not expose the gold answer before the run stops.
+- [ ] Set `gold_answer_hidden_until_ended_at` to `true` only after confirming
+      that the gold answer stayed hidden through `ended_at`.
 - [ ] Stop timing only at approved artifact plus completed checklist, or at an
       explicit blocked outcome.
 - [ ] Compare the stopped artifact with the gold answer.
@@ -46,8 +54,9 @@ employee IDs, or free-text participant notes in the repository.
 | `case_id` | one declared Phase 12 case |
 | `arm` | `manual` / `veridoc` |
 | `attempt_number` | positive integer |
-| `task_revision` | same in both arms |
-| `gold_answer_revision` | same in both arms |
+| `task_revision` | `task-phase12-v1` |
+| `gold_answer_revision` | `gold-phase12-v1` |
+| `gold_answer_hidden_until_ended_at` | `true` attestation |
 | `started_at` | UTC RFC 3339 timestamp |
 | `ended_at` | UTC RFC 3339 timestamp |
 | `excluded_pause_seconds` | non-negative whole seconds |
@@ -71,11 +80,15 @@ employee IDs, or free-text participant notes in the repository.
       gold-answer revisions.
 - [ ] Attempt numbers are contiguous from 1 and no participant run intervals
       overlap.
+- [ ] Attempt timestamps advance in attempt-number order within each
+      participant/case/arm.
 - [ ] Expected high-risk counts match the pinned manifest.
 - [ ] Correction time is recomputed from timestamps minus recorded pauses.
 - [ ] Every participant/case reduction and the paired cohort median are reported.
 - [ ] Per-arm misses, over-detections, completions, blockers, retries, and
       exclusions are reported.
+- [ ] Overall totals report misses, over-detections, approved completions,
+      blockers, retries, and exclusions.
 - [ ] The 30%+ claim is made only for a valid completed record whose paired
       median is at least 30% and whose VeriDoc arm introduced zero high-risk
       misses.

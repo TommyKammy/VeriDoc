@@ -4,6 +4,8 @@
 - Evidence schema version: `veridoc-mvp-human-review-evidence/v1`
 - Approved scope decision: `p12g-02-v1` (`OD-EFFICIENCY-SCOPE`)
 - Target manifest revision: `phase12-mvp-v1`
+- Approved task-instruction revision: `task-phase12-v1`
+- Approved gold-answer revision: `gold-phase12-v1`
 - Applicable cases: `mvp-word-001`, `mvp-excel-001`, `mvp-text-pdf-001`,
   `mvp-scanned-pdf-001`, and `mvp-record-pdf-001`
 
@@ -19,6 +21,9 @@ tasks once in the `manual` arm and once in the `veridoc` arm. Both arms use the
 same source fixture, task instructions, gold-answer revision, completion
 checklist, and timing boundary. The gold answer remains hidden until the timed
 run has stopped.
+Every run attests this boundary with
+`gold_answer_hidden_until_ended_at: true`; a procedure note alone is not
+evidence that the gold remained hidden.
 
 Recruit at least three designated document reviewers with relevant experience.
 Assign repository-safe pseudonyms matching `P[0-9]{3,}`. Keep the mapping from
@@ -65,11 +70,15 @@ completed study. Excluded attempts remain in the record. A blocked non-excluded
 attempt is accounted for and makes its pair ineligible for the 30% calculation;
 it is not an exclusion. Attempt numbers for each participant/case/arm are
 contiguous from 1, and no two timed runs for one participant may overlap.
+Within each participant/case/arm, attempt timestamps must also advance in
+`attempt_number` order; a retry cannot occur before the attempt it retries.
 
-For a given case, every participant and every retained attempt uses one common
-`task_revision` and one common `gold_answer_revision`. The validator derives
-`high_risk_expected_count` from the pinned `phase12-mvp-v1` manifest; evidence
-records cannot redefine that count.
+For every approved case, every participant and every retained attempt uses the
+protocol-pinned `task_revision: task-phase12-v1` and
+`gold_answer_revision: gold-phase12-v1`. Cohort-wide agreement on any other
+value is not sufficient. The validator derives `high_risk_expected_count` from
+the pinned `phase12-mvp-v1` manifest; evidence records cannot redefine that
+count.
 
 ## Measures and calculations
 
@@ -81,7 +90,9 @@ For each retained run, including excluded attempts, record:
 - `over_detection_count`: reviewed high-risk flags that are not high-risk gold
   targets;
 - `outcome`: `approved` or `blocked`;
-- `blocker_code`: a controlled reason for a blocked outcome; and
+- `blocker_code`: a controlled reason for a blocked outcome;
+- `gold_answer_hidden_until_ended_at`: the controlled attestation that the gold
+  answer remained hidden until timing stopped; and
 - the timing fields used by the correction-time formula.
 
 For participant `p` and case `c`, form a pair only when both arms are
@@ -108,10 +119,13 @@ outcome with a non-null `blocker_code`.
 
 ## Privacy and approval boundary
 
-The study owner obtains the applicable consent and quality approval before
-timed work. The record stores only the consent form version, approval state,
-approval timestamp, and approving role. It never stores the participant or
-approver identity. Set `direct_identifiers_stored` to `false`.
+The study owner obtains consent before timed work and records it in
+`consent_approval` with role `study_owner`, the controlled approval state and
+timestamp, and the consent form version. Independently, a quality approver
+records `quality_approval` with role `quality_approver`, the controlled approval
+state and timestamp, and the external system-of-record version. Both approval
+timestamps must strictly precede every timed run. Neither record stores the
+participant or approver identity. Set `direct_identifiers_stored` to `false`.
 
 The schema rejects unknown fields so that identity-like additions cannot be
 silently retained. Controlled codes replace free-text participant notes.

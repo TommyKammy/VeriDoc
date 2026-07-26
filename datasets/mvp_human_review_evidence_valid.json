@@ -12,9 +12,15 @@
   "consent_approval": {
     "approval_status": "approved",
     "approved_at": "2026-07-26T00:00:00Z",
-    "approved_by_role": "quality_approver",
+    "approved_by_role": "study_owner",
     "consent_form_version": "synthetic-v1",
     "direct_identifiers_stored": false
+  },
+  "quality_approval": {
+    "approval_status": "approved",
+    "approved_at": "2026-07-26T00:05:00Z",
+    "approved_by_role": "quality_approver",
+    "external_record_version": "synthetic-quality-v1"
   },
   "participants": [
     {
@@ -57,6 +63,7 @@
       "attempt_number": 1,
       "task_revision": "task-phase12-v1",
       "gold_answer_revision": "gold-phase12-v1",
+      "gold_answer_hidden_until_ended_at": true,
       "started_at": "2026-07-26T01:00:00Z",
       "ended_at": "2026-07-26T01:20:00Z",
       "excluded_pause_seconds": 0,
@@ -77,6 +84,7 @@
       "attempt_number": 1,
       "task_revision": "task-phase12-v1",
       "gold_answer_revision": "gold-phase12-v1",
+      "gold_answer_hidden_until_ended_at": true,
       "started_at": "2026-07-26T02:00:00Z",
       "ended_at": "2026-07-26T02:13:00Z",
       "excluded_pause_seconds": 60,
@@ -97,6 +105,7 @@
       "attempt_number": 1,
       "task_revision": "task-phase12-v1",
       "gold_answer_revision": "gold-phase12-v1",
+      "gold_answer_hidden_until_ended_at": true,
       "started_at": "2026-07-26T03:00:00Z",
       "ended_at": "2026-07-26T03:12:00Z",
       "excluded_pause_seconds": 0,
@@ -117,6 +126,7 @@
       "attempt_number": 1,
       "task_revision": "task-phase12-v1",
       "gold_answer_revision": "gold-phase12-v1",
+      "gold_answer_hidden_until_ended_at": true,
       "started_at": "2026-07-26T04:00:00Z",
       "ended_at": "2026-07-26T04:18:00Z",
       "excluded_pause_seconds": 0,
@@ -137,6 +147,7 @@
       "attempt_number": 1,
       "task_revision": "task-phase12-v1",
       "gold_answer_revision": "gold-phase12-v1",
+      "gold_answer_hidden_until_ended_at": true,
       "started_at": "2026-07-26T05:00:00Z",
       "ended_at": "2026-07-26T05:22:00Z",
       "excluded_pause_seconds": 120,
@@ -157,6 +168,7 @@
       "attempt_number": 1,
       "task_revision": "task-phase12-v1",
       "gold_answer_revision": "gold-phase12-v1",
+      "gold_answer_hidden_until_ended_at": true,
       "started_at": "2026-07-26T06:00:00Z",
       "ended_at": "2026-07-26T06:14:00Z",
       "excluded_pause_seconds": 0,

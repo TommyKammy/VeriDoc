@@ -24,6 +24,12 @@ EXPECTED_CASE_IDS = {
     "mvp-scanned-pdf-001",
     "mvp-record-pdf-001",
 }
+APPROVED_TASK_REVISION = "task-phase12-v1"
+APPROVED_GOLD_ANSWER_REVISION = "gold-phase12-v1"
+APPROVED_RUN_REVISIONS = {
+    "task_revision": APPROVED_TASK_REVISION,
+    "gold_answer_revision": APPROVED_GOLD_ANSWER_REVISION,
+}
 PARTICIPANT_ID_RE = re.compile(r"^P[0-9]{3,}$")
 STUDY_ID_RE = re.compile(r"^HR-[A-Z0-9][A-Z0-9-]{2,63}$")
 RUN_ID_RE = re.compile(r"^RUN-[A-Z0-9][A-Z0-9-]{2,63}$")
@@ -174,12 +180,10 @@ def validate_record(record: Any) -> list[str]:
             "consent_approval.approved_at",
             errors,
         )
-        approved_by_role = consent.get("approved_by_role")
-        if not isinstance(approved_by_role, str) or approved_by_role not in {
-            "study_owner",
-            "quality_approver",
-        }:
-            errors.append("consent_approval.approved_by_role is invalid")
+        if consent.get("approved_by_role") != "study_owner":
+            errors.append(
+                "consent_approval.approved_by_role must be study_owner"
+            )
         consent_version = consent.get("consent_form_version")
         if (
             not isinstance(consent_version, str)
@@ -188,6 +192,44 @@ def validate_record(record: Any) -> list[str]:
             errors.append("consent_approval.consent_form_version is invalid")
         if consent.get("direct_identifiers_stored") is not False:
             errors.append("consent_approval.direct_identifiers_stored must be false")
+
+    quality_approval = record.get("quality_approval")
+    quality_approved_at: datetime | None = None
+    quality_schema = schema["$defs"]["qualityApproval"]
+    _unknown_fields(
+        quality_approval,
+        set(quality_schema["properties"]),
+        "quality_approval",
+        errors,
+    )
+    _required_fields(
+        quality_approval,
+        set(quality_schema["required"]),
+        "quality_approval",
+        errors,
+    )
+    if isinstance(quality_approval, dict):
+        if quality_approval.get("approval_status") != "approved":
+            errors.append("quality_approval.approval_status must be approved")
+        quality_approved_at = _parse_utc(
+            quality_approval.get("approved_at"),
+            "quality_approval.approved_at",
+            errors,
+        )
+        if quality_approval.get("approved_by_role") != "quality_approver":
+            errors.append(
+                "quality_approval.approved_by_role must be quality_approver"
+            )
+        external_record_version = quality_approval.get(
+            "external_record_version"
+        )
+        if (
+            not isinstance(external_record_version, str)
+            or REVISION_RE.fullmatch(external_record_version) is None
+        ):
+            errors.append(
+                "quality_approval.external_record_version is invalid"
+            )
 
     participants = record.get("participants")
     participant_ids: set[str] = set()
@@ -264,6 +306,9 @@ def validate_record(record: Any) -> list[str]:
     attempt_numbers_by_group: dict[
         tuple[str, str, str], set[int]
     ] = defaultdict(set)
+    attempt_timing_by_group: dict[
+        tuple[str, str, str], dict[int, tuple[datetime, datetime]]
+    ] = defaultdict(dict)
     revisions_by_case: dict[
         tuple[str, str], set[str]
     ] = defaultdict(set)
@@ -335,8 +380,20 @@ def validate_record(record: Any) -> list[str]:
             revision = run.get(field)
             if not isinstance(revision, str) or REVISION_RE.fullmatch(revision) is None:
                 errors.append(f"{label}.{field} is invalid")
-            elif case_is_declared:
-                revisions_by_case[(case_id, field)].add(revision)
+            else:
+                expected_revision = APPROVED_RUN_REVISIONS[field]
+                if revision != expected_revision:
+                    errors.append(
+                        f"{label}.{field} must match approved protocol "
+                        f"revision {expected_revision}"
+                    )
+                if case_is_declared:
+                    revisions_by_case[(case_id, field)].add(revision)
+
+        if run.get("gold_answer_hidden_until_ended_at") is not True:
+            errors.append(
+                f"{label}.gold_answer_hidden_until_ended_at must be true"
+            )
 
         started_at = _parse_utc(run.get("started_at"), f"{label}.started_at", errors)
         ended_at = _parse_utc(run.get("ended_at"), f"{label}.ended_at", errors)
@@ -353,6 +410,14 @@ def validate_record(record: Any) -> list[str]:
                     (started_at, ended_at, label)
                 )
                 all_started_at.append(started_at)
+                if (
+                    case_is_declared
+                    and attempt_is_valid
+                    and elapsed_seconds > 0
+                ):
+                    attempt_timing_by_group[
+                        (participant_id, case_id, arm)
+                    ][attempt_number] = (started_at, ended_at)
 
         pause_seconds = run.get("excluded_pause_seconds")
         if not _is_non_negative_int(pause_seconds):
@@ -413,7 +478,8 @@ def validate_record(record: Any) -> list[str]:
         expected = run.get("high_risk_expected_count")
         misses = run.get("high_risk_miss_count")
         if (
-            case_is_declared
+            isinstance(case_id, str)
+            and case_id in expected_high_risk_counts
             and _is_non_negative_int(expected)
             and expected != expected_high_risk_counts[case_id]
         ):
@@ -445,6 +511,12 @@ def validate_record(record: Any) -> list[str]:
         and approved_at >= min(all_started_at)
     ):
         errors.append("consent approval must precede every timed run")
+    if (
+        quality_approved_at is not None
+        and all_started_at
+        and quality_approved_at >= min(all_started_at)
+    ):
+        errors.append("quality approval must precede every timed run")
 
     for group, attempt_numbers in sorted(attempt_numbers_by_group.items()):
         expected_numbers = set(range(1, max(attempt_numbers) + 1))
@@ -453,6 +525,19 @@ def validate_record(record: Any) -> list[str]:
                 f"{group[0]}/{group[1]}/{group[2]} attempt_number values "
                 "must be contiguous from 1"
             )
+        timings = attempt_timing_by_group[group]
+        ordered_timings = [
+            (attempt_number, timings[attempt_number])
+            for attempt_number in sorted(attempt_numbers)
+            if attempt_number in timings
+        ]
+        for previous, current in zip(ordered_timings, ordered_timings[1:]):
+            if current[1][0] < previous[1][1]:
+                errors.append(
+                    f"{group[0]}/{group[1]}/{group[2]} attempt timestamps "
+                    "must follow attempt_number order"
+                )
+                break
 
     for (case_id, field), revisions in sorted(revisions_by_case.items()):
         if len(revisions) > 1:
@@ -600,6 +685,17 @@ def summarize_record(record: dict[str, Any]) -> dict[str, Any]:
         for run in record["runs"]
     }
     all_required_runs_accounted = required_groups <= recorded_groups
+    totals = {
+        metric: sum(arm_metrics[arm][metric] for arm in ("manual", "veridoc"))
+        for metric in (
+            "high_risk_misses",
+            "over_detections",
+            "approved_completions",
+            "blockers",
+            "retry_runs",
+            "excluded_runs",
+        )
+    }
 
     return {
         "study_id": record["study_id"],
@@ -614,6 +710,7 @@ def summarize_record(record: dict[str, Any]) -> dict[str, Any]:
         "pair_results": pair_results,
         "paired_median_reduction_percent": paired_median,
         "arm_metrics": arm_metrics,
+        "totals": totals,
         "efficiency_target_met": (
             record["study_status"] == "completed"
             and paired_median is not None

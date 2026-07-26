@@ -9,6 +9,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from scripts.ci.validate_mvp_human_review_evidence import (
+    APPROVED_GOLD_ANSWER_REVISION,
+    APPROVED_TASK_REVISION,
     summarize_record,
     validate_record,
 )
@@ -92,8 +94,9 @@ def _completed_record(base_record: dict[str, object]) -> dict[str, object]:
                         "case_id": case_id,
                         "arm": arm,
                         "attempt_number": 1,
-                        "task_revision": f"task-{case_index}-v1",
-                        "gold_answer_revision": f"gold-{case_index}-v1",
+                        "task_revision": APPROVED_TASK_REVISION,
+                        "gold_answer_revision": APPROVED_GOLD_ANSWER_REVISION,
+                        "gold_answer_hidden_until_ended_at": True,
                         "started_at": _utc_text(started_at),
                         "ended_at": _utc_text(ended_at),
                         "excluded_pause_seconds": 0,
@@ -189,9 +192,15 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         )
         self.assertFalse(schema["additionalProperties"])
         self.assertFalse(schema["$defs"]["consentApproval"]["additionalProperties"])
+        self.assertFalse(schema["$defs"]["qualityApproval"]["additionalProperties"])
         self.assertFalse(schema["$defs"]["participant"]["additionalProperties"])
         self.assertFalse(schema["$defs"]["run"]["additionalProperties"])
         self.assertIn("practice_revision", schema["required"])
+        self.assertIn("quality_approval", schema["required"])
+        self.assertIn(
+            "gold_answer_hidden_until_ended_at",
+            schema["$defs"]["run"]["required"],
+        )
         self.assertEqual(
             "p12g-13-human-review-v1",
             schema["properties"]["protocol_version"]["const"],
@@ -204,6 +213,14 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             "phase12-mvp-v1",
             schema["properties"]["manifest_revision"]["const"],
         )
+        self.assertEqual(
+            APPROVED_TASK_REVISION,
+            schema["$defs"]["run"]["properties"]["task_revision"]["const"],
+        )
+        self.assertEqual(
+            APPROVED_GOLD_ANSWER_REVISION,
+            schema["$defs"]["run"]["properties"]["gold_answer_revision"]["const"],
+        )
 
     def test_synthetic_validation_example_is_valid_and_recomputable(self) -> None:
         self.assertEqual([], validate_record(self.valid_record))
@@ -215,6 +232,23 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertEqual(3, len(summary["pair_results"]))
         self.assertEqual(35.0, summary["paired_median_reduction_percent"])
         self.assertEqual(1, summary["arm_metrics"]["veridoc"]["blockers"])
+        self.assertEqual(
+            {
+                metric: sum(
+                    summary["arm_metrics"][arm][metric]
+                    for arm in ("manual", "veridoc")
+                )
+                for metric in (
+                    "high_risk_misses",
+                    "over_detections",
+                    "approved_completions",
+                    "blockers",
+                    "retry_runs",
+                    "excluded_runs",
+                )
+            },
+            summary["totals"],
+        )
         blocked_pair = next(
             pair
             for pair in summary["pair_results"]
@@ -281,6 +315,67 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             validate_record(record),
         )
 
+    def test_attempt_timestamps_must_follow_attempt_number_order(self) -> None:
+        record = _completed_record(self.valid_record)
+        _add_excluded_veridoc_retry_with_miss(record)
+        runs = record["runs"]
+        assert isinstance(runs, list)
+        first = next(
+            run
+            for run in runs
+            if isinstance(run, dict)
+            and run["participant_id"] == "P001"
+            and run["case_id"] == "mvp-scanned-pdf-001"
+            and run["arm"] == "veridoc"
+            and run["attempt_number"] == 1
+        )
+        retry = runs[-1]
+        assert isinstance(retry, dict)
+        first["started_at"], retry["started_at"] = (
+            retry["started_at"],
+            first["started_at"],
+        )
+        first["ended_at"], retry["ended_at"] = (
+            retry["ended_at"],
+            first["ended_at"],
+        )
+        self.assertIn(
+            "P001/mvp-scanned-pdf-001/veridoc attempt timestamps "
+            "must follow attempt_number order",
+            validate_record(record),
+        )
+
+    def test_unknown_declared_case_is_rejected_without_crashing(self) -> None:
+        record = copy.deepcopy(self.valid_record)
+        record["case_ids"] = ["unknown-case"]
+        for run in record["runs"]:
+            run["case_id"] = "unknown-case"
+        self.assertIn("unknown case_ids: unknown-case", validate_record(record))
+
+    def test_gold_answer_must_be_attested_hidden_until_timing_ends(self) -> None:
+        record = copy.deepcopy(self.valid_record)
+        record["runs"][0]["gold_answer_hidden_until_ended_at"] = False
+        self.assertIn(
+            "run[0].gold_answer_hidden_until_ended_at must be true",
+            validate_record(record),
+        )
+
+    def test_run_revisions_must_match_the_approved_protocol_contract(self) -> None:
+        record = copy.deepcopy(self.valid_record)
+        record["runs"][0]["task_revision"] = "unapproved-task-v2"
+        record["runs"][0]["gold_answer_revision"] = "unapproved-gold-v2"
+        errors = validate_record(record)
+        self.assertIn(
+            "run[0].task_revision must match approved protocol revision "
+            f"{APPROVED_TASK_REVISION}",
+            errors,
+        )
+        self.assertIn(
+            "run[0].gold_answer_revision must match approved protocol revision "
+            f"{APPROVED_GOLD_ANSWER_REVISION}",
+            errors,
+        )
+
     def test_case_revisions_are_fixed_across_cohort_and_excluded_attempts(
         self,
     ) -> None:
@@ -309,6 +404,32 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             "consent approval must precede every timed run",
             validate_record(record),
         )
+        record = copy.deepcopy(self.valid_record)
+        record["quality_approval"]["approved_at"] = record["runs"][0]["started_at"]
+        self.assertIn(
+            "quality approval must precede every timed run",
+            validate_record(record),
+        )
+
+    def test_quality_approval_is_separate_and_required(self) -> None:
+        record = copy.deepcopy(self.valid_record)
+        del record["quality_approval"]
+        self.assertIn(
+            "missing record field: quality_approval",
+            validate_record(record),
+        )
+        record = copy.deepcopy(self.valid_record)
+        record["quality_approval"]["approved_by_role"] = "study_owner"
+        record["quality_approval"]["external_record_version"] = ""
+        errors = validate_record(record)
+        self.assertIn(
+            "quality_approval.approved_by_role must be quality_approver",
+            errors,
+        )
+        self.assertIn(
+            "quality_approval.external_record_version is invalid",
+            errors,
+        )
 
     def test_participant_run_intervals_must_not_overlap(self) -> None:
         record = copy.deepcopy(self.valid_record)
@@ -331,6 +452,9 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertEqual(1, summary["arm_metrics"]["veridoc"]["retry_runs"])
         self.assertEqual(1, summary["arm_metrics"]["veridoc"]["excluded_runs"])
         self.assertEqual(1, summary["arm_metrics"]["veridoc"]["high_risk_misses"])
+        self.assertEqual(1, summary["totals"]["retry_runs"])
+        self.assertEqual(1, summary["totals"]["excluded_runs"])
+        self.assertEqual(1, summary["totals"]["high_risk_misses"])
         self.assertFalse(summary["efficiency_target_met"])
 
     def test_controlled_blocker_is_accounted_but_excluded_from_median(self) -> None:
@@ -369,7 +493,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             (
                 "/consent_approval/approved_by_role",
                 [],
-                "consent_approval.approved_by_role is invalid",
+                "consent_approval.approved_by_role must be study_owner",
             ),
             (
                 "/runs/0/participant_id",

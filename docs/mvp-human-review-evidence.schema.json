@@ -14,6 +14,7 @@
     "practice_revision",
     "case_ids",
     "consent_approval",
+    "quality_approval",
     "participants",
     "runs"
   ],
@@ -61,6 +62,9 @@
     "consent_approval": {
       "$ref": "#/$defs/consentApproval"
     },
+    "quality_approval": {
+      "$ref": "#/$defs/qualityApproval"
+    },
     "participants": {
       "type": "array",
       "minItems": 3,
@@ -96,10 +100,7 @@
           "format": "date-time"
         },
         "approved_by_role": {
-          "enum": [
-            "study_owner",
-            "quality_approver"
-          ]
+          "const": "study_owner"
         },
         "consent_form_version": {
           "type": "string",
@@ -107,6 +108,32 @@
         },
         "direct_identifiers_stored": {
           "const": false
+        }
+      }
+    },
+    "qualityApproval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "approval_status",
+        "approved_at",
+        "approved_by_role",
+        "external_record_version"
+      ],
+      "properties": {
+        "approval_status": {
+          "const": "approved"
+        },
+        "approved_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "approved_by_role": {
+          "const": "quality_approver"
+        },
+        "external_record_version": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
         }
       }
     },
@@ -163,6 +190,7 @@
         "attempt_number",
         "task_revision",
         "gold_answer_revision",
+        "gold_answer_hidden_until_ended_at",
         "started_at",
         "ended_at",
         "excluded_pause_seconds",
@@ -198,12 +226,13 @@
           "minimum": 1
         },
         "task_revision": {
-          "type": "string",
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+          "const": "task-phase12-v1"
         },
         "gold_answer_revision": {
-          "type": "string",
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+          "const": "gold-phase12-v1"
+        },
+        "gold_answer_hidden_until_ended_at": {
+          "const": true
         },
         "started_at": {
           "type": "string",
