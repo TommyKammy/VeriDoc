@@ -38,7 +38,9 @@ the second paired run blinded even if assessment of the first artifact occurs
 before that second run.
 
 Retain at least three completed designated document reviewers with relevant
-experience. Assign repository-safe pseudonyms matching `P[0-9]{3,}`. Keep the
+experience. Generate `study_id` as an `HR-`-prefixed uppercase UUIDv4; do not
+derive it from a participant, organizer, employer, or project name. Assign
+repository-safe participant pseudonyms matching `P[0-9]{3,}`. Keep the
 mapping from pseudonym to identity outside the repository and outside the
 evidence record. Do not retain direct participant identity: names, email
 addresses, employee IDs, free-text biographies, or other direct identifiers are
@@ -61,6 +63,10 @@ Stop `ended_at` only when either:
 1. the reviewer has an approved artifact and a completed checklist; or
 2. the reviewer declares the run blocked and records a controlled
    `blocker_code`.
+
+All timestamps use the lexical form
+`YYYY-MM-DDTHH:MM:SS[.fraction](Z|+00:00)`. Alternate separators, reduced
+precision, missing UTC designators, and non-zero offsets are invalid.
 
 Record pauses and interruptions in `excluded_pause_seconds`. The correction time
 for a run is:
@@ -100,6 +106,14 @@ attempt records `RUN-P001-MVP-WORD-001-MANUAL-1`. Organizer-selected text,
 names, employee identifiers, and other direct identity fragments are not
 permitted in `run_id`.
 
+At timing stop, seal either the produced output artifact or, for a blocked run
+without an output, a canonical blocked-attempt envelope. Every attempt records
+an opaque `sealed_artifact_record_id`, non-zero
+`sealed_artifact_sha256`, and outcome-consistent `sealed_artifact_kind`. The
+external sealed record is retained under that ID so the independent assessor's
+miss and over-detection counts can be audited against the exact bytes assessed.
+Artifact record IDs are unique across attempts.
+
 For every approved case, every participant and every retained attempt uses the
 protocol-pinned `task_revision: task-phase12-v1` and
 `gold_answer_revision: gold-phase12-v1`. Cohort-wide agreement on any other
@@ -108,6 +122,15 @@ value is not sufficient. Every attempt records `source_fixture_id`,
 the approved manifest and selected fixture contents from the approved target
 commit, verifies the recorded Git blob and canonical contract SHA-256, and
 requires the three source fields to match that immutable contract.
+
+Manual runs record `veridoc_build_provenance: null`. Every VeriDoc run records
+a closed build-provenance object containing an opaque attestation record ID,
+the approved product commit and Git tree, clean-checkout state, verified
+derivation status, non-zero build-artifact SHA-256, and an attestation SHA-256
+over the canonical provenance fields. The validator independently resolves the
+approved Git tree, recomputes the attestation digest, and rejects other commits,
+trees, states, or unsealed provenance. Copying the study-level commit constant
+without this per-run build identity is insufficient.
 
 The approved `p12g-02-v1` manifest does not contain the later structured
 `expected_high_risk_targets` fields. The validator therefore derives an empty
@@ -127,6 +150,8 @@ For each retained run, including excluded attempts, record:
 - `over_detection_count`: reviewed high-risk flags that are not high-risk gold
   targets;
 - `outcome`: `approved` or `blocked`;
+- `checklist_complete`: required `true` only for a non-excluded `approved`
+  outcome; a controlled `blocked` outcome may retain `false`;
 - `blocker_code`: a controlled reason for a blocked outcome;
 - `gold_answer_hidden_until_ended_at`: the controlled attestation that the gold
   answer remained hidden until timing stopped;

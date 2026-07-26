@@ -14,6 +14,8 @@ employee IDs, or free-text participant notes in the repository.
       version are recorded in `quality_approval`.
 - [ ] At least three relevant document reviewers have repository-safe IDs
       matching `P[0-9]{3,}`.
+- [ ] `study_id` is generated as an `HR-`-prefixed uppercase UUIDv4 and is not
+      derived from any participant, organizer, employer, or project name.
 - [ ] The identity-to-pseudonym mapping is outside the repository.
 - [ ] The five `phase12-mvp-v1` cases, task revisions, gold revisions, target
       formats, and completion checklist are fixed for both arms.
@@ -42,6 +44,10 @@ employee IDs, or free-text participant notes in the repository.
 - [ ] Confirm `source_fixture_id`, `source_fixture_path`, and
       `source_fixture_sha256` against the approved manifest fixture before
       timing begins.
+- [ ] For a VeriDoc arm, verify the per-run build-provenance record identifies
+      the approved product commit/tree, clean checkout, build-artifact digest,
+      and attestation digest over the canonical provenance fields. Record
+      `null` for a manual arm.
 - [ ] Start timing only when source, target format, and checklist are available.
 - [ ] Record every pause/interrupt in whole seconds.
 - [ ] Do not expose the gold answer before the run stops.
@@ -49,8 +55,12 @@ employee IDs, or free-text participant notes in the repository.
       that the gold answer stayed hidden through `ended_at`.
 - [ ] Stop timing only at approved artifact plus completed checklist, or at an
       explicit blocked outcome.
-- [ ] Seal the stopped artifact without exposing the gold answer to the
-      participant.
+- [ ] Use strict UTC RFC 3339 timestamps with full seconds and `Z` or
+      `+00:00`; do not use alternate separators or reduced precision.
+- [ ] Seal the stopped output artifact, or a canonical blocked-attempt envelope
+      when no output exists, without exposing the gold answer to the participant.
+- [ ] Record the unique opaque sealed-record ID, artifact/envelope SHA-256, and
+      outcome-consistent artifact kind before assessment.
 - [ ] An independent assessor compares sealed artifacts with the gold outside
       the participant's view and does not disclose the gold or comparison
       result to that participant.
@@ -67,6 +77,9 @@ employee IDs, or free-text participant notes in the repository.
 | Field | Value |
 | --- | --- |
 | `run_id` | `RUN-{participant_id}-{uppercase case_id}-{uppercase arm}-{attempt_number}` |
+| `sealed_artifact_record_id` | unique `SAR-`-prefixed uppercase UUIDv4 |
+| `sealed_artifact_sha256` | non-zero lowercase SHA-256 of sealed bytes |
+| `sealed_artifact_kind` | `output_artifact` / `blocked_attempt_envelope` |
 | `participant_id` | `P...` |
 | participant `participation_status` | `completed` / `withdrawn` |
 | participant `manual_practice_completed_at` | UTC RFC 3339 timestamp |
@@ -76,6 +89,7 @@ employee IDs, or free-text participant notes in the repository.
 | `source_fixture_path` | approved repository-relative fixture path |
 | `source_fixture_sha256` | lowercase SHA-256 of approved fixture content |
 | `arm` | `manual` / `veridoc` |
+| `veridoc_build_provenance` | approved closed build record / `null` for manual |
 | `attempt_number` | positive integer |
 | `task_revision` | `task-phase12-v1` |
 | `gold_answer_revision` | `gold-phase12-v1` |
@@ -86,7 +100,7 @@ employee IDs, or free-text participant notes in the repository.
 | `ended_at` | UTC RFC 3339 timestamp |
 | `excluded_pause_seconds` | non-negative whole seconds |
 | `outcome` | `approved` / `blocked` |
-| `checklist_complete` | `true` / `false` |
+| `checklist_complete` | `true` for included approved; blocked may be `false` |
 | `blocker_code` | controlled code / `null` |
 | `high_risk_expected_count` | non-negative integer |
 | `high_risk_miss_count` | integer not greater than expected |
@@ -102,6 +116,10 @@ employee IDs, or free-text participant notes in the repository.
 - [ ] Withdrawn participants and their existing attempts remain recorded; their
       unstarted future groups are not fabricated.
 - [ ] All retries and exclusions remain in the evidence.
+- [ ] Every attempt has a unique sealed-artifact record ID and non-zero digest;
+      assessor counts refer to those exact sealed bytes.
+- [ ] Every VeriDoc attempt retains approved commit/tree build provenance; every
+      manual attempt records `null`.
 - [ ] Both arm orders are represented among completed participants and their
       counts differ by at most one.
 - [ ] Paired arms use identical task and gold-answer revisions.

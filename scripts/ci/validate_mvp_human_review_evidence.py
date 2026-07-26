@@ -20,6 +20,7 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_PATH = REPO_ROOT / "docs" / "mvp-human-review-evidence.schema.json"
 APPROVED_PRODUCT_COMMIT = "584ef2db12a6676abb65f75de1ec38145e06b487"
+APPROVED_PRODUCT_TREE = "d7b1714ab9e7f42c5299a4e4b5197e4669a035b9"
 APPROVED_MANIFEST_PATH = "datasets/mvp_evaluation_manifest_v1.json"
 APPROVED_MANIFEST_GIT_BLOB = "13450762d323198b1b6e87315be173c784fc4880"
 APPROVED_MANIFEST_CONTRACT_SHA256 = (
@@ -50,12 +51,23 @@ APPROVED_RUN_REVISIONS = {
     "gold_answer_revision": APPROVED_GOLD_ANSWER_REVISION,
 }
 PARTICIPANT_ID_RE = re.compile(r"^P[0-9]{3,}$")
-STUDY_ID_RE = re.compile(r"^HR-[A-Z0-9][A-Z0-9-]{2,63}$")
+UUID4_TOKEN_RE = (
+    r"[0-9A-F]{8}-[0-9A-F]{4}-4[0-9A-F]{3}-"
+    r"[89AB][0-9A-F]{3}-[0-9A-F]{12}"
+)
+STUDY_ID_RE = re.compile(rf"^HR-{UUID4_TOKEN_RE}$")
 RUN_ID_RE = re.compile(
     r"^RUN-P[0-9]{3,}-MVP-[A-Z0-9-]+-(?:MANUAL|VERIDOC)-[1-9][0-9]*$"
 )
+SEALED_ARTIFACT_RECORD_ID_RE = re.compile(rf"^SAR-{UUID4_TOKEN_RE}$")
+BUILD_PROVENANCE_RECORD_ID_RE = re.compile(rf"^BLD-{UUID4_TOKEN_RE}$")
 REVISION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+RFC3339_UTC_RE = re.compile(
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T"
+    r"[0-9]{2}:[0-9]{2}:[0-9]{2}"
+    r"(?:\.[0-9]{1,9})?(?:Z|\+00:00)$"
+)
 
 
 class DuplicateKeyError(ValueError):
@@ -108,10 +120,42 @@ def _git_blob_oid(content: bytes) -> str:
     return hashlib.sha1(header + content).hexdigest()
 
 
+def _canonical_json_sha256(value: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _approved_product_tree() -> str:
+    try:
+        return subprocess.run(
+            ["git", "rev-parse", f"{APPROVED_PRODUCT_COMMIT}^{{tree}}"],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ApprovedManifestError(
+            "unable to resolve the approved product tree"
+        ) from exc
+
+
 @lru_cache(maxsize=1)
 def _load_approved_manifest_contract() -> tuple[
     dict[str, dict[str, Any]], bool
 ]:
+    product_tree = _approved_product_tree()
+    if product_tree != APPROVED_PRODUCT_TREE:
+        raise ApprovedManifestError(
+            "approved product tree mismatch: "
+            f"expected {APPROVED_PRODUCT_TREE}, got {product_tree}"
+        )
     manifest_bytes = _git_show_approved(APPROVED_MANIFEST_PATH)
     manifest_blob = _git_blob_oid(manifest_bytes)
     if manifest_blob != APPROVED_MANIFEST_GIT_BLOB:
@@ -201,14 +245,7 @@ def _load_approved_manifest_contract() -> tuple[
         "fixture_manifest": selected_fixture_manifest,
         "selected_fixture_contents": selected_fixture_contents,
     }
-    contract_sha256 = hashlib.sha256(
-        json.dumps(
-            manifest_contract,
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8")
-    ).hexdigest()
+    contract_sha256 = _canonical_json_sha256(manifest_contract)
     if contract_sha256 != APPROVED_MANIFEST_CONTRACT_SHA256:
         raise ApprovedManifestError(
             "approved manifest contract SHA-256 mismatch: "
@@ -288,7 +325,10 @@ def _required_fields(
 
 
 def _parse_utc(value: Any, label: str, errors: list[str]) -> datetime | None:
-    if not isinstance(value, str):
+    if (
+        not isinstance(value, str)
+        or RFC3339_UTC_RE.fullmatch(value) is None
+    ):
         errors.append(f"{label} must be a UTC RFC 3339 timestamp")
         return None
     try:
@@ -349,7 +389,7 @@ def validate_record(record: Any) -> list[str]:
 
     study_id = record.get("study_id")
     if not isinstance(study_id, str) or STUDY_ID_RE.fullmatch(study_id) is None:
-        errors.append("study_id must match ^HR-[A-Z0-9][A-Z0-9-]{2,63}$")
+        errors.append("study_id must be an opaque HR-prefixed UUIDv4")
 
     study_status = record.get("study_status")
     if not isinstance(study_status, str) or study_status not in {
@@ -556,6 +596,7 @@ def validate_record(record: Any) -> list[str]:
         errors.append("runs do not account for every participant/case/arm")
 
     run_schema = schema["$defs"]["run"]
+    build_schema = schema["$defs"]["veridocBuildProvenance"]
     approved_case_contracts: dict[str, dict[str, Any]] = {}
     structured_high_risk_targets_ready = False
     try:
@@ -566,6 +607,7 @@ def validate_record(record: Any) -> list[str]:
     except ApprovedManifestError as exc:
         errors.append(f"approved manifest contract is unavailable: {exc}")
     run_ids: set[str] = set()
+    sealed_artifact_record_ids: set[str] = set()
     attempt_keys: set[tuple[Any, ...]] = set()
     attempt_numbers_by_group: dict[
         tuple[str, str, str], set[int]
@@ -605,6 +647,41 @@ def validate_record(record: Any) -> list[str]:
             errors.append(f"duplicate run_id: {run_id}")
         else:
             run_ids.add(run_id)
+
+        sealed_artifact_record_id = run.get("sealed_artifact_record_id")
+        if (
+            not isinstance(sealed_artifact_record_id, str)
+            or SEALED_ARTIFACT_RECORD_ID_RE.fullmatch(
+                sealed_artifact_record_id
+            )
+            is None
+        ):
+            errors.append(
+                f"{label}.sealed_artifact_record_id must be an opaque "
+                "SAR-prefixed UUIDv4"
+            )
+        elif sealed_artifact_record_id in sealed_artifact_record_ids:
+            errors.append(
+                "duplicate sealed_artifact_record_id: "
+                f"{sealed_artifact_record_id}"
+            )
+        else:
+            sealed_artifact_record_ids.add(sealed_artifact_record_id)
+        sealed_artifact_sha256 = run.get("sealed_artifact_sha256")
+        if (
+            not isinstance(sealed_artifact_sha256, str)
+            or SHA256_RE.fullmatch(sealed_artifact_sha256) is None
+            or sealed_artifact_sha256 == "0" * 64
+        ):
+            errors.append(
+                f"{label}.sealed_artifact_sha256 must be lowercase SHA-256"
+            )
+        sealed_artifact_kind = run.get("sealed_artifact_kind")
+        if sealed_artifact_kind not in {
+            "output_artifact",
+            "blocked_attempt_envelope",
+        }:
+            errors.append(f"{label}.sealed_artifact_kind is invalid")
 
         participant_id = run.get("participant_id")
         participant_is_declared = (
@@ -652,6 +729,88 @@ def validate_record(record: Any) -> list[str]:
         arm_is_valid = isinstance(arm, str) and arm in {"manual", "veridoc"}
         if not arm_is_valid:
             errors.append(f"{label}.arm is invalid")
+        build_provenance = run.get("veridoc_build_provenance")
+        if arm == "manual":
+            if build_provenance is not None:
+                errors.append(
+                    f"{label}.veridoc_build_provenance must be null "
+                    "for manual arm"
+                )
+        elif arm == "veridoc":
+            _unknown_fields(
+                build_provenance,
+                set(build_schema["properties"]),
+                f"{label}.veridoc_build_provenance",
+                errors,
+            )
+            _required_fields(
+                build_provenance,
+                set(build_schema["required"]),
+                f"{label}.veridoc_build_provenance",
+                errors,
+            )
+            if isinstance(build_provenance, dict):
+                build_record_id = build_provenance.get("record_id")
+                if (
+                    not isinstance(build_record_id, str)
+                    or BUILD_PROVENANCE_RECORD_ID_RE.fullmatch(build_record_id)
+                    is None
+                ):
+                    errors.append(
+                        f"{label}.veridoc_build_provenance.record_id must "
+                        "be an opaque BLD-prefixed UUIDv4"
+                    )
+                for field, expected_value in (
+                    ("product_commit", APPROVED_PRODUCT_COMMIT),
+                    ("product_tree", APPROVED_PRODUCT_TREE),
+                    ("checkout_state", "clean"),
+                    (
+                        "derivation_status",
+                        "verified_from_approved_commit",
+                    ),
+                ):
+                    if build_provenance.get(field) != expected_value:
+                        errors.append(
+                            f"{label}.veridoc_build_provenance.{field} "
+                            f"must be {expected_value!r}"
+                        )
+                for field in (
+                    "build_artifact_sha256",
+                    "attestation_sha256",
+                ):
+                    value = build_provenance.get(field)
+                    if (
+                        not isinstance(value, str)
+                        or SHA256_RE.fullmatch(value) is None
+                        or value == "0" * 64
+                    ):
+                        errors.append(
+                            f"{label}.veridoc_build_provenance.{field} "
+                            "must be lowercase SHA-256"
+                        )
+                attestation_payload = {
+                    field: build_provenance.get(field)
+                    for field in (
+                        "record_id",
+                        "product_commit",
+                        "product_tree",
+                        "checkout_state",
+                        "derivation_status",
+                        "build_artifact_sha256",
+                    )
+                }
+                expected_attestation_sha256 = _canonical_json_sha256(
+                    attestation_payload
+                )
+                if (
+                    build_provenance.get("attestation_sha256")
+                    != expected_attestation_sha256
+                ):
+                    errors.append(
+                        f"{label}.veridoc_build_provenance."
+                        "attestation_sha256 must bind the canonical "
+                        f"provenance record as {expected_attestation_sha256}"
+                    )
         attempt_number = run.get("attempt_number")
         attempt_is_valid = (
             isinstance(attempt_number, int)
@@ -757,6 +916,11 @@ def validate_record(record: Any) -> list[str]:
         if outcome == "approved":
             if blocker_code is not None:
                 errors.append(f"{label}.blocker_code must be null for approved outcome")
+            if sealed_artifact_kind != "output_artifact":
+                errors.append(
+                    f"{label}.sealed_artifact_kind must be output_artifact "
+                    "for approved outcome"
+                )
         elif outcome == "blocked":
             if not isinstance(blocker_code, str) or blocker_code not in {
                 "source_unreadable",
@@ -766,6 +930,11 @@ def validate_record(record: Any) -> list[str]:
                 "other_controlled",
             }:
                 errors.append(f"{label}.blocker_code is required for blocked outcome")
+            if sealed_artifact_kind != "blocked_attempt_envelope":
+                errors.append(
+                    f"{label}.sealed_artifact_kind must be "
+                    "blocked_attempt_envelope for blocked outcome"
+                )
         else:
             errors.append(f"{label}.outcome is invalid")
 
@@ -796,8 +965,15 @@ def validate_record(record: Any) -> list[str]:
         checklist_complete = run.get("checklist_complete")
         if not isinstance(checklist_complete, bool):
             errors.append(f"{label}.checklist_complete must be boolean")
-        elif excluded is False and not checklist_complete:
-            errors.append(f"{label}.checklist_complete must be true when included")
+        elif (
+            excluded is False
+            and outcome == "approved"
+            and not checklist_complete
+        ):
+            errors.append(
+                f"{label}.checklist_complete must be true for included "
+                "approved outcome"
+            )
 
         for field in (
             "high_risk_expected_count",
