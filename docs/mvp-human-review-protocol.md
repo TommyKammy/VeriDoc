@@ -4,6 +4,11 @@
 - Evidence schema version: `veridoc-mvp-human-review-evidence/v1`
 - Approved scope decision: `p12g-02-v1` (`OD-EFFICIENCY-SCOPE`)
 - Target manifest revision: `phase12-mvp-v1`
+- Approved target product commit:
+  `584ef2db12a6676abb65f75de1ec38145e06b487`
+- Approved manifest Git blob: `13450762d323198b1b6e87315be173c784fc4880`
+- Approved manifest contract SHA-256:
+  `5d91a67915d79c649954c5c8af02e74d08d94d0b97e7e673a7db690df61ebfff`
 - Approved task-instruction revision: `task-phase12-v1`
 - Approved gold-answer revision: `gold-phase12-v1`
 - Applicable cases: `mvp-word-001`, `mvp-excel-001`, `mvp-text-pdf-001`,
@@ -88,13 +93,29 @@ numbers for each recorded participant/case/arm are contiguous from 1, and no
 two timed runs for one participant may overlap.
 Within each participant/case/arm, attempt timestamps must also advance in
 `attempt_number` order; a retry cannot occur before the attempt it retries.
+Each attempt uses the generated opaque ID
+`RUN-{participant_id}-{uppercase case_id}-{uppercase arm}-{attempt_number}`.
+For example, participant `P001` reviewing `mvp-word-001` manually on the first
+attempt records `RUN-P001-MVP-WORD-001-MANUAL-1`. Organizer-selected text,
+names, employee identifiers, and other direct identity fragments are not
+permitted in `run_id`.
 
 For every approved case, every participant and every retained attempt uses the
 protocol-pinned `task_revision: task-phase12-v1` and
 `gold_answer_revision: gold-phase12-v1`. Cohort-wide agreement on any other
-value is not sufficient. The validator derives `high_risk_expected_count` from
-the pinned `phase12-mvp-v1` manifest; evidence records cannot redefine that
-count.
+value is not sufficient. Every attempt records `source_fixture_id`,
+`source_fixture_path`, and `source_fixture_sha256`; the validator reconstructs
+the approved manifest and selected fixture contents from the approved target
+commit, verifies the recorded Git blob and canonical contract SHA-256, and
+requires the three source fields to match that immutable contract.
+
+The approved `p12g-02-v1` manifest does not contain the later structured
+`expected_high_risk_targets` fields. The validator therefore derives an empty
+approved target set instead of reading the mutable current checkout and reports
+`structured_high_risk_targets_ready: false`. Even if timing improves by 30%,
+`efficiency_target_met` remains `false` until the decision owner approves a new
+manifest contract and decision revision containing those structured targets.
+Evidence records cannot substitute the current unapproved counts.
 
 ## Measures and calculations
 
@@ -149,6 +170,8 @@ participant or approver identity. Set `direct_identifiers_stored` to `false`.
 
 The schema rejects unknown fields so that identity-like additions cannot be
 silently retained. Controlled codes replace free-text participant notes.
+The CLI parser also rejects duplicate JSON object keys instead of accepting the
+last value, so every retained record has one deterministic interpretation.
 Operational identity mappings, signed consent forms, and approval records stay
 in the approved external system of record and are referenced only by version.
 

@@ -9,6 +9,9 @@
     "protocol_version",
     "decision_revision",
     "manifest_revision",
+    "target_product_commit",
+    "manifest_git_blob",
+    "manifest_contract_sha256",
     "study_id",
     "study_status",
     "practice_revision",
@@ -30,6 +33,15 @@
     },
     "manifest_revision": {
       "const": "phase12-mvp-v1"
+    },
+    "target_product_commit": {
+      "const": "584ef2db12a6676abb65f75de1ec38145e06b487"
+    },
+    "manifest_git_blob": {
+      "const": "13450762d323198b1b6e87315be173c784fc4880"
+    },
+    "manifest_contract_sha256": {
+      "const": "5d91a67915d79c649954c5c8af02e74d08d94d0b97e7e673a7db690df61ebfff"
     },
     "study_id": {
       "type": "string",
@@ -203,6 +215,9 @@
         "run_id",
         "participant_id",
         "case_id",
+        "source_fixture_id",
+        "source_fixture_path",
+        "source_fixture_sha256",
         "arm",
         "attempt_number",
         "task_revision",
@@ -225,7 +240,7 @@
       "properties": {
         "run_id": {
           "type": "string",
-          "pattern": "^RUN-[A-Z0-9][A-Z0-9-]{2,63}$"
+          "pattern": "^RUN-P[0-9]{3,}-MVP-[A-Z0-9-]+-(MANUAL|VERIDOC)-[1-9][0-9]*$"
         },
         "participant_id": {
           "type": "string",
@@ -233,6 +248,18 @@
         },
         "case_id": {
           "type": "string"
+        },
+        "source_fixture_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{2,127}$"
+        },
+        "source_fixture_path": {
+          "type": "string",
+          "pattern": "^datasets/fixtures/[A-Za-z0-9._/-]+$"
+        },
+        "source_fixture_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
         },
         "arm": {
           "enum": [

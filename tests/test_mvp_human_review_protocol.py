@@ -4,12 +4,16 @@ import copy
 import json
 import subprocess
 import sys
+import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from scripts.ci.validate_mvp_human_review_evidence import (
     APPROVED_GOLD_ANSWER_REVISION,
+    APPROVED_MANIFEST_CONTRACT_SHA256,
+    APPROVED_MANIFEST_GIT_BLOB,
+    APPROVED_PRODUCT_COMMIT,
     APPROVED_TASK_REVISION,
     summarize_record,
     validate_record,
@@ -38,8 +42,35 @@ EXPECTED_HIGH_RISK_COUNTS = {
     "mvp-word-001": 0,
     "mvp-excel-001": 0,
     "mvp-text-pdf-001": 0,
-    "mvp-scanned-pdf-001": 1,
+    "mvp-scanned-pdf-001": 0,
     "mvp-record-pdf-001": 0,
+}
+APPROVED_FIXTURES = {
+    "mvp-word-001": (
+        "word-to-excel-application",
+        "datasets/fixtures/word/word-to-excel-application.docx",
+        "8d3f4c25af465eb03bb1b2a624d14de27b1f777a4ec2cd5674563335d2b58cf1",
+    ),
+    "mvp-excel-001": (
+        "excel-to-word-representative",
+        "datasets/fixtures/excel/excel-to-word-representative.xlsx",
+        "b6554a36e10c02b6db4bbb73b10a8156d136025eb46291b34f6f370addc13f35",
+    ),
+    "mvp-text-pdf-001": (
+        "pdf-to-excel-table-report",
+        "datasets/fixtures/pdf/pdf-to-excel-ruled-table.pdf",
+        "a6a0e34591f46a15e12106ff5e3d319f7a8b1e10e835def09a75bf2064c2cce6",
+    ),
+    "mvp-scanned-pdf-001": (
+        "scanned-pdf-representative",
+        "datasets/fixtures/pdf/scanned-pdf-representative.pdf",
+        "742cf1c91f4c8a00fd798ffff63727605c767d6ec0dd5718fd565617051c496a",
+    ),
+    "mvp-record-pdf-001": (
+        "record-pdf-neutral-representative",
+        "datasets/fixtures/pdf/record-pdf-neutral-representative.pdf",
+        "076714fac54730e4012018bc11b48486de39ad3e83f9fb9aa1c29f98401516c6",
+    ),
 }
 
 
@@ -82,16 +113,23 @@ def _completed_record(base_record: dict[str, object]) -> dict[str, object]:
         for arm in arm_order:
             assert arm in {"manual", "veridoc"}
             duration = timedelta(seconds=120 if arm == "manual" else 60)
-            for case_index, case_id in enumerate(ALL_CASE_IDS, start=1):
+            for case_id in ALL_CASE_IDS:
                 started_at = cursor
                 ended_at = started_at + duration
+                fixture_id, fixture_path, fixture_sha256 = APPROVED_FIXTURES[
+                    case_id
+                ]
                 runs.append(
                     {
                         "run_id": (
-                            f"RUN-{participant_id}-{case_index}-{arm.upper()}-1"
+                            f"RUN-{participant_id}-{case_id.upper()}-"
+                            f"{arm.upper()}-1"
                         ),
                         "participant_id": participant_id,
                         "case_id": case_id,
+                        "source_fixture_id": fixture_id,
+                        "source_fixture_path": fixture_path,
+                        "source_fixture_sha256": fixture_sha256,
                         "arm": arm,
                         "attempt_number": 1,
                         "task_revision": APPROVED_TASK_REVISION,
@@ -120,7 +158,7 @@ def _completed_record(base_record: dict[str, object]) -> dict[str, object]:
     return record
 
 
-def _add_excluded_veridoc_retry_with_miss(record: dict[str, object]) -> None:
+def _add_excluded_veridoc_retry(record: dict[str, object]) -> None:
     runs = record["runs"]
     assert isinstance(runs, list)
     source = next(
@@ -140,11 +178,11 @@ def _add_excluded_veridoc_retry_with_miss(record: dict[str, object]) -> None:
     retry_start = max(participant_ends) + timedelta(minutes=1)
     retry.update(
         {
-            "run_id": "RUN-P001-4-VERIDOC-2",
+            "run_id": "RUN-P001-MVP-SCANNED-PDF-001-VERIDOC-2",
             "attempt_number": 2,
             "started_at": _utc_text(retry_start),
             "ended_at": _utc_text(retry_start + timedelta(minutes=1)),
-            "high_risk_miss_count": 1,
+            "over_detection_count": 1,
             "excluded": True,
             "exclusion_reason_code": "technical_failure",
         }
@@ -180,7 +218,7 @@ def _add_withdrawn_participant(record: dict[str, object]) -> None:
     withdrawn_attempt = copy.deepcopy(source)
     withdrawn_attempt.update(
         {
-            "run_id": "RUN-P004-WORD-MANUAL-1",
+            "run_id": "RUN-P004-MVP-WORD-001-MANUAL-1",
             "participant_id": "P004",
             "started_at": "2026-08-10T01:00:00Z",
             "ended_at": "2026-08-10T01:02:00Z",
@@ -269,6 +307,24 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             schema["properties"]["manifest_revision"]["const"],
         )
         self.assertEqual(
+            APPROVED_PRODUCT_COMMIT,
+            schema["properties"]["target_product_commit"]["const"],
+        )
+        self.assertEqual(
+            APPROVED_MANIFEST_GIT_BLOB,
+            schema["properties"]["manifest_git_blob"]["const"],
+        )
+        self.assertEqual(
+            APPROVED_MANIFEST_CONTRACT_SHA256,
+            schema["properties"]["manifest_contract_sha256"]["const"],
+        )
+        for field in (
+            "source_fixture_id",
+            "source_fixture_path",
+            "source_fixture_sha256",
+        ):
+            self.assertIn(field, schema["$defs"]["run"]["required"])
+        self.assertEqual(
             APPROVED_TASK_REVISION,
             schema["$defs"]["run"]["properties"]["task_revision"]["const"],
         )
@@ -316,6 +372,11 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             blocked_pair["veridoc_blocker_code"],
         )
         self.assertFalse(summary["efficiency_target_met"])
+        self.assertFalse(summary["structured_high_risk_targets_ready"])
+        self.assertEqual(
+            APPROVED_MANIFEST_CONTRACT_SHA256,
+            summary["manifest_contract_sha256"],
+        )
 
     def test_declared_invalid_examples_are_rejected_for_the_stated_reason(
         self,
@@ -341,25 +402,57 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             validate_record(record),
         )
 
-    def test_completed_record_can_meet_target_with_fixed_contract(self) -> None:
+    def test_unapproved_structured_targets_keep_efficiency_fail_closed(
+        self,
+    ) -> None:
         record = _completed_record(self.valid_record)
         self.assertEqual([], validate_record(record))
         summary = summarize_record(record)
         self.assertEqual(15, summary["eligible_pair_count"])
         self.assertEqual(50.0, summary["paired_median_reduction_percent"])
         self.assertTrue(summary["all_required_runs_accounted"])
-        self.assertTrue(summary["efficiency_target_met"])
+        self.assertFalse(summary["structured_high_risk_targets_ready"])
+        self.assertFalse(summary["efficiency_target_met"])
 
-    def test_expected_high_risk_count_is_bound_to_manifest(self) -> None:
+    def test_expected_high_risk_count_is_bound_to_approved_manifest(self) -> None:
         record = copy.deepcopy(self.valid_record)
         record["case_ids"] = ["mvp-scanned-pdf-001"]
         for run in record["runs"]:
             run["case_id"] = "mvp-scanned-pdf-001"
+            run["source_fixture_id"] = APPROVED_FIXTURES[
+                "mvp-scanned-pdf-001"
+            ][0]
+            run["source_fixture_path"] = APPROVED_FIXTURES[
+                "mvp-scanned-pdf-001"
+            ][1]
+            run["source_fixture_sha256"] = APPROVED_FIXTURES[
+                "mvp-scanned-pdf-001"
+            ][2]
+            run["run_id"] = (
+                f"RUN-{run['participant_id']}-MVP-SCANNED-PDF-001-"
+                f"{str(run['arm']).upper()}-{run['attempt_number']}"
+            )
+            run["high_risk_expected_count"] = 1
         self.assertIn(
-            "run[0].high_risk_expected_count must match manifest count "
-            "1 for mvp-scanned-pdf-001",
+            "run[0].high_risk_expected_count must match approved manifest "
+            "count 0 for mvp-scanned-pdf-001",
             validate_record(record),
         )
+
+    def test_run_fixture_identity_is_bound_to_approved_source(self) -> None:
+        record = copy.deepcopy(self.valid_record)
+        record["runs"][0]["source_fixture_sha256"] = "0" * 64
+        self.assertIn(
+            "run[0].source_fixture_sha256 must match approved manifest value "
+            "'8d3f4c25af465eb03bb1b2a624d14de27b1f777a4ec2cd5674563335d2b58cf1'",
+            validate_record(record),
+        )
+
+    def test_run_id_must_be_generated_from_pseudonymous_fields(self) -> None:
+        record = copy.deepcopy(self.valid_record)
+        record["runs"][0]["run_id"] = "RUN-ALICE-EMPLOYEE-123"
+        errors = validate_record(record)
+        self.assertIn("run[0].run_id is invalid", errors)
 
     def test_attempt_numbers_must_be_contiguous_from_one(self) -> None:
         record = copy.deepcopy(self.valid_record)
@@ -372,7 +465,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
 
     def test_attempt_timestamps_must_follow_attempt_number_order(self) -> None:
         record = _completed_record(self.valid_record)
-        _add_excluded_veridoc_retry_with_miss(record)
+        _add_excluded_veridoc_retry(record)
         runs = record["runs"]
         assert isinstance(runs, list)
         first = next(
@@ -463,7 +556,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         )
 
         completed = _completed_record(self.valid_record)
-        _add_excluded_veridoc_retry_with_miss(completed)
+        _add_excluded_veridoc_retry(completed)
         completed["runs"][-1]["gold_answer_revision"] = "different-gold-v2"
         self.assertIn(
             "all retained runs for mvp-scanned-pdf-001 must use the same "
@@ -514,25 +607,25 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             any(error.startswith("P001 timed runs overlap:") for error in errors)
         )
 
-    def test_excluded_veridoc_miss_blocks_target_and_is_reported_per_arm(
+    def test_excluded_veridoc_retry_is_reported_per_arm(
         self,
     ) -> None:
         record = _completed_record(self.valid_record)
-        _add_excluded_veridoc_retry_with_miss(record)
+        _add_excluded_veridoc_retry(record)
         self.assertEqual([], validate_record(record))
         summary = summarize_record(record)
         self.assertEqual(1, summary["retry_runs"])
         self.assertEqual(1, summary["excluded_runs"])
         self.assertEqual(1, summary["arm_metrics"]["veridoc"]["retry_runs"])
         self.assertEqual(1, summary["arm_metrics"]["veridoc"]["excluded_runs"])
-        self.assertEqual(1, summary["arm_metrics"]["veridoc"]["high_risk_misses"])
+        self.assertEqual(1, summary["arm_metrics"]["veridoc"]["over_detections"])
         self.assertEqual(
             16,
             summary["arm_metrics"]["veridoc"]["approved_completions"],
         )
         self.assertEqual(1, summary["totals"]["retry_runs"])
         self.assertEqual(1, summary["totals"]["excluded_runs"])
-        self.assertEqual(1, summary["totals"]["high_risk_misses"])
+        self.assertEqual(1, summary["totals"]["over_detections"])
         self.assertEqual(31, summary["totals"]["approved_completions"])
         self.assertFalse(summary["efficiency_target_met"])
 
@@ -548,7 +641,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertEqual(15, summary["eligible_pair_count"])
         self.assertEqual(1, summary["totals"]["excluded_runs"])
         self.assertEqual(31, summary["totals"]["approved_completions"])
-        self.assertTrue(summary["efficiency_target_met"])
+        self.assertFalse(summary["efficiency_target_met"])
 
     def test_completed_cohort_still_requires_three_reviewers(self) -> None:
         record = copy.deepcopy(self.valid_record)
@@ -575,7 +668,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertEqual(14, summary["eligible_pair_count"])
         self.assertEqual(1, summary["ineligible_pair_count"])
         self.assertEqual(50.0, summary["paired_median_reduction_percent"])
-        self.assertTrue(summary["efficiency_target_met"])
+        self.assertFalse(summary["efficiency_target_met"])
 
     def test_practice_revision_is_required_and_controlled(self) -> None:
         record = copy.deepcopy(self.valid_record)
@@ -654,6 +747,29 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         summary = json.loads(completed.stdout)
         self.assertEqual("validation_example", summary["study_status"])
         self.assertFalse(summary["efficiency_target_met"])
+
+    def test_validator_cli_rejects_duplicate_json_object_keys(self) -> None:
+        duplicate = VALID_EXAMPLE_PATH.read_text(encoding="utf-8").replace(
+            '"high_risk_miss_count": 0,',
+            '"high_risk_miss_count": 1,\n'
+            '      "high_risk_miss_count": 0,',
+            1,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            duplicate_path = Path(directory) / "duplicate.json"
+            duplicate_path.write_text(duplicate, encoding="utf-8")
+            completed = subprocess.run(
+                [sys.executable, str(VALIDATOR_PATH), str(duplicate_path)],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        self.assertEqual(2, completed.returncode)
+        self.assertIn(
+            "duplicate JSON object key: high_risk_miss_count",
+            completed.stderr,
+        )
 
 
 if __name__ == "__main__":

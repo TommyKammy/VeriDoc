@@ -3,6 +3,9 @@
   "protocol_version": "p12g-13-human-review-v1",
   "decision_revision": "p12g-02-v1",
   "manifest_revision": "phase12-mvp-v1",
+  "target_product_commit": "584ef2db12a6676abb65f75de1ec38145e06b487",
+  "manifest_git_blob": "13450762d323198b1b6e87315be173c784fc4880",
+  "manifest_contract_sha256": "5d91a67915d79c649954c5c8af02e74d08d94d0b97e7e673a7db690df61ebfff",
   "study_id": "HR-VALIDATION-001",
   "study_status": "validation_example",
   "practice_revision": "practice-phase12-v1",
@@ -65,9 +68,12 @@
   ],
   "runs": [
     {
-      "run_id": "RUN-P001-WORD-MANUAL-1",
+      "run_id": "RUN-P001-MVP-WORD-001-MANUAL-1",
       "participant_id": "P001",
       "case_id": "mvp-word-001",
+      "source_fixture_id": "word-to-excel-application",
+      "source_fixture_path": "datasets/fixtures/word/word-to-excel-application.docx",
+      "source_fixture_sha256": "8d3f4c25af465eb03bb1b2a624d14de27b1f777a4ec2cd5674563335d2b58cf1",
       "arm": "manual",
       "attempt_number": 1,
       "task_revision": "task-phase12-v1",
@@ -88,9 +94,12 @@
       "exclusion_reason_code": null
     },
     {
-      "run_id": "RUN-P001-WORD-VERIDOC-1",
+      "run_id": "RUN-P001-MVP-WORD-001-VERIDOC-1",
       "participant_id": "P001",
       "case_id": "mvp-word-001",
+      "source_fixture_id": "word-to-excel-application",
+      "source_fixture_path": "datasets/fixtures/word/word-to-excel-application.docx",
+      "source_fixture_sha256": "8d3f4c25af465eb03bb1b2a624d14de27b1f777a4ec2cd5674563335d2b58cf1",
       "arm": "veridoc",
       "attempt_number": 1,
       "task_revision": "task-phase12-v1",
@@ -111,9 +120,12 @@
       "exclusion_reason_code": null
     },
     {
-      "run_id": "RUN-P002-WORD-VERIDOC-1",
+      "run_id": "RUN-P002-MVP-WORD-001-VERIDOC-1",
       "participant_id": "P002",
       "case_id": "mvp-word-001",
+      "source_fixture_id": "word-to-excel-application",
+      "source_fixture_path": "datasets/fixtures/word/word-to-excel-application.docx",
+      "source_fixture_sha256": "8d3f4c25af465eb03bb1b2a624d14de27b1f777a4ec2cd5674563335d2b58cf1",
       "arm": "veridoc",
       "attempt_number": 1,
       "task_revision": "task-phase12-v1",
@@ -134,9 +146,12 @@
       "exclusion_reason_code": null
     },
     {
-      "run_id": "RUN-P002-WORD-MANUAL-1",
+      "run_id": "RUN-P002-MVP-WORD-001-MANUAL-1",
       "participant_id": "P002",
       "case_id": "mvp-word-001",
+      "source_fixture_id": "word-to-excel-application",
+      "source_fixture_path": "datasets/fixtures/word/word-to-excel-application.docx",
+      "source_fixture_sha256": "8d3f4c25af465eb03bb1b2a624d14de27b1f777a4ec2cd5674563335d2b58cf1",
       "arm": "manual",
       "attempt_number": 1,
       "task_revision": "task-phase12-v1",
@@ -157,9 +172,12 @@
       "exclusion_reason_code": null
     },
     {
-      "run_id": "RUN-P003-WORD-MANUAL-1",
+      "run_id": "RUN-P003-MVP-WORD-001-MANUAL-1",
       "participant_id": "P003",
       "case_id": "mvp-word-001",
+      "source_fixture_id": "word-to-excel-application",
+      "source_fixture_path": "datasets/fixtures/word/word-to-excel-application.docx",
+      "source_fixture_sha256": "8d3f4c25af465eb03bb1b2a624d14de27b1f777a4ec2cd5674563335d2b58cf1",
       "arm": "manual",
       "attempt_number": 1,
       "task_revision": "task-phase12-v1",
@@ -180,9 +198,12 @@
       "exclusion_reason_code": null
     },
     {
-      "run_id": "RUN-P003-WORD-VERIDOC-1",
+      "run_id": "RUN-P003-MVP-WORD-001-VERIDOC-1",
       "participant_id": "P003",
       "case_id": "mvp-word-001",
+      "source_fixture_id": "word-to-excel-application",
+      "source_fixture_path": "datasets/fixtures/word/word-to-excel-application.docx",
+      "source_fixture_sha256": "8d3f4c25af465eb03bb1b2a624d14de27b1f777a4ec2cd5674563335d2b58cf1",
       "arm": "veridoc",
       "attempt_number": 1,
       "task_revision": "task-phase12-v1",

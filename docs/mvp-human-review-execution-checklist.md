@@ -17,6 +17,11 @@ employee IDs, or free-text participant notes in the repository.
 - [ ] The identity-to-pseudonym mapping is outside the repository.
 - [ ] The five `phase12-mvp-v1` cases, task revisions, gold revisions, target
       formats, and completion checklist are fixed for both arms.
+- [ ] The evidence pins target commit
+      `584ef2db12a6676abb65f75de1ec38145e06b487`, manifest Git blob
+      `13450762d323198b1b6e87315be173c784fc4880`, and approved manifest
+      contract SHA-256
+      `5d91a67915d79c649954c5c8af02e74d08d94d0b97e7e673a7db690df61ebfff`.
 - [ ] Every case uses `task-phase12-v1` and `gold-phase12-v1`; cohort agreement
       on a different revision is not accepted.
 - [ ] Gold answers are hidden until each timed run stops.
@@ -32,6 +37,11 @@ employee IDs, or free-text participant notes in the repository.
 
 - [ ] Confirm participant ID, case ID, arm, attempt number, task revision, and
       gold-answer revision.
+- [ ] Generate `run_id` only from participant ID, full case ID, arm, and
+      attempt number; do not enter organizer-selected text.
+- [ ] Confirm `source_fixture_id`, `source_fixture_path`, and
+      `source_fixture_sha256` against the approved manifest fixture before
+      timing begins.
 - [ ] Start timing only when source, target format, and checklist are available.
 - [ ] Record every pause/interrupt in whole seconds.
 - [ ] Do not expose the gold answer before the run stops.
@@ -56,12 +66,15 @@ employee IDs, or free-text participant notes in the repository.
 
 | Field | Value |
 | --- | --- |
-| `run_id` | `RUN-...` |
+| `run_id` | `RUN-{participant_id}-{uppercase case_id}-{uppercase arm}-{attempt_number}` |
 | `participant_id` | `P...` |
 | participant `participation_status` | `completed` / `withdrawn` |
 | participant `manual_practice_completed_at` | UTC RFC 3339 timestamp |
 | participant `veridoc_practice_completed_at` | UTC RFC 3339 timestamp |
 | `case_id` | one declared Phase 12 case |
+| `source_fixture_id` | approved manifest fixture ID |
+| `source_fixture_path` | approved repository-relative fixture path |
+| `source_fixture_sha256` | lowercase SHA-256 of approved fixture content |
 | `arm` | `manual` / `veridoc` |
 | `attempt_number` | positive integer |
 | `task_revision` | `task-phase12-v1` |
@@ -98,7 +111,10 @@ employee IDs, or free-text participant notes in the repository.
       overlap.
 - [ ] Attempt timestamps advance in attempt-number order within each
       participant/case/arm.
-- [ ] Expected high-risk counts match the pinned manifest.
+- [ ] Expected high-risk counts match the approved manifest at the pinned
+      target commit, not the mutable current checkout.
+- [ ] If `structured_high_risk_targets_ready` is `false`, do not claim the
+      efficiency target; obtain a new approved decision/manifest revision.
 - [ ] Correction time is recomputed from timestamps minus recorded pauses.
 - [ ] Every completed-participant/case reduction and the paired cohort median
       are reported.
@@ -116,3 +132,5 @@ employee IDs, or free-text participant notes in the repository.
 ```bash
 python3 scripts/ci/validate_mvp_human_review_evidence.py RECORD.json
 ```
+
+- [ ] A duplicate JSON object key is rejected rather than silently overwritten.

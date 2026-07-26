@@ -4,19 +4,38 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import statistics
+import subprocess
 import sys
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_PATH = REPO_ROOT / "docs" / "mvp-human-review-evidence.schema.json"
-MANIFEST_PATH = REPO_ROOT / "datasets" / "mvp_evaluation_manifest_v1.json"
+APPROVED_PRODUCT_COMMIT = "584ef2db12a6676abb65f75de1ec38145e06b487"
+APPROVED_MANIFEST_PATH = "datasets/mvp_evaluation_manifest_v1.json"
+APPROVED_MANIFEST_GIT_BLOB = "13450762d323198b1b6e87315be173c784fc4880"
+APPROVED_MANIFEST_CONTRACT_SHA256 = (
+    "5d91a67915d79c649954c5c8af02e74d08d94d0b97e7e673a7db690df61ebfff"
+)
+MANIFEST_CONTRACT_FIELDS = (
+    "schema_version",
+    "selection_status",
+    "selection_revision",
+    "fixture_manifest",
+    "source_policy",
+    "confidential_source_documents_allowed",
+    "acceptance_limits",
+    "required_categories",
+    "cases",
+)
 EXPECTED_CASE_IDS = {
     "mvp-word-001",
     "mvp-excel-001",
@@ -32,20 +51,215 @@ APPROVED_RUN_REVISIONS = {
 }
 PARTICIPANT_ID_RE = re.compile(r"^P[0-9]{3,}$")
 STUDY_ID_RE = re.compile(r"^HR-[A-Z0-9][A-Z0-9-]{2,63}$")
-RUN_ID_RE = re.compile(r"^RUN-[A-Z0-9][A-Z0-9-]{2,63}$")
+RUN_ID_RE = re.compile(
+    r"^RUN-P[0-9]{3,}-MVP-[A-Z0-9-]+-(?:MANUAL|VERIDOC)-[1-9][0-9]*$"
+)
 REVISION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+class DuplicateKeyError(ValueError):
+    """Raised when a JSON object contains an ambiguous duplicate key."""
+
+
+class ApprovedManifestError(RuntimeError):
+    """Raised when the approved manifest contract cannot be reconstructed."""
+
+
+def _reject_duplicate_object_keys(
+    pairs: list[tuple[str, Any]],
+) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise DuplicateKeyError(f"duplicate JSON object key: {key}")
+        value[key] = item
+    return value
+
+
+def _loads_json_strict(text: str) -> Any:
+    return json.loads(text, object_pairs_hook=_reject_duplicate_object_keys)
 
 
 def _load_schema() -> dict[str, Any]:
-    return json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    schema = _loads_json_strict(SCHEMA_PATH.read_text(encoding="utf-8"))
+    if not isinstance(schema, dict):
+        raise ValueError("human-review schema must be an object")
+    return schema
 
 
-def _load_expected_high_risk_counts() -> dict[str, int]:
-    manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
-    return {
-        case["id"]: len(case["expected_high_risk_targets"])
-        for case in manifest["cases"]
+def _git_show_approved(path: str) -> bytes:
+    try:
+        return subprocess.run(
+            ["git", "show", f"{APPROVED_PRODUCT_COMMIT}:{path}"],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ApprovedManifestError(
+            f"unable to read {path!r} at approved commit "
+            f"{APPROVED_PRODUCT_COMMIT}"
+        ) from exc
+
+
+def _git_blob_oid(content: bytes) -> str:
+    header = f"blob {len(content)}\0".encode("ascii")
+    return hashlib.sha1(header + content).hexdigest()
+
+
+@lru_cache(maxsize=1)
+def _load_approved_manifest_contract() -> tuple[
+    dict[str, dict[str, Any]], bool
+]:
+    manifest_bytes = _git_show_approved(APPROVED_MANIFEST_PATH)
+    manifest_blob = _git_blob_oid(manifest_bytes)
+    if manifest_blob != APPROVED_MANIFEST_GIT_BLOB:
+        raise ApprovedManifestError(
+            "approved manifest Git blob mismatch: "
+            f"expected {APPROVED_MANIFEST_GIT_BLOB}, got {manifest_blob}"
+        )
+    try:
+        manifest = _loads_json_strict(manifest_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, DuplicateKeyError) as exc:
+        raise ApprovedManifestError("approved manifest is not strict JSON") from exc
+    if not isinstance(manifest, dict):
+        raise ApprovedManifestError("approved manifest must be an object")
+
+    fixture_manifest_path = manifest.get("fixture_manifest")
+    if not isinstance(fixture_manifest_path, str):
+        raise ApprovedManifestError(
+            "approved manifest fixture_manifest must be a path"
+        )
+    try:
+        fixture_manifest = _loads_json_strict(
+            _git_show_approved(fixture_manifest_path).decode("utf-8")
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, DuplicateKeyError) as exc:
+        raise ApprovedManifestError(
+            "approved fixture manifest is not strict JSON"
+        ) from exc
+    if not isinstance(fixture_manifest, dict) or not isinstance(
+        fixture_manifest.get("fixtures"), list
+    ):
+        raise ApprovedManifestError(
+            "approved fixture manifest must contain fixtures"
+        )
+
+    cases = manifest.get("cases")
+    if not isinstance(cases, list) or any(
+        not isinstance(case, dict) for case in cases
+    ):
+        raise ApprovedManifestError("approved manifest must contain case objects")
+    fixture_by_id = {
+        fixture.get("id"): fixture
+        for fixture in fixture_manifest["fixtures"]
+        if isinstance(fixture, dict) and isinstance(fixture.get("id"), str)
     }
+    selected_fixture_ids = sorted(
+        {
+            case.get("fixture_id")
+            for case in cases
+            if isinstance(case.get("fixture_id"), str)
+        }
+    )
+    if len(selected_fixture_ids) != len(cases):
+        raise ApprovedManifestError(
+            "approved cases must bind unique fixture identifiers"
+        )
+    try:
+        selected_fixture_manifest = {
+            key: value
+            for key, value in fixture_manifest.items()
+            if key != "fixtures"
+        }
+        selected_fixture_manifest["fixtures"] = [
+            fixture
+            for fixture in fixture_manifest["fixtures"]
+            if isinstance(fixture, dict)
+            and fixture.get("id") in selected_fixture_ids
+        ]
+        selected_fixture_contents = {}
+        for fixture_id in selected_fixture_ids:
+            fixture = fixture_by_id[fixture_id]
+            fixture_path = fixture["path"]
+            fixture_content = _git_show_approved(fixture_path)
+            selected_fixture_contents[fixture_id] = {
+                "path": fixture_path,
+                "present": True,
+                "sha256": hashlib.sha256(fixture_content).hexdigest(),
+            }
+    except (KeyError, TypeError) as exc:
+        raise ApprovedManifestError(
+            "approved fixture identities are incomplete"
+        ) from exc
+
+    manifest_contract = {
+        field: manifest.get(field) for field in MANIFEST_CONTRACT_FIELDS
+    }
+    manifest_contract["fixture_approval_contract"] = {
+        "fixture_manifest": selected_fixture_manifest,
+        "selected_fixture_contents": selected_fixture_contents,
+    }
+    contract_sha256 = hashlib.sha256(
+        json.dumps(
+            manifest_contract,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    if contract_sha256 != APPROVED_MANIFEST_CONTRACT_SHA256:
+        raise ApprovedManifestError(
+            "approved manifest contract SHA-256 mismatch: "
+            f"expected {APPROVED_MANIFEST_CONTRACT_SHA256}, "
+            f"got {contract_sha256}"
+        )
+
+    case_contracts: dict[str, dict[str, Any]] = {}
+    structured_high_risk_targets_ready = True
+    for case in cases:
+        case_id = case.get("id")
+        fixture_id = case.get("fixture_id")
+        fixture_path = case.get("fixture_path")
+        targets = case.get("expected_high_risk_targets")
+        if not isinstance(case_id, str) or not isinstance(fixture_id, str):
+            raise ApprovedManifestError("approved case identity is incomplete")
+        fixture = fixture_by_id.get(fixture_id)
+        if (
+            not isinstance(fixture, dict)
+            or not isinstance(fixture.get("path"), str)
+            or fixture_path != fixture["path"]
+        ):
+            raise ApprovedManifestError(
+                f"approved fixture path mismatch for {case_id}"
+            )
+        if not isinstance(targets, list):
+            structured_high_risk_targets_ready = False
+            targets = []
+        case_contracts[case_id] = {
+            "fixture_id": fixture_id,
+            "fixture_path": fixture_path,
+            "fixture_sha256": selected_fixture_contents[fixture_id]["sha256"],
+            "high_risk_expected_count": len(targets),
+        }
+    if set(case_contracts) != EXPECTED_CASE_IDS:
+        raise ApprovedManifestError(
+            "approved manifest case set does not match Phase 12 scope"
+        )
+    return case_contracts, structured_high_risk_targets_ready
+
+
+def _expected_run_id(
+    participant_id: str,
+    case_id: str,
+    arm: str,
+    attempt_number: int,
+) -> str:
+    return (
+        f"RUN-{participant_id}-{case_id.upper()}-"
+        f"{arm.upper()}-{attempt_number}"
+    )
 
 
 def _unknown_fields(
@@ -120,6 +334,9 @@ def validate_record(record: Any) -> list[str]:
         ("protocol_version", "p12g-13-human-review-v1"),
         ("decision_revision", "p12g-02-v1"),
         ("manifest_revision", "phase12-mvp-v1"),
+        ("target_product_commit", APPROVED_PRODUCT_COMMIT),
+        ("manifest_git_blob", APPROVED_MANIFEST_GIT_BLOB),
+        ("manifest_contract_sha256", APPROVED_MANIFEST_CONTRACT_SHA256),
     ):
         _validate_constant(record, field, expected, errors)
 
@@ -339,7 +556,15 @@ def validate_record(record: Any) -> list[str]:
         errors.append("runs do not account for every participant/case/arm")
 
     run_schema = schema["$defs"]["run"]
-    expected_high_risk_counts = _load_expected_high_risk_counts()
+    approved_case_contracts: dict[str, dict[str, Any]] = {}
+    structured_high_risk_targets_ready = False
+    try:
+        (
+            approved_case_contracts,
+            _structured_high_risk_targets_ready,
+        ) = _load_approved_manifest_contract()
+    except ApprovedManifestError as exc:
+        errors.append(f"approved manifest contract is unavailable: {exc}")
     run_ids: set[str] = set()
     attempt_keys: set[tuple[Any, ...]] = set()
     attempt_numbers_by_group: dict[
@@ -371,7 +596,10 @@ def validate_record(record: Any) -> list[str]:
             continue
 
         run_id = run.get("run_id")
-        if not isinstance(run_id, str) or RUN_ID_RE.fullmatch(run_id) is None:
+        run_id_is_valid = (
+            isinstance(run_id, str) and RUN_ID_RE.fullmatch(run_id) is not None
+        )
+        if not run_id_is_valid:
             errors.append(f"{label}.run_id is invalid")
         elif run_id in run_ids:
             errors.append(f"duplicate run_id: {run_id}")
@@ -388,6 +616,38 @@ def validate_record(record: Any) -> list[str]:
         case_is_declared = isinstance(case_id, str) and case_id in declared_cases
         if not case_is_declared:
             errors.append(f"{label}.case_id is not declared")
+        approved_case = (
+            approved_case_contracts.get(case_id)
+            if isinstance(case_id, str)
+            else None
+        )
+        for field in (
+            "source_fixture_id",
+            "source_fixture_path",
+            "source_fixture_sha256",
+        ):
+            value = run.get(field)
+            if not isinstance(value, str):
+                errors.append(f"{label}.{field} must be a string")
+        source_fixture_sha256 = run.get("source_fixture_sha256")
+        if (
+            isinstance(source_fixture_sha256, str)
+            and SHA256_RE.fullmatch(source_fixture_sha256) is None
+        ):
+            errors.append(
+                f"{label}.source_fixture_sha256 must be lowercase SHA-256"
+            )
+        if approved_case is not None:
+            for field, contract_field in (
+                ("source_fixture_id", "fixture_id"),
+                ("source_fixture_path", "fixture_path"),
+                ("source_fixture_sha256", "fixture_sha256"),
+            ):
+                if run.get(field) != approved_case[contract_field]:
+                    errors.append(
+                        f"{label}.{field} must match approved manifest "
+                        f"value {approved_case[contract_field]!r}"
+                    )
         arm = run.get("arm")
         arm_is_valid = isinstance(arm, str) and arm in {"manual", "veridoc"}
         if not arm_is_valid:
@@ -415,6 +675,18 @@ def validate_record(record: Any) -> list[str]:
                 attempt_numbers_by_group[
                     (participant_id, case_id, arm)
                 ].add(attempt_number)
+            if run_id_is_valid:
+                expected_run_id = _expected_run_id(
+                    participant_id,
+                    case_id,
+                    arm,
+                    attempt_number,
+                )
+                if run_id != expected_run_id:
+                    errors.append(
+                        f"{label}.run_id must equal generated opaque ID "
+                        f"{expected_run_id}"
+                    )
 
         for field in ("task_revision", "gold_answer_revision"):
             revision = run.get(field)
@@ -538,13 +810,17 @@ def validate_record(record: Any) -> list[str]:
         misses = run.get("high_risk_miss_count")
         if (
             isinstance(case_id, str)
-            and case_id in expected_high_risk_counts
+            and case_id in approved_case_contracts
             and _is_non_negative_int(expected)
-            and expected != expected_high_risk_counts[case_id]
+            and expected
+            != approved_case_contracts[case_id]["high_risk_expected_count"]
         ):
+            approved_expected = approved_case_contracts[case_id][
+                "high_risk_expected_count"
+            ]
             errors.append(
-                f"{label}.high_risk_expected_count must match manifest count "
-                f"{expected_high_risk_counts[case_id]} for {case_id}"
+                f"{label}.high_risk_expected_count must match approved "
+                f"manifest count {approved_expected} for {case_id}"
             )
         if (
             _is_non_negative_int(expected)
@@ -674,6 +950,7 @@ def summarize_record(record: dict[str, Any]) -> dict[str, Any]:
     errors = validate_record(record)
     if errors:
         raise ValueError("record is invalid: " + "; ".join(errors))
+    _, structured_high_risk_targets_ready = _load_approved_manifest_contract()
 
     participants = [
         item["participant_id"]
@@ -786,6 +1063,12 @@ def summarize_record(record: dict[str, Any]) -> dict[str, Any]:
     return {
         "study_id": record["study_id"],
         "study_status": record["study_status"],
+        "target_product_commit": APPROVED_PRODUCT_COMMIT,
+        "manifest_git_blob": APPROVED_MANIFEST_GIT_BLOB,
+        "manifest_contract_sha256": APPROVED_MANIFEST_CONTRACT_SHA256,
+        "structured_high_risk_targets_ready": (
+            structured_high_risk_targets_ready
+        ),
         "required_runs": 2 * len(participants) * len(record["case_ids"]),
         "recorded_runs": len(record["runs"]),
         "excluded_runs": sum(run["excluded"] for run in record["runs"]),
@@ -799,6 +1082,7 @@ def summarize_record(record: dict[str, Any]) -> dict[str, Any]:
         "totals": totals,
         "efficiency_target_met": (
             record["study_status"] == "completed"
+            and structured_high_risk_targets_ready
             and paired_median is not None
             and paired_median >= 30.0
             and arm_metrics["veridoc"]["high_risk_misses"] == 0
@@ -815,8 +1099,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        record = json.loads(args.record.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        record = _loads_json_strict(args.record.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, DuplicateKeyError) as exc:
         print(f"Unable to read evidence: {exc}", file=sys.stderr)
         return 2
 
