@@ -1,0 +1,24 @@
+{
+  "schema_version": "veridoc-mvp-human-review-invalid-examples/v1",
+  "base_record": "datasets/mvp_human_review_evidence_valid.json",
+  "examples": [
+    {
+      "id": "direct-participant-identity",
+      "path": "/participants/0/participant_name",
+      "value": "Direct Identity Must Not Be Stored",
+      "expected_error": "unknown participant field: participant_name"
+    },
+    {
+      "id": "cross-arm-task-drift",
+      "path": "/runs/1/task_revision",
+      "value": "different-task-v2",
+      "expected_error": "paired runs must use the same task_revision"
+    },
+    {
+      "id": "pause-exceeds-elapsed-time",
+      "path": "/runs/0/excluded_pause_seconds",
+      "value": 1201,
+      "expected_error": "excluded_pause_seconds must be less than elapsed time"
+    }
+  ]
+}
