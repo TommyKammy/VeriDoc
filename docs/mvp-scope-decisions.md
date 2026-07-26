@@ -22,7 +22,7 @@ pins.
 - Target manifest: `datasets/mvp_evaluation_manifest_v1.json`
 - Target manifest revision: `phase12-mvp-v1`
 - Target manifest Git blob: `13450762d323198b1b6e87315be173c784fc4880`
-- Approved manifest contract SHA-256: `26ec6520f197b72b8ff94cfe8e47c6cc2ab6c9d597632e24c48397c19ba7a80d`
+- Approved manifest contract SHA-256: `5d91a67915d79c649954c5c8af02e74d08d94d0b97e7e673a7db690df61ebfff`
 - Approved OD-EFFICIENCY-SCOPE contract SHA-256: `3d9d05671895ec8d6e8b14f44b6a8dd7f99aa17b7b65871b78fb56a49966b6fb`
 - Approved OD-SEGREGATION contract SHA-256: `74d83d2d028c1ba79fffd6742ab9f13f7e345932248e36b86289e16c93a01476`
 - Approved ROLE_PERMISSIONS contract SHA-256: `dad052a8f6fe7acd549b2fa974c20e09b702fbcf31917deecf1636db61dfb322`
@@ -32,9 +32,10 @@ pins.
 - Approval status: `approved`
 
 The approved manifest contract hash above is derived from the manifest,
-fixture-manifest gold expectations, and selected fixture contents at the
-recorded target product commit. Later fixture or expectation changes are not
-covered by this approval, even when the manifest revision string is unchanged.
+fixture-manifest policy and schema, selected fixture entries and gold
+expectations, and selected fixture contents at the recorded target product
+commit. Later selected-fixture or expectation changes are not covered by this
+approval, even when the manifest revision string is unchanged.
 
 ## OD-TEMPLATES
 

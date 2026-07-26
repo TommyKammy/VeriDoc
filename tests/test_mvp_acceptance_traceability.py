@@ -232,10 +232,21 @@ class MvpAcceptanceTraceabilityDocsTest(unittest.TestCase):
             fixture["id"]: fixture
             for fixture in fixture_manifest["fixtures"]
         }
-        selected_fixture_contents = {}
-        for fixture_id in sorted(
+        selected_fixture_ids = sorted(
             {case["fixture_id"] for case in manifest["cases"]}
-        ):
+        )
+        selected_fixture_manifest = {
+            key: value
+            for key, value in fixture_manifest.items()
+            if key != "fixtures"
+        }
+        selected_fixture_manifest["fixtures"] = [
+            fixture
+            for fixture in fixture_manifest["fixtures"]
+            if fixture["id"] in selected_fixture_ids
+        ]
+        selected_fixture_contents = {}
+        for fixture_id in selected_fixture_ids:
             fixture_path_value = fixture_by_id[fixture_id]["path"]
             fixture_path = REPO_ROOT / fixture_path_value
             selected_fixture_contents[fixture_id] = {
@@ -244,7 +255,7 @@ class MvpAcceptanceTraceabilityDocsTest(unittest.TestCase):
                 "sha256": hashlib.sha256(fixture_path.read_bytes()).hexdigest(),
             }
         manifest_contract["fixture_approval_contract"] = {
-            "fixture_manifest": fixture_manifest,
+            "fixture_manifest": selected_fixture_manifest,
             "selected_fixture_contents": selected_fixture_contents,
         }
         manifest_contract_sha256 = hashlib.sha256(
@@ -279,10 +290,21 @@ class MvpAcceptanceTraceabilityDocsTest(unittest.TestCase):
             fixture["id"]: fixture
             for fixture in approved_fixture_manifest["fixtures"]
         }
-        approved_fixture_contents = {}
-        for fixture_id in sorted(
+        approved_selected_fixture_ids = sorted(
             {case["fixture_id"] for case in approved_manifest["cases"]}
-        ):
+        )
+        approved_selected_fixture_manifest = {
+            key: value
+            for key, value in approved_fixture_manifest.items()
+            if key != "fixtures"
+        }
+        approved_selected_fixture_manifest["fixtures"] = [
+            fixture
+            for fixture in approved_fixture_manifest["fixtures"]
+            if fixture["id"] in approved_selected_fixture_ids
+        ]
+        approved_fixture_contents = {}
+        for fixture_id in approved_selected_fixture_ids:
             fixture_path_value = approved_fixture_by_id[fixture_id]["path"]
             fixture_content = git_show(fixture_path_value)
             approved_fixture_contents[fixture_id] = {
@@ -295,7 +317,7 @@ class MvpAcceptanceTraceabilityDocsTest(unittest.TestCase):
             for field in contract_fields
         }
         approved_manifest_contract["fixture_approval_contract"] = {
-            "fixture_manifest": approved_fixture_manifest,
+            "fixture_manifest": approved_selected_fixture_manifest,
             "selected_fixture_contents": approved_fixture_contents,
         }
         derived_approved_manifest_hash = hashlib.sha256(

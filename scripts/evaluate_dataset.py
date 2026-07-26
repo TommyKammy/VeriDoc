@@ -8193,7 +8193,7 @@ MVP_MANIFEST_DECISION_CONTRACT_FIELDS = (
 MVP_SCOPE_DECISION_APPROVED_CONTRACTS = {
     "p12g-02-v1": {
         "Approved manifest contract SHA-256": (
-            "26ec6520f197b72b8ff94cfe8e47c6cc2ab6c9d597632e24c48397c19ba7a80d"
+            "5d91a67915d79c649954c5c8af02e74d08d94d0b97e7e673a7db690df61ebfff"
         ),
         "Approved OD-EFFICIENCY-SCOPE contract SHA-256": (
             "3d9d05671895ec8d6e8b14f44b6a8dd7f99aa17b7b65871b78fb56a49966b6fb"
@@ -8291,6 +8291,19 @@ def mvp_fixture_approval_contract(
         for fixture_id in (fixture.get("id"),)
         if isinstance(fixture_id, str) and fixture_id
     }
+    selected_fixture_id_set = set(selected_fixture_ids)
+    selected_fixture_manifest = {
+        key: value
+        for key, value in fixture_manifest.items()
+        if key != "fixtures"
+    }
+    selected_fixture_manifest["fixtures"] = [
+        dict(fixture)
+        for fixture in fixture_values
+        if isinstance(fixture, Mapping)
+        and isinstance(fixture.get("id"), str)
+        and fixture["id"] in selected_fixture_id_set
+    ]
     selected_fixture_contents: dict[str, dict[str, object]] = {}
     resolved_root = repo_root.resolve()
     for fixture_id in selected_fixture_ids:
@@ -8318,7 +8331,7 @@ def mvp_fixture_approval_contract(
             ),
         }
     return {
-        "fixture_manifest": dict(fixture_manifest),
+        "fixture_manifest": selected_fixture_manifest,
         "selected_fixture_contents": selected_fixture_contents,
     }
 

@@ -1288,6 +1288,16 @@ class EvaluateDatasetTest(unittest.TestCase):
             fixture_manifest=fixture_manifest,
             repo_root=REPO_ROOT,
         )
+        selected_fixture_ids = {
+            case["fixture_id"] for case in manifest["cases"]
+        }
+        self.assertEqual(
+            selected_fixture_ids,
+            {
+                fixture["id"]
+                for fixture in fixture_contract["fixture_manifest"]["fixtures"]
+            },
+        )
         from services.api.poc_web import ROLE_PERMISSIONS
 
         parsed_role_permissions = evaluate_dataset.mvp_role_permissions_from_source(
@@ -1473,6 +1483,61 @@ class EvaluateDatasetTest(unittest.TestCase):
             fixture_manifest_failures["OD-EFFICIENCY-SCOPE"],
         )
         self.assertEqual((), fixture_manifest_failures["OD-SEGREGATION"])
+
+        unrelated_fixture_manifest = copy.deepcopy(fixture_manifest)
+        unrelated_fixture = next(
+            fixture
+            for fixture in unrelated_fixture_manifest["fixtures"]
+            if fixture["id"] == "sample-document-ir-v0"
+        )
+        unrelated_fixture["title"] = "out-of-scope fixture maintenance"
+        unrelated_fixture_failures = (
+            evaluate_dataset.mvp_scope_decision_input_failures(
+                decision_record=decision_record,
+                manifest=manifest,
+                manifest_source="datasets/mvp_evaluation_manifest_v1.json",
+                role_permissions=ROLE_PERMISSIONS,
+                fixture_contract=evaluate_dataset.mvp_fixture_approval_contract(
+                    manifest=manifest,
+                    fixture_manifest=unrelated_fixture_manifest,
+                    repo_root=REPO_ROOT,
+                ),
+            )
+        )
+        self.assertEqual(
+            baseline_template_failures,
+            unrelated_fixture_failures["OD-TEMPLATES"],
+        )
+        self.assertEqual(
+            (),
+            unrelated_fixture_failures["OD-EFFICIENCY-SCOPE"],
+        )
+        self.assertEqual((), unrelated_fixture_failures["OD-SEGREGATION"])
+
+        drifted_fixture_policy = copy.deepcopy(fixture_manifest)
+        drifted_fixture_policy["policy"]["public_only"] = False
+        fixture_policy_failures = (
+            evaluate_dataset.mvp_scope_decision_input_failures(
+                decision_record=decision_record,
+                manifest=manifest,
+                manifest_source="datasets/mvp_evaluation_manifest_v1.json",
+                role_permissions=ROLE_PERMISSIONS,
+                fixture_contract=evaluate_dataset.mvp_fixture_approval_contract(
+                    manifest=manifest,
+                    fixture_manifest=drifted_fixture_policy,
+                    repo_root=REPO_ROOT,
+                ),
+            )
+        )
+        self.assertNotEqual(
+            baseline_template_failures,
+            fixture_policy_failures["OD-TEMPLATES"],
+        )
+        self.assertEqual(
+            (),
+            fixture_policy_failures["OD-EFFICIENCY-SCOPE"],
+        )
+        self.assertEqual((), fixture_policy_failures["OD-SEGREGATION"])
 
         drifted_fixture_content = copy.deepcopy(fixture_contract)
         drifted_fixture_content["selected_fixture_contents"][
