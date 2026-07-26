@@ -11,6 +11,7 @@
     "manifest_revision",
     "study_id",
     "study_status",
+    "practice_revision",
     "case_ids",
     "consent_approval",
     "participants",
@@ -38,6 +39,10 @@
         "validation_example",
         "completed"
       ]
+    },
+    "practice_revision": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
     },
     "case_ids": {
       "type": "array",

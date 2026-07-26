@@ -15,6 +15,8 @@ employee IDs, or free-text participant notes in the repository.
       formats, and completion checklist are fixed for both arms.
 - [ ] Gold answers are hidden until each timed run stops.
 - [ ] Each participant completed one fixed, unscored practice task per arm.
+- [ ] One `practice_revision` fixes the practice task, training material, and
+      assistance contract for the whole cohort.
 - [ ] Arm order is assigned before timed work and is counterbalanced.
 - [ ] Timing device and pause/interrupt recording method are ready.
 
@@ -65,6 +67,11 @@ employee IDs, or free-text participant notes in the repository.
 - [ ] Both arm orders are represented and participant counts differ by at most
       one.
 - [ ] Paired arms use identical task and gold-answer revisions.
+- [ ] Every retained attempt for a case uses the same cohort-wide task and
+      gold-answer revisions.
+- [ ] Attempt numbers are contiguous from 1 and no participant run intervals
+      overlap.
+- [ ] Expected high-risk counts match the pinned manifest.
 - [ ] Correction time is recomputed from timestamps minus recorded pauses.
 - [ ] Every participant/case reduction and the paired cohort median are reported.
 - [ ] Per-arm misses, over-detections, completions, blockers, retries, and

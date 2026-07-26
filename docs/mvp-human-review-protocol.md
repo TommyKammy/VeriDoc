@@ -27,9 +27,10 @@ Do not retain direct participant identity: names, email addresses, employee IDs,
 free-text biographies, or other direct identifiers are prohibited.
 
 Before timed work, each participant completes one fixed, unscored practice task
-for each arm. Counterbalance arm order: both `manual`-first and `veridoc`-first
-orders must occur, and their participant counts may differ by at most one.
-Training material and assistance must not vary between participants or arms.
+for each arm. Record the fixed task, training material, and assistance contract
+as one study-level `practice_revision`; it must not vary between participants or
+arms. Counterbalance arm order: both `manual`-first and `veridoc`-first orders
+must occur, and their participant counts may differ by at most one.
 
 ## Timing and run accounting
 
@@ -62,11 +63,17 @@ attempt sets `excluded` to `true` and uses one predeclared
 Each participant/case/arm must have exactly one non-excluded attempt in a
 completed study. Excluded attempts remain in the record. A blocked non-excluded
 attempt is accounted for and makes its pair ineligible for the 30% calculation;
-it is not an exclusion.
+it is not an exclusion. Attempt numbers for each participant/case/arm are
+contiguous from 1, and no two timed runs for one participant may overlap.
+
+For a given case, every participant and every retained attempt uses one common
+`task_revision` and one common `gold_answer_revision`. The validator derives
+`high_risk_expected_count` from the pinned `phase12-mvp-v1` manifest; evidence
+records cannot redefine that count.
 
 ## Measures and calculations
 
-For each non-excluded run, record:
+For each retained run, including excluded attempts, record:
 
 - `high_risk_expected_count`: high-risk gold targets in the task;
 - `high_risk_miss_count`: expected high-risk targets not identified and
@@ -85,12 +92,14 @@ pair_reduction_percent(p, c) =
   100 * (manual_seconds - veridoc_seconds) / manual_seconds
 ```
 
-Report every participant/case pair. The paired cohort median is the median of all
-eligible `pair_reduction_percent` values. The efficiency target passes only if
-that median is at least 30%, every required run is accounted for, and the
-assisted arm introduces zero high-risk misses. Report total and per-arm
-high-risk misses, over-detections, approved completions, blockers, exclusions,
-and retries even when the efficiency target fails or cannot be calculated.
+Report every participant/case pair, including arm outcomes and blocker codes for
+ineligible pairs. The paired cohort median is the median of all eligible
+`pair_reduction_percent` values. The efficiency target passes only if that
+median is at least 30%, every required run is accounted for, and every retained
+VeriDoc attempt—including excluded retries—contains zero high-risk misses.
+Report total and per-arm high-risk misses, over-detections, approved
+completions, blockers, exclusions, and retries even when the efficiency target
+fails or cannot be calculated.
 
 `high_risk_miss_count` is bounded by `high_risk_expected_count`.
 `over_detection_count` is a non-negative count, not a rate. A completion is an

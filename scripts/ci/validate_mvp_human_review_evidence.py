@@ -16,6 +16,7 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_PATH = REPO_ROOT / "docs" / "mvp-human-review-evidence.schema.json"
+MANIFEST_PATH = REPO_ROOT / "datasets" / "mvp_evaluation_manifest_v1.json"
 EXPECTED_CASE_IDS = {
     "mvp-word-001",
     "mvp-excel-001",
@@ -31,6 +32,14 @@ REVISION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 def _load_schema() -> dict[str, Any]:
     return json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+
+
+def _load_expected_high_risk_counts() -> dict[str, int]:
+    manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+    return {
+        case["id"]: len(case["expected_high_risk_targets"])
+        for case in manifest["cases"]
+    }
 
 
 def _unknown_fields(
@@ -108,6 +117,13 @@ def validate_record(record: Any) -> list[str]:
     ):
         _validate_constant(record, field, expected, errors)
 
+    practice_revision = record.get("practice_revision")
+    if (
+        not isinstance(practice_revision, str)
+        or REVISION_RE.fullmatch(practice_revision) is None
+    ):
+        errors.append("practice_revision is invalid")
+
     study_id = record.get("study_id")
     if not isinstance(study_id, str) or STUDY_ID_RE.fullmatch(study_id) is None:
         errors.append("study_id must match ^HR-[A-Z0-9][A-Z0-9-]{2,63}$")
@@ -136,6 +152,7 @@ def validate_record(record: Any) -> list[str]:
             errors.append("completed study must declare all five Phase 12 case_ids")
 
     consent = record.get("consent_approval")
+    approved_at: datetime | None = None
     consent_schema = schema["$defs"]["consentApproval"]
     _unknown_fields(
         consent,
@@ -152,7 +169,11 @@ def validate_record(record: Any) -> list[str]:
     if isinstance(consent, dict):
         if consent.get("approval_status") != "approved":
             errors.append("consent_approval.approval_status must be approved")
-        _parse_utc(consent.get("approved_at"), "consent_approval.approved_at", errors)
+        approved_at = _parse_utc(
+            consent.get("approved_at"),
+            "consent_approval.approved_at",
+            errors,
+        )
         approved_by_role = consent.get("approved_by_role")
         if not isinstance(approved_by_role, str) or approved_by_role not in {
             "study_owner",
@@ -237,14 +258,25 @@ def validate_record(record: Any) -> list[str]:
         errors.append("runs do not account for every participant/case/arm")
 
     run_schema = schema["$defs"]["run"]
+    expected_high_risk_counts = _load_expected_high_risk_counts()
     run_ids: set[str] = set()
     attempt_keys: set[tuple[Any, ...]] = set()
+    attempt_numbers_by_group: dict[
+        tuple[str, str, str], set[int]
+    ] = defaultdict(set)
+    revisions_by_case: dict[
+        tuple[str, str], set[str]
+    ] = defaultdict(set)
     included_by_pair: dict[
         tuple[str, str, str], list[dict[str, Any]]
     ] = defaultdict(list)
     times_by_participant_arm: dict[tuple[str, str], list[tuple[datetime, datetime]]] = (
         defaultdict(list)
     )
+    times_by_participant: dict[
+        str, list[tuple[datetime, datetime, str]]
+    ] = defaultdict(list)
+    all_started_at: list[datetime] = []
 
     for index, run in enumerate(runs):
         label = f"run[{index}]"
@@ -295,11 +327,16 @@ def validate_record(record: Any) -> list[str]:
                 errors.append(f"duplicate run attempt: {attempt_key!r}")
             else:
                 attempt_keys.add(attempt_key)
+                attempt_numbers_by_group[
+                    (participant_id, case_id, arm)
+                ].add(attempt_number)
 
         for field in ("task_revision", "gold_answer_revision"):
             revision = run.get(field)
             if not isinstance(revision, str) or REVISION_RE.fullmatch(revision) is None:
                 errors.append(f"{label}.{field} is invalid")
+            elif case_is_declared:
+                revisions_by_case[(case_id, field)].add(revision)
 
         started_at = _parse_utc(run.get("started_at"), f"{label}.started_at", errors)
         ended_at = _parse_utc(run.get("ended_at"), f"{label}.ended_at", errors)
@@ -312,6 +349,10 @@ def validate_record(record: Any) -> list[str]:
                 times_by_participant_arm[(participant_id, arm)].append(
                     (started_at, ended_at)
                 )
+                times_by_participant[participant_id].append(
+                    (started_at, ended_at, label)
+                )
+                all_started_at.append(started_at)
 
         pause_seconds = run.get("excluded_pause_seconds")
         if not _is_non_negative_int(pause_seconds):
@@ -372,6 +413,15 @@ def validate_record(record: Any) -> list[str]:
         expected = run.get("high_risk_expected_count")
         misses = run.get("high_risk_miss_count")
         if (
+            case_is_declared
+            and _is_non_negative_int(expected)
+            and expected != expected_high_risk_counts[case_id]
+        ):
+            errors.append(
+                f"{label}.high_risk_expected_count must match manifest count "
+                f"{expected_high_risk_counts[case_id]} for {case_id}"
+            )
+        if (
             _is_non_negative_int(expected)
             and _is_non_negative_int(misses)
             and misses > expected
@@ -388,6 +438,36 @@ def validate_record(record: Any) -> list[str]:
             and arm_is_valid
         ):
             included_by_pair[(participant_id, case_id, arm)].append(run)
+
+    if (
+        approved_at is not None
+        and all_started_at
+        and approved_at >= min(all_started_at)
+    ):
+        errors.append("consent approval must precede every timed run")
+
+    for group, attempt_numbers in sorted(attempt_numbers_by_group.items()):
+        expected_numbers = set(range(1, max(attempt_numbers) + 1))
+        if attempt_numbers != expected_numbers:
+            errors.append(
+                f"{group[0]}/{group[1]}/{group[2]} attempt_number values "
+                "must be contiguous from 1"
+            )
+
+    for (case_id, field), revisions in sorted(revisions_by_case.items()):
+        if len(revisions) > 1:
+            errors.append(
+                f"all retained runs for {case_id} must use the same {field}"
+            )
+
+    for participant_id, intervals in sorted(times_by_participant.items()):
+        ordered = sorted(intervals)
+        for previous, current in zip(ordered, ordered[1:]):
+            if current[0] < previous[1]:
+                errors.append(
+                    f"{participant_id} timed runs overlap: "
+                    f"{previous[2]} and {current[2]}"
+                )
 
     for participant_id in sorted(participant_ids):
         for case_id in sorted(declared_cases):
@@ -435,52 +515,91 @@ def summarize_record(record: dict[str, Any]) -> dict[str, Any]:
         for run in included
     }
     pair_results: list[dict[str, Any]] = []
+    eligible_pair_results: list[dict[str, Any]] = []
+
+    def correction_seconds(run: dict[str, Any]) -> float:
+        start = datetime.fromisoformat(run["started_at"].replace("Z", "+00:00"))
+        end = datetime.fromisoformat(run["ended_at"].replace("Z", "+00:00"))
+        return (end - start).total_seconds() - run["excluded_pause_seconds"]
+
     for participant_id in sorted(participants):
         for case_id in sorted(record["case_ids"]):
             manual = by_pair[(participant_id, case_id, "manual")]
             veridoc = by_pair[(participant_id, case_id, "veridoc")]
-            if not (
+            eligible = (
                 manual["outcome"] == "approved"
                 and veridoc["outcome"] == "approved"
                 and manual["checklist_complete"]
                 and veridoc["checklist_complete"]
-            ):
-                continue
-
-            def correction_seconds(run: dict[str, Any]) -> float:
-                start = datetime.fromisoformat(run["started_at"].replace("Z", "+00:00"))
-                end = datetime.fromisoformat(run["ended_at"].replace("Z", "+00:00"))
-                return (end - start).total_seconds() - run["excluded_pause_seconds"]
-
-            manual_seconds = correction_seconds(manual)
-            veridoc_seconds = correction_seconds(veridoc)
-            reduction = 100.0 * (manual_seconds - veridoc_seconds) / manual_seconds
-            pair_results.append(
-                {
-                    "participant_id": participant_id,
-                    "case_id": case_id,
-                    "manual_seconds": manual_seconds,
-                    "veridoc_seconds": veridoc_seconds,
-                    "reduction_percent": reduction,
-                }
             )
+            pair_result = {
+                "participant_id": participant_id,
+                "case_id": case_id,
+                "eligible": eligible,
+                "manual_outcome": manual["outcome"],
+                "manual_blocker_code": manual["blocker_code"],
+                "veridoc_outcome": veridoc["outcome"],
+                "veridoc_blocker_code": veridoc["blocker_code"],
+            }
+            if eligible:
+                manual_seconds = correction_seconds(manual)
+                veridoc_seconds = correction_seconds(veridoc)
+                reduction = (
+                    100.0
+                    * (manual_seconds - veridoc_seconds)
+                    / manual_seconds
+                )
+                pair_result.update(
+                    {
+                        "manual_seconds": manual_seconds,
+                        "veridoc_seconds": veridoc_seconds,
+                        "reduction_percent": reduction,
+                    }
+                )
+                eligible_pair_results.append(pair_result)
+            pair_results.append(pair_result)
 
     paired_median = (
-        statistics.median(item["reduction_percent"] for item in pair_results)
-        if pair_results
+        statistics.median(
+            item["reduction_percent"] for item in eligible_pair_results
+        )
+        if eligible_pair_results
         else None
     )
     arm_metrics: dict[str, dict[str, int]] = {}
     for arm in ("manual", "veridoc"):
-        arm_runs = [run for run in included if run["arm"] == arm]
+        all_arm_runs = [run for run in record["runs"] if run["arm"] == arm]
+        included_arm_runs = [run for run in included if run["arm"] == arm]
         arm_metrics[arm] = {
-            "high_risk_misses": sum(run["high_risk_miss_count"] for run in arm_runs),
-            "over_detections": sum(run["over_detection_count"] for run in arm_runs),
-            "approved_completions": sum(
-                run["outcome"] == "approved" for run in arm_runs
+            "high_risk_misses": sum(
+                run["high_risk_miss_count"] for run in all_arm_runs
             ),
-            "blockers": sum(run["outcome"] == "blocked" for run in arm_runs),
+            "over_detections": sum(
+                run["over_detection_count"] for run in all_arm_runs
+            ),
+            "approved_completions": sum(
+                run["outcome"] == "approved" for run in included_arm_runs
+            ),
+            "blockers": sum(
+                run["outcome"] == "blocked" for run in all_arm_runs
+            ),
+            "retry_runs": sum(
+                run["attempt_number"] > 1 for run in all_arm_runs
+            ),
+            "excluded_runs": sum(run["excluded"] for run in all_arm_runs),
         }
+
+    required_groups = {
+        (participant_id, case_id, arm)
+        for participant_id in participants
+        for case_id in record["case_ids"]
+        for arm in ("manual", "veridoc")
+    }
+    recorded_groups = {
+        (run["participant_id"], run["case_id"], run["arm"])
+        for run in record["runs"]
+    }
+    all_required_runs_accounted = required_groups <= recorded_groups
 
     return {
         "study_id": record["study_id"],
@@ -489,7 +608,9 @@ def summarize_record(record: dict[str, Any]) -> dict[str, Any]:
         "recorded_runs": len(record["runs"]),
         "excluded_runs": sum(run["excluded"] for run in record["runs"]),
         "retry_runs": sum(run["attempt_number"] > 1 for run in record["runs"]),
-        "eligible_pair_count": len(pair_results),
+        "all_required_runs_accounted": all_required_runs_accounted,
+        "eligible_pair_count": len(eligible_pair_results),
+        "ineligible_pair_count": len(pair_results) - len(eligible_pair_results),
         "pair_results": pair_results,
         "paired_median_reduction_percent": paired_median,
         "arm_metrics": arm_metrics,
@@ -498,7 +619,7 @@ def summarize_record(record: dict[str, Any]) -> dict[str, Any]:
             and paired_median is not None
             and paired_median >= 30.0
             and arm_metrics["veridoc"]["high_risk_misses"] == 0
-            and len(pair_results) == len(participants) * len(record["case_ids"])
+            and all_required_runs_accounted
         ),
     }
 
