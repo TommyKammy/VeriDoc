@@ -16,6 +16,11 @@
   `docs/mvp-human-review-timed-task-package.json`
 - Pinned timed-task package SHA-256:
   `55c15447c23b46cfee458a0bd13c3eac9916454b446a459dd2588412708aba47`
+- Protocol-pinned completion-checklist revision: `checklist-phase12-v1`
+- Pinned completion-checklist package:
+  `docs/mvp-human-review-completion-checklist-package.json`
+- Pinned completion-checklist package SHA-256:
+  `15c40eebd279600abb8d0f0eaef8c6ecd595f77bf0b81cc0bbe5a7de01fc1b64`
 - Approved gold-answer revision: `gold-phase12-v1`
 - Applicable cases: `mvp-word-001`, `mvp-excel-001`, `mvp-text-pdf-001`,
   `mvp-scanned-pdf-001`, and `mvp-record-pdf-001`
@@ -38,6 +43,11 @@ instructions, prohibited assistance, the distinct manual and VeriDoc tool
 allowances, and the case-specific expectations and review focus. Every run
 binds that package, its case object, and its assigned arm contract by SHA-256;
 `task-phase12-v1` alone is not sufficient evidence.
+The immutable completion-checklist package defines the ordered checklist,
+completion and blocked-outcome rules, hidden-gold boundary, and binding to each
+timed-task case. Every run binds that package and the canonical digest of the
+checklist plus matching case; `checklist-phase12-v1` alone is not sufficient
+evidence.
 The gold answer remains hidden until the timed run has stopped.
 Every included run attests this boundary with
 `gold_answer_hidden_until_ended_at: true`; a procedure note alone is not
@@ -87,9 +97,11 @@ Counterbalance arm order among completed participants: both `manual`-first and
 `veridoc`-first orders must occur, and their participant counts may differ by at
 most one.
 
-Every run records `checklist_revision: checklist-phase12-v1`. This is the
-approved completion checklist shared by both arms and every participant; a
-different or missing checklist revision invalidates the run rather than
+Every run records `checklist_revision: checklist-phase12-v1`,
+`checklist_package_path`, `checklist_package_sha256`, and
+`checklist_case_sha256`. The pinned package is the protocol completion
+checklist shared unchanged by both arms and every participant. A different or
+missing revision, package, or case digest invalidates the run rather than
 creating a second baseline.
 
 ## Timing and run accounting
@@ -178,6 +190,18 @@ binds its scope and manifest hashes, reconciles every case to the approved
 manifest, and requires the exact case and arm digests on every retained
 attempt. Manual and VeriDoc runs therefore cannot silently substitute different
 instructions or unapproved tools behind a shared revision label.
+
+Every attempt records
+`checklist_package_path:
+docs/mvp-human-review-completion-checklist-package.json`, its pinned SHA-256
+`15c40eebd279600abb8d0f0eaef8c6ecd595f77bf0b81cc0bbe5a7de01fc1b64`,
+and `checklist_case_sha256`, the canonical SHA-256 over the package's shared
+instructions, ordered checklist items, and matching case binding. The
+validator verifies the package bytes and closed shape, requires the package to
+bind the pinned timed-task package and approved scope, reconciles each
+checklist case to the timed-task case digest, and requires the exact checklist
+case digest on every retained attempt. Manual and VeriDoc arms therefore
+cannot receive different completion criteria behind the same revision label.
 
 Every attempt also records
 `gold_package_path: datasets/mvp_human_review_gold_package_v1.json`, its pinned

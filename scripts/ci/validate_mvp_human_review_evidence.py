@@ -54,6 +54,12 @@ PINNED_TASK_PACKAGE_PATH = "docs/mvp-human-review-timed-task-package.json"
 PINNED_TASK_PACKAGE_SHA256 = (
     "55c15447c23b46cfee458a0bd13c3eac9916454b446a459dd2588412708aba47"
 )
+PINNED_CHECKLIST_PACKAGE_PATH = (
+    "docs/mvp-human-review-completion-checklist-package.json"
+)
+PINNED_CHECKLIST_PACKAGE_SHA256 = (
+    "15c40eebd279600abb8d0f0eaef8c6ecd595f77bf0b81cc0bbe5a7de01fc1b64"
+)
 PINNED_GOLD_PACKAGE_PATH = "datasets/mvp_human_review_gold_package_v1.json"
 PINNED_GOLD_PACKAGE_SHA256 = (
     "d4dd34836d38eecc721af3d512caa978eaf9fa40cdf988d48e72ef8f1db44716"
@@ -107,6 +113,10 @@ class PinnedGoldPackageError(RuntimeError):
 
 class PinnedTaskPackageError(RuntimeError):
     """Raised when the pinned timed-task package cannot be verified."""
+
+
+class PinnedChecklistPackageError(RuntimeError):
+    """Raised when the pinned completion-checklist package cannot be verified."""
 
 
 def _reject_duplicate_object_keys(
@@ -555,6 +565,159 @@ def _load_pinned_task_package_contract() -> tuple[
             "pinned timed-task package case set does not match Phase 12 scope"
         )
     return case_contracts, arm_sha256
+
+
+@lru_cache(maxsize=1)
+def _load_pinned_checklist_package_contract() -> dict[
+    str, dict[str, str]
+]:
+    try:
+        package_bytes = (
+            REPO_ROOT / PINNED_CHECKLIST_PACKAGE_PATH
+        ).read_bytes()
+    except OSError as exc:
+        raise PinnedChecklistPackageError(
+            "pinned completion-checklist package cannot be read"
+        ) from exc
+    actual_sha256 = hashlib.sha256(package_bytes).hexdigest()
+    if actual_sha256 != PINNED_CHECKLIST_PACKAGE_SHA256:
+        raise PinnedChecklistPackageError(
+            "pinned completion-checklist package SHA-256 mismatch: "
+            f"expected {PINNED_CHECKLIST_PACKAGE_SHA256}, got {actual_sha256}"
+        )
+    try:
+        package = _loads_json_strict(package_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, DuplicateKeyError) as exc:
+        raise PinnedChecklistPackageError(
+            "pinned completion-checklist package is not strict UTF-8 JSON"
+        ) from exc
+    if not isinstance(package, dict):
+        raise PinnedChecklistPackageError(
+            "pinned completion-checklist package must be an object"
+        )
+    expected_top_fields = {
+        "schema_version",
+        "checklist_revision",
+        "decision_revision",
+        "approved_efficiency_scope_sha256",
+        "task_package_path",
+        "task_package_sha256",
+        "contract_status",
+        "shared_instructions",
+        "items",
+        "cases",
+    }
+    if set(package) != expected_top_fields:
+        raise PinnedChecklistPackageError(
+            "pinned completion-checklist package fields do not match "
+            "the closed contract"
+        )
+    for field, expected in (
+        (
+            "schema_version",
+            "veridoc-mvp-human-review-completion-checklist-package/v1",
+        ),
+        ("checklist_revision", APPROVED_CHECKLIST_REVISION),
+        ("decision_revision", "p12g-02-v1"),
+        (
+            "approved_efficiency_scope_sha256",
+            "3d9d05671895ec8d6e8b14f44b6a8dd7f99aa17b7b65871b78fb56a49966b6fb",
+        ),
+        ("task_package_path", PINNED_TASK_PACKAGE_PATH),
+        ("task_package_sha256", PINNED_TASK_PACKAGE_SHA256),
+        ("contract_status", "protocol_pinned"),
+    ):
+        if package.get(field) != expected:
+            raise PinnedChecklistPackageError(
+                f"pinned completion-checklist package {field} "
+                f"must be {expected!r}"
+            )
+
+    shared_instructions = package.get("shared_instructions")
+    expected_instruction_fields = {
+        "arm_application",
+        "completion_rule",
+        "blocked_rule",
+        "deviation_rule",
+        "gold_boundary",
+    }
+    if (
+        not isinstance(shared_instructions, dict)
+        or set(shared_instructions) != expected_instruction_fields
+        or any(
+            not isinstance(shared_instructions[field], str)
+            or not shared_instructions[field].strip()
+            for field in expected_instruction_fields
+        )
+    ):
+        raise PinnedChecklistPackageError(
+            "pinned completion-checklist shared instructions are invalid"
+        )
+
+    items = package.get("items")
+    expected_item_ids = [f"CHK-{number:02d}" for number in range(1, 9)]
+    if (
+        not isinstance(items, list)
+        or [
+            item.get("item_id")
+            for item in items
+            if isinstance(item, dict)
+        ]
+        != expected_item_ids
+        or any(
+            not isinstance(item, dict)
+            or set(item) != {"item_id", "requirement"}
+            or not isinstance(item.get("requirement"), str)
+            or not item["requirement"].strip()
+            for item in items
+        )
+    ):
+        raise PinnedChecklistPackageError(
+            "pinned completion-checklist items are invalid"
+        )
+
+    cases = package.get("cases")
+    if not isinstance(cases, list):
+        raise PinnedChecklistPackageError(
+            "pinned completion-checklist cases must be an array"
+        )
+    case_contracts: dict[str, dict[str, str]] = {}
+    for case in cases:
+        if (
+            not isinstance(case, dict)
+            or set(case) != {"case_id", "task_case_sha256"}
+        ):
+            raise PinnedChecklistPackageError(
+                "pinned completion-checklist cases must match "
+                "the closed contract"
+            )
+        case_id = case.get("case_id")
+        task_case_sha256 = case.get("task_case_sha256")
+        if (
+            not isinstance(case_id, str)
+            or case_id in case_contracts
+            or not isinstance(task_case_sha256, str)
+            or SHA256_RE.fullmatch(task_case_sha256) is None
+        ):
+            raise PinnedChecklistPackageError(
+                "pinned completion-checklist case identity is invalid"
+            )
+        case_contracts[case_id] = {
+            "task_case_sha256": task_case_sha256,
+            "checklist_case_sha256": _canonical_json_sha256(
+                {
+                    "shared_instructions": shared_instructions,
+                    "items": items,
+                    "case": case,
+                }
+            ),
+        }
+    if set(case_contracts) != EXPECTED_CASE_IDS:
+        raise PinnedChecklistPackageError(
+            "pinned completion-checklist case set does not match "
+            "Phase 12 scope"
+        )
+    return case_contracts
 
 
 @lru_cache(maxsize=1)
@@ -1148,6 +1311,7 @@ def validate_record(record: Any) -> list[str]:
     approved_case_contracts: dict[str, dict[str, Any]] = {}
     task_case_contracts: dict[str, dict[str, Any]] = {}
     task_arm_sha256: dict[str, str] = {}
+    checklist_case_contracts: dict[str, dict[str, str]] = {}
     gold_case_contracts: dict[str, dict[str, Any]] = {}
     try:
         (
@@ -1163,6 +1327,14 @@ def validate_record(record: Any) -> list[str]:
         ) = _load_pinned_task_package_contract()
     except PinnedTaskPackageError as exc:
         errors.append(f"pinned timed-task package is unavailable: {exc}")
+    try:
+        checklist_case_contracts = (
+            _load_pinned_checklist_package_contract()
+        )
+    except PinnedChecklistPackageError as exc:
+        errors.append(
+            f"pinned completion-checklist package is unavailable: {exc}"
+        )
     try:
         (
             gold_case_contracts,
@@ -1200,6 +1372,17 @@ def validate_record(record: Any) -> list[str]:
                     f"pinned timed-task package {field} for {case_id} "
                     "must match the approved manifest"
                 )
+    for case_id in sorted(
+        task_case_contracts.keys() & checklist_case_contracts.keys()
+    ):
+        if (
+            checklist_case_contracts[case_id]["task_case_sha256"]
+            != task_case_contracts[case_id]["task_case_sha256"]
+        ):
+            errors.append(
+                "pinned completion-checklist task case for "
+                f"{case_id} must match the timed-task package"
+            )
     run_ids: set[str] = set()
     sealed_artifact_record_ids: set[str] = set()
     attempt_keys: set[tuple[Any, ...]] = set()
@@ -1370,6 +1553,30 @@ def validate_record(record: Any) -> list[str]:
             errors.append(
                 f"{label}.gold_case_sha256 must bind pinned gold case "
                 f"{case_id} as {gold_case['gold_case_sha256']}"
+            )
+        for field, expected_value in (
+            ("checklist_package_path", PINNED_CHECKLIST_PACKAGE_PATH),
+            ("checklist_package_sha256", PINNED_CHECKLIST_PACKAGE_SHA256),
+        ):
+            if run.get(field) != expected_value:
+                errors.append(
+                    f"{label}.{field} must match pinned completion-checklist "
+                    f"package value {expected_value!r}"
+                )
+        checklist_case = (
+            checklist_case_contracts.get(case_id)
+            if isinstance(case_id, str)
+            else None
+        )
+        if (
+            checklist_case is not None
+            and run.get("checklist_case_sha256")
+            != checklist_case["checklist_case_sha256"]
+        ):
+            errors.append(
+                f"{label}.checklist_case_sha256 must bind pinned completion "
+                f"checklist for {case_id} as "
+                f"{checklist_case['checklist_case_sha256']}"
             )
         arm = run.get("arm")
         arm_is_valid = isinstance(arm, str) and arm in {"manual", "veridoc"}
@@ -2014,6 +2221,8 @@ def summarize_record(record: dict[str, Any]) -> dict[str, Any]:
         "manifest_contract_sha256": APPROVED_MANIFEST_CONTRACT_SHA256,
         "task_package_path": PINNED_TASK_PACKAGE_PATH,
         "task_package_sha256": PINNED_TASK_PACKAGE_SHA256,
+        "checklist_package_path": PINNED_CHECKLIST_PACKAGE_PATH,
+        "checklist_package_sha256": PINNED_CHECKLIST_PACKAGE_SHA256,
         "gold_package_path": PINNED_GOLD_PACKAGE_PATH,
         "gold_package_sha256": PINNED_GOLD_PACKAGE_SHA256,
         "gold_package_approval_status": "unapproved_validation_only",

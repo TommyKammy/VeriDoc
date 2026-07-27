@@ -21,6 +21,12 @@
       "expected_error": "run[0].task_arm_sha256 must bind pinned manual assistance contract as f8c40d44bd0d29ff8b93455e196acd1adb495f71e13696c207739c478bae5440"
     },
     {
+      "id": "completion-checklist-contract-drift",
+      "path": "/runs/0/checklist_case_sha256",
+      "value": "0000000000000000000000000000000000000000000000000000000000000000",
+      "expected_error": "run[0].checklist_case_sha256 must bind pinned completion checklist for mvp-word-001 as c4d31dabdc42f6241e41b8f64697bef4bafe567e1cb99e6cc37ce61229cc776f"
+    },
+    {
       "id": "target-format-drift",
       "path": "/runs/0/conversion_mode",
       "value": "pdf_to_word",

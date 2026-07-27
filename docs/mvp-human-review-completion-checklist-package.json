@@ -1,0 +1,72 @@
+{
+  "schema_version": "veridoc-mvp-human-review-completion-checklist-package/v1",
+  "checklist_revision": "checklist-phase12-v1",
+  "decision_revision": "p12g-02-v1",
+  "approved_efficiency_scope_sha256": "3d9d05671895ec8d6e8b14f44b6a8dd7f99aa17b7b65871b78fb56a49966b6fb",
+  "task_package_path": "docs/mvp-human-review-timed-task-package.json",
+  "task_package_sha256": "55c15447c23b46cfee458a0bd13c3eac9916454b446a459dd2588412708aba47",
+  "contract_status": "protocol_pinned",
+  "shared_instructions": {
+    "arm_application": "Apply these checklist items unchanged and in the listed order to both the manual and VeriDoc arms.",
+    "completion_rule": "Set checklist_complete to true only after every item has been evaluated and the approved or blocked outcome has been recorded.",
+    "blocked_rule": "If an artifact requirement cannot be satisfied, record a controlled blocked outcome and blocker_code instead of approving the artifact.",
+    "deviation_rule": "If gold is exposed early or prohibited assistance is used, retain and exclude the attempt as a protocol_deviation instead of treating it as a valid approved or blocked comparison.",
+    "gold_boundary": "Use only the source fixture and pinned timed-task instructions during the timed attempt; do not expose gold answers or gold comparison results until timing has stopped."
+  },
+  "items": [
+    {
+      "item_id": "CHK-01",
+      "requirement": "Confirm the assigned source fixture, conversion mode, and target artifact type match the pinned timed-task case before timing begins."
+    },
+    {
+      "item_id": "CHK-02",
+      "requirement": "Confirm the source can be reviewed and the produced target artifact can be opened and remains editable in the required target format."
+    },
+    {
+      "item_id": "CHK-03",
+      "requirement": "Verify every expectation in the pinned timed-task case against the produced artifact and correct all detectable deviations."
+    },
+    {
+      "item_id": "CHK-04",
+      "requirement": "Verify every review-focus item in the pinned timed-task case, including required high-risk warnings and source evidence."
+    },
+    {
+      "item_id": "CHK-05",
+      "requirement": "Compare content and structure directly with the source and correct detectable omissions, inventions, ordering errors, and table or section defects."
+    },
+    {
+      "item_id": "CHK-06",
+      "requirement": "Record an approved outcome only when no required defect remains unresolved; otherwise record a controlled blocked outcome and blocker_code."
+    },
+    {
+      "item_id": "CHK-07",
+      "requirement": "Confirm the artifact or blocked outcome is final, record the outcome, and do not alter the artifact after timing stops."
+    },
+    {
+      "item_id": "CHK-08",
+      "requirement": "Confirm gold remained hidden and only the assigned arm assistance was used; otherwise retain and exclude the attempt as a protocol deviation."
+    }
+  ],
+  "cases": [
+    {
+      "case_id": "mvp-word-001",
+      "task_case_sha256": "889b04fc2703ebcd7f16e24e19338da050985effe51c75668b84c2ad30c6d741"
+    },
+    {
+      "case_id": "mvp-excel-001",
+      "task_case_sha256": "0d91c2dc290af17164eec2b9270c007663cfefe732394c5c68f5856fea186111"
+    },
+    {
+      "case_id": "mvp-text-pdf-001",
+      "task_case_sha256": "e428760db75a24d477b0928d38bc9d3b2d2d5feeadaa1229d4b6ec5c61e012e4"
+    },
+    {
+      "case_id": "mvp-scanned-pdf-001",
+      "task_case_sha256": "18e732cf59c29cf817ad87a80cfd020f64d34799c1ac8c4a354068577a9d13c5"
+    },
+    {
+      "case_id": "mvp-record-pdf-001",
+      "task_case_sha256": "9bc7bd5bda936d9b20f9d26e5c6957903b13782857ccdbbb0a93de2643d4648b"
+    }
+  ]
+}

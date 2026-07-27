@@ -40,6 +40,10 @@ employee IDs, or free-text participant notes in the repository.
       `55c15447c23b46cfee458a0bd13c3eac9916454b446a459dd2588412708aba47`
       and fixes common instructions, prohibited assistance, arm-specific tool
       allowances, and all five case expectations.
+- [ ] `docs/mvp-human-review-completion-checklist-package.json` has SHA-256
+      `15c40eebd279600abb8d0f0eaef8c6ecd595f77bf0b81cc0bbe5a7de01fc1b64`
+      and fixes the ordered checklist, completion rules, hidden-gold boundary,
+      and per-case timed-task bindings shared by both arms.
 - [ ] `datasets/mvp_human_review_gold_package_v1.json` has SHA-256
       `d4dd34836d38eecc721af3d512caa978eaf9fa40cdf988d48e72ef8f1db44716`;
       its per-case canonical digests bind target format and scoring content.
@@ -75,6 +79,9 @@ employee IDs, or free-text participant notes in the repository.
       manifest case before timing begins.
 - [ ] Confirm the pinned `task_package_path`, package SHA-256, case-specific
       `task_case_sha256`, and assigned-arm `task_arm_sha256` before timing.
+- [ ] Confirm the pinned `checklist_package_path`, package SHA-256, and
+      case-specific `checklist_case_sha256` before timing; use its ordered
+      checklist unchanged for both arms.
 - [ ] Use only the tools allowed by the pinned manual or VeriDoc arm contract;
       do not substitute another converter, OCR, generative-AI, or automation
       tool.
@@ -152,6 +159,9 @@ employee IDs, or free-text participant notes in the repository.
 | `gold_package_sha256` | pinned package SHA-256 |
 | `gold_case_sha256` | canonical SHA-256 of the matching gold case object |
 | `checklist_revision` | `checklist-phase12-v1` |
+| `checklist_package_path` | `docs/mvp-human-review-completion-checklist-package.json` |
+| `checklist_package_sha256` | pinned completion-checklist package SHA-256 |
+| `checklist_case_sha256` | canonical SHA-256 of the shared checklist plus matching case binding |
 | `gold_answer_hidden_until_ended_at` | `true` / `false` only for excluded `protocol_deviation` |
 | `gold_answer_compared_by_role` | `independent_assessor` |
 | `gold_answer_comparison_withheld_from_participant` | `true` attestation |
@@ -193,6 +203,8 @@ employee IDs, or free-text participant notes in the repository.
 - [ ] Every attempt binds the same pinned timed-task package and correct
       case-specific digest; each arm uses its own fixed assistance-contract
       digest.
+- [ ] Every attempt binds the same pinned completion-checklist package and the
+      correct case-specific digest in both arms.
 - [ ] Every retained attempt for a case uses the same cohort-wide task and
       gold-answer and checklist revisions.
 - [ ] Attempt numbers are contiguous from 1 and no participant run intervals

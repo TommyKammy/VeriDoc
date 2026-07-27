@@ -444,6 +444,9 @@
         "gold_package_sha256",
         "gold_case_sha256",
         "checklist_revision",
+        "checklist_package_path",
+        "checklist_package_sha256",
+        "checklist_case_sha256",
         "gold_answer_hidden_until_ended_at",
         "gold_answer_compared_by_role",
         "gold_answer_comparison_withheld_from_participant",
@@ -566,6 +569,16 @@
         },
         "checklist_revision": {
           "const": "checklist-phase12-v1"
+        },
+        "checklist_package_path": {
+          "const": "docs/mvp-human-review-completion-checklist-package.json"
+        },
+        "checklist_package_sha256": {
+          "const": "15c40eebd279600abb8d0f0eaef8c6ecd595f77bf0b81cc0bbe5a7de01fc1b64"
+        },
+        "checklist_case_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
         },
         "gold_answer_hidden_until_ended_at": {
           "type": "boolean"

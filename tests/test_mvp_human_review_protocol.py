@@ -22,6 +22,8 @@ from scripts.ci.validate_mvp_human_review_evidence import (
     APPROVED_PRODUCT_COMMIT,
     APPROVED_PRODUCT_TREE,
     APPROVED_TASK_REVISION,
+    PINNED_CHECKLIST_PACKAGE_PATH,
+    PINNED_CHECKLIST_PACKAGE_SHA256,
     PINNED_GOLD_PACKAGE_PATH,
     PINNED_GOLD_PACKAGE_SHA256,
     PINNED_TASK_PACKAGE_PATH,
@@ -40,6 +42,9 @@ PRACTICE_PACKAGE_PATH = (
 )
 GOLD_PACKAGE_PATH = REPO_ROOT / PINNED_GOLD_PACKAGE_PATH
 TASK_PACKAGE_PATH = REPO_ROOT / PINNED_TASK_PACKAGE_PATH
+COMPLETION_CHECKLIST_PACKAGE_PATH = (
+    REPO_ROOT / PINNED_CHECKLIST_PACKAGE_PATH
+)
 VALID_EXAMPLE_PATH = REPO_ROOT / "datasets" / "mvp_human_review_evidence_valid.json"
 INVALID_EXAMPLES_PATH = (
     REPO_ROOT / "datasets" / "mvp_human_review_evidence_invalid_examples.json"
@@ -108,6 +113,23 @@ PINNED_TASK_ARM_SHA256 = {
     ),
     "veridoc": (
         "204ae4a4f884e48e0360e6f506f9ef57a7e6e98a50f519e2f06e9c9041daaf06"
+    ),
+}
+PINNED_CHECKLIST_CASE_SHA256 = {
+    "mvp-word-001": (
+        "c4d31dabdc42f6241e41b8f64697bef4bafe567e1cb99e6cc37ce61229cc776f"
+    ),
+    "mvp-excel-001": (
+        "53d67e61e555a885ef0ad1a18d47f059caafd271febdbfbcd7baea8a74a7a90f"
+    ),
+    "mvp-text-pdf-001": (
+        "dc42d2a9eba69b437a176f280eae8b1bc2507833b08f056a903a6e0da22784e9"
+    ),
+    "mvp-scanned-pdf-001": (
+        "21c5c92c086be5b0a5d3f83e9a373842ca054480743f8ab7aabe21d777945f3f"
+    ),
+    "mvp-record-pdf-001": (
+        "b67ffa6777a3ca60aac5ca0227e0e672814071a15a85698ba2d380d97738d9ca"
     ),
 }
 CONSENT_FORM_VERSION = "CF-550E8400-E29B-41D4-A716-446655440201"
@@ -248,6 +270,15 @@ def _completed_record(base_record: dict[str, object]) -> dict[str, object]:
                         "gold_package_sha256": PINNED_GOLD_PACKAGE_SHA256,
                         "gold_case_sha256": PINNED_GOLD_CASE_SHA256[case_id],
                         "checklist_revision": APPROVED_CHECKLIST_REVISION,
+                        "checklist_package_path": (
+                            PINNED_CHECKLIST_PACKAGE_PATH
+                        ),
+                        "checklist_package_sha256": (
+                            PINNED_CHECKLIST_PACKAGE_SHA256
+                        ),
+                        "checklist_case_sha256": (
+                            PINNED_CHECKLIST_CASE_SHA256[case_id]
+                        ),
                         "gold_answer_hidden_until_ended_at": True,
                         "gold_answer_compared_by_role": "independent_assessor",
                         "gold_answer_comparison_withheld_from_participant": True,
@@ -384,8 +415,10 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             "checklist-phase12-v1",
             "mvp-human-review-practice-package.json",
             "mvp-human-review-timed-task-package.json",
+            "mvp-human-review-completion-checklist-package.json",
             "task_case_sha256",
             "task_arm_sha256",
+            "checklist_case_sha256",
             "mvp_human_review_gold_package_v1.json",
             "gold_case_sha256",
             "target_artifact_type",
@@ -520,6 +553,9 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             "gold_package_sha256",
             "gold_case_sha256",
             "checklist_revision",
+            "checklist_package_path",
+            "checklist_package_sha256",
+            "checklist_case_sha256",
         ):
             self.assertIn(field, schema["$defs"]["run"]["required"])
         self.assertEqual(
@@ -568,6 +604,18 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             APPROVED_CHECKLIST_REVISION,
             schema["$defs"]["run"]["properties"]["checklist_revision"]["const"],
         )
+        self.assertEqual(
+            PINNED_CHECKLIST_PACKAGE_PATH,
+            schema["$defs"]["run"]["properties"]["checklist_package_path"][
+                "const"
+            ],
+        )
+        self.assertEqual(
+            PINNED_CHECKLIST_PACKAGE_SHA256,
+            schema["$defs"]["run"]["properties"]["checklist_package_sha256"][
+                "const"
+            ],
+        )
 
     def test_synthetic_validation_example_is_valid_and_recomputable(self) -> None:
         self.assertEqual([], validate_record(self.valid_record))
@@ -583,6 +631,10 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertEqual(
             PINNED_TASK_PACKAGE_SHA256,
             summary["task_package_sha256"],
+        )
+        self.assertEqual(
+            PINNED_CHECKLIST_PACKAGE_SHA256,
+            summary["checklist_package_sha256"],
         )
         self.assertEqual(
             "unapproved_validation_only",
@@ -787,6 +839,25 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             f"contract as {PINNED_TASK_ARM_SHA256['manual']}",
             errors,
         )
+
+    def test_run_is_bound_to_pinned_completion_checklist(self) -> None:
+        record = copy.deepcopy(self.valid_record)
+        record["runs"][0]["checklist_package_sha256"] = "0" * 64
+        record["runs"][0]["checklist_case_sha256"] = "f" * 64
+        errors = validate_record(record)
+        self.assertIn(
+            "run[0].checklist_package_sha256 must match pinned "
+            "completion-checklist package value "
+            f"'{PINNED_CHECKLIST_PACKAGE_SHA256}'",
+            errors,
+        )
+        self.assertIn(
+            "run[0].checklist_case_sha256 must bind pinned completion "
+            "checklist for mvp-word-001 as "
+            f"{PINNED_CHECKLIST_CASE_SHA256['mvp-word-001']}",
+            errors,
+        )
+
     def test_run_id_must_be_generated_from_pseudonymous_fields(self) -> None:
         record = copy.deepcopy(self.valid_record)
         record["runs"][0]["run_id"] = "RUN-ALICE-EMPLOYEE-123"
@@ -1519,6 +1590,30 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertNotEqual(
             PINNED_TASK_ARM_SHA256["manual"],
             PINNED_TASK_ARM_SHA256["veridoc"],
+        )
+        self.assertEqual(
+            set(ALL_CASE_IDS),
+            {case["case_id"] for case in package["cases"]},
+        )
+
+    def test_completion_checklist_package_is_immutable_and_shared(self) -> None:
+        package_sha256 = hashlib.sha256(
+            COMPLETION_CHECKLIST_PACKAGE_PATH.read_bytes()
+        ).hexdigest()
+        self.assertEqual(PINNED_CHECKLIST_PACKAGE_SHA256, package_sha256)
+        package = json.loads(
+            COMPLETION_CHECKLIST_PACKAGE_PATH.read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            APPROVED_CHECKLIST_REVISION,
+            package["checklist_revision"],
+        )
+        arm_application = package["shared_instructions"]["arm_application"]
+        self.assertIn("unchanged", arm_application)
+        self.assertIn("both the manual and VeriDoc arms", arm_application)
+        self.assertEqual(
+            [f"CHK-{number:02d}" for number in range(1, 9)],
+            [item["item_id"] for item in package["items"]],
         )
         self.assertEqual(
             set(ALL_CASE_IDS),
