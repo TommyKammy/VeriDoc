@@ -6,7 +6,7 @@
 - Target manifest revision: `phase12-mvp-v1`
 - Approved target product commit:
   `584ef2db12a6676abb65f75de1ec38145e06b487`
-- Approved reproducible product artifact SHA-256:
+- Approved source-tree listing SHA-256:
   `0bec46f7d8240796a137a163c20c4ee5f98f867f5730d78fe56b571eeffd6b3c`
 - Approved manifest Git blob: `13450762d323198b1b6e87315be173c784fc4880`
 - Approved manifest contract SHA-256:
@@ -56,6 +56,8 @@ as `true`, and both UTC completion timestamps must strictly precede their
 earliest timed run. A participant who withdraws before or during practice
 retains each actual completion flag; an uncompleted arm records `false` with a
 `null` timestamp, and `arm_order` may remain `null` if it was not assigned.
+Every participant records `withdrawn_at`: completed participants use `null`,
+while withdrawn participants record the controlled UTC withdrawal boundary.
 Counterbalance arm order among completed participants: both `manual`-first and
 `veridoc`-first orders must occur, and their participant counts may differ by at
 most one.
@@ -104,6 +106,8 @@ accounted for, requires a completed checklist, and makes its pair ineligible for
 the 30% calculation; it is not an exclusion. Attempt numbers for each recorded
 participant/case/arm are contiguous from 1, and no two timed runs for one
 participant may overlap.
+No timed attempt may start at or end after that participant's `withdrawn_at`
+boundary; an attempt ending exactly at withdrawal is retained.
 Within each participant/case/arm, attempt timestamps must also advance in
 `attempt_number` order; a retry cannot occur before the attempt it retries.
 Each attempt uses the generated opaque ID
@@ -132,15 +136,26 @@ requires the three source fields to match that immutable contract.
 
 Manual runs record `veridoc_build_provenance: null`. Every VeriDoc run records
 a closed build-provenance object containing an opaque attestation record ID,
-the approved product commit and Git tree, clean-checkout state, verified
-derivation status, the reproducible approved-product artifact SHA-256, and an
-attestation SHA-256 over the canonical provenance fields. The product artifact
-digest is SHA-256 over the exact bytes emitted by
+the approved product commit and Git tree, clean-checkout state, source-tree
+derivation status, the approved source-tree listing SHA-256, an explicit
+execution-attestation status, and an attestation SHA-256 over the canonical
+provenance fields. The source-tree digest is SHA-256 over the exact bytes emitted by
 `git ls-tree -r -z --full-tree APPROVED_PRODUCT_COMMIT`; the validator
 independently derives that digest, resolves the approved Git tree, recomputes
-the attestation digest, and rejects other commits, trees, artifacts, states, or
-unsealed provenance. Copying the study-level commit constant without this
-per-run build identity is insufficient.
+the attestation digest, and rejects other commits, trees, listings, states, or
+unsealed provenance.
+
+That Git listing identifies approved source, not the executable or checkout
+actually used for a run. This protocol therefore fixes
+`derivation_status: approved_source_tree_verified_execution_unattested` and
+`execution_attestation_status: unverified_validation_only`. A validation
+example may exercise the paired calculation, but completed-study pairs remain
+ineligible, the paired median remains unavailable, and
+`efficiency_target_met` remains `false` until an authenticated external
+execution attestation and its schema/validator integration are separately
+approved. Issue #319 excludes product modification and actual participant
+trials, so this revision does not invent an executable identity or signing
+service.
 
 The approved `p12g-02-v1` manifest does not contain the later structured
 `expected_high_risk_targets` fields. The validator therefore derives an empty
@@ -160,8 +175,8 @@ For each retained run, including excluded attempts, record:
 - `over_detection_count`: reviewed high-risk flags that are not high-risk gold
   targets;
 - `outcome`: `approved` or `blocked`;
-- `checklist_complete`: required `true` only for a non-excluded `approved`
-  outcome; a controlled `blocked` outcome may retain `false`;
+- `checklist_complete`: required `true` for every non-excluded outcome,
+  including a controlled `blocked` outcome;
 - `blocker_code`: a controlled reason for a blocked outcome;
 - `gold_answer_hidden_until_ended_at`: the controlled attestation that the gold
   answer remained hidden until timing stopped;
@@ -172,7 +187,10 @@ For each retained run, including excluded attempts, record:
 - the timing fields used by the correction-time formula.
 
 For participant `p` and case `c`, form a pair only when both arms are
-non-excluded, approved, checklist-complete, and have positive correction time:
+non-excluded, approved, checklist-complete, and have positive correction time.
+For a completed study, authenticated execution attestation is also required;
+the validation example may demonstrate recomputation while remaining
+execution-unattested:
 
 ```text
 pair_reduction_percent(p, c) =

@@ -29,6 +29,7 @@
     {
       "participant_id": "P001",
       "participation_status": "completed",
+      "withdrawn_at": null,
       "relevant_experience_attested": true,
       "manual_practice_completed": true,
       "manual_practice_completed_at": "2026-07-26T00:10:00Z",
@@ -42,6 +43,7 @@
     {
       "participant_id": "P002",
       "participation_status": "completed",
+      "withdrawn_at": null,
       "relevant_experience_attested": true,
       "manual_practice_completed": true,
       "manual_practice_completed_at": "2026-07-26T00:10:00Z",
@@ -55,6 +57,7 @@
     {
       "participant_id": "P003",
       "participation_status": "completed",
+      "withdrawn_at": null,
       "relevant_experience_attested": true,
       "manual_practice_completed": true,
       "manual_practice_completed_at": "2026-07-26T00:10:00Z",
@@ -113,9 +116,10 @@
         "product_commit": "584ef2db12a6676abb65f75de1ec38145e06b487",
         "product_tree": "d7b1714ab9e7f42c5299a4e4b5197e4669a035b9",
         "checkout_state": "clean",
-        "derivation_status": "verified_from_approved_commit",
-        "build_artifact_sha256": "0bec46f7d8240796a137a163c20c4ee5f98f867f5730d78fe56b571eeffd6b3c",
-        "attestation_sha256": "4884902eca3e12ba591c9304645e6c779710b85291bfa4dcf1387e2d9831607c"
+        "derivation_status": "approved_source_tree_verified_execution_unattested",
+        "source_tree_listing_sha256": "0bec46f7d8240796a137a163c20c4ee5f98f867f5730d78fe56b571eeffd6b3c",
+        "execution_attestation_status": "unverified_validation_only",
+        "attestation_sha256": "33476974ce1add5b3f890f432b8c306299bf28cb601d231c040d18775b068295"
       },
       "attempt_number": 1,
       "task_revision": "task-phase12-v1",
@@ -151,9 +155,10 @@
         "product_commit": "584ef2db12a6676abb65f75de1ec38145e06b487",
         "product_tree": "d7b1714ab9e7f42c5299a4e4b5197e4669a035b9",
         "checkout_state": "clean",
-        "derivation_status": "verified_from_approved_commit",
-        "build_artifact_sha256": "0bec46f7d8240796a137a163c20c4ee5f98f867f5730d78fe56b571eeffd6b3c",
-        "attestation_sha256": "4884902eca3e12ba591c9304645e6c779710b85291bfa4dcf1387e2d9831607c"
+        "derivation_status": "approved_source_tree_verified_execution_unattested",
+        "source_tree_listing_sha256": "0bec46f7d8240796a137a163c20c4ee5f98f867f5730d78fe56b571eeffd6b3c",
+        "execution_attestation_status": "unverified_validation_only",
+        "attestation_sha256": "33476974ce1add5b3f890f432b8c306299bf28cb601d231c040d18775b068295"
       },
       "attempt_number": 1,
       "task_revision": "task-phase12-v1",
@@ -249,9 +254,10 @@
         "product_commit": "584ef2db12a6676abb65f75de1ec38145e06b487",
         "product_tree": "d7b1714ab9e7f42c5299a4e4b5197e4669a035b9",
         "checkout_state": "clean",
-        "derivation_status": "verified_from_approved_commit",
-        "build_artifact_sha256": "0bec46f7d8240796a137a163c20c4ee5f98f867f5730d78fe56b571eeffd6b3c",
-        "attestation_sha256": "4884902eca3e12ba591c9304645e6c779710b85291bfa4dcf1387e2d9831607c"
+        "derivation_status": "approved_source_tree_verified_execution_unattested",
+        "source_tree_listing_sha256": "0bec46f7d8240796a137a163c20c4ee5f98f867f5730d78fe56b571eeffd6b3c",
+        "execution_attestation_status": "unverified_validation_only",
+        "attestation_sha256": "33476974ce1add5b3f890f432b8c306299bf28cb601d231c040d18775b068295"
       },
       "attempt_number": 1,
       "task_revision": "task-phase12-v1",

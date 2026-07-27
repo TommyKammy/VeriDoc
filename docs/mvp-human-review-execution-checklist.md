@@ -20,8 +20,7 @@ employee IDs, or free-text participant notes in the repository.
 - [ ] The five `phase12-mvp-v1` cases, task revisions, gold revisions, target
       formats, and completion checklist are fixed for both arms.
 - [ ] The evidence pins target commit
-      `584ef2db12a6676abb65f75de1ec38145e06b487`, reproducible product
-      artifact SHA-256
+      `584ef2db12a6676abb65f75de1ec38145e06b487`, source-tree listing SHA-256
       `0bec46f7d8240796a137a163c20c4ee5f98f867f5730d78fe56b571eeffd6b3c`,
       manifest Git blob
       `13450762d323198b1b6e87315be173c784fc4880`, and approved manifest
@@ -33,6 +32,8 @@ employee IDs, or free-text participant notes in the repository.
 - [ ] Each completed participant completed one fixed, unscored practice task
       per arm; withdrawn participants retain actual flags and `null` timestamps
       for uncompleted arms.
+- [ ] Each completed participant records `withdrawn_at: null`; each withdrawn
+      participant records a controlled UTC withdrawal boundary.
 - [ ] Each arm's practice completion timestamp precedes that participant's
       earliest timed run.
 - [ ] One `practice_revision` fixes the practice task, training material, and
@@ -49,10 +50,13 @@ employee IDs, or free-text participant notes in the repository.
 - [ ] Confirm `source_fixture_id`, `source_fixture_path`, and
       `source_fixture_sha256` against the approved manifest fixture before
       timing begins.
-- [ ] For a VeriDoc arm, verify the per-run build-provenance record identifies
-      the approved product commit/tree, clean checkout, reproducibly derived
-      `git ls-tree` artifact digest, and attestation digest over the canonical
-      provenance fields. Record `null` for a manual arm.
+- [ ] For a VeriDoc arm, verify the per-run provenance record identifies the
+      approved product commit/tree, clean checkout, reproducibly derived
+      `git ls-tree` source-listing digest, explicit
+      `unverified_validation_only` execution status, and attestation digest
+      over the canonical provenance fields. Record `null` for a manual arm.
+- [ ] Do not treat the source-listing digest as proof of the executable or
+      checkout used for the run.
 - [ ] Start timing only when source, target format, and checklist are available.
 - [ ] Record every pause/interrupt in whole seconds.
 - [ ] Do not expose the gold answer before the run stops.
@@ -87,6 +91,7 @@ employee IDs, or free-text participant notes in the repository.
 | `sealed_artifact_kind` | `output_artifact` / `blocked_attempt_envelope` |
 | `participant_id` | `P...` |
 | participant `participation_status` | `completed` / `withdrawn` |
+| participant `withdrawn_at` | `null` when completed / controlled UTC RFC 3339 boundary when withdrawn |
 | participant `manual_practice_completed_at` | UTC RFC 3339 timestamp / `null` when withdrawn before completion |
 | participant `veridoc_practice_completed_at` | UTC RFC 3339 timestamp / `null` when withdrawn before completion |
 | `case_id` | one declared Phase 12 case |
@@ -94,7 +99,7 @@ employee IDs, or free-text participant notes in the repository.
 | `source_fixture_path` | approved repository-relative fixture path |
 | `source_fixture_sha256` | lowercase SHA-256 of approved fixture content |
 | `arm` | `manual` / `veridoc` |
-| `veridoc_build_provenance` | approved closed build record / `null` for manual |
+| `veridoc_build_provenance` | closed source-tree provenance with execution explicitly unattested / `null` for manual |
 | `attempt_number` | positive integer |
 | `task_revision` | `task-phase12-v1` |
 | `gold_answer_revision` | `gold-phase12-v1` |
@@ -121,11 +126,14 @@ employee IDs, or free-text participant notes in the repository.
 - [ ] Withdrawn participants and their existing attempts remain recorded; their
       unstarted future groups are not fabricated, and any completed pairs remain
       reported as ineligible.
+- [ ] No attempt starts at or ends after its participant's `withdrawn_at`
+      boundary.
 - [ ] All retries and exclusions remain in the evidence.
 - [ ] Every attempt has a unique sealed-artifact record ID and non-zero digest;
       assessor counts refer to those exact sealed bytes.
-- [ ] Every VeriDoc attempt retains approved commit/tree build provenance; every
-      manual attempt records `null`.
+- [ ] Every VeriDoc attempt retains approved commit/tree source provenance and
+      explicit execution-attestation status; every manual attempt records
+      `null`.
 - [ ] Both arm orders are represented among completed participants and their
       counts differ by at most one.
 - [ ] Paired arms use identical task and gold-answer revisions.
@@ -139,6 +147,9 @@ employee IDs, or free-text participant notes in the repository.
       target commit, not the mutable current checkout.
 - [ ] If `structured_high_risk_targets_ready` is `false`, do not claim the
       efficiency target; obtain a new approved decision/manifest revision.
+- [ ] If `execution_attestation_ready` is `false`, do not report completed
+      study pairs as eligible or claim an efficiency median; obtain an approved
+      authenticated execution-attestation integration.
 - [ ] Correction time is recomputed from timestamps minus recorded pauses.
 - [ ] Every completed-participant/case reduction and the paired cohort median
       are reported.

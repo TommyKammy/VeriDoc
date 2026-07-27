@@ -21,7 +21,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_PATH = REPO_ROOT / "docs" / "mvp-human-review-evidence.schema.json"
 APPROVED_PRODUCT_COMMIT = "584ef2db12a6676abb65f75de1ec38145e06b487"
 APPROVED_PRODUCT_TREE = "d7b1714ab9e7f42c5299a4e4b5197e4669a035b9"
-APPROVED_PRODUCT_ARTIFACT_SHA256 = (
+APPROVED_SOURCE_TREE_LISTING_SHA256 = (
     "0bec46f7d8240796a137a163c20c4ee5f98f867f5730d78fe56b571eeffd6b3c"
 )
 APPROVED_MANIFEST_PATH = "datasets/mvp_evaluation_manifest_v1.json"
@@ -149,7 +149,7 @@ def _approved_product_tree() -> str:
         ) from exc
 
 
-def _approved_product_artifact_sha256() -> str:
+def _approved_source_tree_listing_sha256() -> str:
     try:
         tree_manifest = subprocess.run(
             [
@@ -166,7 +166,7 @@ def _approved_product_artifact_sha256() -> str:
         ).stdout
     except (OSError, subprocess.CalledProcessError) as exc:
         raise ApprovedManifestError(
-            "unable to derive the approved product artifact"
+            "unable to derive the approved source-tree listing"
         ) from exc
     return hashlib.sha256(tree_manifest).hexdigest()
 
@@ -181,12 +181,12 @@ def _load_approved_manifest_contract() -> tuple[
             "approved product tree mismatch: "
             f"expected {APPROVED_PRODUCT_TREE}, got {product_tree}"
         )
-    product_artifact_sha256 = _approved_product_artifact_sha256()
-    if product_artifact_sha256 != APPROVED_PRODUCT_ARTIFACT_SHA256:
+    source_tree_listing_sha256 = _approved_source_tree_listing_sha256()
+    if source_tree_listing_sha256 != APPROVED_SOURCE_TREE_LISTING_SHA256:
         raise ApprovedManifestError(
-            "approved product artifact SHA-256 mismatch: "
-            f"expected {APPROVED_PRODUCT_ARTIFACT_SHA256}, "
-            f"got {product_artifact_sha256}"
+            "approved source-tree listing SHA-256 mismatch: "
+            f"expected {APPROVED_SOURCE_TREE_LISTING_SHA256}, "
+            f"got {source_tree_listing_sha256}"
         )
     manifest_bytes = _git_show_approved(APPROVED_MANIFEST_PATH)
     manifest_blob = _git_blob_oid(manifest_bytes)
@@ -524,6 +524,7 @@ def validate_record(record: Any) -> list[str]:
     participant_ids: set[str] = set()
     participant_statuses: dict[str, str] = {}
     participant_orders: dict[str, tuple[str, str]] = {}
+    participant_withdrawn_at: dict[str, datetime] = {}
     practice_completed_at_by_participant: dict[
         str, dict[str, datetime]
     ] = defaultdict(dict)
@@ -568,6 +569,18 @@ def validate_record(record: Any) -> list[str]:
             errors.append(f"{label}.participation_status is invalid")
         elif isinstance(participant_id, str):
             participant_statuses[participant_id] = participation_status
+        withdrawn_at_value = participant.get("withdrawn_at")
+        if participation_status == "completed":
+            if withdrawn_at_value is not None:
+                errors.append(f"{label}.withdrawn_at must be null when completed")
+        elif participation_status == "withdrawn":
+            withdrawn_at = _parse_utc(
+                withdrawn_at_value,
+                f"{label}.withdrawn_at",
+                errors,
+            )
+            if withdrawn_at is not None and isinstance(participant_id, str):
+                participant_withdrawn_at[participant_id] = withdrawn_at
         if participant.get("relevant_experience_attested") is not True:
             errors.append(f"{label}.relevant_experience_attested must be true")
         for arm in ("manual", "veridoc"):
@@ -818,7 +831,11 @@ def validate_record(record: Any) -> list[str]:
                     ("checkout_state", "clean"),
                     (
                         "derivation_status",
-                        "verified_from_approved_commit",
+                        "approved_source_tree_verified_execution_unattested",
+                    ),
+                    (
+                        "execution_attestation_status",
+                        "unverified_validation_only",
                     ),
                 ):
                     if build_provenance.get(field) != expected_value:
@@ -827,7 +844,7 @@ def validate_record(record: Any) -> list[str]:
                             f"must be {expected_value!r}"
                         )
                 for field in (
-                    "build_artifact_sha256",
+                    "source_tree_listing_sha256",
                     "attestation_sha256",
                 ):
                     value = build_provenance.get(field)
@@ -841,14 +858,14 @@ def validate_record(record: Any) -> list[str]:
                             "must be lowercase SHA-256"
                         )
                 if (
-                    build_provenance.get("build_artifact_sha256")
-                    != APPROVED_PRODUCT_ARTIFACT_SHA256
+                    build_provenance.get("source_tree_listing_sha256")
+                    != APPROVED_SOURCE_TREE_LISTING_SHA256
                 ):
                     errors.append(
                         f"{label}.veridoc_build_provenance."
-                        "build_artifact_sha256 must match the reproducibly "
-                        "derived approved product artifact "
-                        f"{APPROVED_PRODUCT_ARTIFACT_SHA256}"
+                        "source_tree_listing_sha256 must match the "
+                        "reproducibly derived approved source-tree listing "
+                        f"{APPROVED_SOURCE_TREE_LISTING_SHA256}"
                     )
                 attestation_payload = {
                     field: build_provenance.get(field)
@@ -858,7 +875,8 @@ def validate_record(record: Any) -> list[str]:
                         "product_tree",
                         "checkout_state",
                         "derivation_status",
-                        "build_artifact_sha256",
+                        "source_tree_listing_sha256",
+                        "execution_attestation_status",
                     )
                 }
                 expected_attestation_sha256 = _canonical_json_sha256(
@@ -1101,6 +1119,15 @@ def validate_record(record: Any) -> list[str]:
                 errors.append(
                     f"{participant_id}.{field} must precede every timed run"
                 )
+    for participant_id, withdrawn_at in sorted(
+        participant_withdrawn_at.items()
+    ):
+        for started_at, ended_at, run_label in times_by_participant[participant_id]:
+            if started_at >= withdrawn_at or ended_at > withdrawn_at:
+                errors.append(
+                    f"{run_label} must not start at or end after "
+                    f"{participant_id} withdrawal"
+                )
 
     for group, attempt_numbers in sorted(attempt_numbers_by_group.items()):
         ordered_attempt_numbers = sorted(attempt_numbers)
@@ -1214,6 +1241,9 @@ def summarize_record(record: dict[str, Any]) -> dict[str, Any]:
         item["participant_id"]: item["participation_status"]
         for item in record["participants"]
     }
+    # This protocol version intentionally has no trusted execution-attestation
+    # path. Its only accepted status is unverified_validation_only.
+    execution_attestation_ready = False
     included = [run for run in record["runs"] if not run["excluded"]]
     by_pair = {
         (run["participant_id"], run["case_id"], run["arm"]): run
@@ -1235,6 +1265,7 @@ def summarize_record(record: dict[str, Any]) -> dict[str, Any]:
                 continue
             eligible = (
                 participant_statuses[participant_id] == "completed"
+                and record["study_status"] == "validation_example"
                 and manual["outcome"] == "approved"
                 and veridoc["outcome"] == "approved"
                 and manual["checklist_complete"]
@@ -1329,6 +1360,7 @@ def summarize_record(record: dict[str, Any]) -> dict[str, Any]:
         "structured_high_risk_targets_ready": (
             structured_high_risk_targets_ready
         ),
+        "execution_attestation_ready": execution_attestation_ready,
         "required_runs": 2
         * len(completed_participants)
         * len(record["case_ids"]),
@@ -1345,6 +1377,7 @@ def summarize_record(record: dict[str, Any]) -> dict[str, Any]:
         "efficiency_target_met": (
             record["study_status"] == "completed"
             and structured_high_risk_targets_ready
+            and execution_attestation_ready
             and paired_median is not None
             and paired_median >= 30.0
             and arm_metrics["veridoc"]["high_risk_misses"] == 0

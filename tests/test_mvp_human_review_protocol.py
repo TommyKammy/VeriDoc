@@ -14,7 +14,7 @@ from scripts.ci.validate_mvp_human_review_evidence import (
     APPROVED_GOLD_ANSWER_REVISION,
     APPROVED_MANIFEST_CONTRACT_SHA256,
     APPROVED_MANIFEST_GIT_BLOB,
-    APPROVED_PRODUCT_ARTIFACT_SHA256,
+    APPROVED_SOURCE_TREE_LISTING_SHA256,
     APPROVED_PRODUCT_COMMIT,
     APPROVED_PRODUCT_TREE,
     APPROVED_TASK_REVISION,
@@ -80,12 +80,13 @@ BUILD_PROVENANCE = {
     "product_commit": APPROVED_PRODUCT_COMMIT,
     "product_tree": APPROVED_PRODUCT_TREE,
     "checkout_state": "clean",
-    "derivation_status": "verified_from_approved_commit",
-    "build_artifact_sha256": (
+    "derivation_status": "approved_source_tree_verified_execution_unattested",
+    "source_tree_listing_sha256": (
         "0bec46f7d8240796a137a163c20c4ee5f98f867f5730d78fe56b571eeffd6b3c"
     ),
+    "execution_attestation_status": "unverified_validation_only",
     "attestation_sha256": (
-        "4884902eca3e12ba591c9304645e6c779710b85291bfa4dcf1387e2d9831607c"
+        "33476974ce1add5b3f890f432b8c306299bf28cb601d231c040d18775b068295"
     ),
 }
 
@@ -242,6 +243,7 @@ def _add_withdrawn_participant(record: dict[str, object]) -> None:
         {
             "participant_id": "P004",
             "participation_status": "withdrawn",
+            "withdrawn_at": "2026-08-10T01:02:00Z",
             "relevant_experience_attested": True,
             "manual_practice_completed": True,
             "manual_practice_completed_at": "2026-07-26T00:10:00Z",
@@ -348,6 +350,10 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             "manual_practice_completed_at",
             schema["$defs"]["participant"]["required"],
         )
+        self.assertIn(
+            "withdrawn_at",
+            schema["$defs"]["participant"]["required"],
+        )
         self.assertEqual(
             "p12g-13-human-review-v1",
             schema["properties"]["protocol_version"]["const"],
@@ -389,9 +395,15 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             ]["const"],
         )
         self.assertEqual(
-            APPROVED_PRODUCT_ARTIFACT_SHA256,
+            APPROVED_SOURCE_TREE_LISTING_SHA256,
             schema["$defs"]["veridocBuildProvenance"]["properties"][
-                "build_artifact_sha256"
+                "source_tree_listing_sha256"
+            ]["const"],
+        )
+        self.assertEqual(
+            "unverified_validation_only",
+            schema["$defs"]["veridocBuildProvenance"]["properties"][
+                "execution_attestation_status"
             ]["const"],
         )
         self.assertEqual(
@@ -410,6 +422,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertEqual(6, summary["recorded_runs"])
         self.assertEqual(2, summary["eligible_pair_count"])
         self.assertEqual(1, summary["ineligible_pair_count"])
+        self.assertFalse(summary["execution_attestation_ready"])
         self.assertEqual(3, len(summary["pair_results"]))
         self.assertEqual(35.0, summary["paired_median_reduction_percent"])
         self.assertEqual(1, summary["arm_metrics"]["veridoc"]["blockers"])
@@ -478,8 +491,10 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         record = _completed_record(self.valid_record)
         self.assertEqual([], validate_record(record))
         summary = summarize_record(record)
-        self.assertEqual(15, summary["eligible_pair_count"])
-        self.assertEqual(50.0, summary["paired_median_reduction_percent"])
+        self.assertEqual(0, summary["eligible_pair_count"])
+        self.assertEqual(15, summary["ineligible_pair_count"])
+        self.assertIsNone(summary["paired_median_reduction_percent"])
+        self.assertFalse(summary["execution_attestation_ready"])
         self.assertTrue(summary["all_required_runs_accounted"])
         self.assertFalse(summary["structured_high_risk_targets_ready"])
         self.assertFalse(summary["efficiency_target_met"])
@@ -631,7 +646,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         )
         provenance = veridoc["veridoc_build_provenance"]
         assert isinstance(provenance, dict)
-        provenance["build_artifact_sha256"] = "a" * 64
+        provenance["source_tree_listing_sha256"] = "a" * 64
         attestation_payload = {
             field: provenance[field]
             for field in (
@@ -640,7 +655,8 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                 "product_tree",
                 "checkout_state",
                 "derivation_status",
-                "build_artifact_sha256",
+                "source_tree_listing_sha256",
+                "execution_attestation_status",
             )
         }
         provenance["attestation_sha256"] = hashlib.sha256(
@@ -654,8 +670,8 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         errors = validate_record(record)
         self.assertTrue(
             any(
-                "build_artifact_sha256 must match the reproducibly derived "
-                "approved product artifact"
+                "source_tree_listing_sha256 must match the reproducibly "
+                "derived approved source-tree listing"
                 in error
                 for error in errors
             )
@@ -682,6 +698,19 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                 in error
                 for error in validate_record(record)
             )
+        )
+
+        record = copy.deepcopy(self.valid_record)
+        veridoc = next(
+            run for run in record["runs"] if run["arm"] == "veridoc"
+        )
+        provenance = veridoc["veridoc_build_provenance"]
+        assert isinstance(provenance, dict)
+        provenance["execution_attestation_status"] = "verified_external"
+        self.assertIn(
+            "run[1].veridoc_build_provenance.execution_attestation_status "
+            "must be 'unverified_validation_only'",
+            validate_record(record),
         )
 
     def test_attempt_numbers_must_be_contiguous_from_one(self) -> None:
@@ -879,10 +908,23 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         summary = summarize_record(record)
         self.assertEqual(30, summary["required_runs"])
         self.assertEqual(31, summary["recorded_runs"])
-        self.assertEqual(15, summary["eligible_pair_count"])
+        self.assertEqual(0, summary["eligible_pair_count"])
+        self.assertEqual(15, summary["ineligible_pair_count"])
+        self.assertFalse(summary["execution_attestation_ready"])
         self.assertEqual(1, summary["totals"]["excluded_runs"])
         self.assertEqual(31, summary["totals"]["approved_completions"])
         self.assertFalse(summary["efficiency_target_met"])
+
+    def test_withdrawal_boundary_rejects_an_attempt_that_ends_after_it(
+        self,
+    ) -> None:
+        record = _completed_record(self.valid_record)
+        _add_withdrawn_participant(record)
+        record["participants"][-1]["withdrawn_at"] = "2026-08-10T01:01:00Z"
+        self.assertIn(
+            "run[30] must not start at or end after P004 withdrawal",
+            validate_record(record),
+        )
 
     def test_withdrawn_participant_may_retain_incomplete_practice(self) -> None:
         record = _completed_record(self.valid_record)
@@ -890,6 +932,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             {
                 "participant_id": "P004",
                 "participation_status": "withdrawn",
+                "withdrawn_at": "2026-07-26T00:30:00Z",
                 "relevant_experience_attested": True,
                 "manual_practice_completed": False,
                 "manual_practice_completed_at": None,
@@ -922,6 +965,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
     ) -> None:
         record = _completed_record(self.valid_record)
         _add_withdrawn_participant(record)
+        record["participants"][-1]["withdrawn_at"] = "2026-08-10T01:06:00Z"
         record["runs"].pop()
         for arm, start in (
             ("manual", datetime(2026, 8, 10, 1, 0, tzinfo=timezone.utc)),
@@ -955,8 +999,9 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertEqual([], validate_record(record))
         summary = summarize_record(record)
         self.assertEqual(16, len(summary["pair_results"]))
-        self.assertEqual(15, summary["eligible_pair_count"])
-        self.assertEqual(1, summary["ineligible_pair_count"])
+        self.assertEqual(0, summary["eligible_pair_count"])
+        self.assertEqual(16, summary["ineligible_pair_count"])
+        self.assertFalse(summary["execution_attestation_ready"])
         withdrawn_pair = next(
             pair
             for pair in summary["pair_results"]
@@ -994,10 +1039,15 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             "run after withdrawal",
             validate_record(record),
         )
+        self.assertIn(
+            "run[32] must not start at or end after P004 withdrawal",
+            validate_record(record),
+        )
 
     def test_completed_cohort_still_requires_three_reviewers(self) -> None:
         record = copy.deepcopy(self.valid_record)
         record["participants"][2]["participation_status"] = "withdrawn"
+        record["participants"][2]["withdrawn_at"] = "2026-07-28T00:00:00Z"
         self.assertIn(
             "completed participant cohort must contain at least three reviewers",
             validate_record(record),
@@ -1019,9 +1069,10 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertEqual([], validate_record(record))
         summary = summarize_record(record)
         self.assertTrue(summary["all_required_runs_accounted"])
-        self.assertEqual(14, summary["eligible_pair_count"])
-        self.assertEqual(1, summary["ineligible_pair_count"])
-        self.assertEqual(50.0, summary["paired_median_reduction_percent"])
+        self.assertEqual(0, summary["eligible_pair_count"])
+        self.assertEqual(15, summary["ineligible_pair_count"])
+        self.assertIsNone(summary["paired_median_reduction_percent"])
+        self.assertFalse(summary["execution_attestation_ready"])
         self.assertFalse(summary["efficiency_target_met"])
 
     def test_practice_revision_is_required_and_controlled(self) -> None:
