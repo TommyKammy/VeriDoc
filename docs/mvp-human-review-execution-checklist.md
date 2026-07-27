@@ -12,8 +12,10 @@ employee IDs, or free-text participant notes in the repository.
       recorded in `consent_approval`.
 - [ ] Quality-approver role, approval status/timestamp, and external-record
       version are recorded in `quality_approval`.
-- [ ] At least three relevant document reviewers have repository-safe IDs
-      matching `P[0-9]{3,}`.
+- [ ] At least three relevant document reviewers have IDs generated
+      independently as `P-` plus a cryptographically random uppercase UUIDv4.
+- [ ] No participant ID is transformed, truncated, hashed, or prefixed from an
+      employee number or other existing identifier.
 - [ ] `study_id` is generated as an `HR-`-prefixed uppercase UUIDv4 and is not
       derived from any participant, organizer, employer, or project name.
 - [ ] The identity-to-pseudonym mapping is outside the repository.
@@ -26,8 +28,9 @@ employee IDs, or free-text participant notes in the repository.
       `13450762d323198b1b6e87315be173c784fc4880`, and approved manifest
       contract SHA-256
       `5d91a67915d79c649954c5c8af02e74d08d94d0b97e7e673a7db690df61ebfff`.
-- [ ] Every case uses `task-phase12-v1` and `gold-phase12-v1`; cohort agreement
-      on a different revision is not accepted.
+- [ ] Every case uses `task-phase12-v1`, `gold-phase12-v1`, and
+      `checklist-phase12-v1`; cohort agreement on a different revision is not
+      accepted.
 - [ ] Gold answers are hidden until each timed run stops.
 - [ ] Each completed participant completed one fixed, unscored practice task
       per arm; withdrawn participants retain actual flags and `null` timestamps
@@ -43,8 +46,8 @@ employee IDs, or free-text participant notes in the repository.
 
 ## Per-run procedure
 
-- [ ] Confirm participant ID, case ID, arm, attempt number, task revision, and
-      gold-answer revision.
+- [ ] Confirm participant ID, case ID, arm, attempt number, task revision,
+      gold-answer revision, and `checklist-phase12-v1`.
 - [ ] Generate `run_id` only from participant ID, full case ID, arm, and
       attempt number; do not enter organizer-selected text.
 - [ ] Confirm `source_fixture_id`, `source_fixture_path`, and
@@ -89,7 +92,7 @@ employee IDs, or free-text participant notes in the repository.
 | `sealed_artifact_record_id` | unique `SAR-`-prefixed uppercase UUIDv4 |
 | `sealed_artifact_sha256` | non-zero lowercase SHA-256 of sealed bytes |
 | `sealed_artifact_kind` | `output_artifact` / `blocked_attempt_envelope` |
-| `participant_id` | `P...` |
+| `participant_id` | `P-` plus an independently generated uppercase UUIDv4 |
 | participant `participation_status` | `completed` / `withdrawn` |
 | participant `withdrawn_at` | `null` when completed / controlled UTC RFC 3339 boundary when withdrawn |
 | participant `manual_practice_completed_at` | UTC RFC 3339 timestamp / `null` when withdrawn before completion |
@@ -103,6 +106,7 @@ employee IDs, or free-text participant notes in the repository.
 | `attempt_number` | positive integer |
 | `task_revision` | `task-phase12-v1` |
 | `gold_answer_revision` | `gold-phase12-v1` |
+| `checklist_revision` | `checklist-phase12-v1` |
 | `gold_answer_hidden_until_ended_at` | `true` attestation |
 | `gold_answer_compared_by_role` | `independent_assessor` |
 | `gold_answer_comparison_withheld_from_participant` | `true` attestation |
@@ -136,9 +140,9 @@ employee IDs, or free-text participant notes in the repository.
       `null`.
 - [ ] Both arm orders are represented among completed participants and their
       counts differ by at most one.
-- [ ] Paired arms use identical task and gold-answer revisions.
+- [ ] Paired arms use identical task, gold-answer, and checklist revisions.
 - [ ] Every retained attempt for a case uses the same cohort-wide task and
-      gold-answer revisions.
+      gold-answer and checklist revisions.
 - [ ] Attempt numbers are contiguous from 1 and no participant run intervals
       overlap.
 - [ ] Attempt timestamps advance in attempt-number order within each

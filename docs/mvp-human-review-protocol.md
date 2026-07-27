@@ -41,12 +41,14 @@ before that second run.
 
 Retain at least three completed designated document reviewers with relevant
 experience. Generate `study_id` as an `HR-`-prefixed uppercase UUIDv4; do not
-derive it from a participant, organizer, employer, or project name. Assign
-repository-safe participant pseudonyms matching `P[0-9]{3,}`. Keep the
-mapping from pseudonym to identity outside the repository and outside the
-evidence record. Do not retain direct participant identity: names, email
-addresses, employee IDs, free-text biographies, or other direct identifiers are
-prohibited.
+derive it from a participant, organizer, employer, or project name. Independently
+generate each participant pseudonym as `P-` plus a cryptographically random
+uppercase UUIDv4 before associating it with a participant. Do not transform,
+truncate, hash, or prefix an employee number or other existing identifier.
+Keep the mapping from pseudonym to identity outside the repository and outside
+the evidence record. Do not retain direct participant identity: names, email
+addresses, employee IDs, free-text biographies, or other direct identifiers
+are prohibited.
 
 Before timed work, each completed participant completes one fixed, unscored
 practice task for each arm. Record the fixed task, training material, and
@@ -61,6 +63,11 @@ while withdrawn participants record the controlled UTC withdrawal boundary.
 Counterbalance arm order among completed participants: both `manual`-first and
 `veridoc`-first orders must occur, and their participant counts may differ by at
 most one.
+
+Every run records `checklist_revision: checklist-phase12-v1`. This is the
+approved completion checklist shared by both arms and every participant; a
+different or missing checklist revision invalidates the run rather than
+creating a second baseline.
 
 ## Timing and run accounting
 
@@ -112,10 +119,12 @@ Within each participant/case/arm, attempt timestamps must also advance in
 `attempt_number` order; a retry cannot occur before the attempt it retries.
 Each attempt uses the generated opaque ID
 `RUN-{participant_id}-{uppercase case_id}-{uppercase arm}-{attempt_number}`.
-For example, participant `P001` reviewing `mvp-word-001` manually on the first
-attempt records `RUN-P001-MVP-WORD-001-MANUAL-1`. Organizer-selected text,
-names, employee identifiers, and other direct identity fragments are not
-permitted in `run_id`.
+For example, participant
+`P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A` reviewing `mvp-word-001`
+manually on the first attempt records
+`RUN-P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A-MVP-WORD-001-MANUAL-1`.
+Organizer-selected text, names, employee identifiers, and other direct identity
+fragments are not permitted in `run_id`.
 
 At timing stop, seal either the produced output artifact or, for a blocked run
 without an output, a canonical blocked-attempt envelope. Every attempt records

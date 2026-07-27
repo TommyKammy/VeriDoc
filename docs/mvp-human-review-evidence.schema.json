@@ -168,7 +168,7 @@
       "properties": {
         "participant_id": {
           "type": "string",
-          "pattern": "^P[0-9]{3,}$"
+          "pattern": "^P-[0-9A-F]{8}-[0-9A-F]{4}-4[0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}$"
         },
         "participation_status": {
           "enum": [
@@ -396,6 +396,7 @@
         "attempt_number",
         "task_revision",
         "gold_answer_revision",
+        "checklist_revision",
         "gold_answer_hidden_until_ended_at",
         "gold_answer_compared_by_role",
         "gold_answer_comparison_withheld_from_participant",
@@ -414,7 +415,7 @@
       "properties": {
         "run_id": {
           "type": "string",
-          "pattern": "^RUN-P[0-9]{3,}-MVP-[A-Z0-9-]+-(MANUAL|VERIDOC)-[1-9][0-9]*$"
+          "pattern": "^RUN-P-[0-9A-F]{8}-[0-9A-F]{4}-4[0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}-MVP-[A-Z0-9-]+-(MANUAL|VERIDOC)-[1-9][0-9]*$"
         },
         "sealed_artifact_record_id": {
           "type": "string",
@@ -435,7 +436,7 @@
         },
         "participant_id": {
           "type": "string",
-          "pattern": "^P[0-9]{3,}$"
+          "pattern": "^P-[0-9A-F]{8}-[0-9A-F]{4}-4[0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}$"
         },
         "case_id": {
           "type": "string"
@@ -477,6 +478,9 @@
         },
         "gold_answer_revision": {
           "const": "gold-phase12-v1"
+        },
+        "checklist_revision": {
+          "const": "checklist-phase12-v1"
         },
         "gold_answer_hidden_until_ended_at": {
           "const": true

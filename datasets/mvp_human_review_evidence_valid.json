@@ -27,7 +27,7 @@
   },
   "participants": [
     {
-      "participant_id": "P001",
+      "participant_id": "P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A",
       "participation_status": "completed",
       "withdrawn_at": null,
       "relevant_experience_attested": true,
@@ -41,7 +41,7 @@
       ]
     },
     {
-      "participant_id": "P002",
+      "participant_id": "P-386BEEA7-81DC-408A-B045-D73A233C0DC5",
       "participation_status": "completed",
       "withdrawn_at": null,
       "relevant_experience_attested": true,
@@ -55,7 +55,7 @@
       ]
     },
     {
-      "participant_id": "P003",
+      "participant_id": "P-E136C88A-C95D-47D2-AB32-F5C3AD66F2F5",
       "participation_status": "completed",
       "withdrawn_at": null,
       "relevant_experience_attested": true,
@@ -71,11 +71,11 @@
   ],
   "runs": [
     {
-      "run_id": "RUN-P001-MVP-WORD-001-MANUAL-1",
+      "run_id": "RUN-P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A-MVP-WORD-001-MANUAL-1",
       "sealed_artifact_record_id": "SAR-550E8400-E29B-41D4-A716-446655440101",
       "sealed_artifact_sha256": "6b947f049ef23218eebc3891f33841fc3a4160e182e01af6fa179434cc74af9e",
       "sealed_artifact_kind": "output_artifact",
-      "participant_id": "P001",
+      "participant_id": "P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A",
       "case_id": "mvp-word-001",
       "source_fixture_id": "word-to-excel-application",
       "source_fixture_path": "datasets/fixtures/word/word-to-excel-application.docx",
@@ -85,6 +85,7 @@
       "attempt_number": 1,
       "task_revision": "task-phase12-v1",
       "gold_answer_revision": "gold-phase12-v1",
+      "checklist_revision": "checklist-phase12-v1",
       "gold_answer_hidden_until_ended_at": true,
       "gold_answer_compared_by_role": "independent_assessor",
       "gold_answer_comparison_withheld_from_participant": true,
@@ -101,11 +102,11 @@
       "exclusion_reason_code": null
     },
     {
-      "run_id": "RUN-P001-MVP-WORD-001-VERIDOC-1",
+      "run_id": "RUN-P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A-MVP-WORD-001-VERIDOC-1",
       "sealed_artifact_record_id": "SAR-550E8400-E29B-41D4-A716-446655440102",
       "sealed_artifact_sha256": "6eb0cd76bc6f5d456cf95b10356ef22a7d970d295e204a836ecbea1c50d536cd",
       "sealed_artifact_kind": "output_artifact",
-      "participant_id": "P001",
+      "participant_id": "P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A",
       "case_id": "mvp-word-001",
       "source_fixture_id": "word-to-excel-application",
       "source_fixture_path": "datasets/fixtures/word/word-to-excel-application.docx",
@@ -124,6 +125,7 @@
       "attempt_number": 1,
       "task_revision": "task-phase12-v1",
       "gold_answer_revision": "gold-phase12-v1",
+      "checklist_revision": "checklist-phase12-v1",
       "gold_answer_hidden_until_ended_at": true,
       "gold_answer_compared_by_role": "independent_assessor",
       "gold_answer_comparison_withheld_from_participant": true,
@@ -140,11 +142,11 @@
       "exclusion_reason_code": null
     },
     {
-      "run_id": "RUN-P002-MVP-WORD-001-VERIDOC-1",
+      "run_id": "RUN-P-386BEEA7-81DC-408A-B045-D73A233C0DC5-MVP-WORD-001-VERIDOC-1",
       "sealed_artifact_record_id": "SAR-550E8400-E29B-41D4-A716-446655440103",
       "sealed_artifact_sha256": "e54a3f0a00974cbf422e327c110f3c3bb10a188801165293fbc59a012c7538e6",
       "sealed_artifact_kind": "blocked_attempt_envelope",
-      "participant_id": "P002",
+      "participant_id": "P-386BEEA7-81DC-408A-B045-D73A233C0DC5",
       "case_id": "mvp-word-001",
       "source_fixture_id": "word-to-excel-application",
       "source_fixture_path": "datasets/fixtures/word/word-to-excel-application.docx",
@@ -163,6 +165,7 @@
       "attempt_number": 1,
       "task_revision": "task-phase12-v1",
       "gold_answer_revision": "gold-phase12-v1",
+      "checklist_revision": "checklist-phase12-v1",
       "gold_answer_hidden_until_ended_at": true,
       "gold_answer_compared_by_role": "independent_assessor",
       "gold_answer_comparison_withheld_from_participant": true,
@@ -179,11 +182,11 @@
       "exclusion_reason_code": null
     },
     {
-      "run_id": "RUN-P002-MVP-WORD-001-MANUAL-1",
+      "run_id": "RUN-P-386BEEA7-81DC-408A-B045-D73A233C0DC5-MVP-WORD-001-MANUAL-1",
       "sealed_artifact_record_id": "SAR-550E8400-E29B-41D4-A716-446655440104",
       "sealed_artifact_sha256": "a9ee12e7b6446f82b5bb0b36105f714b449f2af03fa956d2fd6348c5ba47a3b2",
       "sealed_artifact_kind": "output_artifact",
-      "participant_id": "P002",
+      "participant_id": "P-386BEEA7-81DC-408A-B045-D73A233C0DC5",
       "case_id": "mvp-word-001",
       "source_fixture_id": "word-to-excel-application",
       "source_fixture_path": "datasets/fixtures/word/word-to-excel-application.docx",
@@ -193,6 +196,7 @@
       "attempt_number": 1,
       "task_revision": "task-phase12-v1",
       "gold_answer_revision": "gold-phase12-v1",
+      "checklist_revision": "checklist-phase12-v1",
       "gold_answer_hidden_until_ended_at": true,
       "gold_answer_compared_by_role": "independent_assessor",
       "gold_answer_comparison_withheld_from_participant": true,
@@ -209,11 +213,11 @@
       "exclusion_reason_code": null
     },
     {
-      "run_id": "RUN-P003-MVP-WORD-001-MANUAL-1",
+      "run_id": "RUN-P-E136C88A-C95D-47D2-AB32-F5C3AD66F2F5-MVP-WORD-001-MANUAL-1",
       "sealed_artifact_record_id": "SAR-550E8400-E29B-41D4-A716-446655440105",
       "sealed_artifact_sha256": "2d689077436c9748cfc9683c11f0f3eb15ec3c87f4c9ac4675c58d583ae95b65",
       "sealed_artifact_kind": "output_artifact",
-      "participant_id": "P003",
+      "participant_id": "P-E136C88A-C95D-47D2-AB32-F5C3AD66F2F5",
       "case_id": "mvp-word-001",
       "source_fixture_id": "word-to-excel-application",
       "source_fixture_path": "datasets/fixtures/word/word-to-excel-application.docx",
@@ -223,6 +227,7 @@
       "attempt_number": 1,
       "task_revision": "task-phase12-v1",
       "gold_answer_revision": "gold-phase12-v1",
+      "checklist_revision": "checklist-phase12-v1",
       "gold_answer_hidden_until_ended_at": true,
       "gold_answer_compared_by_role": "independent_assessor",
       "gold_answer_comparison_withheld_from_participant": true,
@@ -239,11 +244,11 @@
       "exclusion_reason_code": null
     },
     {
-      "run_id": "RUN-P003-MVP-WORD-001-VERIDOC-1",
+      "run_id": "RUN-P-E136C88A-C95D-47D2-AB32-F5C3AD66F2F5-MVP-WORD-001-VERIDOC-1",
       "sealed_artifact_record_id": "SAR-550E8400-E29B-41D4-A716-446655440106",
       "sealed_artifact_sha256": "00ba20840d183d06773eb37f63f881dbbc85e44677dc8246ba428250c559e52f",
       "sealed_artifact_kind": "output_artifact",
-      "participant_id": "P003",
+      "participant_id": "P-E136C88A-C95D-47D2-AB32-F5C3AD66F2F5",
       "case_id": "mvp-word-001",
       "source_fixture_id": "word-to-excel-application",
       "source_fixture_path": "datasets/fixtures/word/word-to-excel-application.docx",
@@ -262,6 +267,7 @@
       "attempt_number": 1,
       "task_revision": "task-phase12-v1",
       "gold_answer_revision": "gold-phase12-v1",
+      "checklist_revision": "checklist-phase12-v1",
       "gold_answer_hidden_until_ended_at": true,
       "gold_answer_compared_by_role": "independent_assessor",
       "gold_answer_comparison_withheld_from_participant": true,

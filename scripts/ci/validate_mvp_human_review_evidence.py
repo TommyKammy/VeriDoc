@@ -49,18 +49,21 @@ EXPECTED_CASE_IDS = {
 }
 APPROVED_TASK_REVISION = "task-phase12-v1"
 APPROVED_GOLD_ANSWER_REVISION = "gold-phase12-v1"
+APPROVED_CHECKLIST_REVISION = "checklist-phase12-v1"
 APPROVED_RUN_REVISIONS = {
     "task_revision": APPROVED_TASK_REVISION,
     "gold_answer_revision": APPROVED_GOLD_ANSWER_REVISION,
+    "checklist_revision": APPROVED_CHECKLIST_REVISION,
 }
-PARTICIPANT_ID_RE = re.compile(r"^P[0-9]{3,}$")
 UUID4_TOKEN_RE = (
     r"[0-9A-F]{8}-[0-9A-F]{4}-4[0-9A-F]{3}-"
     r"[89AB][0-9A-F]{3}-[0-9A-F]{12}"
 )
+PARTICIPANT_ID_RE = re.compile(rf"^P-{UUID4_TOKEN_RE}$")
 STUDY_ID_RE = re.compile(rf"^HR-{UUID4_TOKEN_RE}$")
 RUN_ID_RE = re.compile(
-    r"^RUN-P[0-9]{3,}-MVP-[A-Z0-9-]+-(?:MANUAL|VERIDOC)-[1-9][0-9]*$"
+    rf"^RUN-P-{UUID4_TOKEN_RE}-MVP-[A-Z0-9-]+-"
+    r"(?:MANUAL|VERIDOC)-[1-9][0-9]*$"
 )
 SEALED_ARTIFACT_RECORD_ID_RE = re.compile(rf"^SAR-{UUID4_TOKEN_RE}$")
 BUILD_PROVENANCE_RECORD_ID_RE = re.compile(rf"^BLD-{UUID4_TOKEN_RE}$")
@@ -556,7 +559,9 @@ def validate_record(record: Any) -> list[str]:
             not isinstance(participant_id, str)
             or PARTICIPANT_ID_RE.fullmatch(participant_id) is None
         ):
-            errors.append(f"{label}.participant_id is invalid")
+            errors.append(
+                f"{label}.participant_id must be an opaque P-prefixed UUIDv4"
+            )
         elif participant_id in participant_ids:
             errors.append(f"duplicate participant_id: {participant_id}")
         else:
@@ -927,7 +932,11 @@ def validate_record(record: Any) -> list[str]:
                         f"{expected_run_id}"
                     )
 
-        for field in ("task_revision", "gold_answer_revision"):
+        for field in (
+            "task_revision",
+            "gold_answer_revision",
+            "checklist_revision",
+        ):
             revision = run.get(field)
             if not isinstance(revision, str) or REVISION_RE.fullmatch(revision) is None:
                 errors.append(f"{label}.{field} is invalid")
@@ -1205,7 +1214,11 @@ def validate_record(record: Any) -> list[str]:
             manual = included_by_pair[(participant_id, case_id, "manual")]
             veridoc = included_by_pair[(participant_id, case_id, "veridoc")]
             if len(manual) == 1 and len(veridoc) == 1:
-                for field in ("task_revision", "gold_answer_revision"):
+                for field in (
+                    "task_revision",
+                    "gold_answer_revision",
+                    "checklist_revision",
+                ):
                     if manual[0].get(field) != veridoc[0].get(field):
                         errors.append(f"paired runs must use the same {field}")
 

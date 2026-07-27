@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from scripts.ci.validate_mvp_human_review_evidence import (
+    APPROVED_CHECKLIST_REVISION,
     APPROVED_GOLD_ANSWER_REVISION,
     APPROVED_MANIFEST_CONTRACT_SHA256,
     APPROVED_MANIFEST_GIT_BLOB,
@@ -172,6 +173,7 @@ def _completed_record(base_record: dict[str, object]) -> dict[str, object]:
                         "attempt_number": 1,
                         "task_revision": APPROVED_TASK_REVISION,
                         "gold_answer_revision": APPROVED_GOLD_ANSWER_REVISION,
+                        "checklist_revision": APPROVED_CHECKLIST_REVISION,
                         "gold_answer_hidden_until_ended_at": True,
                         "gold_answer_compared_by_role": "independent_assessor",
                         "gold_answer_comparison_withheld_from_participant": True,
@@ -203,25 +205,25 @@ def _add_excluded_veridoc_retry(record: dict[str, object]) -> None:
         run
         for run in runs
         if isinstance(run, dict)
-        and run["participant_id"] == "P001"
+        and run["participant_id"] == "P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A"
         and run["case_id"] == "mvp-scanned-pdf-001"
         and run["arm"] == "veridoc"
     )
     participant_ends = [
         datetime.fromisoformat(str(run["ended_at"]).replace("Z", "+00:00"))
         for run in runs
-        if isinstance(run, dict) and run["participant_id"] == "P001"
+        if isinstance(run, dict) and run["participant_id"] == "P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A"
     ]
     retry = copy.deepcopy(source)
     retry_start = max(participant_ends) + timedelta(minutes=1)
     retry.update(
         {
-            "run_id": "RUN-P001-MVP-SCANNED-PDF-001-VERIDOC-2",
+            "run_id": "RUN-P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A-MVP-SCANNED-PDF-001-VERIDOC-2",
             "sealed_artifact_record_id": _opaque_record_id(
-                "SAR", "RUN-P001-MVP-SCANNED-PDF-001-VERIDOC-2"
+                "SAR", "RUN-P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A-MVP-SCANNED-PDF-001-VERIDOC-2"
             ),
             "sealed_artifact_sha256": hashlib.sha256(
-                b"RUN-P001-MVP-SCANNED-PDF-001-VERIDOC-2"
+                b"RUN-P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A-MVP-SCANNED-PDF-001-VERIDOC-2"
             ).hexdigest(),
             "attempt_number": 2,
             "started_at": _utc_text(retry_start),
@@ -241,7 +243,7 @@ def _add_withdrawn_participant(record: dict[str, object]) -> None:
     assert isinstance(runs, list)
     participants.append(
         {
-            "participant_id": "P004",
+            "participant_id": "P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C",
             "participation_status": "withdrawn",
             "withdrawn_at": "2026-08-10T01:02:00Z",
             "relevant_experience_attested": True,
@@ -256,21 +258,21 @@ def _add_withdrawn_participant(record: dict[str, object]) -> None:
         run
         for run in runs
         if isinstance(run, dict)
-        and run["participant_id"] == "P001"
+        and run["participant_id"] == "P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A"
         and run["case_id"] == "mvp-word-001"
         and run["arm"] == "manual"
     )
     withdrawn_attempt = copy.deepcopy(source)
     withdrawn_attempt.update(
         {
-            "run_id": "RUN-P004-MVP-WORD-001-MANUAL-1",
+            "run_id": "RUN-P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C-MVP-WORD-001-MANUAL-1",
             "sealed_artifact_record_id": _opaque_record_id(
-                "SAR", "RUN-P004-MVP-WORD-001-MANUAL-1"
+                "SAR", "RUN-P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C-MVP-WORD-001-MANUAL-1"
             ),
             "sealed_artifact_sha256": hashlib.sha256(
-                b"RUN-P004-MVP-WORD-001-MANUAL-1"
+                b"RUN-P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C-MVP-WORD-001-MANUAL-1"
             ).hexdigest(),
-            "participant_id": "P004",
+            "participant_id": "P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C",
             "started_at": "2026-08-10T01:00:00Z",
             "ended_at": "2026-08-10T01:02:00Z",
             "excluded": True,
@@ -294,6 +296,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             "veridoc-mvp-human-review-evidence/v1",
             "p12g-02-v1",
             "phase12-mvp-v1",
+            "checklist-phase12-v1",
             "within-participant",
             "paired cohort median",
             "high-risk miss",
@@ -386,6 +389,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             "sealed_artifact_sha256",
             "sealed_artifact_kind",
             "veridoc_build_provenance",
+            "checklist_revision",
         ):
             self.assertIn(field, schema["$defs"]["run"]["required"])
         self.assertEqual(
@@ -413,6 +417,10 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertEqual(
             APPROVED_GOLD_ANSWER_REVISION,
             schema["$defs"]["run"]["properties"]["gold_answer_revision"]["const"],
+        )
+        self.assertEqual(
+            APPROVED_CHECKLIST_REVISION,
+            schema["$defs"]["run"]["properties"]["checklist_revision"]["const"],
         )
 
     def test_synthetic_validation_example_is_valid_and_recomputable(self) -> None:
@@ -446,7 +454,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         blocked_pair = next(
             pair
             for pair in summary["pair_results"]
-            if pair["participant_id"] == "P002"
+            if pair["participant_id"] == "P-386BEEA7-81DC-408A-B045-D73A233C0DC5"
         )
         self.assertFalse(blocked_pair["eligible"])
         self.assertEqual("blocked", blocked_pair["veridoc_outcome"])
@@ -546,6 +554,25 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             "study_id must be an opaque HR-prefixed UUIDv4",
             validate_record(record),
         )
+
+    def test_participant_id_cannot_be_a_prefixed_employee_number(self) -> None:
+        record = copy.deepcopy(self.valid_record)
+        original = record["participants"][0]["participant_id"]
+        direct_identifier = "P123456789"
+        record["participants"][0]["participant_id"] = direct_identifier
+        for run in record["runs"]:
+            if run["participant_id"] == original:
+                run["participant_id"] = direct_identifier
+                run["run_id"] = run["run_id"].replace(
+                    original,
+                    direct_identifier,
+                )
+        errors = validate_record(record)
+        self.assertIn(
+            "participant[0].participant_id must be an opaque P-prefixed UUIDv4",
+            errors,
+        )
+        self.assertIn("run[0].run_id is invalid", errors)
 
     def test_rfc3339_timestamp_lexical_form_is_enforced(self) -> None:
         for value in (
@@ -717,7 +744,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         record = copy.deepcopy(self.valid_record)
         record["runs"][0]["attempt_number"] = 2
         self.assertIn(
-            "P001/mvp-word-001/manual attempt_number values "
+            "P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A/mvp-word-001/manual attempt_number values "
             "must be contiguous from 1",
             validate_record(record),
         )
@@ -728,7 +755,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         record = copy.deepcopy(self.valid_record)
         record["runs"][0]["attempt_number"] = 100_000_000
         self.assertIn(
-            "P001/mvp-word-001/manual attempt_number values "
+            "P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A/mvp-word-001/manual attempt_number values "
             "must be contiguous from 1",
             validate_record(record),
         )
@@ -742,7 +769,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             run
             for run in runs
             if isinstance(run, dict)
-            and run["participant_id"] == "P001"
+            and run["participant_id"] == "P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A"
             and run["case_id"] == "mvp-scanned-pdf-001"
             and run["arm"] == "veridoc"
             and run["attempt_number"] == 1
@@ -758,7 +785,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             first["ended_at"],
         )
         self.assertIn(
-            "P001/mvp-scanned-pdf-001/veridoc attempt timestamps "
+            "P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A/mvp-scanned-pdf-001/veridoc attempt timestamps "
             "must follow attempt_number order",
             validate_record(record),
         )
@@ -798,9 +825,17 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         )
 
     def test_run_revisions_must_match_the_approved_protocol_contract(self) -> None:
+        missing = copy.deepcopy(self.valid_record)
+        del missing["runs"][0]["checklist_revision"]
+        self.assertIn(
+            "missing run[0] field: checklist_revision",
+            validate_record(missing),
+        )
+
         record = copy.deepcopy(self.valid_record)
         record["runs"][0]["task_revision"] = "unapproved-task-v2"
         record["runs"][0]["gold_answer_revision"] = "unapproved-gold-v2"
+        record["runs"][0]["checklist_revision"] = "unapproved-checklist-v2"
         errors = validate_record(record)
         self.assertIn(
             "run[0].task_revision must match approved protocol revision "
@@ -812,13 +847,18 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             f"{APPROVED_GOLD_ANSWER_REVISION}",
             errors,
         )
+        self.assertIn(
+            "run[0].checklist_revision must match approved protocol revision "
+            f"{APPROVED_CHECKLIST_REVISION}",
+            errors,
+        )
 
     def test_case_revisions_are_fixed_across_cohort_and_excluded_attempts(
         self,
     ) -> None:
         record = copy.deepcopy(self.valid_record)
         for run in record["runs"]:
-            if run["participant_id"] == "P003":
+            if run["participant_id"] == "P-E136C88A-C95D-47D2-AB32-F5C3AD66F2F5":
                 run["task_revision"] = "different-task-v2"
         self.assertIn(
             "all retained runs for mvp-word-001 must use the same task_revision",
@@ -832,6 +872,20 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             "all retained runs for mvp-scanned-pdf-001 must use the same "
             "gold_answer_revision",
             validate_record(completed),
+        )
+
+        checklist_drift = copy.deepcopy(self.valid_record)
+        checklist_drift["runs"][1]["checklist_revision"] = (
+            "different-checklist-v2"
+        )
+        self.assertIn(
+            "all retained runs for mvp-word-001 must use the same "
+            "checklist_revision",
+            validate_record(checklist_drift),
+        )
+        self.assertIn(
+            "paired runs must use the same checklist_revision",
+            validate_record(checklist_drift),
         )
 
     def test_approval_must_strictly_precede_every_run(self) -> None:
@@ -874,7 +928,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         record["runs"][1]["ended_at"] = record["runs"][0]["ended_at"]
         errors = validate_record(record)
         self.assertTrue(
-            any(error.startswith("P001 timed runs overlap:") for error in errors)
+            any(error.startswith("P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A timed runs overlap:") for error in errors)
         )
 
     def test_excluded_veridoc_retry_is_reported_per_arm(
@@ -922,7 +976,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         _add_withdrawn_participant(record)
         record["participants"][-1]["withdrawn_at"] = "2026-08-10T01:01:00Z"
         self.assertIn(
-            "run[30] must not start at or end after P004 withdrawal",
+            "run[30] must not start at or end after P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C withdrawal",
             validate_record(record),
         )
 
@@ -930,7 +984,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         record = _completed_record(self.valid_record)
         record["participants"].append(
             {
-                "participant_id": "P004",
+                "participant_id": "P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C",
                 "participation_status": "withdrawn",
                 "withdrawn_at": "2026-07-26T00:30:00Z",
                 "relevant_experience_attested": True,
@@ -974,12 +1028,12 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             source = next(
                 run
                 for run in record["runs"]
-                if run["participant_id"] == "P001"
+                if run["participant_id"] == "P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A"
                 and run["case_id"] == "mvp-word-001"
                 and run["arm"] == arm
             )
             run = copy.deepcopy(source)
-            run_id = f"RUN-P004-MVP-WORD-001-{arm.upper()}-1"
+            run_id = f"RUN-P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C-MVP-WORD-001-{arm.upper()}-1"
             run.update(
                 {
                     "run_id": run_id,
@@ -989,7 +1043,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                     "sealed_artifact_sha256": hashlib.sha256(
                         run_id.encode("utf-8")
                     ).hexdigest(),
-                    "participant_id": "P004",
+                    "participant_id": "P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C",
                     "started_at": _utc_text(start),
                     "ended_at": _utc_text(start + timedelta(minutes=2)),
                 }
@@ -1005,7 +1059,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         withdrawn_pair = next(
             pair
             for pair in summary["pair_results"]
-            if pair["participant_id"] == "P004"
+            if pair["participant_id"] == "P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C"
         )
         self.assertFalse(withdrawn_pair["eligible"])
         self.assertEqual("approved", withdrawn_pair["manual_outcome"])
@@ -1015,18 +1069,18 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             next(
                 run
                 for run in record["runs"]
-                if run["participant_id"] == "P004"
+                if run["participant_id"] == "P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C"
                 and run["arm"] == "manual"
             )
         )
         duplicate.update(
             {
-                "run_id": "RUN-P004-MVP-WORD-001-MANUAL-2",
+                "run_id": "RUN-P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C-MVP-WORD-001-MANUAL-2",
                 "sealed_artifact_record_id": _opaque_record_id(
-                    "SAR", "RUN-P004-MVP-WORD-001-MANUAL-2"
+                    "SAR", "RUN-P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C-MVP-WORD-001-MANUAL-2"
                 ),
                 "sealed_artifact_sha256": hashlib.sha256(
-                    b"RUN-P004-MVP-WORD-001-MANUAL-2"
+                    b"RUN-P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C-MVP-WORD-001-MANUAL-2"
                 ).hexdigest(),
                 "attempt_number": 2,
                 "started_at": "2026-08-10T01:06:00Z",
@@ -1035,12 +1089,12 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         )
         record["runs"].append(duplicate)
         self.assertIn(
-            "P004/mvp-word-001/manual must have at most one non-excluded "
+            "P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C/mvp-word-001/manual must have at most one non-excluded "
             "run after withdrawal",
             validate_record(record),
         )
         self.assertIn(
-            "run[32] must not start at or end after P004 withdrawal",
+            "run[32] must not start at or end after P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C withdrawal",
             validate_record(record),
         )
 
@@ -1058,7 +1112,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         blocked = next(
             run
             for run in record["runs"]
-            if run["participant_id"] == "P002"
+            if run["participant_id"] == "P-386BEEA7-81DC-408A-B045-D73A233C0DC5"
             and run["case_id"] == "mvp-word-001"
             and run["arm"] == "veridoc"
         )
@@ -1088,7 +1142,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             "runs"
         ][0]["started_at"]
         self.assertIn(
-            "P001.manual_practice_completed_at must precede every timed run",
+            "P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A.manual_practice_completed_at must precede every timed run",
             validate_record(record),
         )
 
