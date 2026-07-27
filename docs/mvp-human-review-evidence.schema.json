@@ -124,7 +124,7 @@
         },
         "consent_form_version": {
           "type": "string",
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+          "pattern": "^CF-[0-9A-F]{8}-[0-9A-F]{4}-4[0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}$"
         },
         "direct_identifiers_stored": {
           "const": false
@@ -154,7 +154,7 @@
         },
         "external_record_version": {
           "type": "string",
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+          "pattern": "^QAR-[0-9A-F]{8}-[0-9A-F]{4}-4[0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}$"
         }
       }
     },
@@ -212,7 +212,7 @@
         },
         "consent_form_version": {
           "type": "string",
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+          "pattern": "^CF-[0-9A-F]{8}-[0-9A-F]{4}-4[0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}$"
         },
         "relevant_experience_attested": {
           "const": true
@@ -429,11 +429,16 @@
         "source_fixture_id",
         "source_fixture_path",
         "source_fixture_sha256",
+        "conversion_mode",
+        "target_artifact_type",
         "arm",
         "veridoc_build_provenance",
         "attempt_number",
         "task_revision",
         "gold_answer_revision",
+        "gold_package_path",
+        "gold_package_sha256",
+        "gold_case_sha256",
         "checklist_revision",
         "gold_answer_hidden_until_ended_at",
         "gold_answer_compared_by_role",
@@ -491,6 +496,20 @@
           "type": "string",
           "pattern": "^[0-9a-f]{64}$"
         },
+        "conversion_mode": {
+          "enum": [
+            "word_to_excel",
+            "excel_to_word",
+            "pdf_to_excel",
+            "pdf_to_word"
+          ]
+        },
+        "target_artifact_type": {
+          "enum": [
+            "xlsx",
+            "docx"
+          ]
+        },
         "arm": {
           "enum": [
             "manual",
@@ -516,6 +535,16 @@
         },
         "gold_answer_revision": {
           "const": "gold-phase12-v1"
+        },
+        "gold_package_path": {
+          "const": "datasets/mvp_human_review_gold_package_v1.json"
+        },
+        "gold_package_sha256": {
+          "const": "d4dd34836d38eecc721af3d512caa978eaf9fa40cdf988d48e72ef8f1db44716"
+        },
+        "gold_case_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
         },
         "checklist_revision": {
           "const": "checklist-phase12-v1"

@@ -22,6 +22,8 @@ from scripts.ci.validate_mvp_human_review_evidence import (
     APPROVED_PRODUCT_COMMIT,
     APPROVED_PRODUCT_TREE,
     APPROVED_TASK_REVISION,
+    PINNED_GOLD_PACKAGE_PATH,
+    PINNED_GOLD_PACKAGE_SHA256,
     summarize_record,
     validate_record,
 )
@@ -34,6 +36,7 @@ CHECKLIST_PATH = REPO_ROOT / "docs" / "mvp-human-review-execution-checklist.md"
 PRACTICE_PACKAGE_PATH = (
     REPO_ROOT / "docs" / "mvp-human-review-practice-package.json"
 )
+GOLD_PACKAGE_PATH = REPO_ROOT / PINNED_GOLD_PACKAGE_PATH
 VALID_EXAMPLE_PATH = REPO_ROOT / "datasets" / "mvp_human_review_evidence_valid.json"
 INVALID_EXAMPLES_PATH = (
     REPO_ROOT / "datasets" / "mvp_human_review_evidence_invalid_examples.json"
@@ -52,9 +55,34 @@ EXPECTED_HIGH_RISK_COUNTS = {
     "mvp-word-001": 0,
     "mvp-excel-001": 0,
     "mvp-text-pdf-001": 0,
-    "mvp-scanned-pdf-001": 0,
+    "mvp-scanned-pdf-001": 1,
     "mvp-record-pdf-001": 0,
 }
+APPROVED_TARGET_FORMATS = {
+    "mvp-word-001": ("word_to_excel", "xlsx"),
+    "mvp-excel-001": ("excel_to_word", "docx"),
+    "mvp-text-pdf-001": ("pdf_to_excel", "xlsx"),
+    "mvp-scanned-pdf-001": ("pdf_to_word", "docx"),
+    "mvp-record-pdf-001": ("pdf_to_word", "docx"),
+}
+PINNED_GOLD_CASE_SHA256 = {
+    "mvp-word-001": (
+        "1f3337f012629121a802df23adbe80a887d005a8b45fb3dc0231518ce34b812f"
+    ),
+    "mvp-excel-001": (
+        "fb3f3dae15793cc7d449d2787ca475094f42e4702de31d6f00dabbf972ef305c"
+    ),
+    "mvp-text-pdf-001": (
+        "effd5300edac2fb18572182add5127ad45dda40bcbac11d3ecc8904d1614a597"
+    ),
+    "mvp-scanned-pdf-001": (
+        "0d98675a91e5191fb25cdda96c4563bc070c0c0fcd1d536d4accccf1e6540cb9"
+    ),
+    "mvp-record-pdf-001": (
+        "fbd0f75c1464b474f92bd29a8b41584707ef00d36e99c0dfa7dc320eb245696f"
+    ),
+}
+CONSENT_FORM_VERSION = "CF-550E8400-E29B-41D4-A716-446655440201"
 APPROVED_FIXTURES = {
     "mvp-word-001": (
         "word-to-excel-application",
@@ -151,6 +179,9 @@ def _completed_record(base_record: dict[str, object]) -> dict[str, object]:
                 fixture_id, fixture_path, fixture_sha256 = APPROVED_FIXTURES[
                     case_id
                 ]
+                conversion_mode, target_artifact_type = (
+                    APPROVED_TARGET_FORMATS[case_id]
+                )
                 run_id = (
                     f"RUN-{participant_id}-{case_id.upper()}-"
                     f"{arm.upper()}-1"
@@ -170,6 +201,8 @@ def _completed_record(base_record: dict[str, object]) -> dict[str, object]:
                         "source_fixture_id": fixture_id,
                         "source_fixture_path": fixture_path,
                         "source_fixture_sha256": fixture_sha256,
+                        "conversion_mode": conversion_mode,
+                        "target_artifact_type": target_artifact_type,
                         "arm": arm,
                         "veridoc_build_provenance": (
                             copy.deepcopy(BUILD_PROVENANCE)
@@ -179,6 +212,9 @@ def _completed_record(base_record: dict[str, object]) -> dict[str, object]:
                         "attempt_number": 1,
                         "task_revision": APPROVED_TASK_REVISION,
                         "gold_answer_revision": APPROVED_GOLD_ANSWER_REVISION,
+                        "gold_package_path": PINNED_GOLD_PACKAGE_PATH,
+                        "gold_package_sha256": PINNED_GOLD_PACKAGE_SHA256,
+                        "gold_case_sha256": PINNED_GOLD_CASE_SHA256[case_id],
                         "checklist_revision": APPROVED_CHECKLIST_REVISION,
                         "gold_answer_hidden_until_ended_at": True,
                         "gold_answer_compared_by_role": "independent_assessor",
@@ -254,7 +290,7 @@ def _add_withdrawn_participant(record: dict[str, object]) -> None:
             "withdrawn_at": "2026-08-10T01:02:00Z",
             "consent_status": "consented",
             "consented_at": "2026-07-26T00:06:00Z",
-            "consent_form_version": "synthetic-v1",
+            "consent_form_version": CONSENT_FORM_VERSION,
             "relevant_experience_attested": True,
             "manual_practice_completed": True,
             "manual_practice_completed_at": "2026-07-26T00:10:00Z",
@@ -315,6 +351,9 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             "phase12-mvp-v1",
             "checklist-phase12-v1",
             "mvp-human-review-practice-package.json",
+            "mvp_human_review_gold_package_v1.json",
+            "gold_case_sha256",
+            "target_artifact_type",
             "consent_status",
             "protocol_deviation",
             "within-participant",
@@ -432,10 +471,15 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             "source_fixture_id",
             "source_fixture_path",
             "source_fixture_sha256",
+            "conversion_mode",
+            "target_artifact_type",
             "sealed_artifact_record_id",
             "sealed_artifact_sha256",
             "sealed_artifact_kind",
             "veridoc_build_provenance",
+            "gold_package_path",
+            "gold_package_sha256",
+            "gold_case_sha256",
             "checklist_revision",
         ):
             self.assertIn(field, schema["$defs"]["run"]["required"])
@@ -466,6 +510,14 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             schema["$defs"]["run"]["properties"]["gold_answer_revision"]["const"],
         )
         self.assertEqual(
+            PINNED_GOLD_PACKAGE_PATH,
+            schema["$defs"]["run"]["properties"]["gold_package_path"]["const"],
+        )
+        self.assertEqual(
+            PINNED_GOLD_PACKAGE_SHA256,
+            schema["$defs"]["run"]["properties"]["gold_package_sha256"]["const"],
+        )
+        self.assertEqual(
             APPROVED_CHECKLIST_REVISION,
             schema["$defs"]["run"]["properties"]["checklist_revision"]["const"],
         )
@@ -477,6 +529,14 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertEqual(6, summary["recorded_runs"])
         self.assertEqual(2, summary["eligible_pair_count"])
         self.assertEqual(1, summary["ineligible_pair_count"])
+        self.assertEqual(
+            PINNED_GOLD_PACKAGE_SHA256,
+            summary["gold_package_sha256"],
+        )
+        self.assertEqual(
+            "unapproved_validation_only",
+            summary["gold_package_approval_status"],
+        )
         self.assertFalse(summary["execution_attestation_ready"])
         self.assertEqual(3, len(summary["pair_results"]))
         self.assertEqual(35.0, summary["paired_median_reduction_percent"])
@@ -549,12 +609,33 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertEqual(0, summary["eligible_pair_count"])
         self.assertEqual(15, summary["ineligible_pair_count"])
         self.assertIsNone(summary["paired_median_reduction_percent"])
+        self.assertTrue(
+            all(pair["calculable"] for pair in summary["pair_results"])
+        )
+        self.assertTrue(
+            all(
+                {
+                    "manual_seconds",
+                    "veridoc_seconds",
+                    "reduction_percent",
+                }
+                <= pair.keys()
+                for pair in summary["pair_results"]
+            )
+        )
+        self.assertEqual(
+            {50.0},
+            {
+                pair["reduction_percent"]
+                for pair in summary["pair_results"]
+            },
+        )
         self.assertFalse(summary["execution_attestation_ready"])
         self.assertTrue(summary["all_required_runs_accounted"])
         self.assertFalse(summary["structured_high_risk_targets_ready"])
         self.assertFalse(summary["efficiency_target_met"])
 
-    def test_expected_high_risk_count_is_bound_to_approved_manifest(self) -> None:
+    def test_expected_high_risk_count_is_bound_to_pinned_gold_case(self) -> None:
         record = copy.deepcopy(self.valid_record)
         record["case_ids"] = ["mvp-scanned-pdf-001"]
         for run in record["runs"]:
@@ -568,14 +649,21 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             run["source_fixture_sha256"] = APPROVED_FIXTURES[
                 "mvp-scanned-pdf-001"
             ][2]
+            (
+                run["conversion_mode"],
+                run["target_artifact_type"],
+            ) = APPROVED_TARGET_FORMATS["mvp-scanned-pdf-001"]
+            run["gold_case_sha256"] = PINNED_GOLD_CASE_SHA256[
+                "mvp-scanned-pdf-001"
+            ]
             run["run_id"] = (
                 f"RUN-{run['participant_id']}-MVP-SCANNED-PDF-001-"
                 f"{str(run['arm']).upper()}-{run['attempt_number']}"
             )
-            run["high_risk_expected_count"] = 1
+            run["high_risk_expected_count"] = 0
         self.assertIn(
-            "run[0].high_risk_expected_count must match approved manifest "
-            "count 0 for mvp-scanned-pdf-001",
+            "run[0].high_risk_expected_count must match pinned gold package "
+            "count 1 for mvp-scanned-pdf-001",
             validate_record(record),
         )
 
@@ -586,6 +674,39 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             "run[0].source_fixture_sha256 must match approved manifest value "
             "'8d3f4c25af465eb03bb1b2a624d14de27b1f777a4ec2cd5674563335d2b58cf1'",
             validate_record(record),
+        )
+
+    def test_run_target_format_is_bound_to_approved_manifest(self) -> None:
+        record = copy.deepcopy(self.valid_record)
+        record["runs"][0]["conversion_mode"] = "pdf_to_word"
+        record["runs"][0]["target_artifact_type"] = "docx"
+        errors = validate_record(record)
+        self.assertIn(
+            "run[0].conversion_mode must match approved manifest value "
+            "'word_to_excel'",
+            errors,
+        )
+        self.assertIn(
+            "run[0].target_artifact_type must match approved manifest value "
+            "'xlsx'",
+            errors,
+        )
+
+    def test_run_scoring_is_bound_to_pinned_gold_content(self) -> None:
+        record = copy.deepcopy(self.valid_record)
+        record["runs"][0]["gold_package_sha256"] = "0" * 64
+        record["runs"][0]["gold_case_sha256"] = "f" * 64
+        errors = validate_record(record)
+        self.assertIn(
+            "run[0].gold_package_sha256 must match pinned gold package value "
+            f"'{PINNED_GOLD_PACKAGE_SHA256}'",
+            errors,
+        )
+        self.assertIn(
+            "run[0].gold_case_sha256 must bind pinned gold case "
+            "mvp-word-001 as "
+            f"{PINNED_GOLD_CASE_SHA256['mvp-word-001']}",
+            errors,
         )
 
     def test_run_id_must_be_generated_from_pseudonymous_fields(self) -> None:
@@ -600,6 +721,36 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertIn(
             "study_id must be an opaque HR-prefixed UUIDv4",
             validate_record(record),
+        )
+
+    def test_approval_versions_must_be_privacy_safe_opaque_references(
+        self,
+    ) -> None:
+        record = copy.deepcopy(self.valid_record)
+        record["consent_approval"]["consent_form_version"] = (
+            "ALICE-EMPLOYEE-123"
+        )
+        record["participants"][0]["consent_form_version"] = (
+            "ALICE-EMPLOYEE-123"
+        )
+        record["quality_approval"]["external_record_version"] = (
+            "ALICE-EMPLOYEE-123"
+        )
+        errors = validate_record(record)
+        self.assertIn(
+            "consent_approval.consent_form_version must be an opaque "
+            "CF-prefixed UUIDv4",
+            errors,
+        )
+        self.assertIn(
+            "participant[0].consent_form_version must be an opaque "
+            "CF-prefixed UUIDv4",
+            errors,
+        )
+        self.assertIn(
+            "quality_approval.external_record_version must be an opaque "
+            "QAR-prefixed UUIDv4",
+            errors,
         )
 
     def test_participant_id_cannot_be_a_prefixed_employee_number(self) -> None:
@@ -979,7 +1130,8 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             errors,
         )
         self.assertIn(
-            "quality_approval.external_record_version is invalid",
+            "quality_approval.external_record_version must be an opaque "
+            "QAR-prefixed UUIDv4",
             errors,
         )
 
@@ -1050,7 +1202,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                 "withdrawn_at": "2026-07-26T00:30:00Z",
                 "consent_status": "consented",
                 "consented_at": "2026-07-26T00:06:00Z",
-                "consent_form_version": "synthetic-v1",
+                "consent_form_version": CONSENT_FORM_VERSION,
                 "relevant_experience_attested": True,
                 "manual_practice_completed": False,
                 "manual_practice_completed_at": None,
@@ -1251,6 +1403,30 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             errors,
         )
 
+    def test_gold_package_is_immutable_and_case_scoped(self) -> None:
+        package_sha256 = hashlib.sha256(
+            GOLD_PACKAGE_PATH.read_bytes()
+        ).hexdigest()
+        self.assertEqual(PINNED_GOLD_PACKAGE_SHA256, package_sha256)
+        package = json.loads(GOLD_PACKAGE_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(
+            "unapproved_validation_only",
+            package["approval_status"],
+        )
+        self.assertEqual(
+            set(ALL_CASE_IDS),
+            {case["case_id"] for case in package["cases"]},
+        )
+        scanned_case = next(
+            case
+            for case in package["cases"]
+            if case["case_id"] == "mvp-scanned-pdf-001"
+        )
+        self.assertEqual(
+            1,
+            len(scanned_case["expected_high_risk_targets"]),
+        )
+
     def test_practice_must_precede_participants_earliest_timed_run(self) -> None:
         record = copy.deepcopy(self.valid_record)
         record["participants"][0]["manual_practice_completed_at"] = record[
@@ -1266,7 +1442,9 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
     ) -> None:
         record = copy.deepcopy(self.valid_record)
         record["participants"][0]["consent_status"] = "not_consented"
-        record["participants"][0]["consent_form_version"] = "other-form-v2"
+        record["participants"][0]["consent_form_version"] = (
+            "CF-550E8400-E29B-41D4-A716-446655440299"
+        )
         record["participants"][0]["consented_at"] = record["participants"][0][
             "manual_practice_completed_at"
         ]

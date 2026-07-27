@@ -1,0 +1,55 @@
+{
+  "schema_version": "veridoc-mvp-human-review-gold-package/v1",
+  "gold_answer_revision": "gold-phase12-v1",
+  "source_manifest_path": "datasets/mvp_evaluation_manifest_v1.json",
+  "source_manifest_revision": "phase12-mvp-v1",
+  "approval_status": "unapproved_validation_only",
+  "cases": [
+    {
+      "case_id": "mvp-word-001",
+      "conversion_mode": "word_to_excel",
+      "expected_artifact_types": [
+        "xlsx"
+      ],
+      "expected_high_risk_targets": []
+    },
+    {
+      "case_id": "mvp-excel-001",
+      "conversion_mode": "excel_to_word",
+      "expected_artifact_types": [
+        "docx"
+      ],
+      "expected_high_risk_targets": []
+    },
+    {
+      "case_id": "mvp-text-pdf-001",
+      "conversion_mode": "pdf_to_excel",
+      "expected_artifact_types": [
+        "xlsx"
+      ],
+      "expected_high_risk_targets": []
+    },
+    {
+      "case_id": "mvp-scanned-pdf-001",
+      "conversion_mode": "pdf_to_word",
+      "expected_artifact_types": [
+        "docx"
+      ],
+      "expected_high_risk_targets": [
+        {
+          "id": "scanned-page-ocr-boundary",
+          "document_id": "scanned-pdf-representative",
+          "block_id": "block-0001"
+        }
+      ]
+    },
+    {
+      "case_id": "mvp-record-pdf-001",
+      "conversion_mode": "pdf_to_word",
+      "expected_artifact_types": [
+        "docx"
+      ],
+      "expected_high_risk_targets": []
+    }
+  ]
+}

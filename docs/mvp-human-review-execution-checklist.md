@@ -8,13 +8,15 @@ employee IDs, or free-text participant notes in the repository.
 
 - [ ] Consent approval and independent quality approval are complete before any
       timed work.
-- [ ] Consent form version, study-owner role, and approval timestamp are
-      recorded in `consent_approval`.
+- [ ] An independently generated opaque `CF-`-prefixed uppercase UUIDv4,
+      study-owner role, and approval timestamp are recorded in
+      `consent_approval`; the version contains no organizer-selected text.
 - [ ] Every pseudonymous participant records `consent_status: consented`, the
       approved `consent_form_version`, and a `consented_at` timestamp after form
       approval and before that participant's practice or timed work.
-- [ ] Quality-approver role, approval status/timestamp, and external-record
-      version are recorded in `quality_approval`.
+- [ ] Quality-approver role, approval status/timestamp, and independently
+      generated opaque `QAR-`-prefixed uppercase UUIDv4 are recorded in
+      `quality_approval`.
 - [ ] At least three relevant document reviewers have IDs generated
       independently as `P-` plus a cryptographically random uppercase UUIDv4.
 - [ ] No participant ID is transformed, truncated, hashed, or prefixed from an
@@ -34,6 +36,11 @@ employee IDs, or free-text participant notes in the repository.
 - [ ] Every case uses `task-phase12-v1`, `gold-phase12-v1`, and
       `checklist-phase12-v1`; cohort agreement on a different revision is not
       accepted.
+- [ ] `datasets/mvp_human_review_gold_package_v1.json` has SHA-256
+      `d4dd34836d38eecc721af3d512caa978eaf9fa40cdf988d48e72ef8f1db44716`;
+      its per-case canonical digests bind target format and scoring content.
+- [ ] The pinned gold package remains `unapproved_validation_only`; it makes
+      validation scoring reproducible but does not approve an efficiency claim.
 - [ ] Gold answers are hidden until each timed run stops.
 - [ ] Each completed participant completed one fixed, unscored practice task
       per arm; withdrawn participants retain actual flags and `null` timestamps
@@ -60,6 +67,10 @@ employee IDs, or free-text participant notes in the repository.
 - [ ] Confirm `source_fixture_id`, `source_fixture_path`, and
       `source_fixture_sha256` against the approved manifest fixture before
       timing begins.
+- [ ] Confirm `conversion_mode` and `target_artifact_type` against the approved
+      manifest case before timing begins.
+- [ ] Confirm the pinned `gold_package_path`, package SHA-256, and case-specific
+      `gold_case_sha256` before independent assessment.
 - [ ] For a VeriDoc arm, verify the per-run provenance record identifies the
       approved product commit/tree, clean checkout, reproducibly derived
       `git ls-tree` source-listing digest, explicit
@@ -106,7 +117,7 @@ employee IDs, or free-text participant notes in the repository.
 | participant `withdrawn_at` | `null` when completed / controlled UTC RFC 3339 boundary when withdrawn |
 | participant `consent_status` | `consented` |
 | participant `consented_at` | UTC RFC 3339 timestamp after form approval and before practice/timed work |
-| participant `consent_form_version` | same version as `consent_approval` |
+| participant `consent_form_version` | same opaque `CF-`-prefixed UUIDv4 as `consent_approval` |
 | participant `manual_practice_completed_at` | UTC RFC 3339 timestamp / `null` when withdrawn before completion |
 | participant `manual_practice_revision` | `practice-phase12-v1` |
 | participant `manual_practice_package_sha256` | approved immutable package digest |
@@ -117,11 +128,16 @@ employee IDs, or free-text participant notes in the repository.
 | `source_fixture_id` | approved manifest fixture ID |
 | `source_fixture_path` | approved repository-relative fixture path |
 | `source_fixture_sha256` | lowercase SHA-256 of approved fixture content |
+| `conversion_mode` | approved manifest conversion mode for the case |
+| `target_artifact_type` | approved manifest artifact type for the case |
 | `arm` | `manual` / `veridoc` |
 | `veridoc_build_provenance` | closed source-tree provenance with execution explicitly unattested / `null` for manual |
 | `attempt_number` | positive integer |
 | `task_revision` | `task-phase12-v1` |
 | `gold_answer_revision` | `gold-phase12-v1` |
+| `gold_package_path` | `datasets/mvp_human_review_gold_package_v1.json` |
+| `gold_package_sha256` | pinned package SHA-256 |
+| `gold_case_sha256` | canonical SHA-256 of the matching gold case object |
 | `checklist_revision` | `checklist-phase12-v1` |
 | `gold_answer_hidden_until_ended_at` | `true` / `false` only for excluded `protocol_deviation` |
 | `gold_answer_compared_by_role` | `independent_assessor` |
@@ -167,16 +183,18 @@ employee IDs, or free-text participant notes in the repository.
       overlap.
 - [ ] Attempt timestamps advance in attempt-number order within each
       participant/case/arm.
-- [ ] Expected high-risk counts match the approved manifest at the pinned
-      target commit, not the mutable current checkout.
+- [ ] Expected high-risk counts match the case content in the pinned gold
+      package, not an unbound revision label or mutable runtime value.
 - [ ] If `structured_high_risk_targets_ready` is `false`, do not claim the
       efficiency target; obtain a new approved decision/manifest revision.
 - [ ] If `execution_attestation_ready` is `false`, do not report completed
       study pairs as eligible or claim an efficiency median; obtain an approved
       authenticated execution-attestation integration.
 - [ ] Correction time is recomputed from timestamps minus recorded pauses.
-- [ ] Every completed-participant/case reduction and the paired cohort median
-      are reported.
+- [ ] Every otherwise calculable completed-participant/case pair reports manual
+      seconds, VeriDoc seconds, and reduction even when it is ineligible.
+- [ ] The paired cohort median includes eligible pairs only; an ineligible
+      pair's reported measurement is not silently promoted into the median.
 - [ ] Per-arm misses, over-detections, completions, blockers, retries, and
       exclusions are reported.
 - [ ] Overall totals report misses, over-detections, approved completions,

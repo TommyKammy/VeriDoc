@@ -26,8 +26,10 @@ efficiency target has been met. A completed record is valid only when it passes
 Use a within-participant comparison. Every completed participant performs the
 same five tasks once in the `manual` arm and once in the `veridoc` arm. Both
 arms use the same source fixture, task instructions, gold-answer revision,
-completion checklist, and timing boundary. The gold answer remains hidden until
-the timed run has stopped.
+manifest-defined conversion mode and target artifact type, completion checklist,
+and timing boundary. Each run records those target-format fields and the
+validator requires them to match the immutable approved manifest contract.
+The gold answer remains hidden until the timed run has stopped.
 Every included run attests this boundary with
 `gold_answer_hidden_until_ended_at: true`; a procedure note alone is not
 evidence that the gold remained hidden. An excluded attempt may record `false`
@@ -55,6 +57,8 @@ For each pseudonymous participant, record `consent_status: consented`,
 `consented_at`, and the approved `consent_form_version`. The participant
 consent timestamp must strictly follow study-owner approval of that form and
 strictly precede completed practice and every timed run.
+The form version is an opaque `CF-`-prefixed uppercase UUIDv4, not organizer
+text or a transformed person/employee identifier.
 
 Before timed work, each completed participant completes one fixed, unscored
 practice task for each arm. The immutable
@@ -151,7 +155,18 @@ value is not sufficient. Every attempt records `source_fixture_id`,
 `source_fixture_path`, and `source_fixture_sha256`; the validator reconstructs
 the approved manifest and selected fixture contents from the approved target
 commit, verifies the recorded Git blob and canonical contract SHA-256, and
-requires the three source fields to match that immutable contract.
+requires the three source fields plus `conversion_mode` and
+`target_artifact_type` to match that immutable contract.
+
+Every attempt also records
+`gold_package_path: datasets/mvp_human_review_gold_package_v1.json`, its pinned
+SHA-256
+`d4dd34836d38eecc721af3d512caa978eaf9fa40cdf988d48e72ef8f1db44716`,
+and the canonical SHA-256 of the matching case object as `gold_case_sha256`.
+The validator verifies the package bytes, closed package shape, complete case
+set, package-to-manifest target formats, case digest, and
+`high_risk_expected_count` against the pinned case content for every retained
+attempt. A revision label alone is not a scoring reference.
 
 Manual runs record `veridoc_build_provenance: null`. Every VeriDoc run records
 a closed build-provenance object containing an opaque attestation record ID,
@@ -176,19 +191,21 @@ approved. Issue #319 excludes product modification and actual participant
 trials, so this revision does not invent an executable identity or signing
 service.
 
-The approved `p12g-02-v1` manifest does not contain the later structured
-`expected_high_risk_targets` fields. The validator therefore derives an empty
-approved target set instead of reading the mutable current checkout and reports
+The pinned gold package makes the current per-case scoring inputs reproducible,
+including the scanned-PDF OCR-boundary target, but honestly declares
+`approval_status: unapproved_validation_only`. The approved `p12g-02-v1`
+manifest predates those structured targets, so the validator reports
 `structured_high_risk_targets_ready: false`. Even if timing improves by 30%,
 `efficiency_target_met` remains `false` until the decision owner approves a new
 manifest contract and decision revision containing those structured targets.
-Evidence records cannot substitute the current unapproved counts.
+Immutable validation content does not substitute for approval.
 
 ## Measures and calculations
 
 For each retained run, including excluded attempts, record:
 
-- `high_risk_expected_count`: high-risk gold targets in the task;
+- `high_risk_expected_count`: high-risk targets in the pinned per-case gold
+  content;
 - `high_risk_miss_count`: expected high-risk targets not identified and
   correctly resolved before completion;
 - `over_detection_count`: reviewed high-risk flags that are not high-risk gold
@@ -219,10 +236,14 @@ pair_reduction_percent(p, c) =
 ```
 
 Report every participant/case pair, including arm outcomes and blocker codes for
-ineligible pairs. The paired cohort median is the median of all eligible
-`pair_reduction_percent` values. The efficiency target passes only if that
-median is at least 30%, every required run is accounted for, and every retained
-VeriDoc attempt—including excluded retries—contains zero high-risk misses.
+ineligible pairs. Whenever both included arms are approved and
+checklist-complete, report `manual_seconds`, `veridoc_seconds`, and
+`pair_reduction_percent` even when approval or execution-attestation gates keep
+the pair ineligible. Calculation availability and acceptance eligibility are
+separate. The paired cohort median is the median of eligible values only. The
+efficiency target passes only if that median is at least 30%, every required run
+is accounted for, and every retained VeriDoc attempt—including excluded
+retries—contains zero high-risk misses.
 Report total and per-arm high-risk misses, over-detections, approved
 completions, blockers, exclusions, and retries even when the efficiency target
 fails or cannot be calculated.
@@ -239,8 +260,9 @@ records it in
 `consent_approval` with role `study_owner`, the controlled approval state and
 timestamp, and the consent form version. Independently, a quality approver
 records `quality_approval` with role `quality_approver`, the controlled approval
-state and timestamp, and the external system-of-record version. Each participant
-then records a privacy-safe consent attestation under the same form version;
+state and timestamp, and an opaque `QAR-`-prefixed uppercase UUIDv4 external
+system-of-record version. Each participant then records a privacy-safe consent
+attestation under the same opaque `CF-` version;
 its timestamp must follow form approval and precede that participant's practice
 and timed work. Both study approval timestamps must strictly precede every timed
 run. Neither record stores the participant or approver identity. Set
@@ -251,7 +273,8 @@ silently retained. Controlled codes replace free-text participant notes.
 The CLI parser also rejects duplicate JSON object keys instead of accepting the
 last value, so every retained record has one deterministic interpretation.
 Operational identity mappings, signed consent forms, and approval records stay
-in the approved external system of record and are referenced only by version.
+in the approved external system of record and are referenced only by opaque
+UUIDv4 tokens that cannot carry organizer-selected identity text.
 
 Any change to the task, timing boundary, cohort minimum, comparison formula,
 privacy boundary, decision revision, or manifest revision requires a new

@@ -15,6 +15,18 @@
       "expected_error": "paired runs must use the same task_revision"
     },
     {
+      "id": "target-format-drift",
+      "path": "/runs/0/conversion_mode",
+      "value": "pdf_to_word",
+      "expected_error": "run[0].conversion_mode must match approved manifest value 'word_to_excel'"
+    },
+    {
+      "id": "gold-case-digest-drift",
+      "path": "/runs/0/gold_case_sha256",
+      "value": "0000000000000000000000000000000000000000000000000000000000000000",
+      "expected_error": "run[0].gold_case_sha256 must bind pinned gold case mvp-word-001 as 1f3337f012629121a802df23adbe80a887d005a8b45fb3dc0231518ce34b812f"
+    },
+    {
       "id": "pause-exceeds-elapsed-time",
       "path": "/runs/0/excluded_pause_seconds",
       "value": 1201,
@@ -25,6 +37,12 @@
       "path": "/participants/0/consent_status",
       "value": "not_consented",
       "expected_error": "participant[0].consent_status must be consented"
+    },
+    {
+      "id": "personalized-quality-approval-version",
+      "path": "/quality_approval/external_record_version",
+      "value": "ALICE-EMPLOYEE-123",
+      "expected_error": "quality_approval.external_record_version must be an opaque QAR-prefixed UUIDv4"
     },
     {
       "id": "participant-practice-package-drift",

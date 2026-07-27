@@ -50,6 +50,10 @@ EXPECTED_CASE_IDS = {
 APPROVED_TASK_REVISION = "task-phase12-v1"
 APPROVED_GOLD_ANSWER_REVISION = "gold-phase12-v1"
 APPROVED_CHECKLIST_REVISION = "checklist-phase12-v1"
+PINNED_GOLD_PACKAGE_PATH = "datasets/mvp_human_review_gold_package_v1.json"
+PINNED_GOLD_PACKAGE_SHA256 = (
+    "d4dd34836d38eecc721af3d512caa978eaf9fa40cdf988d48e72ef8f1db44716"
+)
 APPROVED_PRACTICE_REVISION = "practice-phase12-v1"
 APPROVED_PRACTICE_PACKAGE_PATH = (
     "docs/mvp-human-review-practice-package.json"
@@ -68,6 +72,8 @@ UUID4_TOKEN_RE = (
 )
 PARTICIPANT_ID_RE = re.compile(rf"^P-{UUID4_TOKEN_RE}$")
 STUDY_ID_RE = re.compile(rf"^HR-{UUID4_TOKEN_RE}$")
+CONSENT_FORM_VERSION_RE = re.compile(rf"^CF-{UUID4_TOKEN_RE}$")
+QUALITY_APPROVAL_RECORD_VERSION_RE = re.compile(rf"^QAR-{UUID4_TOKEN_RE}$")
 RUN_ID_RE = re.compile(
     rf"^RUN-P-{UUID4_TOKEN_RE}-MVP-[A-Z0-9-]+-"
     r"(?:MANUAL|VERIDOC)-[1-9][0-9]*$"
@@ -89,6 +95,10 @@ class DuplicateKeyError(ValueError):
 
 class ApprovedManifestError(RuntimeError):
     """Raised when the approved manifest contract cannot be reconstructed."""
+
+
+class PinnedGoldPackageError(RuntimeError):
+    """Raised when the pinned validation gold package cannot be verified."""
 
 
 def _reject_duplicate_object_keys(
@@ -301,9 +311,21 @@ def _load_approved_manifest_contract() -> tuple[
         case_id = case.get("id")
         fixture_id = case.get("fixture_id")
         fixture_path = case.get("fixture_path")
+        conversion_mode = case.get("conversion_mode")
+        expected_artifacts = case.get("expected_artifacts")
         targets = case.get("expected_high_risk_targets")
         if not isinstance(case_id, str) or not isinstance(fixture_id, str):
             raise ApprovedManifestError("approved case identity is incomplete")
+        if (
+            not isinstance(conversion_mode, str)
+            or not isinstance(expected_artifacts, list)
+            or len(expected_artifacts) != 1
+            or not isinstance(expected_artifacts[0], dict)
+            or not isinstance(expected_artifacts[0].get("type"), str)
+        ):
+            raise ApprovedManifestError(
+                f"approved target format is incomplete for {case_id}"
+            )
         fixture = fixture_by_id.get(fixture_id)
         if (
             not isinstance(fixture, dict)
@@ -320,6 +342,8 @@ def _load_approved_manifest_contract() -> tuple[
             "fixture_id": fixture_id,
             "fixture_path": fixture_path,
             "fixture_sha256": selected_fixture_contents[fixture_id]["sha256"],
+            "conversion_mode": conversion_mode,
+            "target_artifact_type": expected_artifacts[0]["type"],
             "high_risk_expected_count": len(targets),
         }
     if set(case_contracts) != EXPECTED_CASE_IDS:
@@ -327,6 +351,108 @@ def _load_approved_manifest_contract() -> tuple[
             "approved manifest case set does not match Phase 12 scope"
         )
     return case_contracts, structured_high_risk_targets_ready
+
+
+@lru_cache(maxsize=1)
+def _load_pinned_gold_package_contract() -> tuple[
+    dict[str, dict[str, Any]], bool
+]:
+    try:
+        package_bytes = (REPO_ROOT / PINNED_GOLD_PACKAGE_PATH).read_bytes()
+    except OSError as exc:
+        raise PinnedGoldPackageError(
+            "pinned gold package cannot be read"
+        ) from exc
+    actual_sha256 = hashlib.sha256(package_bytes).hexdigest()
+    if actual_sha256 != PINNED_GOLD_PACKAGE_SHA256:
+        raise PinnedGoldPackageError(
+            "pinned gold package SHA-256 mismatch: "
+            f"expected {PINNED_GOLD_PACKAGE_SHA256}, got {actual_sha256}"
+        )
+    try:
+        package = _loads_json_strict(package_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, DuplicateKeyError) as exc:
+        raise PinnedGoldPackageError(
+            "pinned gold package is not strict UTF-8 JSON"
+        ) from exc
+    if not isinstance(package, dict):
+        raise PinnedGoldPackageError("pinned gold package must be an object")
+    expected_top_fields = {
+        "schema_version",
+        "gold_answer_revision",
+        "source_manifest_path",
+        "source_manifest_revision",
+        "approval_status",
+        "cases",
+    }
+    if set(package) != expected_top_fields:
+        raise PinnedGoldPackageError(
+            "pinned gold package fields do not match the closed contract"
+        )
+    for field, expected in (
+        (
+            "schema_version",
+            "veridoc-mvp-human-review-gold-package/v1",
+        ),
+        ("gold_answer_revision", APPROVED_GOLD_ANSWER_REVISION),
+        ("source_manifest_path", APPROVED_MANIFEST_PATH),
+        ("source_manifest_revision", "phase12-mvp-v1"),
+    ):
+        if package.get(field) != expected:
+            raise PinnedGoldPackageError(
+                f"pinned gold package {field} must be {expected!r}"
+            )
+    approval_status = package.get("approval_status")
+    if approval_status != "unapproved_validation_only":
+        raise PinnedGoldPackageError(
+            "pinned gold package approval_status must be "
+            "'unapproved_validation_only'"
+        )
+    cases = package.get("cases")
+    if not isinstance(cases, list):
+        raise PinnedGoldPackageError(
+            "pinned gold package cases must be an array"
+        )
+    case_contracts: dict[str, dict[str, Any]] = {}
+    expected_case_fields = {
+        "case_id",
+        "conversion_mode",
+        "expected_artifact_types",
+        "expected_high_risk_targets",
+    }
+    for case in cases:
+        if not isinstance(case, dict) or set(case) != expected_case_fields:
+            raise PinnedGoldPackageError(
+                "pinned gold package cases must match the closed contract"
+            )
+        case_id = case.get("case_id")
+        conversion_mode = case.get("conversion_mode")
+        artifact_types = case.get("expected_artifact_types")
+        targets = case.get("expected_high_risk_targets")
+        if (
+            not isinstance(case_id, str)
+            or case_id in case_contracts
+            or not isinstance(conversion_mode, str)
+            or not isinstance(artifact_types, list)
+            or len(artifact_types) != 1
+            or not isinstance(artifact_types[0], str)
+            or not isinstance(targets, list)
+            or any(not isinstance(target, dict) for target in targets)
+        ):
+            raise PinnedGoldPackageError(
+                "pinned gold package case content is invalid"
+            )
+        case_contracts[case_id] = {
+            "conversion_mode": conversion_mode,
+            "target_artifact_type": artifact_types[0],
+            "high_risk_expected_count": len(targets),
+            "gold_case_sha256": _canonical_json_sha256(case),
+        }
+    if set(case_contracts) != EXPECTED_CASE_IDS:
+        raise PinnedGoldPackageError(
+            "pinned gold package case set does not match Phase 12 scope"
+        )
+    return case_contracts, approval_status == "approved"
 
 
 def _expected_run_id(
@@ -578,9 +704,12 @@ def validate_record(record: Any) -> list[str]:
         consent_version = consent.get("consent_form_version")
         if (
             not isinstance(consent_version, str)
-            or REVISION_RE.fullmatch(consent_version) is None
+            or CONSENT_FORM_VERSION_RE.fullmatch(consent_version) is None
         ):
-            errors.append("consent_approval.consent_form_version is invalid")
+            errors.append(
+                "consent_approval.consent_form_version must be an opaque "
+                "CF-prefixed UUIDv4"
+            )
         else:
             approved_consent_form_version = consent_version
         if consent.get("direct_identifiers_stored") is not False:
@@ -618,10 +747,14 @@ def validate_record(record: Any) -> list[str]:
         )
         if (
             not isinstance(external_record_version, str)
-            or REVISION_RE.fullmatch(external_record_version) is None
+            or QUALITY_APPROVAL_RECORD_VERSION_RE.fullmatch(
+                external_record_version
+            )
+            is None
         ):
             errors.append(
-                "quality_approval.external_record_version is invalid"
+                "quality_approval.external_record_version must be an opaque "
+                "QAR-prefixed UUIDv4"
             )
 
     participants = record.get("participants")
@@ -700,9 +833,15 @@ def validate_record(record: Any) -> list[str]:
         participant_consent_version = participant.get("consent_form_version")
         if (
             not isinstance(participant_consent_version, str)
-            or REVISION_RE.fullmatch(participant_consent_version) is None
+            or CONSENT_FORM_VERSION_RE.fullmatch(
+                participant_consent_version
+            )
+            is None
         ):
-            errors.append(f"{label}.consent_form_version is invalid")
+            errors.append(
+                f"{label}.consent_form_version must be an opaque "
+                "CF-prefixed UUIDv4"
+            )
         elif (
             approved_consent_form_version is not None
             and participant_consent_version != approved_consent_form_version
@@ -803,7 +942,7 @@ def validate_record(record: Any) -> list[str]:
     run_schema = schema["$defs"]["run"]
     build_schema = schema["$defs"]["veridocBuildProvenance"]
     approved_case_contracts: dict[str, dict[str, Any]] = {}
-    structured_high_risk_targets_ready = False
+    gold_case_contracts: dict[str, dict[str, Any]] = {}
     try:
         (
             approved_case_contracts,
@@ -811,6 +950,25 @@ def validate_record(record: Any) -> list[str]:
         ) = _load_approved_manifest_contract()
     except ApprovedManifestError as exc:
         errors.append(f"approved manifest contract is unavailable: {exc}")
+    try:
+        (
+            gold_case_contracts,
+            _gold_targets_approved,
+        ) = _load_pinned_gold_package_contract()
+    except PinnedGoldPackageError as exc:
+        errors.append(f"pinned gold package is unavailable: {exc}")
+    for case_id in sorted(
+        approved_case_contracts.keys() & gold_case_contracts.keys()
+    ):
+        for field in ("conversion_mode", "target_artifact_type"):
+            if (
+                approved_case_contracts[case_id][field]
+                != gold_case_contracts[case_id][field]
+            ):
+                errors.append(
+                    f"pinned gold package {field} for {case_id} must match "
+                    "the approved manifest"
+                )
     run_ids: set[str] = set()
     sealed_artifact_record_ids: set[str] = set()
     attempt_keys: set[tuple[Any, ...]] = set()
@@ -928,12 +1086,37 @@ def validate_record(record: Any) -> list[str]:
                 ("source_fixture_id", "fixture_id"),
                 ("source_fixture_path", "fixture_path"),
                 ("source_fixture_sha256", "fixture_sha256"),
+                ("conversion_mode", "conversion_mode"),
+                ("target_artifact_type", "target_artifact_type"),
             ):
                 if run.get(field) != approved_case[contract_field]:
                     errors.append(
                         f"{label}.{field} must match approved manifest "
                         f"value {approved_case[contract_field]!r}"
                     )
+        for field, expected_value in (
+            ("gold_package_path", PINNED_GOLD_PACKAGE_PATH),
+            ("gold_package_sha256", PINNED_GOLD_PACKAGE_SHA256),
+        ):
+            if run.get(field) != expected_value:
+                errors.append(
+                    f"{label}.{field} must match pinned gold package "
+                    f"value {expected_value!r}"
+                )
+        gold_case = (
+            gold_case_contracts.get(case_id)
+            if isinstance(case_id, str)
+            else None
+        )
+        if (
+            gold_case is not None
+            and run.get("gold_case_sha256")
+            != gold_case["gold_case_sha256"]
+        ):
+            errors.append(
+                f"{label}.gold_case_sha256 must bind pinned gold case "
+                f"{case_id} as {gold_case['gold_case_sha256']}"
+            )
         arm = run.get("arm")
         arm_is_valid = isinstance(arm, str) and arm in {"manual", "veridoc"}
         if not arm_is_valid:
@@ -1232,17 +1415,17 @@ def validate_record(record: Any) -> list[str]:
         misses = run.get("high_risk_miss_count")
         if (
             isinstance(case_id, str)
-            and case_id in approved_case_contracts
+            and case_id in gold_case_contracts
             and _is_non_negative_int(expected)
             and expected
-            != approved_case_contracts[case_id]["high_risk_expected_count"]
+            != gold_case_contracts[case_id]["high_risk_expected_count"]
         ):
-            approved_expected = approved_case_contracts[case_id][
+            pinned_expected = gold_case_contracts[case_id][
                 "high_risk_expected_count"
             ]
             errors.append(
-                f"{label}.high_risk_expected_count must match approved "
-                f"manifest count {approved_expected} for {case_id}"
+                f"{label}.high_risk_expected_count must match pinned "
+                f"gold package count {pinned_expected} for {case_id}"
             )
         if (
             _is_non_negative_int(expected)
@@ -1436,7 +1619,9 @@ def summarize_record(record: dict[str, Any]) -> dict[str, Any]:
     errors = validate_record(record)
     if errors:
         raise ValueError("record is invalid: " + "; ".join(errors))
-    _, structured_high_risk_targets_ready = _load_approved_manifest_contract()
+    _, structured_high_risk_targets_ready = (
+        _load_pinned_gold_package_contract()
+    )
 
     completed_participants = [
         item["participant_id"]
@@ -1469,24 +1654,28 @@ def summarize_record(record: dict[str, Any]) -> dict[str, Any]:
             veridoc = by_pair.get((participant_id, case_id, "veridoc"))
             if manual is None or veridoc is None:
                 continue
-            eligible = (
-                participant_statuses[participant_id] == "completed"
-                and record["study_status"] == "validation_example"
-                and manual["outcome"] == "approved"
+            calculable = (
+                manual["outcome"] == "approved"
                 and veridoc["outcome"] == "approved"
                 and manual["checklist_complete"]
                 and veridoc["checklist_complete"]
             )
+            eligible = (
+                calculable
+                and participant_statuses[participant_id] == "completed"
+                and record["study_status"] == "validation_example"
+            )
             pair_result = {
                 "participant_id": participant_id,
                 "case_id": case_id,
+                "calculable": calculable,
                 "eligible": eligible,
                 "manual_outcome": manual["outcome"],
                 "manual_blocker_code": manual["blocker_code"],
                 "veridoc_outcome": veridoc["outcome"],
                 "veridoc_blocker_code": veridoc["blocker_code"],
             }
-            if eligible:
+            if calculable:
                 manual_seconds = correction_seconds(manual)
                 veridoc_seconds = correction_seconds(veridoc)
                 reduction = (
@@ -1501,7 +1690,8 @@ def summarize_record(record: dict[str, Any]) -> dict[str, Any]:
                         "reduction_percent": reduction,
                     }
                 )
-                eligible_pair_results.append(pair_result)
+                if eligible:
+                    eligible_pair_results.append(pair_result)
             pair_results.append(pair_result)
 
     paired_median = (
@@ -1563,6 +1753,9 @@ def summarize_record(record: dict[str, Any]) -> dict[str, Any]:
         "target_product_commit": APPROVED_PRODUCT_COMMIT,
         "manifest_git_blob": APPROVED_MANIFEST_GIT_BLOB,
         "manifest_contract_sha256": APPROVED_MANIFEST_CONTRACT_SHA256,
+        "gold_package_path": PINNED_GOLD_PACKAGE_PATH,
+        "gold_package_sha256": PINNED_GOLD_PACKAGE_SHA256,
+        "gold_package_approval_status": "unapproved_validation_only",
         "structured_high_risk_targets_ready": (
             structured_high_risk_targets_ready
         ),
