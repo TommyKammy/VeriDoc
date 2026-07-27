@@ -6,6 +6,8 @@
 - Target manifest revision: `phase12-mvp-v1`
 - Approved target product commit:
   `584ef2db12a6676abb65f75de1ec38145e06b487`
+- Approved reproducible product artifact SHA-256:
+  `0bec46f7d8240796a137a163c20c4ee5f98f867f5730d78fe56b571eeffd6b3c`
 - Approved manifest Git blob: `13450762d323198b1b6e87315be173c784fc4880`
 - Approved manifest contract SHA-256:
   `5d91a67915d79c649954c5c8af02e74d08d94d0b97e7e673a7db690df61ebfff`
@@ -46,14 +48,17 @@ evidence record. Do not retain direct participant identity: names, email
 addresses, employee IDs, free-text biographies, or other direct identifiers are
 prohibited.
 
-Before timed work, each participant completes one fixed, unscored practice task
-for each arm. Record the fixed task, training material, and assistance contract
-as one study-level `practice_revision`; it must not vary between participants or
-arms. Record `manual_practice_completed_at` and
-`veridoc_practice_completed_at`; both UTC timestamps must strictly precede that
-participant's earliest timed run. Counterbalance arm order among completed
-participants: both `manual`-first and `veridoc`-first orders must occur, and
-their participant counts may differ by at most one.
+Before timed work, each completed participant completes one fixed, unscored
+practice task for each arm. Record the fixed task, training material, and
+assistance contract as one study-level `practice_revision`; it must not vary
+between participants or arms. Completed participants record both practice flags
+as `true`, and both UTC completion timestamps must strictly precede their
+earliest timed run. A participant who withdraws before or during practice
+retains each actual completion flag; an uncompleted arm records `false` with a
+`null` timestamp, and `arm_order` may remain `null` if it was not assigned.
+Counterbalance arm order among completed participants: both `manual`-first and
+`veridoc`-first orders must occur, and their participant counts may differ by at
+most one.
 
 ## Timing and run accounting
 
@@ -62,7 +67,7 @@ Stop `ended_at` only when either:
 
 1. the reviewer has an approved artifact and a completed checklist; or
 2. the reviewer declares the run blocked and records a controlled
-   `blocker_code`.
+   `blocker_code`, then completes the checklist.
 
 All timestamps use the lexical form
 `YYYY-MM-DDTHH:MM:SS[.fraction](Z|+00:00)`. Alternate separators, reduced
@@ -93,10 +98,12 @@ Participants who withdraw remain declared with
 `participation_status: withdrawn`; their existing attempts remain in the record,
 including any `participant_withdrew` exclusion, but their unstarted future
 participant/case/arm groups are not required and they are excluded from the
-paired cohort median. A blocked non-excluded attempt is accounted for and makes
-its pair ineligible for the 30% calculation; it is not an exclusion. Attempt
-numbers for each recorded participant/case/arm are contiguous from 1, and no
-two timed runs for one participant may overlap.
+paired cohort median. Any fully recorded pair completed before withdrawal
+remains in `pair_results` as ineligible. A blocked non-excluded attempt is
+accounted for, requires a completed checklist, and makes its pair ineligible for
+the 30% calculation; it is not an exclusion. Attempt numbers for each recorded
+participant/case/arm are contiguous from 1, and no two timed runs for one
+participant may overlap.
 Within each participant/case/arm, attempt timestamps must also advance in
 `attempt_number` order; a retry cannot occur before the attempt it retries.
 Each attempt uses the generated opaque ID
@@ -126,11 +133,14 @@ requires the three source fields to match that immutable contract.
 Manual runs record `veridoc_build_provenance: null`. Every VeriDoc run records
 a closed build-provenance object containing an opaque attestation record ID,
 the approved product commit and Git tree, clean-checkout state, verified
-derivation status, non-zero build-artifact SHA-256, and an attestation SHA-256
-over the canonical provenance fields. The validator independently resolves the
-approved Git tree, recomputes the attestation digest, and rejects other commits,
-trees, states, or unsealed provenance. Copying the study-level commit constant
-without this per-run build identity is insufficient.
+derivation status, the reproducible approved-product artifact SHA-256, and an
+attestation SHA-256 over the canonical provenance fields. The product artifact
+digest is SHA-256 over the exact bytes emitted by
+`git ls-tree -r -z --full-tree APPROVED_PRODUCT_COMMIT`; the validator
+independently derives that digest, resolves the approved Git tree, recomputes
+the attestation digest, and rejects other commits, trees, artifacts, states, or
+unsealed provenance. Copying the study-level commit constant without this
+per-run build identity is insufficient.
 
 The approved `p12g-02-v1` manifest does not contain the later structured
 `expected_high_risk_targets` fields. The validator therefore derives an empty

@@ -179,23 +179,40 @@
           "const": true
         },
         "manual_practice_completed": {
-          "const": true
+          "type": "boolean"
         },
         "manual_practice_completed_at": {
-          "type": "string",
-          "format": "date-time",
-          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?(Z|\\+00:00)$"
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?(Z|\\+00:00)$"
+            }
+          ]
         },
         "veridoc_practice_completed": {
-          "const": true
+          "type": "boolean"
         },
         "veridoc_practice_completed_at": {
-          "type": "string",
-          "format": "date-time",
-          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?(Z|\\+00:00)$"
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?(Z|\\+00:00)$"
+            }
+          ]
         },
         "arm_order": {
           "oneOf": [
+            {
+              "type": "null"
+            },
             {
               "const": [
                 "manual",
@@ -210,7 +227,79 @@
             }
           ]
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "participation_status": {
+                "const": "completed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "manual_practice_completed": {
+                "const": true
+              },
+              "veridoc_practice_completed": {
+                "const": true
+              },
+              "arm_order": {
+                "not": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "manual_practice_completed": {
+                "const": false
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "manual_practice_completed_at": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "manual_practice_completed_at": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "veridoc_practice_completed": {
+                "const": false
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "veridoc_practice_completed_at": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "veridoc_practice_completed_at": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ]
     },
     "veridocBuildProvenance": {
       "type": "object",
@@ -242,11 +331,7 @@
           "const": "verified_from_approved_commit"
         },
         "build_artifact_sha256": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{64}$",
-          "not": {
-            "const": "0000000000000000000000000000000000000000000000000000000000000000"
-          }
+          "const": "0bec46f7d8240796a137a163c20c4ee5f98f867f5730d78fe56b571eeffd6b3c"
         },
         "attestation_sha256": {
           "type": "string",
@@ -500,9 +585,6 @@
         {
           "if": {
             "properties": {
-              "outcome": {
-                "const": "approved"
-              },
               "excluded": {
                 "const": false
               }

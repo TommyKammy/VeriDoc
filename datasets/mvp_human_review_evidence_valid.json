@@ -114,8 +114,8 @@
         "product_tree": "d7b1714ab9e7f42c5299a4e4b5197e4669a035b9",
         "checkout_state": "clean",
         "derivation_status": "verified_from_approved_commit",
-        "build_artifact_sha256": "d8de1833e8dc2bbf46e104c5baad66294e0ef3f1eddbcb32b9d894b0d4ae65be",
-        "attestation_sha256": "58ff77b60383f2e78ccd4aef088dcb97237cedd421831e43ef5f8eda63c0b979"
+        "build_artifact_sha256": "0bec46f7d8240796a137a163c20c4ee5f98f867f5730d78fe56b571eeffd6b3c",
+        "attestation_sha256": "4884902eca3e12ba591c9304645e6c779710b85291bfa4dcf1387e2d9831607c"
       },
       "attempt_number": 1,
       "task_revision": "task-phase12-v1",
@@ -152,8 +152,8 @@
         "product_tree": "d7b1714ab9e7f42c5299a4e4b5197e4669a035b9",
         "checkout_state": "clean",
         "derivation_status": "verified_from_approved_commit",
-        "build_artifact_sha256": "d8de1833e8dc2bbf46e104c5baad66294e0ef3f1eddbcb32b9d894b0d4ae65be",
-        "attestation_sha256": "58ff77b60383f2e78ccd4aef088dcb97237cedd421831e43ef5f8eda63c0b979"
+        "build_artifact_sha256": "0bec46f7d8240796a137a163c20c4ee5f98f867f5730d78fe56b571eeffd6b3c",
+        "attestation_sha256": "4884902eca3e12ba591c9304645e6c779710b85291bfa4dcf1387e2d9831607c"
       },
       "attempt_number": 1,
       "task_revision": "task-phase12-v1",
@@ -165,7 +165,7 @@
       "ended_at": "2026-07-26T03:12:00Z",
       "excluded_pause_seconds": 0,
       "outcome": "blocked",
-      "checklist_complete": false,
+      "checklist_complete": true,
       "blocker_code": "approval_unavailable",
       "high_risk_expected_count": 0,
       "high_risk_miss_count": 0,
@@ -250,8 +250,8 @@
         "product_tree": "d7b1714ab9e7f42c5299a4e4b5197e4669a035b9",
         "checkout_state": "clean",
         "derivation_status": "verified_from_approved_commit",
-        "build_artifact_sha256": "d8de1833e8dc2bbf46e104c5baad66294e0ef3f1eddbcb32b9d894b0d4ae65be",
-        "attestation_sha256": "58ff77b60383f2e78ccd4aef088dcb97237cedd421831e43ef5f8eda63c0b979"
+        "build_artifact_sha256": "0bec46f7d8240796a137a163c20c4ee5f98f867f5730d78fe56b571eeffd6b3c",
+        "attestation_sha256": "4884902eca3e12ba591c9304645e6c779710b85291bfa4dcf1387e2d9831607c"
       },
       "attempt_number": 1,
       "task_revision": "task-phase12-v1",

@@ -21,6 +21,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_PATH = REPO_ROOT / "docs" / "mvp-human-review-evidence.schema.json"
 APPROVED_PRODUCT_COMMIT = "584ef2db12a6676abb65f75de1ec38145e06b487"
 APPROVED_PRODUCT_TREE = "d7b1714ab9e7f42c5299a4e4b5197e4669a035b9"
+APPROVED_PRODUCT_ARTIFACT_SHA256 = (
+    "0bec46f7d8240796a137a163c20c4ee5f98f867f5730d78fe56b571eeffd6b3c"
+)
 APPROVED_MANIFEST_PATH = "datasets/mvp_evaluation_manifest_v1.json"
 APPROVED_MANIFEST_GIT_BLOB = "13450762d323198b1b6e87315be173c784fc4880"
 APPROVED_MANIFEST_CONTRACT_SHA256 = (
@@ -146,6 +149,28 @@ def _approved_product_tree() -> str:
         ) from exc
 
 
+def _approved_product_artifact_sha256() -> str:
+    try:
+        tree_manifest = subprocess.run(
+            [
+                "git",
+                "ls-tree",
+                "-r",
+                "-z",
+                "--full-tree",
+                APPROVED_PRODUCT_COMMIT,
+            ],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ApprovedManifestError(
+            "unable to derive the approved product artifact"
+        ) from exc
+    return hashlib.sha256(tree_manifest).hexdigest()
+
+
 @lru_cache(maxsize=1)
 def _load_approved_manifest_contract() -> tuple[
     dict[str, dict[str, Any]], bool
@@ -155,6 +180,13 @@ def _load_approved_manifest_contract() -> tuple[
         raise ApprovedManifestError(
             "approved product tree mismatch: "
             f"expected {APPROVED_PRODUCT_TREE}, got {product_tree}"
+        )
+    product_artifact_sha256 = _approved_product_artifact_sha256()
+    if product_artifact_sha256 != APPROVED_PRODUCT_ARTIFACT_SHA256:
+        raise ApprovedManifestError(
+            "approved product artifact SHA-256 mismatch: "
+            f"expected {APPROVED_PRODUCT_ARTIFACT_SHA256}, "
+            f"got {product_artifact_sha256}"
         )
     manifest_bytes = _git_show_approved(APPROVED_MANIFEST_PATH)
     manifest_blob = _git_blob_oid(manifest_bytes)
@@ -536,33 +568,49 @@ def validate_record(record: Any) -> list[str]:
             errors.append(f"{label}.participation_status is invalid")
         elif isinstance(participant_id, str):
             participant_statuses[participant_id] = participation_status
-        for field in (
-            "relevant_experience_attested",
-            "manual_practice_completed",
-            "veridoc_practice_completed",
-        ):
-            if participant.get(field) is not True:
-                errors.append(f"{label}.{field} must be true")
-        for field in (
-            "manual_practice_completed_at",
-            "veridoc_practice_completed_at",
-        ):
-            completed_at = _parse_utc(
-                participant.get(field),
-                f"{label}.{field}",
-                errors,
-            )
-            if completed_at is not None and isinstance(participant_id, str):
-                practice_completed_at_by_participant[participant_id][
-                    field
-                ] = completed_at
+        if participant.get("relevant_experience_attested") is not True:
+            errors.append(f"{label}.relevant_experience_attested must be true")
+        for arm in ("manual", "veridoc"):
+            completed_field = f"{arm}_practice_completed"
+            completed_at_field = f"{arm}_practice_completed_at"
+            completed = participant.get(completed_field)
+            completed_at_value = participant.get(completed_at_field)
+            if participation_status == "completed":
+                if completed is not True:
+                    errors.append(f"{label}.{completed_field} must be true")
+            elif not isinstance(completed, bool):
+                errors.append(f"{label}.{completed_field} must be boolean")
+            if completed is True:
+                completed_at = _parse_utc(
+                    completed_at_value,
+                    f"{label}.{completed_at_field}",
+                    errors,
+                )
+                if completed_at is not None and isinstance(participant_id, str):
+                    practice_completed_at_by_participant[participant_id][
+                        completed_at_field
+                    ] = completed_at
+            elif completed is False and completed_at_value is not None:
+                errors.append(
+                    f"{label}.{completed_at_field} must be null when "
+                    f"{completed_field} is false"
+                )
         arm_order = participant.get("arm_order")
-        if arm_order not in (
+        arm_order_is_valid = arm_order in (
             ["manual", "veridoc"],
             ["veridoc", "manual"],
-        ):
+        )
+        if participation_status == "completed" and not arm_order_is_valid:
             errors.append(f"{label}.arm_order is invalid")
-        elif isinstance(participant_id, str):
+        elif (
+            participation_status == "withdrawn"
+            and arm_order is not None
+            and not arm_order_is_valid
+        ):
+            errors.append(
+                f"{label}.arm_order must be null or a controlled arm order"
+            )
+        elif arm_order_is_valid and isinstance(participant_id, str):
             participant_orders[participant_id] = (arm_order[0], arm_order[1])
 
     completed_participant_ids = {
@@ -677,10 +725,14 @@ def validate_record(record: Any) -> list[str]:
                 f"{label}.sealed_artifact_sha256 must be lowercase SHA-256"
             )
         sealed_artifact_kind = run.get("sealed_artifact_kind")
-        if sealed_artifact_kind not in {
-            "output_artifact",
-            "blocked_attempt_envelope",
-        }:
+        if (
+            not isinstance(sealed_artifact_kind, str)
+            or sealed_artifact_kind
+            not in {
+                "output_artifact",
+                "blocked_attempt_envelope",
+            }
+        ):
             errors.append(f"{label}.sealed_artifact_kind is invalid")
 
         participant_id = run.get("participant_id")
@@ -788,6 +840,16 @@ def validate_record(record: Any) -> list[str]:
                             f"{label}.veridoc_build_provenance.{field} "
                             "must be lowercase SHA-256"
                         )
+                if (
+                    build_provenance.get("build_artifact_sha256")
+                    != APPROVED_PRODUCT_ARTIFACT_SHA256
+                ):
+                    errors.append(
+                        f"{label}.veridoc_build_provenance."
+                        "build_artifact_sha256 must match the reproducibly "
+                        "derived approved product artifact "
+                        f"{APPROVED_PRODUCT_ARTIFACT_SHA256}"
+                    )
                 attestation_payload = {
                     field: build_provenance.get(field)
                     for field in (
@@ -967,12 +1029,11 @@ def validate_record(record: Any) -> list[str]:
             errors.append(f"{label}.checklist_complete must be boolean")
         elif (
             excluded is False
-            and outcome == "approved"
             and not checklist_complete
         ):
             errors.append(
-                f"{label}.checklist_complete must be true for included "
-                "approved outcome"
+                f"{label}.checklist_complete must be true for every "
+                "included outcome"
             )
 
         for field in (
@@ -1042,8 +1103,14 @@ def validate_record(record: Any) -> list[str]:
                 )
 
     for group, attempt_numbers in sorted(attempt_numbers_by_group.items()):
-        expected_numbers = set(range(1, max(attempt_numbers) + 1))
-        if attempt_numbers != expected_numbers:
+        ordered_attempt_numbers = sorted(attempt_numbers)
+        if any(
+            attempt_number != expected
+            for expected, attempt_number in enumerate(
+                ordered_attempt_numbers,
+                start=1,
+            )
+        ):
             errors.append(
                 f"{group[0]}/{group[1]}/{group[2]} attempt_number values "
                 "must be contiguous from 1"
@@ -1088,6 +1155,16 @@ def validate_record(record: Any) -> list[str]:
                 "participant_withdrew exclusion"
             )
         if participation_status != "completed":
+            for case_id in sorted(declared_cases):
+                for arm in ("manual", "veridoc"):
+                    included = included_by_pair[
+                        (participant_id, case_id, arm)
+                    ]
+                    if len(included) > 1:
+                        errors.append(
+                            f"{participant_id}/{case_id}/{arm} must have at "
+                            "most one non-excluded run after withdrawal"
+                        )
             continue
         for case_id in sorted(declared_cases):
             for arm in ("manual", "veridoc"):
@@ -1128,11 +1205,15 @@ def summarize_record(record: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("record is invalid: " + "; ".join(errors))
     _, structured_high_risk_targets_ready = _load_approved_manifest_contract()
 
-    participants = [
+    completed_participants = [
         item["participant_id"]
         for item in record["participants"]
         if item["participation_status"] == "completed"
     ]
+    participant_statuses = {
+        item["participant_id"]: item["participation_status"]
+        for item in record["participants"]
+    }
     included = [run for run in record["runs"] if not run["excluded"]]
     by_pair = {
         (run["participant_id"], run["case_id"], run["arm"]): run
@@ -1146,12 +1227,15 @@ def summarize_record(record: dict[str, Any]) -> dict[str, Any]:
         end = datetime.fromisoformat(run["ended_at"].replace("Z", "+00:00"))
         return (end - start).total_seconds() - run["excluded_pause_seconds"]
 
-    for participant_id in sorted(participants):
+    for participant_id in sorted(participant_statuses):
         for case_id in sorted(record["case_ids"]):
-            manual = by_pair[(participant_id, case_id, "manual")]
-            veridoc = by_pair[(participant_id, case_id, "veridoc")]
+            manual = by_pair.get((participant_id, case_id, "manual"))
+            veridoc = by_pair.get((participant_id, case_id, "veridoc"))
+            if manual is None or veridoc is None:
+                continue
             eligible = (
-                manual["outcome"] == "approved"
+                participant_statuses[participant_id] == "completed"
+                and manual["outcome"] == "approved"
                 and veridoc["outcome"] == "approved"
                 and manual["checklist_complete"]
                 and veridoc["checklist_complete"]
@@ -1215,7 +1299,7 @@ def summarize_record(record: dict[str, Any]) -> dict[str, Any]:
 
     required_groups = {
         (participant_id, case_id, arm)
-        for participant_id in participants
+        for participant_id in completed_participants
         for case_id in record["case_ids"]
         for arm in ("manual", "veridoc")
     }
@@ -1245,7 +1329,9 @@ def summarize_record(record: dict[str, Any]) -> dict[str, Any]:
         "structured_high_risk_targets_ready": (
             structured_high_risk_targets_ready
         ),
-        "required_runs": 2 * len(participants) * len(record["case_ids"]),
+        "required_runs": 2
+        * len(completed_participants)
+        * len(record["case_ids"]),
         "recorded_runs": len(record["runs"]),
         "excluded_runs": sum(run["excluded"] for run in record["runs"]),
         "retry_runs": sum(run["attempt_number"] > 1 for run in record["runs"]),
@@ -1276,7 +1362,12 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         record = _loads_json_strict(args.record.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, DuplicateKeyError) as exc:
+    except (
+        OSError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        DuplicateKeyError,
+    ) as exc:
         print(f"Unable to read evidence: {exc}", file=sys.stderr)
         return 2
 

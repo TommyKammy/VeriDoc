@@ -20,14 +20,19 @@ employee IDs, or free-text participant notes in the repository.
 - [ ] The five `phase12-mvp-v1` cases, task revisions, gold revisions, target
       formats, and completion checklist are fixed for both arms.
 - [ ] The evidence pins target commit
-      `584ef2db12a6676abb65f75de1ec38145e06b487`, manifest Git blob
+      `584ef2db12a6676abb65f75de1ec38145e06b487`, reproducible product
+      artifact SHA-256
+      `0bec46f7d8240796a137a163c20c4ee5f98f867f5730d78fe56b571eeffd6b3c`,
+      manifest Git blob
       `13450762d323198b1b6e87315be173c784fc4880`, and approved manifest
       contract SHA-256
       `5d91a67915d79c649954c5c8af02e74d08d94d0b97e7e673a7db690df61ebfff`.
 - [ ] Every case uses `task-phase12-v1` and `gold-phase12-v1`; cohort agreement
       on a different revision is not accepted.
 - [ ] Gold answers are hidden until each timed run stops.
-- [ ] Each participant completed one fixed, unscored practice task per arm.
+- [ ] Each completed participant completed one fixed, unscored practice task
+      per arm; withdrawn participants retain actual flags and `null` timestamps
+      for uncompleted arms.
 - [ ] Each arm's practice completion timestamp precedes that participant's
       earliest timed run.
 - [ ] One `practice_revision` fixes the practice task, training material, and
@@ -45,16 +50,16 @@ employee IDs, or free-text participant notes in the repository.
       `source_fixture_sha256` against the approved manifest fixture before
       timing begins.
 - [ ] For a VeriDoc arm, verify the per-run build-provenance record identifies
-      the approved product commit/tree, clean checkout, build-artifact digest,
-      and attestation digest over the canonical provenance fields. Record
-      `null` for a manual arm.
+      the approved product commit/tree, clean checkout, reproducibly derived
+      `git ls-tree` artifact digest, and attestation digest over the canonical
+      provenance fields. Record `null` for a manual arm.
 - [ ] Start timing only when source, target format, and checklist are available.
 - [ ] Record every pause/interrupt in whole seconds.
 - [ ] Do not expose the gold answer before the run stops.
 - [ ] Set `gold_answer_hidden_until_ended_at` to `true` only after confirming
       that the gold answer stayed hidden through `ended_at`.
 - [ ] Stop timing only at approved artifact plus completed checklist, or at an
-      explicit blocked outcome.
+      explicit blocked outcome followed by checklist completion.
 - [ ] Use strict UTC RFC 3339 timestamps with full seconds and `Z` or
       `+00:00`; do not use alternate separators or reduced precision.
 - [ ] Seal the stopped output artifact, or a canonical blocked-attempt envelope
@@ -82,8 +87,8 @@ employee IDs, or free-text participant notes in the repository.
 | `sealed_artifact_kind` | `output_artifact` / `blocked_attempt_envelope` |
 | `participant_id` | `P...` |
 | participant `participation_status` | `completed` / `withdrawn` |
-| participant `manual_practice_completed_at` | UTC RFC 3339 timestamp |
-| participant `veridoc_practice_completed_at` | UTC RFC 3339 timestamp |
+| participant `manual_practice_completed_at` | UTC RFC 3339 timestamp / `null` when withdrawn before completion |
+| participant `veridoc_practice_completed_at` | UTC RFC 3339 timestamp / `null` when withdrawn before completion |
 | `case_id` | one declared Phase 12 case |
 | `source_fixture_id` | approved manifest fixture ID |
 | `source_fixture_path` | approved repository-relative fixture path |
@@ -100,7 +105,7 @@ employee IDs, or free-text participant notes in the repository.
 | `ended_at` | UTC RFC 3339 timestamp |
 | `excluded_pause_seconds` | non-negative whole seconds |
 | `outcome` | `approved` / `blocked` |
-| `checklist_complete` | `true` for included approved; blocked may be `false` |
+| `checklist_complete` | `true` for every non-excluded outcome |
 | `blocker_code` | controlled code / `null` |
 | `high_risk_expected_count` | non-negative integer |
 | `high_risk_miss_count` | integer not greater than expected |
@@ -114,7 +119,8 @@ employee IDs, or free-text participant notes in the repository.
 - [ ] Every completed participant has one non-excluded record for every case
       and arm.
 - [ ] Withdrawn participants and their existing attempts remain recorded; their
-      unstarted future groups are not fabricated.
+      unstarted future groups are not fabricated, and any completed pairs remain
+      reported as ineligible.
 - [ ] All retries and exclusions remain in the evidence.
 - [ ] Every attempt has a unique sealed-artifact record ID and non-zero digest;
       assessor counts refer to those exact sealed bytes.
