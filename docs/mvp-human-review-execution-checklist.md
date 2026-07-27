@@ -10,6 +10,9 @@ employee IDs, or free-text participant notes in the repository.
       timed work.
 - [ ] Consent form version, study-owner role, and approval timestamp are
       recorded in `consent_approval`.
+- [ ] Every pseudonymous participant records `consent_status: consented`, the
+      approved `consent_form_version`, and a `consented_at` timestamp after form
+      approval and before that participant's practice or timed work.
 - [ ] Quality-approver role, approval status/timestamp, and external-record
       version are recorded in `quality_approval`.
 - [ ] At least three relevant document reviewers have IDs generated
@@ -35,12 +38,16 @@ employee IDs, or free-text participant notes in the repository.
 - [ ] Each completed participant completed one fixed, unscored practice task
       per arm; withdrawn participants retain actual flags and `null` timestamps
       for uncompleted arms.
+- [ ] `docs/mvp-human-review-practice-package.json` has SHA-256
+      `e01b405b9898ec6a52a3e8c67d4e78419559df0ba9686f5d9b4d8738a85d7b16`
+      and defines both arm fixtures, training material, task instructions, and
+      assistance contracts.
+- [ ] Every participant records `practice-phase12-v1` and that package digest
+      separately for manual and VeriDoc practice.
 - [ ] Each completed participant records `withdrawn_at: null`; each withdrawn
       participant records a controlled UTC withdrawal boundary.
 - [ ] Each arm's practice completion timestamp precedes that participant's
-      earliest timed run.
-- [ ] One `practice_revision` fixes the practice task, training material, and
-      assistance contract for the whole cohort.
+      earliest timed run and does not occur after withdrawal.
 - [ ] Arm order is assigned before timed work and is counterbalanced.
 - [ ] Timing device and pause/interrupt recording method are ready.
 
@@ -63,8 +70,10 @@ employee IDs, or free-text participant notes in the repository.
 - [ ] Start timing only when source, target format, and checklist are available.
 - [ ] Record every pause/interrupt in whole seconds.
 - [ ] Do not expose the gold answer before the run stops.
-- [ ] Set `gold_answer_hidden_until_ended_at` to `true` only after confirming
-      that the gold answer stayed hidden through `ended_at`.
+- [ ] Set `gold_answer_hidden_until_ended_at` to `true` after confirming that
+      the gold answer stayed hidden through `ended_at`. If it was exposed
+      early, retain the attempt with `false`, `excluded: true`, and
+      `exclusion_reason_code: protocol_deviation`.
 - [ ] Stop timing only at approved artifact plus completed checklist, or at an
       explicit blocked outcome followed by checklist completion.
 - [ ] Use strict UTC RFC 3339 timestamps with full seconds and `Z` or
@@ -95,8 +104,15 @@ employee IDs, or free-text participant notes in the repository.
 | `participant_id` | `P-` plus an independently generated uppercase UUIDv4 |
 | participant `participation_status` | `completed` / `withdrawn` |
 | participant `withdrawn_at` | `null` when completed / controlled UTC RFC 3339 boundary when withdrawn |
+| participant `consent_status` | `consented` |
+| participant `consented_at` | UTC RFC 3339 timestamp after form approval and before practice/timed work |
+| participant `consent_form_version` | same version as `consent_approval` |
 | participant `manual_practice_completed_at` | UTC RFC 3339 timestamp / `null` when withdrawn before completion |
+| participant `manual_practice_revision` | `practice-phase12-v1` |
+| participant `manual_practice_package_sha256` | approved immutable package digest |
 | participant `veridoc_practice_completed_at` | UTC RFC 3339 timestamp / `null` when withdrawn before completion |
+| participant `veridoc_practice_revision` | `practice-phase12-v1` |
+| participant `veridoc_practice_package_sha256` | approved immutable package digest |
 | `case_id` | one declared Phase 12 case |
 | `source_fixture_id` | approved manifest fixture ID |
 | `source_fixture_path` | approved repository-relative fixture path |
@@ -107,7 +123,7 @@ employee IDs, or free-text participant notes in the repository.
 | `task_revision` | `task-phase12-v1` |
 | `gold_answer_revision` | `gold-phase12-v1` |
 | `checklist_revision` | `checklist-phase12-v1` |
-| `gold_answer_hidden_until_ended_at` | `true` attestation |
+| `gold_answer_hidden_until_ended_at` | `true` / `false` only for excluded `protocol_deviation` |
 | `gold_answer_compared_by_role` | `independent_assessor` |
 | `gold_answer_comparison_withheld_from_participant` | `true` attestation |
 | `started_at` | UTC RFC 3339 timestamp |
@@ -132,6 +148,10 @@ employee IDs, or free-text participant notes in the repository.
       reported as ineligible.
 - [ ] No attempt starts at or ends after its participant's `withdrawn_at`
       boundary.
+- [ ] No participant consent or practice completion is recorded after
+      withdrawal.
+- [ ] Every participant's two practice attestations bind to the approved
+      revision and immutable package digest.
 - [ ] All retries and exclusions remain in the evidence.
 - [ ] Every attempt has a unique sealed-artifact record ID and non-zero digest;
       assessor counts refer to those exact sealed bytes.

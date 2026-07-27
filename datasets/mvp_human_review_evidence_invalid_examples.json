@@ -19,6 +19,24 @@
       "path": "/runs/0/excluded_pause_seconds",
       "value": 1201,
       "expected_error": "excluded_pause_seconds must be less than elapsed time"
+    },
+    {
+      "id": "participant-consent-missing",
+      "path": "/participants/0/consent_status",
+      "value": "not_consented",
+      "expected_error": "participant[0].consent_status must be consented"
+    },
+    {
+      "id": "participant-practice-package-drift",
+      "path": "/participants/0/manual_practice_package_sha256",
+      "value": "0000000000000000000000000000000000000000000000000000000000000000",
+      "expected_error": "participant[0].manual_practice_package_sha256 must match approved practice package"
+    },
+    {
+      "id": "included-hidden-gold-violation",
+      "path": "/runs/0/gold_answer_hidden_until_ended_at",
+      "value": false,
+      "expected_error": "run[0].gold_answer_hidden_until_ended_at may be false only for an excluded protocol_deviation"
     }
   ]
 }

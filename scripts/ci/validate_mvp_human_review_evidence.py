@@ -50,6 +50,13 @@ EXPECTED_CASE_IDS = {
 APPROVED_TASK_REVISION = "task-phase12-v1"
 APPROVED_GOLD_ANSWER_REVISION = "gold-phase12-v1"
 APPROVED_CHECKLIST_REVISION = "checklist-phase12-v1"
+APPROVED_PRACTICE_REVISION = "practice-phase12-v1"
+APPROVED_PRACTICE_PACKAGE_PATH = (
+    "docs/mvp-human-review-practice-package.json"
+)
+APPROVED_PRACTICE_PACKAGE_SHA256 = (
+    "e01b405b9898ec6a52a3e8c67d4e78419559df0ba9686f5d9b4d8738a85d7b16"
+)
 APPROVED_RUN_REVISIONS = {
     "task_revision": APPROVED_TASK_REVISION,
     "gold_answer_revision": APPROVED_GOLD_ANSWER_REVISION,
@@ -412,15 +419,106 @@ def validate_record(record: Any) -> list[str]:
         ("target_product_commit", APPROVED_PRODUCT_COMMIT),
         ("manifest_git_blob", APPROVED_MANIFEST_GIT_BLOB),
         ("manifest_contract_sha256", APPROVED_MANIFEST_CONTRACT_SHA256),
+        ("practice_revision", APPROVED_PRACTICE_REVISION),
+        ("practice_package_path", APPROVED_PRACTICE_PACKAGE_PATH),
+        ("practice_package_sha256", APPROVED_PRACTICE_PACKAGE_SHA256),
     ):
         _validate_constant(record, field, expected, errors)
 
-    practice_revision = record.get("practice_revision")
-    if (
-        not isinstance(practice_revision, str)
-        or REVISION_RE.fullmatch(practice_revision) is None
-    ):
-        errors.append("practice_revision is invalid")
+    try:
+        practice_package_bytes = (
+            REPO_ROOT / APPROVED_PRACTICE_PACKAGE_PATH
+        ).read_bytes()
+    except OSError:
+        errors.append("approved practice package cannot be read")
+    else:
+        practice_package_sha256 = hashlib.sha256(
+            practice_package_bytes
+        ).hexdigest()
+        if practice_package_sha256 != APPROVED_PRACTICE_PACKAGE_SHA256:
+            errors.append(
+                "approved practice package content must match "
+                f"{APPROVED_PRACTICE_PACKAGE_SHA256}"
+            )
+        try:
+            practice_package = _loads_json_strict(
+                practice_package_bytes.decode("utf-8")
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError, DuplicateKeyError):
+            errors.append("approved practice package must be strict UTF-8 JSON")
+        else:
+            if not isinstance(practice_package, dict):
+                errors.append("approved practice package must be an object")
+            else:
+                for field, expected in (
+                    (
+                        "schema_version",
+                        "veridoc-mvp-human-review-practice-package/v1",
+                    ),
+                    ("practice_revision", APPROVED_PRACTICE_REVISION),
+                    ("decision_revision", "p12g-02-v1"),
+                ):
+                    if practice_package.get(field) != expected:
+                        errors.append(
+                            f"approved practice package {field} must be "
+                            f"{expected!r}"
+                        )
+                training_material = practice_package.get(
+                    "training_material"
+                )
+                instructions = (
+                    training_material.get("instructions")
+                    if isinstance(training_material, dict)
+                    else None
+                )
+                if (
+                    not isinstance(instructions, list)
+                    or not instructions
+                    or any(
+                        not isinstance(instruction, str)
+                        or not instruction.strip()
+                        for instruction in instructions
+                    )
+                ):
+                    errors.append(
+                        "approved practice package training instructions "
+                        "must be non-empty strings"
+                    )
+                for arm in ("manual", "veridoc"):
+                    practice = practice_package.get(f"{arm}_practice")
+                    label = f"approved practice package {arm}_practice"
+                    if not isinstance(practice, dict):
+                        errors.append(f"{label} must be an object")
+                        continue
+                    fixture_path = practice.get("source_fixture_path")
+                    fixture_sha256 = practice.get("source_fixture_sha256")
+                    if (
+                        not isinstance(fixture_path, str)
+                        or not fixture_path.startswith("datasets/fixtures/")
+                    ):
+                        errors.append(
+                            f"{label}.source_fixture_path is invalid"
+                        )
+                        continue
+                    if (
+                        not isinstance(fixture_sha256, str)
+                        or SHA256_RE.fullmatch(fixture_sha256) is None
+                    ):
+                        errors.append(
+                            f"{label}.source_fixture_sha256 is invalid"
+                        )
+                        continue
+                    try:
+                        actual_fixture_sha256 = hashlib.sha256(
+                            (REPO_ROOT / fixture_path).read_bytes()
+                        ).hexdigest()
+                    except OSError:
+                        errors.append(f"{label} fixture cannot be read")
+                    else:
+                        if actual_fixture_sha256 != fixture_sha256:
+                            errors.append(
+                                f"{label} fixture must match declared SHA-256"
+                            )
 
     study_id = record.get("study_id")
     if not isinstance(study_id, str) or STUDY_ID_RE.fullmatch(study_id) is None:
@@ -451,6 +549,7 @@ def validate_record(record: Any) -> list[str]:
 
     consent = record.get("consent_approval")
     approved_at: datetime | None = None
+    approved_consent_form_version: str | None = None
     consent_schema = schema["$defs"]["consentApproval"]
     _unknown_fields(
         consent,
@@ -482,6 +581,8 @@ def validate_record(record: Any) -> list[str]:
             or REVISION_RE.fullmatch(consent_version) is None
         ):
             errors.append("consent_approval.consent_form_version is invalid")
+        else:
+            approved_consent_form_version = consent_version
         if consent.get("direct_identifiers_stored") is not False:
             errors.append("consent_approval.direct_identifiers_stored must be false")
 
@@ -528,6 +629,7 @@ def validate_record(record: Any) -> list[str]:
     participant_statuses: dict[str, str] = {}
     participant_orders: dict[str, tuple[str, str]] = {}
     participant_withdrawn_at: dict[str, datetime] = {}
+    participant_consented_at: dict[str, datetime] = {}
     practice_completed_at_by_participant: dict[
         str, dict[str, datetime]
     ] = defaultdict(dict)
@@ -586,13 +688,50 @@ def validate_record(record: Any) -> list[str]:
             )
             if withdrawn_at is not None and isinstance(participant_id, str):
                 participant_withdrawn_at[participant_id] = withdrawn_at
+        if participant.get("consent_status") != "consented":
+            errors.append(f"{label}.consent_status must be consented")
+        consented_at = _parse_utc(
+            participant.get("consented_at"),
+            f"{label}.consented_at",
+            errors,
+        )
+        if consented_at is not None and isinstance(participant_id, str):
+            participant_consented_at[participant_id] = consented_at
+        participant_consent_version = participant.get("consent_form_version")
+        if (
+            not isinstance(participant_consent_version, str)
+            or REVISION_RE.fullmatch(participant_consent_version) is None
+        ):
+            errors.append(f"{label}.consent_form_version is invalid")
+        elif (
+            approved_consent_form_version is not None
+            and participant_consent_version != approved_consent_form_version
+        ):
+            errors.append(
+                f"{label}.consent_form_version must match consent_approval"
+            )
         if participant.get("relevant_experience_attested") is not True:
             errors.append(f"{label}.relevant_experience_attested must be true")
         for arm in ("manual", "veridoc"):
             completed_field = f"{arm}_practice_completed"
             completed_at_field = f"{arm}_practice_completed_at"
+            revision_field = f"{arm}_practice_revision"
+            package_sha256_field = f"{arm}_practice_package_sha256"
             completed = participant.get(completed_field)
             completed_at_value = participant.get(completed_at_field)
+            if participant.get(revision_field) != APPROVED_PRACTICE_REVISION:
+                errors.append(
+                    f"{label}.{revision_field} must be "
+                    f"{APPROVED_PRACTICE_REVISION}"
+                )
+            if (
+                participant.get(package_sha256_field)
+                != APPROVED_PRACTICE_PACKAGE_SHA256
+            ):
+                errors.append(
+                    f"{label}.{package_sha256_field} must match approved "
+                    "practice package"
+                )
             if participation_status == "completed":
                 if completed is not True:
                     errors.append(f"{label}.{completed_field} must be true")
@@ -950,9 +1089,12 @@ def validate_record(record: Any) -> list[str]:
                 if case_is_declared:
                     revisions_by_case[(case_id, field)].add(revision)
 
-        if run.get("gold_answer_hidden_until_ended_at") is not True:
+        gold_answer_hidden = run.get(
+            "gold_answer_hidden_until_ended_at"
+        )
+        if not isinstance(gold_answer_hidden, bool):
             errors.append(
-                f"{label}.gold_answer_hidden_until_ended_at must be true"
+                f"{label}.gold_answer_hidden_until_ended_at must be boolean"
             )
         if run.get("gold_answer_compared_by_role") != "independent_assessor":
             errors.append(
@@ -1045,6 +1187,22 @@ def validate_record(record: Any) -> list[str]:
         elif not excluded and exclusion_reason is not None:
             errors.append(f"{label}.exclusion_reason_code must be null when included")
         if (
+            gold_answer_hidden is False
+            and not (
+                excluded is True
+                and exclusion_reason == "protocol_deviation"
+            )
+        ):
+            errors.append(
+                f"{label}.gold_answer_hidden_until_ended_at may be false "
+                "only for an excluded protocol_deviation"
+            )
+        elif excluded is False and gold_answer_hidden is not True:
+            errors.append(
+                f"{label}.gold_answer_hidden_until_ended_at must be true "
+                "for every included run"
+            )
+        if (
             excluded is True
             and exclusion_reason == "participant_withdrew"
             and participant_is_declared
@@ -1128,9 +1286,44 @@ def validate_record(record: Any) -> list[str]:
                 errors.append(
                     f"{participant_id}.{field} must precede every timed run"
                 )
+    for participant_id, consented_at in sorted(
+        participant_consented_at.items()
+    ):
+        if approved_at is not None and consented_at <= approved_at:
+            errors.append(
+                f"{participant_id}.consented_at must follow "
+                "consent approval"
+            )
+        practice_times = practice_completed_at_by_participant[participant_id]
+        for field, completed_at in sorted(practice_times.items()):
+            if consented_at >= completed_at:
+                errors.append(
+                    f"{participant_id}.consented_at must precede {field}"
+                )
+        participant_runs = times_by_participant[participant_id]
+        if participant_runs:
+            earliest_run = min(start for start, _, _ in participant_runs)
+            if consented_at >= earliest_run:
+                errors.append(
+                    f"{participant_id}.consented_at must precede every "
+                    "timed run"
+                )
     for participant_id, withdrawn_at in sorted(
         participant_withdrawn_at.items()
     ):
+        consented_at = participant_consented_at.get(participant_id)
+        if consented_at is not None and consented_at >= withdrawn_at:
+            errors.append(
+                f"{participant_id}.consented_at must precede withdrawal"
+            )
+        for field, completed_at in sorted(
+            practice_completed_at_by_participant[participant_id].items()
+        ):
+            if completed_at > withdrawn_at:
+                errors.append(
+                    f"{participant_id}.{field} must not occur after "
+                    "withdrawal"
+                )
         for started_at, ended_at, run_label in times_by_participant[participant_id]:
             if started_at >= withdrawn_at or ended_at > withdrawn_at:
                 errors.append(

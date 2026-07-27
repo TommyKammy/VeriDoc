@@ -28,9 +28,11 @@ same five tasks once in the `manual` arm and once in the `veridoc` arm. Both
 arms use the same source fixture, task instructions, gold-answer revision,
 completion checklist, and timing boundary. The gold answer remains hidden until
 the timed run has stopped.
-Every run attests this boundary with
+Every included run attests this boundary with
 `gold_answer_hidden_until_ended_at: true`; a procedure note alone is not
-evidence that the gold remained hidden.
+evidence that the gold remained hidden. An excluded attempt may record `false`
+only with `exclusion_reason_code: protocol_deviation`, preserving an accidental
+early disclosure without admitting that attempt to the comparison.
 The participant never performs the gold comparison. An `independent_assessor`
 compares sealed artifacts with the gold outside the participant's view and
 withholds the result from that participant. Every run records
@@ -49,15 +51,23 @@ Keep the mapping from pseudonym to identity outside the repository and outside
 the evidence record. Do not retain direct participant identity: names, email
 addresses, employee IDs, free-text biographies, or other direct identifiers
 are prohibited.
+For each pseudonymous participant, record `consent_status: consented`,
+`consented_at`, and the approved `consent_form_version`. The participant
+consent timestamp must strictly follow study-owner approval of that form and
+strictly precede completed practice and every timed run.
 
 Before timed work, each completed participant completes one fixed, unscored
-practice task for each arm. Record the fixed task, training material, and
-assistance contract as one study-level `practice_revision`; it must not vary
-between participants or arms. Completed participants record both practice flags
-as `true`, and both UTC completion timestamps must strictly precede their
-earliest timed run. A participant who withdraws before or during practice
-retains each actual completion flag; an uncompleted arm records `false` with a
-`null` timestamp, and `arm_order` may remain `null` if it was not assigned.
+practice task for each arm. The immutable
+`docs/mvp-human-review-practice-package.json` defines both fixed fixtures,
+training material, task instructions, and assistance contracts. The study
+records its approved path, SHA-256, and `practice-phase12-v1`; every participant
+records that same revision and digest separately for the manual and VeriDoc
+practice actually used. Completed participants record both practice flags as
+`true`, and both UTC completion timestamps must strictly precede their earliest
+timed run. A participant who withdraws before or during practice retains each
+actual completion flag and no practice completion timestamp may occur after
+`withdrawn_at`; an uncompleted arm records `false` with a `null` timestamp, and
+`arm_order` may remain `null` if it was not assigned.
 Every participant records `withdrawn_at`: completed participants use `null`,
 while withdrawn participants record the controlled UTC withdrawal boundary.
 Counterbalance arm order among completed participants: both `manual`-first and
@@ -188,7 +198,9 @@ For each retained run, including excluded attempts, record:
   including a controlled `blocked` outcome;
 - `blocker_code`: a controlled reason for a blocked outcome;
 - `gold_answer_hidden_until_ended_at`: the controlled attestation that the gold
-  answer remained hidden until timing stopped;
+  answer remained hidden until timing stopped; this is `true` for every
+  included run and may be `false` only for an excluded
+  `protocol_deviation`;
 - `gold_answer_compared_by_role` and
   `gold_answer_comparison_withheld_from_participant`: controlled attestations
   that an independent assessor performed the comparison without disclosing the
@@ -222,13 +234,17 @@ attempt. A blocker is a `blocked` outcome with a non-null `blocker_code`.
 
 ## Privacy and approval boundary
 
-The study owner obtains consent before timed work and records it in
+The study owner approves the consent form before participant activity and
+records it in
 `consent_approval` with role `study_owner`, the controlled approval state and
 timestamp, and the consent form version. Independently, a quality approver
 records `quality_approval` with role `quality_approver`, the controlled approval
-state and timestamp, and the external system-of-record version. Both approval
-timestamps must strictly precede every timed run. Neither record stores the
-participant or approver identity. Set `direct_identifiers_stored` to `false`.
+state and timestamp, and the external system-of-record version. Each participant
+then records a privacy-safe consent attestation under the same form version;
+its timestamp must follow form approval and precede that participant's practice
+and timed work. Both study approval timestamps must strictly precede every timed
+run. Neither record stores the participant or approver identity. Set
+`direct_identifiers_stored` to `false`.
 
 The schema rejects unknown fields so that identity-like additions cannot be
 silently retained. Controlled codes replace free-text participant notes.

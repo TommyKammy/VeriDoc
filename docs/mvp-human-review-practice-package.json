@@ -1,0 +1,33 @@
+{
+  "schema_version": "veridoc-mvp-human-review-practice-package/v1",
+  "practice_revision": "practice-phase12-v1",
+  "decision_revision": "p12g-02-v1",
+  "training_material": {
+    "protocol_path": "docs/mvp-human-review-protocol.md",
+    "execution_checklist_path": "docs/mvp-human-review-execution-checklist.md",
+    "instructions": [
+      "Complete each fixed practice task before any timed run; practice is unscored.",
+      "Begin only when the source, target format, and checklist are available, and finish after recording an artifact or controlled blocked outcome.",
+      "Do not access a gold answer, assessment result, or assessor feedback during practice or before timed work.",
+      "Record the package revision, package SHA-256, completion flag, and completion timestamp under the assigned pseudonymous participant ID."
+    ],
+    "gold_answer_available_to_participant": false,
+    "assessor_feedback_available_before_timed_runs": false
+  },
+  "manual_practice": {
+    "source_fixture_id": "word-to-excel-meeting-minutes",
+    "source_fixture_path": "datasets/fixtures/word/word-to-excel-meeting-minutes.docx",
+    "source_fixture_sha256": "23f17ded1790bc1cea2f30c229b4c36d754c50c8cf73a6b153bdaab9cc52c718",
+    "target_format": "xlsx",
+    "task": "Create an editable spreadsheet from the fixed practice source and complete the shared review checklist.",
+    "assistance_contract": "Use a standard document editor only; do not use VeriDoc, another converter, a gold answer, or assessor feedback."
+  },
+  "veridoc_practice": {
+    "source_fixture_id": "word-to-excel-report",
+    "source_fixture_path": "datasets/fixtures/word/word-to-excel-report.docx",
+    "source_fixture_sha256": "d767be09dae3b8c840bfddd85319f51fe62531a688c7d20f3c76f792c46b1b06",
+    "target_format": "xlsx",
+    "task": "Create an editable spreadsheet from the fixed practice source with VeriDoc and complete the shared review checklist.",
+    "assistance_contract": "Use VeriDoc conversion and review UI only; do not use a gold answer or assessor feedback."
+  }
+}

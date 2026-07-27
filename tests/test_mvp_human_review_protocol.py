@@ -15,6 +15,9 @@ from scripts.ci.validate_mvp_human_review_evidence import (
     APPROVED_GOLD_ANSWER_REVISION,
     APPROVED_MANIFEST_CONTRACT_SHA256,
     APPROVED_MANIFEST_GIT_BLOB,
+    APPROVED_PRACTICE_PACKAGE_PATH,
+    APPROVED_PRACTICE_PACKAGE_SHA256,
+    APPROVED_PRACTICE_REVISION,
     APPROVED_SOURCE_TREE_LISTING_SHA256,
     APPROVED_PRODUCT_COMMIT,
     APPROVED_PRODUCT_TREE,
@@ -28,6 +31,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 PROTOCOL_PATH = REPO_ROOT / "docs" / "mvp-human-review-protocol.md"
 SCHEMA_PATH = REPO_ROOT / "docs" / "mvp-human-review-evidence.schema.json"
 CHECKLIST_PATH = REPO_ROOT / "docs" / "mvp-human-review-execution-checklist.md"
+PRACTICE_PACKAGE_PATH = (
+    REPO_ROOT / "docs" / "mvp-human-review-practice-package.json"
+)
 VALID_EXAMPLE_PATH = REPO_ROOT / "datasets" / "mvp_human_review_evidence_valid.json"
 INVALID_EXAMPLES_PATH = (
     REPO_ROOT / "datasets" / "mvp_human_review_evidence_invalid_examples.json"
@@ -246,11 +252,22 @@ def _add_withdrawn_participant(record: dict[str, object]) -> None:
             "participant_id": "P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C",
             "participation_status": "withdrawn",
             "withdrawn_at": "2026-08-10T01:02:00Z",
+            "consent_status": "consented",
+            "consented_at": "2026-07-26T00:06:00Z",
+            "consent_form_version": "synthetic-v1",
             "relevant_experience_attested": True,
             "manual_practice_completed": True,
             "manual_practice_completed_at": "2026-07-26T00:10:00Z",
+            "manual_practice_revision": APPROVED_PRACTICE_REVISION,
+            "manual_practice_package_sha256": (
+                APPROVED_PRACTICE_PACKAGE_SHA256
+            ),
             "veridoc_practice_completed": True,
             "veridoc_practice_completed_at": "2026-07-26T00:20:00Z",
+            "veridoc_practice_revision": APPROVED_PRACTICE_REVISION,
+            "veridoc_practice_package_sha256": (
+                APPROVED_PRACTICE_PACKAGE_SHA256
+            ),
             "arm_order": ["manual", "veridoc"],
         }
     )
@@ -297,6 +314,9 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             "p12g-02-v1",
             "phase12-mvp-v1",
             "checklist-phase12-v1",
+            "mvp-human-review-practice-package.json",
+            "consent_status",
+            "protocol_deviation",
             "within-participant",
             "paired cohort median",
             "high-risk miss",
@@ -336,6 +356,8 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         )
         self.assertFalse(schema["$defs"]["run"]["additionalProperties"])
         self.assertIn("practice_revision", schema["required"])
+        self.assertIn("practice_package_path", schema["required"])
+        self.assertIn("practice_package_sha256", schema["required"])
         self.assertIn("quality_approval", schema["required"])
         self.assertIn(
             "gold_answer_hidden_until_ended_at",
@@ -357,6 +379,19 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             "withdrawn_at",
             schema["$defs"]["participant"]["required"],
         )
+        for field in (
+            "consent_status",
+            "consented_at",
+            "consent_form_version",
+            "manual_practice_revision",
+            "manual_practice_package_sha256",
+            "veridoc_practice_revision",
+            "veridoc_practice_package_sha256",
+        ):
+            self.assertIn(
+                field,
+                schema["$defs"]["participant"]["required"],
+            )
         self.assertEqual(
             "p12g-13-human-review-v1",
             schema["properties"]["protocol_version"]["const"],
@@ -380,6 +415,18 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertEqual(
             APPROVED_MANIFEST_CONTRACT_SHA256,
             schema["properties"]["manifest_contract_sha256"]["const"],
+        )
+        self.assertEqual(
+            APPROVED_PRACTICE_REVISION,
+            schema["properties"]["practice_revision"]["const"],
+        )
+        self.assertEqual(
+            APPROVED_PRACTICE_PACKAGE_PATH,
+            schema["properties"]["practice_package_path"]["const"],
+        )
+        self.assertEqual(
+            APPROVED_PRACTICE_PACKAGE_SHA256,
+            schema["properties"]["practice_package_sha256"]["const"],
         )
         for field in (
             "source_fixture_id",
@@ -801,8 +848,22 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         record = copy.deepcopy(self.valid_record)
         record["runs"][0]["gold_answer_hidden_until_ended_at"] = False
         self.assertIn(
-            "run[0].gold_answer_hidden_until_ended_at must be true",
+            "run[0].gold_answer_hidden_until_ended_at may be false only for "
+            "an excluded protocol_deviation",
             validate_record(record),
+        )
+
+        excluded = _completed_record(self.valid_record)
+        _add_excluded_veridoc_retry(excluded)
+        excluded["runs"][-1]["gold_answer_hidden_until_ended_at"] = False
+        excluded["runs"][-1]["exclusion_reason_code"] = "protocol_deviation"
+        self.assertEqual([], validate_record(excluded))
+
+        excluded["runs"][-1]["exclusion_reason_code"] = "technical_failure"
+        self.assertIn(
+            "run[30].gold_answer_hidden_until_ended_at may be false only for "
+            "an excluded protocol_deviation",
+            validate_record(excluded),
         )
 
     def test_gold_comparison_is_independent_and_withheld_from_participant(
@@ -987,11 +1048,22 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                 "participant_id": "P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C",
                 "participation_status": "withdrawn",
                 "withdrawn_at": "2026-07-26T00:30:00Z",
+                "consent_status": "consented",
+                "consented_at": "2026-07-26T00:06:00Z",
+                "consent_form_version": "synthetic-v1",
                 "relevant_experience_attested": True,
                 "manual_practice_completed": False,
                 "manual_practice_completed_at": None,
+                "manual_practice_revision": APPROVED_PRACTICE_REVISION,
+                "manual_practice_package_sha256": (
+                    APPROVED_PRACTICE_PACKAGE_SHA256
+                ),
                 "veridoc_practice_completed": False,
                 "veridoc_practice_completed_at": None,
+                "veridoc_practice_revision": APPROVED_PRACTICE_REVISION,
+                "veridoc_practice_package_sha256": (
+                    APPROVED_PRACTICE_PACKAGE_SHA256
+                ),
                 "arm_order": None,
             }
         )
@@ -1012,6 +1084,18 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertIn(
             "participant[0].manual_practice_completed must be true",
             validate_record(completed),
+        )
+
+    def test_withdrawn_participant_practice_must_not_cross_withdrawal(
+        self,
+    ) -> None:
+        record = _completed_record(self.valid_record)
+        _add_withdrawn_participant(record)
+        record["participants"][-1]["withdrawn_at"] = "2026-07-26T00:15:00Z"
+        self.assertIn(
+            "P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C."
+            "veridoc_practice_completed_at must not occur after withdrawal",
+            validate_record(record),
         )
 
     def test_withdrawn_participant_recorded_pair_is_reported_ineligible(
@@ -1134,7 +1218,38 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         del record["practice_revision"]
         errors = validate_record(record)
         self.assertIn("missing record field: practice_revision", errors)
-        self.assertIn("practice_revision is invalid", errors)
+        self.assertIn(
+            "practice_revision must be 'practice-phase12-v1'",
+            errors,
+        )
+
+    def test_practice_package_is_immutable_and_attested_per_arm(self) -> None:
+        package_sha256 = hashlib.sha256(
+            PRACTICE_PACKAGE_PATH.read_bytes()
+        ).hexdigest()
+        self.assertEqual(APPROVED_PRACTICE_PACKAGE_SHA256, package_sha256)
+        package = json.loads(PRACTICE_PACKAGE_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(
+            APPROVED_PRACTICE_REVISION,
+            package["practice_revision"],
+        )
+
+        record = copy.deepcopy(self.valid_record)
+        record["participants"][0]["manual_practice_revision"] = (
+            "practice-phase12-v2"
+        )
+        record["participants"][0]["veridoc_practice_package_sha256"] = "0" * 64
+        errors = validate_record(record)
+        self.assertIn(
+            "participant[0].manual_practice_revision must be "
+            "practice-phase12-v1",
+            errors,
+        )
+        self.assertIn(
+            "participant[0].veridoc_practice_package_sha256 must match "
+            "approved practice package",
+            errors,
+        )
 
     def test_practice_must_precede_participants_earliest_timed_run(self) -> None:
         record = copy.deepcopy(self.valid_record)
@@ -1143,6 +1258,38 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         ][0]["started_at"]
         self.assertIn(
             "P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A.manual_practice_completed_at must precede every timed run",
+            validate_record(record),
+        )
+
+    def test_each_participant_consent_is_versioned_and_precedes_activity(
+        self,
+    ) -> None:
+        record = copy.deepcopy(self.valid_record)
+        record["participants"][0]["consent_status"] = "not_consented"
+        record["participants"][0]["consent_form_version"] = "other-form-v2"
+        record["participants"][0]["consented_at"] = record["participants"][0][
+            "manual_practice_completed_at"
+        ]
+        errors = validate_record(record)
+        self.assertIn(
+            "participant[0].consent_status must be consented",
+            errors,
+        )
+        self.assertIn(
+            "participant[0].consent_form_version must match consent_approval",
+            errors,
+        )
+        self.assertIn(
+            "P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A.consented_at must "
+            "precede manual_practice_completed_at",
+            errors,
+        )
+
+        record = copy.deepcopy(self.valid_record)
+        record["participants"][0]["consented_at"] = "2026-07-25T23:59:59Z"
+        self.assertIn(
+            "P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A.consented_at must "
+            "follow consent approval",
             validate_record(record),
         )
 
