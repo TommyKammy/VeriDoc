@@ -1176,6 +1176,32 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                 self.assertEqual(1, summary["excluded_runs"])
                 self.assertEqual(15, len(summary["pair_results"]))
 
+    def test_invalid_timing_starts_enforce_arm_order(self) -> None:
+        record = _completed_record(self.valid_record)
+        _add_excluded_veridoc_retry(record)
+        participant_id = "P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A"
+        manual_starts = [
+            datetime.fromisoformat(
+                str(run["started_at"]).replace("Z", "+00:00")
+            )
+            for run in record["runs"]
+            if run["participant_id"] == participant_id
+            and run["arm"] == "manual"
+        ]
+        retry = record["runs"][-1]
+        retry_started_at = min(manual_starts) - timedelta(seconds=1)
+        retry["started_at"] = _utc_text(retry_started_at)
+        retry["ended_at"] = _utc_text(
+            retry_started_at - timedelta(seconds=1)
+        )
+        retry["excluded_pause_seconds"] = 60
+        retry["exclusion_reason_code"] = "invalid_timing"
+
+        self.assertIn(
+            f"{participant_id} timed runs do not follow declared arm_order",
+            validate_record(record),
+        )
+
     def test_invalid_timing_attempts_remain_in_activity_timeline(
         self,
     ) -> None:
@@ -1667,6 +1693,17 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             APPROVED_PRACTICE_REVISION,
             package["practice_revision"],
         )
+        for document in ("protocol", "execution_checklist"):
+            document_path = package["training_material"][
+                f"{document}_path"
+            ]
+            declared_sha256 = package["training_material"][
+                f"{document}_sha256"
+            ]
+            actual_sha256 = hashlib.sha256(
+                (REPO_ROOT / document_path).read_bytes()
+            ).hexdigest()
+            self.assertEqual(declared_sha256, actual_sha256)
 
         record = copy.deepcopy(self.valid_record)
         record["participants"][0]["manual_practice_revision"] = (

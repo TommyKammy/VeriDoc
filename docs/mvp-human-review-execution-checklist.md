@@ -53,12 +53,12 @@ employee IDs, or free-text participant notes in the repository.
 - [ ] Each completed participant completed one fixed, unscored practice task
       per arm; withdrawn participants retain actual flags and `null` timestamps
       for uncompleted arms.
-- [ ] `docs/mvp-human-review-practice-package.json` has SHA-256
-      `e01b405b9898ec6a52a3e8c67d4e78419559df0ba9686f5d9b4d8738a85d7b16`
-      and defines both arm fixtures, training material, task instructions, and
-      assistance contracts.
-- [ ] Every participant records `practice-phase12-v1` and that package digest
-      separately for manual and VeriDoc practice.
+- [ ] `docs/mvp-human-review-practice-package.json` matches the
+      validator-pinned SHA-256 and defines both arm fixtures, immutable
+      training-document digests, task instructions, and assistance contracts.
+- [ ] Every participant records `practice-phase12-v1` and the
+      validator-pinned package digest separately for manual and VeriDoc
+      practice.
 - [ ] Each completed participant records `withdrawn_at: null`; each withdrawn
       participant records a controlled UTC withdrawal boundary.
 - [ ] Each arm's practice completion timestamp precedes that participant's

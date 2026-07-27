@@ -82,10 +82,12 @@ text or a transformed person/employee identifier.
 Before timed work, each completed participant completes one fixed, unscored
 practice task for each arm. The immutable
 `docs/mvp-human-review-practice-package.json` defines both fixed fixtures,
-training material, task instructions, and assistance contracts. The study
-records its approved path, SHA-256, and `practice-phase12-v1`; every participant
-records that same revision and digest separately for the manual and VeriDoc
-practice actually used. Completed participants record both practice flags as
+training material, task instructions, and assistance contracts. It binds the
+protocol and execution checklist by their repo-relative paths and SHA-256
+digests, and the validator verifies those exact referenced bytes. The study
+records the package's approved path, SHA-256, and `practice-phase12-v1`; every
+participant records that same revision and digest separately for the manual and
+VeriDoc practice actually used. Completed participants record both practice flags as
 `true`, and both UTC completion timestamps must strictly precede their earliest
 timed run. A participant who withdraws before or during practice retains each
 actual completion flag and no practice completion timestamp may occur after

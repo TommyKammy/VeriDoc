@@ -72,8 +72,12 @@ APPROVED_PRACTICE_PACKAGE_PATH = (
     "docs/mvp-human-review-practice-package.json"
 )
 APPROVED_PRACTICE_PACKAGE_SHA256 = (
-    "e01b405b9898ec6a52a3e8c67d4e78419559df0ba9686f5d9b4d8738a85d7b16"
+    "418977956e4a01096a6d7398f78fa3e19af6b7874a95785cbdb68a25f9afdb92"
 )
+APPROVED_PRACTICE_TRAINING_DOCUMENTS = {
+    "protocol": "docs/mvp-human-review-protocol.md",
+    "execution_checklist": "docs/mvp-human-review-execution-checklist.md",
+}
 APPROVED_RUN_REVISIONS = {
     "task_revision": APPROVED_TASK_REVISION,
     "gold_answer_revision": APPROVED_GOLD_ANSWER_REVISION,
@@ -1093,11 +1097,48 @@ def validate_record(record: Any) -> list[str]:
                 training_material = practice_package.get(
                     "training_material"
                 )
-                instructions = (
-                    training_material.get("instructions")
-                    if isinstance(training_material, dict)
-                    else None
-                )
+                if not isinstance(training_material, dict):
+                    errors.append(
+                        "approved practice package training_material must "
+                        "be an object"
+                    )
+                    training_material = {}
+                for document, expected_path in (
+                    APPROVED_PRACTICE_TRAINING_DOCUMENTS.items()
+                ):
+                    label = (
+                        "approved practice package training_material."
+                        f"{document}"
+                    )
+                    document_path = training_material.get(
+                        f"{document}_path"
+                    )
+                    document_sha256 = training_material.get(
+                        f"{document}_sha256"
+                    )
+                    if document_path != expected_path:
+                        errors.append(
+                            f"{label}_path must be {expected_path!r}"
+                        )
+                        continue
+                    if (
+                        not isinstance(document_sha256, str)
+                        or SHA256_RE.fullmatch(document_sha256) is None
+                    ):
+                        errors.append(f"{label}_sha256 is invalid")
+                        continue
+                    try:
+                        actual_document_sha256 = hashlib.sha256(
+                            (REPO_ROOT / document_path).read_bytes()
+                        ).hexdigest()
+                    except OSError:
+                        errors.append(f"{label} cannot be read")
+                    else:
+                        if actual_document_sha256 != document_sha256:
+                            errors.append(
+                                f"{label} must match declared SHA-256"
+                            )
+                instructions = training_material.get("instructions")
                 if (
                     not isinstance(instructions, list)
                     or not instructions
@@ -1538,9 +1579,12 @@ def validate_record(record: Any) -> list[str]:
     included_by_pair: dict[
         tuple[str, str, str], list[dict[str, Any]]
     ] = defaultdict(list)
-    times_by_participant_arm: dict[
+    usable_intervals_by_participant_arm: dict[
         tuple[str, str],
         list[tuple[ExactUtcTimestamp, ExactUtcTimestamp]],
+    ] = defaultdict(list)
+    activity_starts_by_participant_arm: dict[
+        tuple[str, str], list[ExactUtcTimestamp]
     ] = defaultdict(list)
     times_by_participant: dict[
         str, list[tuple[ExactUtcTimestamp, ExactUtcTimestamp, str]]
@@ -1929,8 +1973,13 @@ def validate_record(record: Any) -> list[str]:
             activity_starts_by_participant[participant_id].append(
                 (timing.started_at, label)
             )
+            activity_starts_by_participant_arm[
+                (participant_id, arm)
+            ].append(timing.started_at)
             if timing.is_interval_usable:
-                times_by_participant_arm[(participant_id, arm)].append(
+                usable_intervals_by_participant_arm[
+                    (participant_id, arm)
+                ].append(
                     (timing.started_at, timing.ended_at)
                 )
                 times_by_participant[participant_id].append(
@@ -2243,15 +2292,27 @@ def validate_record(record: Any) -> list[str]:
 
         order = participant_orders.get(participant_id)
         if order is not None:
-            first_times = times_by_participant_arm[(participant_id, order[0])]
-            second_times = times_by_participant_arm[(participant_id, order[1])]
-            if first_times and second_times:
-                if max(end for _, end in first_times) > min(
-                    start for start, _ in second_times
-                ):
-                    errors.append(
-                        f"{participant_id} timed runs do not follow declared arm_order"
-                    )
+            first_starts = activity_starts_by_participant_arm[
+                (participant_id, order[0])
+            ]
+            first_intervals = usable_intervals_by_participant_arm[
+                (participant_id, order[0])
+            ]
+            second_starts = activity_starts_by_participant_arm[
+                (participant_id, order[1])
+            ]
+            first_activity_boundaries = [
+                *first_starts,
+                *(ended_at for _, ended_at in first_intervals),
+            ]
+            if (
+                first_activity_boundaries
+                and second_starts
+                and max(first_activity_boundaries) > min(second_starts)
+            ):
+                errors.append(
+                    f"{participant_id} timed runs do not follow declared arm_order"
+                )
 
     return sorted(set(errors))
 

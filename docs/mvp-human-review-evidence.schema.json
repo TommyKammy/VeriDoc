@@ -62,7 +62,7 @@
       "const": "docs/mvp-human-review-practice-package.json"
     },
     "practice_package_sha256": {
-      "const": "e01b405b9898ec6a52a3e8c67d4e78419559df0ba9686f5d9b4d8738a85d7b16"
+      "const": "418977956e4a01096a6d7398f78fa3e19af6b7874a95785cbdb68a25f9afdb92"
     },
     "case_ids": {
       "type": "array",
@@ -236,7 +236,7 @@
           "const": "practice-phase12-v1"
         },
         "manual_practice_package_sha256": {
-          "const": "e01b405b9898ec6a52a3e8c67d4e78419559df0ba9686f5d9b4d8738a85d7b16"
+          "const": "418977956e4a01096a6d7398f78fa3e19af6b7874a95785cbdb68a25f9afdb92"
         },
         "veridoc_practice_completed": {
           "type": "boolean"
@@ -257,7 +257,7 @@
           "const": "practice-phase12-v1"
         },
         "veridoc_practice_package_sha256": {
-          "const": "e01b405b9898ec6a52a3e8c67d4e78419559df0ba9686f5d9b4d8738a85d7b16"
+          "const": "418977956e4a01096a6d7398f78fa3e19af6b7874a95785cbdb68a25f9afdb92"
         },
         "arm_order": {
           "oneOf": [
