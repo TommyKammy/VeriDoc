@@ -15,6 +15,12 @@
       "expected_error": "paired runs must use the same task_revision"
     },
     {
+      "id": "timed-task-arm-contract-drift",
+      "path": "/runs/0/task_arm_sha256",
+      "value": "204ae4a4f884e48e0360e6f506f9ef57a7e6e98a50f519e2f06e9c9041daaf06",
+      "expected_error": "run[0].task_arm_sha256 must bind pinned manual assistance contract as f8c40d44bd0d29ff8b93455e196acd1adb495f71e13696c207739c478bae5440"
+    },
+    {
       "id": "target-format-drift",
       "path": "/runs/0/conversion_mode",
       "value": "pdf_to_word",

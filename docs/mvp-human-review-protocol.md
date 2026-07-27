@@ -12,6 +12,10 @@
 - Approved manifest contract SHA-256:
   `5d91a67915d79c649954c5c8af02e74d08d94d0b97e7e673a7db690df61ebfff`
 - Approved task-instruction revision: `task-phase12-v1`
+- Pinned timed-task package:
+  `docs/mvp-human-review-timed-task-package.json`
+- Pinned timed-task package SHA-256:
+  `55c15447c23b46cfee458a0bd13c3eac9916454b446a459dd2588412708aba47`
 - Approved gold-answer revision: `gold-phase12-v1`
 - Applicable cases: `mvp-word-001`, `mvp-excel-001`, `mvp-text-pdf-001`,
   `mvp-scanned-pdf-001`, and `mvp-record-pdf-001`
@@ -29,6 +33,11 @@ arms use the same source fixture, task instructions, gold-answer revision,
 manifest-defined conversion mode and target artifact type, completion checklist,
 and timing boundary. Each run records those target-format fields and the
 validator requires them to match the immutable approved manifest contract.
+The immutable timed-task package defines the common objective, timing
+instructions, prohibited assistance, the distinct manual and VeriDoc tool
+allowances, and the case-specific expectations and review focus. Every run
+binds that package, its case object, and its assigned arm contract by SHA-256;
+`task-phase12-v1` alone is not sufficient evidence.
 The gold answer remains hidden until the timed run has stopped.
 Every included run attests this boundary with
 `gold_answer_hidden_until_ended_at: true`; a procedure note alone is not
@@ -157,6 +166,18 @@ the approved manifest and selected fixture contents from the approved target
 commit, verifies the recorded Git blob and canonical contract SHA-256, and
 requires the three source fields plus `conversion_mode` and
 `target_artifact_type` to match that immutable contract.
+
+Every attempt records
+`task_package_path: docs/mvp-human-review-timed-task-package.json`, its pinned
+SHA-256
+`55c15447c23b46cfee458a0bd13c3eac9916454b446a459dd2588412708aba47`,
+the canonical SHA-256 of the matching case object as `task_case_sha256`, and
+the canonical SHA-256 of the assigned arm's tool/assistance contract as
+`task_arm_sha256`. The validator verifies the package bytes and closed shape,
+binds its scope and manifest hashes, reconciles every case to the approved
+manifest, and requires the exact case and arm digests on every retained
+attempt. Manual and VeriDoc runs therefore cannot silently substitute different
+instructions or unapproved tools behind a shared revision label.
 
 Every attempt also records
 `gold_package_path: datasets/mvp_human_review_gold_package_v1.json`, its pinned

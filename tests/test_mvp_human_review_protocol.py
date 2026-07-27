@@ -24,6 +24,8 @@ from scripts.ci.validate_mvp_human_review_evidence import (
     APPROVED_TASK_REVISION,
     PINNED_GOLD_PACKAGE_PATH,
     PINNED_GOLD_PACKAGE_SHA256,
+    PINNED_TASK_PACKAGE_PATH,
+    PINNED_TASK_PACKAGE_SHA256,
     summarize_record,
     validate_record,
 )
@@ -37,6 +39,7 @@ PRACTICE_PACKAGE_PATH = (
     REPO_ROOT / "docs" / "mvp-human-review-practice-package.json"
 )
 GOLD_PACKAGE_PATH = REPO_ROOT / PINNED_GOLD_PACKAGE_PATH
+TASK_PACKAGE_PATH = REPO_ROOT / PINNED_TASK_PACKAGE_PATH
 VALID_EXAMPLE_PATH = REPO_ROOT / "datasets" / "mvp_human_review_evidence_valid.json"
 INVALID_EXAMPLES_PATH = (
     REPO_ROOT / "datasets" / "mvp_human_review_evidence_invalid_examples.json"
@@ -80,6 +83,31 @@ PINNED_GOLD_CASE_SHA256 = {
     ),
     "mvp-record-pdf-001": (
         "fbd0f75c1464b474f92bd29a8b41584707ef00d36e99c0dfa7dc320eb245696f"
+    ),
+}
+PINNED_TASK_CASE_SHA256 = {
+    "mvp-word-001": (
+        "889b04fc2703ebcd7f16e24e19338da050985effe51c75668b84c2ad30c6d741"
+    ),
+    "mvp-excel-001": (
+        "0d91c2dc290af17164eec2b9270c007663cfefe732394c5c68f5856fea186111"
+    ),
+    "mvp-text-pdf-001": (
+        "e428760db75a24d477b0928d38bc9d3b2d2d5feeadaa1229d4b6ec5c61e012e4"
+    ),
+    "mvp-scanned-pdf-001": (
+        "18e732cf59c29cf817ad87a80cfd020f64d34799c1ac8c4a354068577a9d13c5"
+    ),
+    "mvp-record-pdf-001": (
+        "9bc7bd5bda936d9b20f9d26e5c6957903b13782857ccdbbb0a93de2643d4648b"
+    ),
+}
+PINNED_TASK_ARM_SHA256 = {
+    "manual": (
+        "f8c40d44bd0d29ff8b93455e196acd1adb495f71e13696c207739c478bae5440"
+    ),
+    "veridoc": (
+        "204ae4a4f884e48e0360e6f506f9ef57a7e6e98a50f519e2f06e9c9041daaf06"
     ),
 }
 CONSENT_FORM_VERSION = "CF-550E8400-E29B-41D4-A716-446655440201"
@@ -211,6 +239,10 @@ def _completed_record(base_record: dict[str, object]) -> dict[str, object]:
                         ),
                         "attempt_number": 1,
                         "task_revision": APPROVED_TASK_REVISION,
+                        "task_package_path": PINNED_TASK_PACKAGE_PATH,
+                        "task_package_sha256": PINNED_TASK_PACKAGE_SHA256,
+                        "task_case_sha256": PINNED_TASK_CASE_SHA256[case_id],
+                        "task_arm_sha256": PINNED_TASK_ARM_SHA256[arm],
                         "gold_answer_revision": APPROVED_GOLD_ANSWER_REVISION,
                         "gold_package_path": PINNED_GOLD_PACKAGE_PATH,
                         "gold_package_sha256": PINNED_GOLD_PACKAGE_SHA256,
@@ -351,6 +383,9 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             "phase12-mvp-v1",
             "checklist-phase12-v1",
             "mvp-human-review-practice-package.json",
+            "mvp-human-review-timed-task-package.json",
+            "task_case_sha256",
+            "task_arm_sha256",
             "mvp_human_review_gold_package_v1.json",
             "gold_case_sha256",
             "target_artifact_type",
@@ -477,6 +512,10 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             "sealed_artifact_sha256",
             "sealed_artifact_kind",
             "veridoc_build_provenance",
+            "task_package_path",
+            "task_package_sha256",
+            "task_case_sha256",
+            "task_arm_sha256",
             "gold_package_path",
             "gold_package_sha256",
             "gold_case_sha256",
@@ -506,6 +545,14 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             schema["$defs"]["run"]["properties"]["task_revision"]["const"],
         )
         self.assertEqual(
+            PINNED_TASK_PACKAGE_PATH,
+            schema["$defs"]["run"]["properties"]["task_package_path"]["const"],
+        )
+        self.assertEqual(
+            PINNED_TASK_PACKAGE_SHA256,
+            schema["$defs"]["run"]["properties"]["task_package_sha256"]["const"],
+        )
+        self.assertEqual(
             APPROVED_GOLD_ANSWER_REVISION,
             schema["$defs"]["run"]["properties"]["gold_answer_revision"]["const"],
         )
@@ -532,6 +579,10 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertEqual(
             PINNED_GOLD_PACKAGE_SHA256,
             summary["gold_package_sha256"],
+        )
+        self.assertEqual(
+            PINNED_TASK_PACKAGE_SHA256,
+            summary["task_package_sha256"],
         )
         self.assertEqual(
             "unapproved_validation_only",
@@ -656,6 +707,9 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             run["gold_case_sha256"] = PINNED_GOLD_CASE_SHA256[
                 "mvp-scanned-pdf-001"
             ]
+            run["task_case_sha256"] = PINNED_TASK_CASE_SHA256[
+                "mvp-scanned-pdf-001"
+            ]
             run["run_id"] = (
                 f"RUN-{run['participant_id']}-MVP-SCANNED-PDF-001-"
                 f"{str(run['arm']).upper()}-{run['attempt_number']}"
@@ -709,6 +763,30 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             errors,
         )
 
+    def test_run_is_bound_to_pinned_timed_task_and_arm_contract(self) -> None:
+        record = copy.deepcopy(self.valid_record)
+        record["runs"][0]["task_package_sha256"] = "0" * 64
+        record["runs"][0]["task_case_sha256"] = "f" * 64
+        record["runs"][0]["task_arm_sha256"] = PINNED_TASK_ARM_SHA256[
+            "veridoc"
+        ]
+        errors = validate_record(record)
+        self.assertIn(
+            "run[0].task_package_sha256 must match pinned timed-task "
+            f"package value '{PINNED_TASK_PACKAGE_SHA256}'",
+            errors,
+        )
+        self.assertIn(
+            "run[0].task_case_sha256 must bind pinned timed-task case "
+            "mvp-word-001 as "
+            f"{PINNED_TASK_CASE_SHA256['mvp-word-001']}",
+            errors,
+        )
+        self.assertIn(
+            "run[0].task_arm_sha256 must bind pinned manual assistance "
+            f"contract as {PINNED_TASK_ARM_SHA256['manual']}",
+            errors,
+        )
     def test_run_id_must_be_generated_from_pseudonymous_fields(self) -> None:
         record = copy.deepcopy(self.valid_record)
         record["runs"][0]["run_id"] = "RUN-ALICE-EMPLOYEE-123"
@@ -1425,6 +1503,26 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertEqual(
             1,
             len(scanned_case["expected_high_risk_targets"]),
+        )
+
+    def test_timed_task_package_is_immutable_and_arm_scoped(self) -> None:
+        package_sha256 = hashlib.sha256(
+            TASK_PACKAGE_PATH.read_bytes()
+        ).hexdigest()
+        self.assertEqual(PINNED_TASK_PACKAGE_SHA256, package_sha256)
+        package = json.loads(TASK_PACKAGE_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(APPROVED_TASK_REVISION, package["task_revision"])
+        self.assertEqual(
+            {"manual", "veridoc"},
+            set(package["arm_contracts"]),
+        )
+        self.assertNotEqual(
+            PINNED_TASK_ARM_SHA256["manual"],
+            PINNED_TASK_ARM_SHA256["veridoc"],
+        )
+        self.assertEqual(
+            set(ALL_CASE_IDS),
+            {case["case_id"] for case in package["cases"]},
         )
 
     def test_practice_must_precede_participants_earliest_timed_run(self) -> None:

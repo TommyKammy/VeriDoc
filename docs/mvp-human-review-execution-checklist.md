@@ -36,6 +36,10 @@ employee IDs, or free-text participant notes in the repository.
 - [ ] Every case uses `task-phase12-v1`, `gold-phase12-v1`, and
       `checklist-phase12-v1`; cohort agreement on a different revision is not
       accepted.
+- [ ] `docs/mvp-human-review-timed-task-package.json` has SHA-256
+      `55c15447c23b46cfee458a0bd13c3eac9916454b446a459dd2588412708aba47`
+      and fixes common instructions, prohibited assistance, arm-specific tool
+      allowances, and all five case expectations.
 - [ ] `datasets/mvp_human_review_gold_package_v1.json` has SHA-256
       `d4dd34836d38eecc721af3d512caa978eaf9fa40cdf988d48e72ef8f1db44716`;
       its per-case canonical digests bind target format and scoring content.
@@ -69,6 +73,11 @@ employee IDs, or free-text participant notes in the repository.
       timing begins.
 - [ ] Confirm `conversion_mode` and `target_artifact_type` against the approved
       manifest case before timing begins.
+- [ ] Confirm the pinned `task_package_path`, package SHA-256, case-specific
+      `task_case_sha256`, and assigned-arm `task_arm_sha256` before timing.
+- [ ] Use only the tools allowed by the pinned manual or VeriDoc arm contract;
+      do not substitute another converter, OCR, generative-AI, or automation
+      tool.
 - [ ] Confirm the pinned `gold_package_path`, package SHA-256, and case-specific
       `gold_case_sha256` before independent assessment.
 - [ ] For a VeriDoc arm, verify the per-run provenance record identifies the
@@ -134,6 +143,10 @@ employee IDs, or free-text participant notes in the repository.
 | `veridoc_build_provenance` | closed source-tree provenance with execution explicitly unattested / `null` for manual |
 | `attempt_number` | positive integer |
 | `task_revision` | `task-phase12-v1` |
+| `task_package_path` | `docs/mvp-human-review-timed-task-package.json` |
+| `task_package_sha256` | pinned timed-task package SHA-256 |
+| `task_case_sha256` | canonical SHA-256 of the matching timed-task case |
+| `task_arm_sha256` | canonical SHA-256 of the assigned arm assistance contract |
 | `gold_answer_revision` | `gold-phase12-v1` |
 | `gold_package_path` | `datasets/mvp_human_review_gold_package_v1.json` |
 | `gold_package_sha256` | pinned package SHA-256 |
@@ -177,6 +190,9 @@ employee IDs, or free-text participant notes in the repository.
 - [ ] Both arm orders are represented among completed participants and their
       counts differ by at most one.
 - [ ] Paired arms use identical task, gold-answer, and checklist revisions.
+- [ ] Every attempt binds the same pinned timed-task package and correct
+      case-specific digest; each arm uses its own fixed assistance-contract
+      digest.
 - [ ] Every retained attempt for a case uses the same cohort-wide task and
       gold-answer and checklist revisions.
 - [ ] Attempt numbers are contiguous from 1 and no participant run intervals

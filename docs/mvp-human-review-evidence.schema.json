@@ -435,6 +435,10 @@
         "veridoc_build_provenance",
         "attempt_number",
         "task_revision",
+        "task_package_path",
+        "task_package_sha256",
+        "task_case_sha256",
+        "task_arm_sha256",
         "gold_answer_revision",
         "gold_package_path",
         "gold_package_sha256",
@@ -532,6 +536,20 @@
         },
         "task_revision": {
           "const": "task-phase12-v1"
+        },
+        "task_package_path": {
+          "const": "docs/mvp-human-review-timed-task-package.json"
+        },
+        "task_package_sha256": {
+          "const": "55c15447c23b46cfee458a0bd13c3eac9916454b446a459dd2588412708aba47"
+        },
+        "task_case_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "task_arm_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
         },
         "gold_answer_revision": {
           "const": "gold-phase12-v1"

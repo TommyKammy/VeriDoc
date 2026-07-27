@@ -50,6 +50,10 @@ EXPECTED_CASE_IDS = {
 APPROVED_TASK_REVISION = "task-phase12-v1"
 APPROVED_GOLD_ANSWER_REVISION = "gold-phase12-v1"
 APPROVED_CHECKLIST_REVISION = "checklist-phase12-v1"
+PINNED_TASK_PACKAGE_PATH = "docs/mvp-human-review-timed-task-package.json"
+PINNED_TASK_PACKAGE_SHA256 = (
+    "55c15447c23b46cfee458a0bd13c3eac9916454b446a459dd2588412708aba47"
+)
 PINNED_GOLD_PACKAGE_PATH = "datasets/mvp_human_review_gold_package_v1.json"
 PINNED_GOLD_PACKAGE_SHA256 = (
     "d4dd34836d38eecc721af3d512caa978eaf9fa40cdf988d48e72ef8f1db44716"
@@ -99,6 +103,10 @@ class ApprovedManifestError(RuntimeError):
 
 class PinnedGoldPackageError(RuntimeError):
     """Raised when the pinned validation gold package cannot be verified."""
+
+
+class PinnedTaskPackageError(RuntimeError):
+    """Raised when the pinned timed-task package cannot be verified."""
 
 
 def _reject_duplicate_object_keys(
@@ -313,6 +321,7 @@ def _load_approved_manifest_contract() -> tuple[
         fixture_path = case.get("fixture_path")
         conversion_mode = case.get("conversion_mode")
         expected_artifacts = case.get("expected_artifacts")
+        review_focus = case.get("review_focus")
         targets = case.get("expected_high_risk_targets")
         if not isinstance(case_id, str) or not isinstance(fixture_id, str):
             raise ApprovedManifestError("approved case identity is incomplete")
@@ -322,9 +331,21 @@ def _load_approved_manifest_contract() -> tuple[
             or len(expected_artifacts) != 1
             or not isinstance(expected_artifacts[0], dict)
             or not isinstance(expected_artifacts[0].get("type"), str)
+            or not isinstance(expected_artifacts[0].get("expectations"), list)
+            or not expected_artifacts[0]["expectations"]
+            or any(
+                not isinstance(expectation, str) or not expectation.strip()
+                for expectation in expected_artifacts[0]["expectations"]
+            )
+            or not isinstance(review_focus, list)
+            or not review_focus
+            or any(
+                not isinstance(item, str) or not item.strip()
+                for item in review_focus
+            )
         ):
             raise ApprovedManifestError(
-                f"approved target format is incomplete for {case_id}"
+                f"approved timed-task case contract is incomplete for {case_id}"
             )
         fixture = fixture_by_id.get(fixture_id)
         if (
@@ -344,6 +365,8 @@ def _load_approved_manifest_contract() -> tuple[
             "fixture_sha256": selected_fixture_contents[fixture_id]["sha256"],
             "conversion_mode": conversion_mode,
             "target_artifact_type": expected_artifacts[0]["type"],
+            "expectations": expected_artifacts[0]["expectations"],
+            "review_focus": review_focus,
             "high_risk_expected_count": len(targets),
         }
     if set(case_contracts) != EXPECTED_CASE_IDS:
@@ -351,6 +374,187 @@ def _load_approved_manifest_contract() -> tuple[
             "approved manifest case set does not match Phase 12 scope"
         )
     return case_contracts, structured_high_risk_targets_ready
+
+
+def _require_non_empty_strings(value: Any, label: str) -> list[str]:
+    if (
+        not isinstance(value, list)
+        or not value
+        or any(not isinstance(item, str) or not item.strip() for item in value)
+    ):
+        raise PinnedTaskPackageError(
+            f"pinned timed-task package {label} must contain non-empty strings"
+        )
+    return value
+
+
+@lru_cache(maxsize=1)
+def _load_pinned_task_package_contract() -> tuple[
+    dict[str, dict[str, Any]], dict[str, str]
+]:
+    try:
+        package_bytes = (REPO_ROOT / PINNED_TASK_PACKAGE_PATH).read_bytes()
+    except OSError as exc:
+        raise PinnedTaskPackageError(
+            "pinned timed-task package cannot be read"
+        ) from exc
+    actual_sha256 = hashlib.sha256(package_bytes).hexdigest()
+    if actual_sha256 != PINNED_TASK_PACKAGE_SHA256:
+        raise PinnedTaskPackageError(
+            "pinned timed-task package SHA-256 mismatch: "
+            f"expected {PINNED_TASK_PACKAGE_SHA256}, got {actual_sha256}"
+        )
+    try:
+        package = _loads_json_strict(package_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, DuplicateKeyError) as exc:
+        raise PinnedTaskPackageError(
+            "pinned timed-task package is not strict UTF-8 JSON"
+        ) from exc
+    if not isinstance(package, dict):
+        raise PinnedTaskPackageError(
+            "pinned timed-task package must be an object"
+        )
+    expected_top_fields = {
+        "schema_version",
+        "task_revision",
+        "decision_revision",
+        "approved_efficiency_scope_sha256",
+        "manifest_contract_sha256",
+        "contract_status",
+        "common_instructions",
+        "arm_contracts",
+        "cases",
+    }
+    if set(package) != expected_top_fields:
+        raise PinnedTaskPackageError(
+            "pinned timed-task package fields do not match the closed contract"
+        )
+    for field, expected in (
+        (
+            "schema_version",
+            "veridoc-mvp-human-review-timed-task-package/v1",
+        ),
+        ("task_revision", APPROVED_TASK_REVISION),
+        ("decision_revision", "p12g-02-v1"),
+        (
+            "approved_efficiency_scope_sha256",
+            "3d9d05671895ec8d6e8b14f44b6a8dd7f99aa17b7b65871b78fb56a49966b6fb",
+        ),
+        ("manifest_contract_sha256", APPROVED_MANIFEST_CONTRACT_SHA256),
+        ("contract_status", "protocol_pinned"),
+    ):
+        if package.get(field) != expected:
+            raise PinnedTaskPackageError(
+                f"pinned timed-task package {field} must be {expected!r}"
+            )
+
+    common_instructions = package.get("common_instructions")
+    expected_common_fields = {
+        "objective",
+        "start_condition",
+        "stop_condition",
+        "prohibited_assistance",
+    }
+    if (
+        not isinstance(common_instructions, dict)
+        or set(common_instructions) != expected_common_fields
+    ):
+        raise PinnedTaskPackageError(
+            "pinned timed-task package common instructions are invalid"
+        )
+    for field in ("objective", "start_condition", "stop_condition"):
+        value = common_instructions.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise PinnedTaskPackageError(
+                f"pinned timed-task package common {field} is invalid"
+            )
+    _require_non_empty_strings(
+        common_instructions.get("prohibited_assistance"),
+        "common prohibited_assistance",
+    )
+
+    arm_contracts = package.get("arm_contracts")
+    if not isinstance(arm_contracts, dict) or set(arm_contracts) != {
+        "manual",
+        "veridoc",
+    }:
+        raise PinnedTaskPackageError(
+            "pinned timed-task package arm contracts are invalid"
+        )
+    arm_sha256: dict[str, str] = {}
+    for arm in ("manual", "veridoc"):
+        contract = arm_contracts.get(arm)
+        if not isinstance(contract, dict) or set(contract) != {
+            "allowed_tools",
+            "prohibited_tools",
+        }:
+            raise PinnedTaskPackageError(
+                f"pinned timed-task package {arm} contract is invalid"
+            )
+        _require_non_empty_strings(
+            contract.get("allowed_tools"),
+            f"{arm} allowed_tools",
+        )
+        _require_non_empty_strings(
+            contract.get("prohibited_tools"),
+            f"{arm} prohibited_tools",
+        )
+        arm_sha256[arm] = _canonical_json_sha256(contract)
+
+    cases = package.get("cases")
+    if not isinstance(cases, list):
+        raise PinnedTaskPackageError(
+            "pinned timed-task package cases must be an array"
+        )
+    expected_case_fields = {
+        "case_id",
+        "fixture_id",
+        "conversion_mode",
+        "target_artifact_type",
+        "expectations",
+        "review_focus",
+    }
+    case_contracts: dict[str, dict[str, Any]] = {}
+    for case in cases:
+        if not isinstance(case, dict) or set(case) != expected_case_fields:
+            raise PinnedTaskPackageError(
+                "pinned timed-task package cases must match the closed contract"
+            )
+        case_id = case.get("case_id")
+        fixture_id = case.get("fixture_id")
+        conversion_mode = case.get("conversion_mode")
+        target_artifact_type = case.get("target_artifact_type")
+        if (
+            not isinstance(case_id, str)
+            or case_id in case_contracts
+            or not isinstance(fixture_id, str)
+            or not isinstance(conversion_mode, str)
+            or not isinstance(target_artifact_type, str)
+        ):
+            raise PinnedTaskPackageError(
+                "pinned timed-task package case identity is invalid"
+            )
+        _require_non_empty_strings(
+            case.get("expectations"),
+            f"{case_id} expectations",
+        )
+        _require_non_empty_strings(
+            case.get("review_focus"),
+            f"{case_id} review_focus",
+        )
+        case_contracts[case_id] = {
+            "fixture_id": fixture_id,
+            "conversion_mode": conversion_mode,
+            "target_artifact_type": target_artifact_type,
+            "expectations": case["expectations"],
+            "review_focus": case["review_focus"],
+            "task_case_sha256": _canonical_json_sha256(case),
+        }
+    if set(case_contracts) != EXPECTED_CASE_IDS:
+        raise PinnedTaskPackageError(
+            "pinned timed-task package case set does not match Phase 12 scope"
+        )
+    return case_contracts, arm_sha256
 
 
 @lru_cache(maxsize=1)
@@ -942,6 +1146,8 @@ def validate_record(record: Any) -> list[str]:
     run_schema = schema["$defs"]["run"]
     build_schema = schema["$defs"]["veridocBuildProvenance"]
     approved_case_contracts: dict[str, dict[str, Any]] = {}
+    task_case_contracts: dict[str, dict[str, Any]] = {}
+    task_arm_sha256: dict[str, str] = {}
     gold_case_contracts: dict[str, dict[str, Any]] = {}
     try:
         (
@@ -950,6 +1156,13 @@ def validate_record(record: Any) -> list[str]:
         ) = _load_approved_manifest_contract()
     except ApprovedManifestError as exc:
         errors.append(f"approved manifest contract is unavailable: {exc}")
+    try:
+        (
+            task_case_contracts,
+            task_arm_sha256,
+        ) = _load_pinned_task_package_contract()
+    except PinnedTaskPackageError as exc:
+        errors.append(f"pinned timed-task package is unavailable: {exc}")
     try:
         (
             gold_case_contracts,
@@ -968,6 +1181,24 @@ def validate_record(record: Any) -> list[str]:
                 errors.append(
                     f"pinned gold package {field} for {case_id} must match "
                     "the approved manifest"
+                )
+    for case_id in sorted(
+        approved_case_contracts.keys() & task_case_contracts.keys()
+    ):
+        for field in (
+            "fixture_id",
+            "conversion_mode",
+            "target_artifact_type",
+            "expectations",
+            "review_focus",
+        ):
+            if (
+                approved_case_contracts[case_id][field]
+                != task_case_contracts[case_id][field]
+            ):
+                errors.append(
+                    f"pinned timed-task package {field} for {case_id} "
+                    "must match the approved manifest"
                 )
     run_ids: set[str] = set()
     sealed_artifact_record_ids: set[str] = set()
@@ -1095,6 +1326,29 @@ def validate_record(record: Any) -> list[str]:
                         f"value {approved_case[contract_field]!r}"
                     )
         for field, expected_value in (
+            ("task_package_path", PINNED_TASK_PACKAGE_PATH),
+            ("task_package_sha256", PINNED_TASK_PACKAGE_SHA256),
+        ):
+            if run.get(field) != expected_value:
+                errors.append(
+                    f"{label}.{field} must match pinned timed-task package "
+                    f"value {expected_value!r}"
+                )
+        task_case = (
+            task_case_contracts.get(case_id)
+            if isinstance(case_id, str)
+            else None
+        )
+        if (
+            task_case is not None
+            and run.get("task_case_sha256")
+            != task_case["task_case_sha256"]
+        ):
+            errors.append(
+                f"{label}.task_case_sha256 must bind pinned timed-task case "
+                f"{case_id} as {task_case['task_case_sha256']}"
+            )
+        for field, expected_value in (
             ("gold_package_path", PINNED_GOLD_PACKAGE_PATH),
             ("gold_package_sha256", PINNED_GOLD_PACKAGE_SHA256),
         ):
@@ -1121,6 +1375,11 @@ def validate_record(record: Any) -> list[str]:
         arm_is_valid = isinstance(arm, str) and arm in {"manual", "veridoc"}
         if not arm_is_valid:
             errors.append(f"{label}.arm is invalid")
+        elif run.get("task_arm_sha256") != task_arm_sha256.get(arm):
+            errors.append(
+                f"{label}.task_arm_sha256 must bind pinned {arm} "
+                f"assistance contract as {task_arm_sha256.get(arm)}"
+            )
         build_provenance = run.get("veridoc_build_provenance")
         if arm == "manual":
             if build_provenance is not None:
@@ -1753,6 +2012,8 @@ def summarize_record(record: dict[str, Any]) -> dict[str, Any]:
         "target_product_commit": APPROVED_PRODUCT_COMMIT,
         "manifest_git_blob": APPROVED_MANIFEST_GIT_BLOB,
         "manifest_contract_sha256": APPROVED_MANIFEST_CONTRACT_SHA256,
+        "task_package_path": PINNED_TASK_PACKAGE_PATH,
+        "task_package_sha256": PINNED_TASK_PACKAGE_SHA256,
         "gold_package_path": PINNED_GOLD_PACKAGE_PATH,
         "gold_package_sha256": PINNED_GOLD_PACKAGE_SHA256,
         "gold_package_approval_status": "unapproved_validation_only",
