@@ -157,7 +157,12 @@ not invalidate the retained attempt. That attempt is omitted from duration,
 overlap, retry-interval ordering, withdrawal-interval, and paired-measurement
 calculations while remaining in attempt numbering, provenance checks, safety
 metrics, retry counts, and exclusion counts. This exception never applies to an
-included attempt or to another exclusion reason.
+included attempt or to another exclusion reason. Its parsed `started_at` still
+marks participant activity and must follow both study approvals, that
+participant's consent, and both practice completions even though the interval
+is unusable. For a withdrawn participant, that activity start must also precede
+`withdrawn_at`; only the unusable end boundary is omitted from
+withdrawal-interval calculations.
 
 At least three participants must have `participation_status: completed`. Each
 completed participant/case/arm must have exactly one non-excluded attempt.

@@ -1176,6 +1176,49 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                 self.assertEqual(1, summary["excluded_runs"])
                 self.assertEqual(15, len(summary["pair_results"]))
 
+    def test_invalid_timing_attempts_remain_in_activity_timeline(
+        self,
+    ) -> None:
+        record = _completed_record(self.valid_record)
+        _add_excluded_veridoc_retry(record)
+        retry = record["runs"][-1]
+        retry["started_at"] = "2026-07-26T00:05:30Z"
+        retry["ended_at"] = "2026-07-26T00:05:30Z"
+        retry["excluded_pause_seconds"] = 60
+        retry["exclusion_reason_code"] = "invalid_timing"
+
+        errors = validate_record(record)
+        participant_id = "P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A"
+        self.assertIn(
+            f"{participant_id}.consented_at must precede every timed run",
+            errors,
+        )
+        self.assertIn(
+            f"{participant_id}.manual_practice_completed_at must precede "
+            "every timed run",
+            errors,
+        )
+        self.assertIn(
+            f"{participant_id}.veridoc_practice_completed_at must precede "
+            "every timed run",
+            errors,
+        )
+
+    def test_invalid_timing_activity_must_precede_withdrawal(self) -> None:
+        record = _completed_record(self.valid_record)
+        _add_withdrawn_participant(record)
+        invalid_timing_attempt = record["runs"][-1]
+        invalid_timing_attempt["started_at"] = "2026-08-10T01:03:00Z"
+        invalid_timing_attempt["ended_at"] = "2026-08-10T01:03:00Z"
+        invalid_timing_attempt["excluded_pause_seconds"] = 60
+        invalid_timing_attempt["exclusion_reason_code"] = "invalid_timing"
+
+        self.assertIn(
+            "run[30] must start before "
+            "P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C withdrawal",
+            validate_record(record),
+        )
+
     def test_invalid_timing_exception_is_narrowly_scoped(self) -> None:
         included = copy.deepcopy(self.valid_record)
         included["runs"][0]["ended_at"] = included["runs"][0]["started_at"]

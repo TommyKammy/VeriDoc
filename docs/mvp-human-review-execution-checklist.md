@@ -122,6 +122,9 @@ employee IDs, or free-text participant notes in the repository.
       strings and non-negative pause value even when boundaries are equal,
       reversed, or irreconcilable. Do not repair the timer values or include
       that attempt in an interval or paired measurement.
+- [ ] Treat every retained `started_at`, including `invalid_timing`, as
+      participant activity that must follow study approval, participant
+      consent, and both practice completions, and must precede withdrawal.
 - [ ] Check that the record contains no direct identifier or free-text
       participant note.
 

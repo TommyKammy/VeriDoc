@@ -1540,8 +1540,10 @@ def validate_record(record: Any) -> list[str]:
     times_by_participant: dict[
         str, list[tuple[ExactUtcTimestamp, ExactUtcTimestamp, str]]
     ] = defaultdict(list)
+    activity_starts_by_participant: dict[
+        str, list[tuple[ExactUtcTimestamp, str]]
+    ] = defaultdict(list)
     withdrawal_markers: set[str] = set()
-    all_started_at: list[ExactUtcTimestamp] = []
 
     for index, run in enumerate(runs):
         label = f"run[{index}]"
@@ -1919,7 +1921,9 @@ def validate_record(record: Any) -> list[str]:
             and participant_is_declared
             and arm_is_valid
         ):
-            all_started_at.append(timing.started_at)
+            activity_starts_by_participant[participant_id].append(
+                (timing.started_at, label)
+            )
             if timing.is_interval_usable:
                 times_by_participant_arm[(participant_id, arm)].append(
                     (timing.started_at, timing.ended_at)
@@ -2041,27 +2045,32 @@ def validate_record(record: Any) -> list[str]:
         ):
             included_by_pair[(participant_id, case_id, arm)].append(run)
 
+    all_activity_starts = [
+        started_at
+        for participant_starts in activity_starts_by_participant.values()
+        for started_at, _ in participant_starts
+    ]
     if (
         approved_at is not None
-        and all_started_at
-        and approved_at >= min(all_started_at)
+        and all_activity_starts
+        and approved_at >= min(all_activity_starts)
     ):
         errors.append("consent approval must precede every timed run")
     if (
         quality_approved_at is not None
-        and all_started_at
-        and quality_approved_at >= min(all_started_at)
+        and all_activity_starts
+        and quality_approved_at >= min(all_activity_starts)
     ):
         errors.append("quality approval must precede every timed run")
     for participant_id, practice_times in sorted(
         practice_completed_at_by_participant.items()
     ):
-        participant_runs = times_by_participant[participant_id]
-        if not participant_runs:
+        activity_starts = activity_starts_by_participant[participant_id]
+        if not activity_starts:
             continue
-        earliest_run = min(start for start, _, _ in participant_runs)
+        earliest_activity = min(started_at for started_at, _ in activity_starts)
         for field, completed_at in sorted(practice_times.items()):
-            if completed_at >= earliest_run:
+            if completed_at >= earliest_activity:
                 errors.append(
                     f"{participant_id}.{field} must precede every timed run"
                 )
@@ -2079,10 +2088,12 @@ def validate_record(record: Any) -> list[str]:
                 errors.append(
                     f"{participant_id}.consented_at must precede {field}"
                 )
-        participant_runs = times_by_participant[participant_id]
-        if participant_runs:
-            earliest_run = min(start for start, _, _ in participant_runs)
-            if consented_at >= earliest_run:
+        activity_starts = activity_starts_by_participant[participant_id]
+        if activity_starts:
+            earliest_activity = min(
+                started_at for started_at, _ in activity_starts
+            )
+            if consented_at >= earliest_activity:
                 errors.append(
                     f"{participant_id}.consented_at must precede every "
                     "timed run"
@@ -2102,6 +2113,21 @@ def validate_record(record: Any) -> list[str]:
                 errors.append(
                     f"{participant_id}.{field} must not occur after "
                     "withdrawal"
+                )
+        usable_interval_labels = {
+            run_label
+            for _, _, run_label in times_by_participant[participant_id]
+        }
+        for started_at, run_label in activity_starts_by_participant[
+            participant_id
+        ]:
+            if (
+                run_label not in usable_interval_labels
+                and started_at >= withdrawn_at
+            ):
+                errors.append(
+                    f"{run_label} must start before "
+                    f"{participant_id} withdrawal"
                 )
         for started_at, ended_at, run_label in times_by_participant[participant_id]:
             if started_at >= withdrawn_at or ended_at > withdrawn_at:
