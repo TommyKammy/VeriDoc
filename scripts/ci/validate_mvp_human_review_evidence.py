@@ -1264,6 +1264,7 @@ def validate_record(record: Any) -> list[str]:
     participant_orders: dict[str, tuple[str, str]] = {}
     participant_withdrawn_at: dict[str, ExactUtcTimestamp] = {}
     participant_consented_at: dict[str, ExactUtcTimestamp] = {}
+    practice_completed_by_participant: dict[str, set[str]] = defaultdict(set)
     practice_completed_at_by_participant: dict[
         str, dict[str, ExactUtcTimestamp]
     ] = defaultdict(dict)
@@ -1378,6 +1379,10 @@ def validate_record(record: Any) -> list[str]:
             elif not isinstance(completed, bool):
                 errors.append(f"{label}.{completed_field} must be boolean")
             if completed is True:
+                if isinstance(participant_id, str):
+                    practice_completed_by_participant[participant_id].add(
+                        completed_field
+                    )
                 completed_at = _parse_utc(
                     completed_at_value,
                     f"{label}.{completed_at_field}",
@@ -2062,12 +2067,28 @@ def validate_record(record: Any) -> list[str]:
         and quality_approved_at >= min(all_activity_starts)
     ):
         errors.append("quality approval must precede every timed run")
-    for participant_id, practice_times in sorted(
-        practice_completed_at_by_participant.items()
+    required_practice_completions = {
+        "manual_practice_completed",
+        "veridoc_practice_completed",
+    }
+    for participant_id, activity_starts in sorted(
+        activity_starts_by_participant.items()
     ):
-        activity_starts = activity_starts_by_participant[participant_id]
         if not activity_starts:
             continue
+        practice_times = practice_completed_at_by_participant[participant_id]
+        completed_practices = practice_completed_by_participant[participant_id]
+        for field in sorted(
+            required_practice_completions - completed_practices
+        ):
+            errors.append(
+                f"{participant_id}.{field} must be true before "
+                "timed activity"
+            )
+        if participant_id not in participant_orders:
+            errors.append(
+                f"{participant_id}.arm_order is required before timed activity"
+            )
         earliest_activity = min(started_at for started_at, _ in activity_starts)
         for field, completed_at in sorted(practice_times.items()):
             if completed_at >= earliest_activity:

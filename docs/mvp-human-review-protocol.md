@@ -90,7 +90,10 @@ practice actually used. Completed participants record both practice flags as
 timed run. A participant who withdraws before or during practice retains each
 actual completion flag and no practice completion timestamp may occur after
 `withdrawn_at`; an uncompleted arm records `false` with a `null` timestamp, and
-`arm_order` may remain `null` if it was not assigned.
+`arm_order` may remain `null` if it was not assigned. Those concessions apply
+only while the participant has no timed attempts. Once any attempt is retained,
+both practice flags and timestamps must be complete and a controlled
+`arm_order` must be assigned before the earliest timed activity.
 Every participant records `withdrawn_at`: completed participants use `null`,
 while withdrawn participants record the controlled UTC withdrawal boundary.
 Counterbalance arm order among completed participants: both `manual`-first and

@@ -1431,6 +1431,39 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertEqual(31, summary["totals"]["approved_completions"])
         self.assertFalse(summary["efficiency_target_met"])
 
+    def test_withdrawn_participant_attempt_requires_both_practices(
+        self,
+    ) -> None:
+        record = _completed_record(self.valid_record)
+        _add_withdrawn_participant(record)
+        participant = record["participants"][-1]
+        participant["manual_practice_completed"] = False
+        participant["manual_practice_completed_at"] = None
+        participant["veridoc_practice_completed"] = False
+        participant["veridoc_practice_completed_at"] = None
+
+        errors = validate_record(record)
+        for arm in ("manual", "veridoc"):
+            self.assertIn(
+                f"{participant['participant_id']}.{arm}_practice_completed "
+                "must be true before timed activity",
+                errors,
+            )
+
+    def test_withdrawn_participant_attempt_requires_arm_order(
+        self,
+    ) -> None:
+        record = _completed_record(self.valid_record)
+        _add_withdrawn_participant(record)
+        participant = record["participants"][-1]
+        participant["arm_order"] = None
+
+        self.assertIn(
+            f"{participant['participant_id']}.arm_order is required before "
+            "timed activity",
+            validate_record(record),
+        )
+
     def test_withdrawal_boundary_rejects_an_attempt_that_ends_after_it(
         self,
     ) -> None:

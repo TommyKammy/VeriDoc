@@ -199,6 +199,10 @@ employee IDs, or free-text participant notes in the repository.
       withdrawal.
 - [ ] Every participant's two practice attestations bind to the approved
       revision and immutable package digest.
+- [ ] A withdrawn participant may retain incomplete practice or a `null`
+      `arm_order` only when no timed attempt exists for that participant.
+- [ ] Every participant with a retained timed attempt completed both practices
+      and received a controlled `arm_order` before the earliest timed activity.
 - [ ] All retries and exclusions remain in the evidence.
 - [ ] Retained attempts, usable timing intervals, and eligible paired
       measurements are reviewed as three separate sets; no exclusion is
