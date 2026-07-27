@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -935,6 +936,18 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                     validate_record(record),
                 )
 
+    def test_rfc3339_nanosecond_precision_is_preserved(self) -> None:
+        for suffix in ("Z", "+00:00"):
+            with self.subTest(suffix=suffix):
+                record = copy.deepcopy(self.valid_record)
+                record["runs"][0]["started_at"] = (
+                    f"2026-07-26T01:00:00.000000001{suffix}"
+                )
+                record["runs"][0]["ended_at"] = (
+                    f"2026-07-26T01:00:00.000000002{suffix}"
+                )
+                self.assertEqual([], validate_record(record))
+
     def test_every_included_run_requires_completed_checklist(self) -> None:
         blocked = next(
             run
@@ -1135,6 +1148,50 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             "P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A/mvp-scanned-pdf-001/veridoc attempt timestamps "
             "must follow attempt_number order",
             validate_record(record),
+        )
+
+    def test_invalid_timing_exclusions_are_retained_but_not_compared(
+        self,
+    ) -> None:
+        for started_at, ended_at in (
+            (
+                "2026-07-28T00:00:00.000000001Z",
+                "2026-07-28T00:00:00.000000001Z",
+            ),
+            (
+                "2026-07-28T00:00:00.000000002Z",
+                "2026-07-28T00:00:00.000000001Z",
+            ),
+        ):
+            with self.subTest(started_at=started_at, ended_at=ended_at):
+                record = _completed_record(self.valid_record)
+                _add_excluded_veridoc_retry(record)
+                retry = record["runs"][-1]
+                retry["started_at"] = started_at
+                retry["ended_at"] = ended_at
+                retry["excluded_pause_seconds"] = 60
+                retry["exclusion_reason_code"] = "invalid_timing"
+                self.assertEqual([], validate_record(record))
+                summary = summarize_record(record)
+                self.assertEqual(1, summary["excluded_runs"])
+                self.assertEqual(15, len(summary["pair_results"]))
+
+    def test_invalid_timing_exception_is_narrowly_scoped(self) -> None:
+        included = copy.deepcopy(self.valid_record)
+        included["runs"][0]["ended_at"] = included["runs"][0]["started_at"]
+        self.assertIn(
+            "ended_at must be after started_at",
+            validate_record(included),
+        )
+
+        other_exclusion = _completed_record(self.valid_record)
+        _add_excluded_veridoc_retry(other_exclusion)
+        retry = other_exclusion["runs"][-1]
+        retry["ended_at"] = retry["started_at"]
+        self.assertEqual("technical_failure", retry["exclusion_reason_code"])
+        self.assertIn(
+            "ended_at must be after started_at",
+            validate_record(other_exclusion),
         )
 
     def test_unknown_declared_case_is_rejected_without_crashing(self) -> None:
@@ -1717,6 +1774,43 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                 _replace_json_pointer(mutated, path, value)
                 self.assertIn(expected_error, validate_record(mutated))
 
+    def test_every_leaf_type_mutation_fails_closed_without_crashing(
+        self,
+    ) -> None:
+        leaf_paths = []
+
+        def collect_leaf_paths(value, path=()) -> None:
+            if isinstance(value, dict):
+                for key, item in value.items():
+                    collect_leaf_paths(item, path + (key,))
+            elif isinstance(value, list):
+                for index, item in enumerate(value):
+                    collect_leaf_paths(item, path + (index,))
+            else:
+                leaf_paths.append(path)
+
+        collect_leaf_paths(self.valid_record)
+        wrong_type_values = (None, [], {}, "", True, -1, 10**100)
+        for path in leaf_paths:
+            original = self.valid_record
+            for key in path:
+                original = original[key]
+            for replacement in wrong_type_values:
+                if type(replacement) is type(original):
+                    continue
+                mutated = copy.deepcopy(self.valid_record)
+                target = mutated
+                for key in path[:-1]:
+                    target = target[key]
+                target[path[-1]] = replacement
+                self.assertTrue(
+                    validate_record(mutated),
+                    msg=(
+                        "wrong JSON type was accepted at "
+                        f"{'/'.join(map(str, path))}: {replacement!r}"
+                    ),
+                )
+
     def test_validator_cli_accepts_the_validation_example(self) -> None:
         completed = subprocess.run(
             [sys.executable, str(VALIDATOR_PATH), str(VALID_EXAMPLE_PATH)],
@@ -1769,6 +1863,56 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertEqual(2, completed.returncode)
         self.assertIn("Unable to read evidence:", completed.stderr)
         self.assertNotIn("Traceback", completed.stderr)
+
+    def test_validator_cli_rejects_integer_limit_failure_without_traceback(
+        self,
+    ) -> None:
+        digit_limit = 640
+        malformed = '{"oversized_integer": ' + "1" * (digit_limit + 1) + "}"
+        with tempfile.TemporaryDirectory() as directory:
+            invalid_path = Path(directory) / "oversized-integer.json"
+            invalid_path.write_text(malformed, encoding="utf-8")
+            environment = os.environ.copy()
+            environment["PYTHONINTMAXSTRDIGITS"] = str(digit_limit)
+            completed = subprocess.run(
+                [sys.executable, str(VALIDATOR_PATH), str(invalid_path)],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+                env=environment,
+            )
+        self.assertEqual(2, completed.returncode)
+        self.assertIn("Unable to read evidence:", completed.stderr)
+        self.assertNotIn("Traceback", completed.stderr)
+
+    def test_validator_cli_rejects_unsupported_json_numbers(
+        self,
+    ) -> None:
+        invalid_documents = {
+            "nan": '{"value": NaN}',
+            "infinity": '{"value": Infinity}',
+            "overflowing-float": '{"value": 1e400}',
+        }
+        for name, document in invalid_documents.items():
+            with self.subTest(name=name):
+                with tempfile.TemporaryDirectory() as directory:
+                    invalid_path = Path(directory) / f"{name}.json"
+                    invalid_path.write_text(document, encoding="utf-8")
+                    completed = subprocess.run(
+                        [
+                            sys.executable,
+                            str(VALIDATOR_PATH),
+                            str(invalid_path),
+                        ],
+                        cwd=REPO_ROOT,
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                self.assertEqual(2, completed.returncode)
+                self.assertIn("Unable to read evidence:", completed.stderr)
+                self.assertNotIn("Traceback", completed.stderr)
 
 
 if __name__ == "__main__":

@@ -115,7 +115,10 @@ Stop `ended_at` only when either:
 
 All timestamps use the lexical form
 `YYYY-MM-DDTHH:MM:SS[.fraction](Z|+00:00)`. Alternate separators, reduced
-precision, missing UTC designators, and non-zero offsets are invalid.
+precision, missing UTC designators, and non-zero offsets are invalid. The
+optional fraction contains one through nine digits. Validation and ordering
+preserve every declared digit; implementations must not round or truncate the
+value to microseconds before comparing it.
 
 Record pauses and interruptions in `excluded_pause_seconds`. The correction time
 for a run is:
@@ -135,6 +138,26 @@ attempt sets `excluded` to `true` and uses one predeclared
 - `protocol_deviation`
 - `participant_withdrew`
 - `invalid_timing`
+
+Validation treats the evidence ledger and the measurement set as separate
+layers:
+
+1. every retained attempt must remain structurally valid, uniquely identified,
+   revision-bound, provenance-bound, and included in audit and safety counts;
+2. only a non-excluded attempt with a usable positive interval and a pause
+   shorter than that interval may contribute correction time; and
+3. only a complete pair of those usable attempts may contribute a paired
+   measurement or the cohort median.
+
+An `invalid_timing` exclusion records a timer failure rather than a
+measurement. Its timestamp strings must still be valid UTC RFC 3339 values and
+`excluded_pause_seconds` must still be a non-negative integer, but equal or
+reversed boundaries and a pause that cannot be reconciled with the interval do
+not invalidate the retained attempt. That attempt is omitted from duration,
+overlap, retry-interval ordering, withdrawal-interval, and paired-measurement
+calculations while remaining in attempt numbering, provenance checks, safety
+metrics, retry counts, and exclusion counts. This exception never applies to an
+included attempt or to another exclusion reason.
 
 At least three participants must have `participation_status: completed`. Each
 completed participant/case/arm must have exactly one non-excluded attempt.
@@ -315,8 +338,11 @@ run. Neither record stores the participant or approver identity. Set
 
 The schema rejects unknown fields so that identity-like additions cannot be
 silently retained. Controlled codes replace free-text participant notes.
-The CLI parser also rejects duplicate JSON object keys instead of accepting the
-last value, so every retained record has one deterministic interpretation.
+The CLI uses one strict JSON boundary for the evidence file and all pinned
+packages. It rejects invalid UTF-8, malformed JSON, duplicate object keys, and
+numeric tokens that the runtime cannot represent, reporting a controlled input
+error rather than a traceback. It never accepts the last duplicate value, so
+every retained record has one deterministic interpretation.
 Operational identity mappings, signed consent forms, and approval records stay
 in the approved external system of record and are referenced only by opaque
 UUIDv4 tokens that cannot carry organizer-selected identity text.

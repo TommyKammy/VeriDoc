@@ -4,13 +4,16 @@
 from __future__ import annotations
 
 import argparse
+import calendar
 import hashlib
 import json
+import math
 import re
 import statistics
 import subprocess
 import sys
 from collections import Counter, defaultdict
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
@@ -93,13 +96,18 @@ BUILD_PROVENANCE_RECORD_ID_RE = re.compile(rf"^BLD-{UUID4_TOKEN_RE}$")
 REVISION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 RFC3339_UTC_RE = re.compile(
-    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T"
-    r"[0-9]{2}:[0-9]{2}:[0-9]{2}"
-    r"(?:\.[0-9]{1,9})?(?:Z|\+00:00)$"
+    r"^(?P<whole>[0-9]{4}-[0-9]{2}-[0-9]{2}T"
+    r"[0-9]{2}:[0-9]{2}:[0-9]{2})"
+    r"(?:\.(?P<fraction>[0-9]{1,9}))?(?:Z|\+00:00)$"
 )
+NANOSECONDS_PER_SECOND = 1_000_000_000
 
 
-class DuplicateKeyError(ValueError):
+class StrictJsonError(ValueError):
+    """Raised when JSON has no deterministic representation."""
+
+
+class DuplicateKeyError(StrictJsonError):
     """Raised when a JSON object contains an ambiguous duplicate key."""
 
 
@@ -119,6 +127,66 @@ class PinnedChecklistPackageError(RuntimeError):
     """Raised when the pinned completion-checklist package cannot be verified."""
 
 
+@dataclass(frozen=True, order=True)
+class ExactUtcTimestamp:
+    """UTC timestamp whose ordering preserves all nine RFC 3339 digits."""
+
+    epoch_nanoseconds: int
+    source: str = field(compare=False)
+
+    @classmethod
+    def parse(cls, value: str) -> ExactUtcTimestamp:
+        match = RFC3339_UTC_RE.fullmatch(value)
+        if match is None:
+            raise ValueError("not a UTC RFC 3339 timestamp")
+        whole = datetime.strptime(
+            match.group("whole"),
+            "%Y-%m-%dT%H:%M:%S",
+        ).replace(tzinfo=timezone.utc)
+        fraction = (match.group("fraction") or "").ljust(9, "0")
+        return cls(
+            epoch_nanoseconds=(
+                calendar.timegm(whole.utctimetuple())
+                * NANOSECONDS_PER_SECOND
+                + int(fraction or "0")
+            ),
+            source=value,
+        )
+
+
+@dataclass(frozen=True)
+class RunTiming:
+    """Separate retained timing evidence from measurement-eligible timing."""
+
+    started_at: ExactUtcTimestamp
+    ended_at: ExactUtcTimestamp
+    excluded_pause_seconds: int | None
+    is_invalid_timing_exclusion: bool
+
+    @property
+    def elapsed_nanoseconds(self) -> int:
+        return (
+            self.ended_at.epoch_nanoseconds
+            - self.started_at.epoch_nanoseconds
+        )
+
+    @property
+    def is_interval_usable(self) -> bool:
+        return (
+            not self.is_invalid_timing_exclusion
+            and self.elapsed_nanoseconds > 0
+        )
+
+    def correction_seconds(self) -> float:
+        pause_seconds = self.excluded_pause_seconds
+        if pause_seconds is None:
+            raise ValueError("excluded pause is not a non-negative integer")
+        return (
+            self.elapsed_nanoseconds
+            - pause_seconds * NANOSECONDS_PER_SECOND
+        ) / NANOSECONDS_PER_SECOND
+
+
 def _reject_duplicate_object_keys(
     pairs: list[tuple[str, Any]],
 ) -> dict[str, Any]:
@@ -130,8 +198,32 @@ def _reject_duplicate_object_keys(
     return value
 
 
+def _reject_non_json_constant(value: str) -> Any:
+    raise StrictJsonError(f"invalid JSON numeric constant: {value}")
+
+
+def _parse_finite_json_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise StrictJsonError("JSON number is outside the finite runtime range")
+    return parsed
+
+
 def _loads_json_strict(text: str) -> Any:
-    return json.loads(text, object_pairs_hook=_reject_duplicate_object_keys)
+    try:
+        return json.loads(
+            text,
+            object_pairs_hook=_reject_duplicate_object_keys,
+            parse_constant=_reject_non_json_constant,
+            parse_float=_parse_finite_json_float,
+        )
+    except StrictJsonError:
+        raise
+    except (RecursionError, ValueError) as exc:
+        # JSONDecodeError and Python's integer digit-limit failure both derive
+        # from ValueError; excessive nesting raises RecursionError. Normalize
+        # decoder failures at this single input boundary.
+        raise StrictJsonError(str(exc)) from exc
 
 
 def _load_schema() -> dict[str, Any]:
@@ -235,7 +327,7 @@ def _load_approved_manifest_contract() -> tuple[
         )
     try:
         manifest = _loads_json_strict(manifest_bytes.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError, DuplicateKeyError) as exc:
+    except (UnicodeDecodeError, StrictJsonError) as exc:
         raise ApprovedManifestError("approved manifest is not strict JSON") from exc
     if not isinstance(manifest, dict):
         raise ApprovedManifestError("approved manifest must be an object")
@@ -249,7 +341,7 @@ def _load_approved_manifest_contract() -> tuple[
         fixture_manifest = _loads_json_strict(
             _git_show_approved(fixture_manifest_path).decode("utf-8")
         )
-    except (UnicodeDecodeError, json.JSONDecodeError, DuplicateKeyError) as exc:
+    except (UnicodeDecodeError, StrictJsonError) as exc:
         raise ApprovedManifestError(
             "approved fixture manifest is not strict JSON"
         ) from exc
@@ -416,7 +508,7 @@ def _load_pinned_task_package_contract() -> tuple[
         )
     try:
         package = _loads_json_strict(package_bytes.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError, DuplicateKeyError) as exc:
+    except (UnicodeDecodeError, StrictJsonError) as exc:
         raise PinnedTaskPackageError(
             "pinned timed-task package is not strict UTF-8 JSON"
         ) from exc
@@ -587,7 +679,7 @@ def _load_pinned_checklist_package_contract() -> dict[
         )
     try:
         package = _loads_json_strict(package_bytes.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError, DuplicateKeyError) as exc:
+    except (UnicodeDecodeError, StrictJsonError) as exc:
         raise PinnedChecklistPackageError(
             "pinned completion-checklist package is not strict UTF-8 JSON"
         ) from exc
@@ -738,7 +830,7 @@ def _load_pinned_gold_package_contract() -> tuple[
         )
     try:
         package = _loads_json_strict(package_bytes.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError, DuplicateKeyError) as exc:
+    except (UnicodeDecodeError, StrictJsonError) as exc:
         raise PinnedGoldPackageError(
             "pinned gold package is not strict UTF-8 JSON"
         ) from exc
@@ -859,7 +951,11 @@ def _required_fields(
         errors.append(f"missing {label} field: {field}")
 
 
-def _parse_utc(value: Any, label: str, errors: list[str]) -> datetime | None:
+def _parse_utc(
+    value: Any,
+    label: str,
+    errors: list[str],
+) -> ExactUtcTimestamp | None:
     if (
         not isinstance(value, str)
         or RFC3339_UTC_RE.fullmatch(value) is None
@@ -867,14 +963,52 @@ def _parse_utc(value: Any, label: str, errors: list[str]) -> datetime | None:
         errors.append(f"{label} must be a UTC RFC 3339 timestamp")
         return None
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return ExactUtcTimestamp.parse(value)
     except ValueError:
         errors.append(f"{label} must be a UTC RFC 3339 timestamp")
         return None
-    if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(parsed):
-        errors.append(f"{label} must be a UTC RFC 3339 timestamp")
+
+
+def _validate_run_timing(
+    run: dict[str, Any],
+    label: str,
+    errors: list[str],
+) -> RunTiming | None:
+    """Validate timing without rejecting an honestly retained timer failure."""
+
+    started_at = _parse_utc(run.get("started_at"), f"{label}.started_at", errors)
+    ended_at = _parse_utc(run.get("ended_at"), f"{label}.ended_at", errors)
+    pause_seconds = run.get("excluded_pause_seconds")
+    if not _is_non_negative_int(pause_seconds):
+        errors.append(
+            f"{label}.excluded_pause_seconds must be a non-negative integer"
+        )
+        normalized_pause = None
+    else:
+        normalized_pause = pause_seconds
+    if started_at is None or ended_at is None:
         return None
-    return parsed
+
+    timing = RunTiming(
+        started_at=started_at,
+        ended_at=ended_at,
+        excluded_pause_seconds=normalized_pause,
+        is_invalid_timing_exclusion=(
+            run.get("excluded") is True
+            and run.get("exclusion_reason_code") == "invalid_timing"
+        ),
+    )
+    if timing.is_invalid_timing_exclusion:
+        return timing
+    if timing.elapsed_nanoseconds <= 0:
+        errors.append("ended_at must be after started_at")
+    elif (
+        normalized_pause is not None
+        and normalized_pause * NANOSECONDS_PER_SECOND
+        >= timing.elapsed_nanoseconds
+    ):
+        errors.append("excluded_pause_seconds must be less than elapsed time")
+    return timing
 
 
 def _is_non_negative_int(value: Any) -> bool:
@@ -937,7 +1071,7 @@ def validate_record(record: Any) -> list[str]:
             practice_package = _loads_json_strict(
                 practice_package_bytes.decode("utf-8")
             )
-        except (UnicodeDecodeError, json.JSONDecodeError, DuplicateKeyError):
+        except (UnicodeDecodeError, StrictJsonError):
             errors.append("approved practice package must be strict UTF-8 JSON")
         else:
             if not isinstance(practice_package, dict):
@@ -1041,7 +1175,7 @@ def validate_record(record: Any) -> list[str]:
             errors.append("completed study must declare all five Phase 12 case_ids")
 
     consent = record.get("consent_approval")
-    approved_at: datetime | None = None
+    approved_at: ExactUtcTimestamp | None = None
     approved_consent_form_version: str | None = None
     consent_schema = schema["$defs"]["consentApproval"]
     _unknown_fields(
@@ -1083,7 +1217,7 @@ def validate_record(record: Any) -> list[str]:
             errors.append("consent_approval.direct_identifiers_stored must be false")
 
     quality_approval = record.get("quality_approval")
-    quality_approved_at: datetime | None = None
+    quality_approved_at: ExactUtcTimestamp | None = None
     quality_schema = schema["$defs"]["qualityApproval"]
     _unknown_fields(
         quality_approval,
@@ -1128,10 +1262,10 @@ def validate_record(record: Any) -> list[str]:
     participant_ids: set[str] = set()
     participant_statuses: dict[str, str] = {}
     participant_orders: dict[str, tuple[str, str]] = {}
-    participant_withdrawn_at: dict[str, datetime] = {}
-    participant_consented_at: dict[str, datetime] = {}
+    participant_withdrawn_at: dict[str, ExactUtcTimestamp] = {}
+    participant_consented_at: dict[str, ExactUtcTimestamp] = {}
     practice_completed_at_by_participant: dict[
-        str, dict[str, datetime]
+        str, dict[str, ExactUtcTimestamp]
     ] = defaultdict(dict)
     if not isinstance(participants, list):
         errors.append("participants must be an array")
@@ -1390,7 +1524,8 @@ def validate_record(record: Any) -> list[str]:
         tuple[str, str, str], set[int]
     ] = defaultdict(set)
     attempt_timing_by_group: dict[
-        tuple[str, str, str], dict[int, tuple[datetime, datetime]]
+        tuple[str, str, str],
+        dict[int, tuple[ExactUtcTimestamp, ExactUtcTimestamp]],
     ] = defaultdict(dict)
     revisions_by_case: dict[
         tuple[str, str], set[str]
@@ -1398,14 +1533,15 @@ def validate_record(record: Any) -> list[str]:
     included_by_pair: dict[
         tuple[str, str, str], list[dict[str, Any]]
     ] = defaultdict(list)
-    times_by_participant_arm: dict[tuple[str, str], list[tuple[datetime, datetime]]] = (
-        defaultdict(list)
-    )
+    times_by_participant_arm: dict[
+        tuple[str, str],
+        list[tuple[ExactUtcTimestamp, ExactUtcTimestamp]],
+    ] = defaultdict(list)
     times_by_participant: dict[
-        str, list[tuple[datetime, datetime, str]]
+        str, list[tuple[ExactUtcTimestamp, ExactUtcTimestamp, str]]
     ] = defaultdict(list)
     withdrawal_markers: set[str] = set()
-    all_started_at: list[datetime] = []
+    all_started_at: list[ExactUtcTimestamp] = []
 
     for index, run in enumerate(runs):
         label = f"run[{index}]"
@@ -1759,37 +1895,48 @@ def validate_record(record: Any) -> list[str]:
                 "must be true"
             )
 
-        started_at = _parse_utc(run.get("started_at"), f"{label}.started_at", errors)
-        ended_at = _parse_utc(run.get("ended_at"), f"{label}.ended_at", errors)
-        elapsed_seconds: float | None = None
-        if started_at is not None and ended_at is not None:
-            elapsed_seconds = (ended_at - started_at).total_seconds()
-            if elapsed_seconds <= 0:
-                errors.append("ended_at must be after started_at")
-            elif participant_is_declared and arm_is_valid:
+        excluded = run.get("excluded")
+        exclusion_reason = run.get("exclusion_reason_code")
+        if not isinstance(excluded, bool):
+            errors.append(f"{label}.excluded must be boolean")
+        elif excluded and (
+            not isinstance(exclusion_reason, str)
+            or exclusion_reason
+            not in {
+                "technical_failure",
+                "protocol_deviation",
+                "participant_withdrew",
+                "invalid_timing",
+            }
+        ):
+            errors.append(f"{label}.exclusion_reason_code is required when excluded")
+        elif not excluded and exclusion_reason is not None:
+            errors.append(f"{label}.exclusion_reason_code must be null when included")
+
+        timing = _validate_run_timing(run, label, errors)
+        if (
+            timing is not None
+            and participant_is_declared
+            and arm_is_valid
+        ):
+            all_started_at.append(timing.started_at)
+            if timing.is_interval_usable:
                 times_by_participant_arm[(participant_id, arm)].append(
-                    (started_at, ended_at)
+                    (timing.started_at, timing.ended_at)
                 )
                 times_by_participant[participant_id].append(
-                    (started_at, ended_at, label)
+                    (timing.started_at, timing.ended_at, label)
                 )
-                all_started_at.append(started_at)
                 if (
                     case_is_declared
                     and attempt_is_valid
-                    and elapsed_seconds > 0
                 ):
                     attempt_timing_by_group[
                         (participant_id, case_id, arm)
-                    ][attempt_number] = (started_at, ended_at)
-
-        pause_seconds = run.get("excluded_pause_seconds")
-        if not _is_non_negative_int(pause_seconds):
-            errors.append(
-                f"{label}.excluded_pause_seconds must be a non-negative integer"
-            )
-        elif elapsed_seconds is not None and pause_seconds >= elapsed_seconds:
-            errors.append("excluded_pause_seconds must be less than elapsed time")
+                    ][attempt_number] = (
+                        timing.started_at,
+                        timing.ended_at,
+                    )
 
         outcome = run.get("outcome")
         blocker_code = run.get("blocker_code")
@@ -1818,23 +1965,6 @@ def validate_record(record: Any) -> list[str]:
         else:
             errors.append(f"{label}.outcome is invalid")
 
-        excluded = run.get("excluded")
-        exclusion_reason = run.get("exclusion_reason_code")
-        if not isinstance(excluded, bool):
-            errors.append(f"{label}.excluded must be boolean")
-        elif excluded and (
-            not isinstance(exclusion_reason, str)
-            or exclusion_reason
-            not in {
-                "technical_failure",
-                "protocol_deviation",
-                "participant_withdrew",
-                "invalid_timing",
-            }
-        ):
-            errors.append(f"{label}.exclusion_reason_code is required when excluded")
-        elif not excluded and exclusion_reason is not None:
-            errors.append(f"{label}.exclusion_reason_code must be null when included")
         if (
             gold_answer_hidden is False
             and not (
@@ -2110,9 +2240,13 @@ def summarize_record(record: dict[str, Any]) -> dict[str, Any]:
     eligible_pair_results: list[dict[str, Any]] = []
 
     def correction_seconds(run: dict[str, Any]) -> float:
-        start = datetime.fromisoformat(run["started_at"].replace("Z", "+00:00"))
-        end = datetime.fromisoformat(run["ended_at"].replace("Z", "+00:00"))
-        return (end - start).total_seconds() - run["excluded_pause_seconds"]
+        timing = RunTiming(
+            started_at=ExactUtcTimestamp.parse(run["started_at"]),
+            ended_at=ExactUtcTimestamp.parse(run["ended_at"]),
+            excluded_pause_seconds=run["excluded_pause_seconds"],
+            is_invalid_timing_exclusion=False,
+        )
+        return timing.correction_seconds()
 
     for participant_id in sorted(participant_statuses):
         for case_id in sorted(record["case_ids"]):
@@ -2267,8 +2401,7 @@ def main(argv: list[str] | None = None) -> int:
     except (
         OSError,
         UnicodeDecodeError,
-        json.JSONDecodeError,
-        DuplicateKeyError,
+        StrictJsonError,
     ) as exc:
         print(f"Unable to read evidence: {exc}", file=sys.stderr)
         return 2

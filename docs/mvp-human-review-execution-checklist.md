@@ -104,7 +104,8 @@ employee IDs, or free-text participant notes in the repository.
 - [ ] Stop timing only at approved artifact plus completed checklist, or at an
       explicit blocked outcome followed by checklist completion.
 - [ ] Use strict UTC RFC 3339 timestamps with full seconds and `Z` or
-      `+00:00`; do not use alternate separators or reduced precision.
+      `+00:00`; do not use alternate separators or reduced precision. If a
+      one-to-nine-digit fractional second is recorded, preserve every digit.
 - [ ] Seal the stopped output artifact, or a canonical blocked-attempt envelope
       when no output exists, without exposing the gold answer to the participant.
 - [ ] Record the unique opaque sealed-record ID, artifact/envelope SHA-256, and
@@ -117,6 +118,10 @@ employee IDs, or free-text participant notes in the repository.
 - [ ] For a blocked run, select a controlled blocker code.
 - [ ] For an excluded attempt, retain the attempt and select a controlled
       exclusion reason; otherwise record no exclusion reason.
+- [ ] For `invalid_timing`, retain the original syntactically valid timestamp
+      strings and non-negative pause value even when boundaries are equal,
+      reversed, or irreconcilable. Do not repair the timer values or include
+      that attempt in an interval or paired measurement.
 - [ ] Check that the record contains no direct identifier or free-text
       participant note.
 
@@ -192,6 +197,9 @@ employee IDs, or free-text participant notes in the repository.
 - [ ] Every participant's two practice attestations bind to the approved
       revision and immutable package digest.
 - [ ] All retries and exclusions remain in the evidence.
+- [ ] Retained attempts, usable timing intervals, and eligible paired
+      measurements are reviewed as three separate sets; no exclusion is
+      dropped merely because its interval is unusable.
 - [ ] Every attempt has a unique sealed-artifact record ID and non-zero digest;
       assessor counts refer to those exact sealed bytes.
 - [ ] Every VeriDoc attempt retains approved commit/tree source provenance and
@@ -227,6 +235,9 @@ employee IDs, or free-text participant notes in the repository.
       exclusions are reported.
 - [ ] Overall totals report misses, over-detections, approved completions,
       blockers, retries, and exclusions.
+- [ ] The CLI returns a controlled input error without a traceback for invalid
+      UTF-8, malformed JSON, duplicate keys, and unrepresentable numeric
+      tokens.
 - [ ] Approved completions include excluded attempts whose outcome is
       `approved` and whose checklist is complete.
 - [ ] The 30%+ claim is made only for a valid completed record whose paired
