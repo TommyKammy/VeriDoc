@@ -255,12 +255,17 @@ counts.
 For every approved case, every participant and every retained attempt uses the
 protocol-pinned `task_revision: task-phase12-v1` and
 `gold_answer_revision: gold-phase12-v1`. Cohort-wide agreement on any other
-value is not sufficient. Every attempt records `source_fixture_id`,
+value is not sufficient. Every attempt records the enclosing `study_id`,
+which is covered by both its run seal and independent assessor attestation.
+Every attempt also records `source_fixture_id`,
 `source_fixture_path`, and `source_fixture_sha256`; the validator reconstructs
 the approved manifest and selected fixture contents from the approved target
 commit, verifies the recorded Git blob and canonical contract SHA-256, and
 requires the three source fields plus `conversion_mode` and
-`target_artifact_type` to match that immutable contract.
+`target_artifact_type` to match that immutable contract. It then resolves the
+approved path beneath `source_root` (or through the supplied trusted resolver)
+and hashes those fixture bytes, so declarations alone cannot stand in for the
+timed source content.
 
 Every attempt records
 `task_package_path: docs/mvp-human-review-timed-task-package.json`, its pinned
@@ -289,12 +294,15 @@ cannot receive different completion criteria behind the same revision label.
 Every attempt also records
 `gold_package_path: datasets/mvp_human_review_gold_package_v1.json`, its pinned
 SHA-256
-`d4dd34836d38eecc721af3d512caa978eaf9fa40cdf988d48e72ef8f1db44716`,
+`bae5f009632e2d095b4350df300b4e0d4364b00960b94a68c70860da431d6384`,
 and the canonical SHA-256 of the matching case object as `gold_case_sha256`.
 The validator verifies the package bytes, closed package shape, complete case
 set, package-to-manifest target formats, case digest, and
 `high_risk_expected_count` against the pinned case content for every retained
 attempt. A revision label alone is not a scoring reference.
+Every non-empty high-risk target additionally carries a closed
+`expected_condition` with the status, reason, and warning code an assessor
+must compare; locator-only targets are rejected.
 
 Manual runs record `veridoc_build_provenance: null`. Every VeriDoc run records
 a closed build-provenance object containing an opaque attestation record ID,

@@ -39,7 +39,13 @@
         {
           "id": "scanned-page-ocr-boundary",
           "document_id": "scanned-pdf-representative",
-          "block_id": "block-0001"
+          "block_id": "block-0001",
+          "expected_condition": {
+            "condition_type": "blocked_ocr_boundary",
+            "status": "blocked",
+            "reason": "text_layer_unavailable",
+            "warning_code": "OCR_TEXT_LAYER_UNAVAILABLE"
+          }
         }
       ]
     },

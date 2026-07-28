@@ -15,6 +15,7 @@ import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from fractions import Fraction
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable
@@ -66,14 +67,14 @@ PINNED_CHECKLIST_PACKAGE_SHA256 = (
 )
 PINNED_GOLD_PACKAGE_PATH = "datasets/mvp_human_review_gold_package_v1.json"
 PINNED_GOLD_PACKAGE_SHA256 = (
-    "d4dd34836d38eecc721af3d512caa978eaf9fa40cdf988d48e72ef8f1db44716"
+    "bae5f009632e2d095b4350df300b4e0d4364b00960b94a68c70860da431d6384"
 )
 APPROVED_PRACTICE_REVISION = "practice-phase12-v1"
 APPROVED_PRACTICE_PACKAGE_PATH = (
     "docs/mvp-human-review-practice-package.json"
 )
 APPROVED_PRACTICE_PACKAGE_SHA256 = (
-    "936f47e58b073eb18d02a3858f6a8e298f87f2e4242f9949dc4fbc9117fd6a82"
+    "acf761e11bc81db776b09f59fc6b146ff1c211f41c247024499f695b9d5b8ccf"
 )
 APPROVED_PRACTICE_TRAINING_DOCUMENTS = {
     "protocol": "docs/mvp-human-review-protocol.md",
@@ -117,6 +118,7 @@ STUDY_CLAIMS_EXCLUDED_FIELDS = frozenset(
     }
 )
 ArtifactResolver = Callable[[dict[str, Any]], bytes]
+SourceFixtureResolver = Callable[[str], bytes]
 SealedEvidenceResolver = Callable[[str], bytes]
 StudyEvidenceResolver = Callable[[str], bytes]
 AssessorAttestationResolver = Callable[[str], bytes]
@@ -223,13 +225,16 @@ class RunTiming:
         )
 
     def correction_seconds(self) -> float:
+        return self.correction_nanoseconds() / NANOSECONDS_PER_SECOND
+
+    def correction_nanoseconds(self) -> int:
         pause_seconds = self.excluded_pause_seconds
         if pause_seconds is None:
             raise ValueError("excluded pause is not a non-negative integer")
         return (
             self.elapsed_nanoseconds
             - pause_seconds * NANOSECONDS_PER_SECOND
-        ) / NANOSECONDS_PER_SECOND
+        )
 
 
 def _reject_duplicate_object_keys(
@@ -376,6 +381,7 @@ def build_assessor_attestation(run: dict[str, Any]) -> dict[str, Any]:
     return {
         "schema_version": ASSESSOR_ATTESTATION_SCHEMA_VERSION,
         "attestation_record_id": run.get("assessor_attestation_record_id"),
+        "study_id": run.get("study_id"),
         "run_id": run.get("run_id"),
         "participant_id": run.get("participant_id"),
         "assessor_id": run.get("independent_assessor_id"),
@@ -455,6 +461,30 @@ def _read_sealed_artifact(
         return resolved_path.read_bytes()
     except OSError:
         errors.append(f"{label}.sealed_artifact_path cannot be read")
+        return None
+
+
+def _read_source_fixture(
+    relative_path: str,
+    source_root: Path,
+    label: str,
+    errors: list[str],
+) -> bytes | None:
+    try:
+        resolved_path = (source_root / relative_path).resolve(strict=True)
+        resolved_path.relative_to(source_root)
+    except (OSError, ValueError):
+        errors.append(
+            f"{label} cannot be resolved within source_root"
+        )
+        return None
+    if not resolved_path.is_file():
+        errors.append(f"{label} must resolve to a file")
+        return None
+    try:
+        return resolved_path.read_bytes()
+    except OSError:
+        errors.append(f"{label} cannot be read")
         return None
 
 
@@ -706,7 +736,19 @@ def _load_approved_manifest_contract() -> tuple[
             raise ApprovedManifestError(
                 f"approved fixture path mismatch for {case_id}"
             )
-        if not isinstance(targets, list):
+        if (
+            not isinstance(targets, list)
+            or any(
+                not isinstance(target, dict)
+                or set(target) != {"id", "document_id", "block_id"}
+                or any(
+                    not isinstance(target.get(field), str)
+                    or not target[field].strip()
+                    for field in ("id", "document_id", "block_id")
+                )
+                for target in targets
+            )
+        ):
             structured_high_risk_targets_ready = False
             targets = []
         case_contracts[case_id] = {
@@ -1149,6 +1191,49 @@ def _load_pinned_gold_package_contract() -> tuple[
             raise PinnedGoldPackageError(
                 "pinned gold package case content is invalid"
             )
+        target_ids: set[str] = set()
+        for target in targets:
+            expected_target_fields = {
+                "id",
+                "document_id",
+                "block_id",
+                "expected_condition",
+            }
+            if set(target) != expected_target_fields:
+                raise PinnedGoldPackageError(
+                    "pinned gold package high-risk targets must match "
+                    "the closed contract"
+            )
+            target_id = target.get("id")
+            condition = target.get("expected_condition")
+            if (
+                not isinstance(target_id, str)
+                or not target_id.strip()
+                or target_id in target_ids
+                or any(
+                    not isinstance(target.get(field), str)
+                    or not target[field].strip()
+                    for field in ("id", "document_id", "block_id")
+                )
+                or not isinstance(condition, dict)
+                or set(condition)
+                != {
+                    "condition_type",
+                    "status",
+                    "reason",
+                    "warning_code",
+                }
+                or condition.get("condition_type")
+                != "blocked_ocr_boundary"
+                or condition.get("status") != "blocked"
+                or condition.get("reason") != "text_layer_unavailable"
+                or condition.get("warning_code")
+                != "OCR_TEXT_LAYER_UNAVAILABLE"
+            ):
+                raise PinnedGoldPackageError(
+                    "pinned gold package high-risk target condition is invalid"
+                )
+            target_ids.add(target_id)
         case_contracts[case_id] = {
             "conversion_mode": conversion_mode,
             "target_artifact_type": artifact_types[0],
@@ -1278,6 +1363,8 @@ def validate_record(
     *,
     artifact_root: Path = DEFAULT_ARTIFACT_ROOT,
     artifact_resolver: ArtifactResolver | None = None,
+    source_root: Path = REPO_ROOT,
+    source_fixture_resolver: SourceFixtureResolver | None = None,
     sealed_evidence_resolver: SealedEvidenceResolver | None = None,
     study_evidence_resolver: StudyEvidenceResolver | None = None,
     assessor_attestation_resolver: AssessorAttestationResolver | None = None,
@@ -1291,6 +1378,7 @@ def validate_record(
     errors: list[str] = []
     schema = _load_schema()
     artifact_root = artifact_root.resolve()
+    source_root = source_root.resolve()
     if not isinstance(record, dict):
         return ["record must be an object"]
     try:
@@ -1788,7 +1876,10 @@ def validate_record(
     for case_id in sorted(
         approved_case_contracts.keys() & gold_case_contracts.keys()
     ):
-        for field in ("conversion_mode", "target_artifact_type"):
+        for field in (
+            "conversion_mode",
+            "target_artifact_type",
+        ):
             if (
                 approved_case_contracts[case_id][field]
                 != gold_case_contracts[case_id][field]
@@ -1860,6 +1951,7 @@ def validate_record(
         str, list[tuple[ExactUtcTimestamp, str]]
     ] = defaultdict(list)
     withdrawal_marker_participants: set[str] = set()
+    source_fixture_sha256_by_path: dict[str, str | None] = {}
 
     for index, run in enumerate(runs):
         label = f"run[{index}]"
@@ -1930,6 +2022,8 @@ def validate_record(
         )
         if not participant_is_declared:
             errors.append(f"{label}.participant_id is not declared")
+        if run.get("study_id") != study_id:
+            errors.append(f"{label}.study_id must match record study_id")
         case_id = run.get("case_id")
         case_is_declared = isinstance(case_id, str) and case_id in declared_cases
         if not case_is_declared:
@@ -1968,6 +2062,51 @@ def validate_record(
                         f"{label}.{field} must match approved manifest "
                         f"value {approved_case[contract_field]!r}"
                     )
+            approved_fixture_path = approved_case["fixture_path"]
+            if approved_fixture_path not in source_fixture_sha256_by_path:
+                fixture_label = f"{label}.source_fixture_path"
+                if source_fixture_resolver is None:
+                    fixture_bytes = _read_source_fixture(
+                        approved_fixture_path,
+                        source_root,
+                        fixture_label,
+                        errors,
+                    )
+                else:
+                    try:
+                        fixture_bytes = source_fixture_resolver(
+                            approved_fixture_path
+                        )
+                    except (KeyError, OSError, ValueError) as exc:
+                        errors.append(
+                            f"{fixture_label} cannot be resolved: {exc}"
+                        )
+                        fixture_bytes = None
+                    if fixture_bytes is not None and not isinstance(
+                        fixture_bytes, bytes
+                    ):
+                        errors.append(
+                            f"{fixture_label} resolver must return bytes"
+                        )
+                        fixture_bytes = None
+                source_fixture_sha256_by_path[approved_fixture_path] = (
+                    hashlib.sha256(fixture_bytes).hexdigest()
+                    if fixture_bytes is not None
+                    else None
+                )
+            actual_fixture_sha256 = source_fixture_sha256_by_path[
+                approved_fixture_path
+            ]
+            if (
+                actual_fixture_sha256 is not None
+                and actual_fixture_sha256
+                != approved_case["fixture_sha256"]
+            ):
+                errors.append(
+                    f"{label}.source_fixture_path bytes must match approved "
+                    "manifest SHA-256 "
+                    f"{approved_case['fixture_sha256']}"
+                )
         for field, expected_value in (
             ("task_package_path", PINNED_TASK_PACKAGE_PATH),
             ("task_package_sha256", PINNED_TASK_PACKAGE_SHA256),
@@ -2294,10 +2433,12 @@ def validate_record(
         if (
             timing is not None
             and assessment_completed_at is not None
-            and assessment_completed_at <= timing.ended_at
+            and assessment_completed_at
+            <= max(timing.started_at, timing.ended_at)
         ):
             errors.append(
-                f"{label}.assessment_completed_at must follow ended_at"
+                f"{label}.assessment_completed_at must follow both "
+                "started_at and ended_at"
             )
         if (
             timing is not None
@@ -2439,7 +2580,7 @@ def validate_record(
                 else:
                     try:
                         artifact_bytes = artifact_resolver(run)
-                    except (OSError, ValueError) as exc:
+                    except (KeyError, OSError, ValueError) as exc:
                         errors.append(
                             f"{label}.sealed_artifact_path cannot be resolved: "
                             f"{exc}"
@@ -2983,6 +3124,8 @@ def summarize_record(
     *,
     artifact_root: Path = DEFAULT_ARTIFACT_ROOT,
     artifact_resolver: ArtifactResolver | None = None,
+    source_root: Path = REPO_ROOT,
+    source_fixture_resolver: SourceFixtureResolver | None = None,
     sealed_evidence_resolver: SealedEvidenceResolver | None = None,
     study_evidence_resolver: StudyEvidenceResolver | None = None,
     assessor_attestation_resolver: AssessorAttestationResolver | None = None,
@@ -2993,6 +3136,8 @@ def summarize_record(
         record,
         artifact_root=artifact_root,
         artifact_resolver=artifact_resolver,
+        source_root=source_root,
+        source_fixture_resolver=source_fixture_resolver,
         sealed_evidence_resolver=sealed_evidence_resolver,
         study_evidence_resolver=study_evidence_resolver,
         assessor_attestation_resolver=assessor_attestation_resolver,
@@ -3029,15 +3174,16 @@ def summarize_record(
         ].append(run)
     pair_results: list[dict[str, Any]] = []
     eligible_pair_results: list[dict[str, Any]] = []
+    eligible_reductions: list[Fraction] = []
 
-    def correction_seconds(run: dict[str, Any]) -> float:
+    def correction_nanoseconds(run: dict[str, Any]) -> int:
         timing = RunTiming(
             started_at=ExactUtcTimestamp.parse(run["started_at"]),
             ended_at=ExactUtcTimestamp.parse(run["ended_at"]),
             excluded_pause_seconds=run["excluded_pause_seconds"],
             is_invalid_timing_exclusion=False,
         )
-        return timing.correction_seconds()
+        return timing.correction_nanoseconds()
 
     for participant_id in sorted(participant_statuses):
         for case_id in sorted(record["case_ids"]):
@@ -3122,29 +3268,36 @@ def summarize_record(
                     }
                 )
             if calculable:
-                manual_seconds = correction_seconds(manual)
-                veridoc_seconds = correction_seconds(veridoc)
-                reduction = (
-                    100.0
-                    * (manual_seconds - veridoc_seconds)
-                    / manual_seconds
+                manual_nanoseconds = correction_nanoseconds(manual)
+                veridoc_nanoseconds = correction_nanoseconds(veridoc)
+                reduction_exact = Fraction(
+                    100 * (manual_nanoseconds - veridoc_nanoseconds),
+                    manual_nanoseconds,
                 )
                 pair_result.update(
                     {
-                        "manual_seconds": manual_seconds,
-                        "veridoc_seconds": veridoc_seconds,
-                        "reduction_percent": reduction,
+                        "manual_seconds": (
+                            manual_nanoseconds / NANOSECONDS_PER_SECOND
+                        ),
+                        "veridoc_seconds": (
+                            veridoc_nanoseconds / NANOSECONDS_PER_SECOND
+                        ),
+                        "reduction_percent": float(reduction_exact),
                     }
                 )
                 if eligible:
                     eligible_pair_results.append(pair_result)
+                    eligible_reductions.append(reduction_exact)
             pair_results.append(pair_result)
 
+    paired_median_exact = (
+        statistics.median(eligible_reductions)
+        if eligible_reductions
+        else None
+    )
     paired_median = (
-        statistics.median(
-            item["reduction_percent"] for item in eligible_pair_results
-        )
-        if eligible_pair_results
+        float(paired_median_exact)
+        if paired_median_exact is not None
         else None
     )
     arm_metrics: dict[str, dict[str, int]] = {}
@@ -3227,8 +3380,8 @@ def summarize_record(
             record["study_status"] == "completed"
             and structured_high_risk_targets_ready
             and execution_attestation_ready
-            and paired_median is not None
-            and paired_median >= 30.0
+            and paired_median_exact is not None
+            and paired_median_exact >= 30
             and arm_metrics["veridoc"]["high_risk_misses"] == 0
             and all_required_runs_accounted
         ),
@@ -3250,6 +3403,15 @@ def main(argv: list[str] | None = None) -> int:
             "(default: the evidence record directory)"
         ),
     )
+    parser.add_argument(
+        "--source-root",
+        type=Path,
+        default=REPO_ROOT,
+        help=(
+            "root directory used to resolve the approved source fixtures "
+            "(default: repository root)"
+        ),
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -3263,7 +3425,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     artifact_root = args.artifact_root or args.record.parent
-    errors = validate_record(record, artifact_root=artifact_root)
+    errors = validate_record(
+        record,
+        artifact_root=artifact_root,
+        source_root=args.source_root,
+    )
     if errors:
         print("Human-review evidence validation failed:", file=sys.stderr)
         for error in errors:
@@ -3272,7 +3438,11 @@ def main(argv: list[str] | None = None) -> int:
 
     print(
         json.dumps(
-            summarize_record(record, artifact_root=artifact_root),
+            summarize_record(
+                record,
+                artifact_root=artifact_root,
+                source_root=args.source_root,
+            ),
             indent=2,
             sort_keys=True,
         )

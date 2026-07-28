@@ -47,7 +47,7 @@ employee IDs, or free-text participant notes in the repository.
       and fixes the ordered checklist, completion rules, hidden-gold boundary,
       and per-case timed-task bindings shared by both arms.
 - [ ] `datasets/mvp_human_review_gold_package_v1.json` has SHA-256
-      `d4dd34836d38eecc721af3d512caa978eaf9fa40cdf988d48e72ef8f1db44716`;
+      `bae5f009632e2d095b4350df300b4e0d4364b00960b94a68c70860da431d6384`;
       its per-case canonical digests bind target format and scoring content.
 - [ ] The pinned gold package remains `unapproved_validation_only`; it makes
       validation scoring reproducible but does not approve an efficiency claim.
@@ -171,10 +171,11 @@ employee IDs, or free-text participant notes in the repository.
 | participant `veridoc_practice_completed_at` | UTC RFC 3339 timestamp / `null` when withdrawn before completion |
 | participant `veridoc_practice_revision` | `practice-phase12-v1` |
 | participant `veridoc_practice_package_sha256` | approved immutable package digest |
+| `study_id` | same opaque `HR-`-prefixed UUIDv4 as the enclosing study; sealed into the run and assessor attestation |
 | `case_id` | one declared Phase 12 case |
 | `source_fixture_id` | approved manifest fixture ID |
 | `source_fixture_path` | approved repository-relative fixture path |
-| `source_fixture_sha256` | lowercase SHA-256 of approved fixture content |
+| `source_fixture_sha256` | lowercase SHA-256 of approved fixture bytes resolved from `source_root` or the trusted resolver |
 | `conversion_mode` | approved manifest conversion mode for the case |
 | `target_artifact_type` | approved manifest artifact type for the case |
 | `arm` | `manual` / `veridoc` |
@@ -198,7 +199,7 @@ employee IDs, or free-text participant notes in the repository.
 | `independent_assessor_id` | `A-` plus an independently generated uppercase UUIDv4 distinct from the participant token |
 | `assessor_attestation_record_id` | unique `AAR-`-prefixed uppercase UUIDv4 |
 | `assessor_attestation_sha256` | non-zero lowercase SHA-256 of the independently retained assessor attestation |
-| `assessment_completed_at` | UTC RFC 3339 timestamp strictly after `ended_at` |
+| `assessment_completed_at` | UTC RFC 3339 timestamp strictly after both `started_at` and `ended_at` |
 | retained assessor attestation | strict UTF-8 JSON at `assessor_records/{assessor_attestation_record_id}.json`, resolved independently of the evidence file |
 | `gold_answer_comparison_withheld_from_participant` | `true` attestation |
 | `started_at` | UTC RFC 3339 timestamp |

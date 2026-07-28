@@ -92,7 +92,7 @@ PINNED_GOLD_CASE_SHA256 = {
         "effd5300edac2fb18572182add5127ad45dda40bcbac11d3ecc8904d1614a597"
     ),
     "mvp-scanned-pdf-001": (
-        "0d98675a91e5191fb25cdda96c4563bc070c0c0fcd1d536d4accccf1e6540cb9"
+        "362febb3aae1499888a741c4083cedde7debaf29a2032fdf399130ce8d4ca5b2"
     ),
     "mvp-record-pdf-001": (
         "fbd0f75c1464b474f92bd29a8b41584707ef00d36e99c0dfa7dc320eb245696f"
@@ -397,6 +397,7 @@ def _completed_record(base_record: dict[str, object]) -> dict[str, object]:
                             artifact_record_id
                         ),
                         "sealed_evidence_envelope": {},
+                        "study_id": record["study_id"],
                         "participant_id": participant_id,
                         "case_id": case_id,
                         "source_fixture_id": fixture_id,
@@ -740,6 +741,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             schema["properties"]["practice_package_sha256"]["const"],
         )
         for field in (
+            "study_id",
             "source_fixture_id",
             "source_fixture_path",
             "source_fixture_sha256",
@@ -1017,6 +1019,37 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertFalse(summary["structured_high_risk_targets_ready"])
         self.assertFalse(summary["efficiency_target_met"])
 
+    def test_exact_thirty_percent_reduction_is_not_rounded_below_target(
+        self,
+    ) -> None:
+        record = copy.deepcopy(self.valid_record)
+        for run in record["runs"]:
+            started_at = datetime.fromisoformat(
+                str(run["started_at"]).replace("Z", "+00:00")
+            )
+            duration_nanoseconds = 30 if run["arm"] == "manual" else 21
+            run["ended_at"] = (
+                started_at.strftime("%Y-%m-%dT%H:%M:%S")
+                + f".{duration_nanoseconds:09d}Z"
+            )
+            run["assessment_completed_at"] = _utc_text(
+                started_at + timedelta(seconds=1)
+            )
+            run["excluded_pause_seconds"] = 0
+            _seal_assessor_attestation(run)
+            _seal_evidence_envelope(run)
+
+        summary = _summarize_record(record)
+        self.assertEqual(30.0, summary["paired_median_reduction_percent"])
+        self.assertEqual(
+            {30.0},
+            {
+                pair["reduction_percent"]
+                for pair in summary["pair_results"]
+                if pair["calculable"]
+            },
+        )
+
     def test_expected_high_risk_count_is_bound_to_pinned_gold_case(self) -> None:
         record = copy.deepcopy(self.valid_record)
         record["case_ids"] = ["mvp-scanned-pdf-001"]
@@ -1059,6 +1092,40 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             "run[0].source_fixture_sha256 must match approved manifest value "
             "'8d3f4c25af465eb03bb1b2a624d14de27b1f777a4ec2cd5674563335d2b58cf1'",
             _validate_record(record),
+        )
+
+    def test_approved_source_fixture_bytes_are_hashed(self) -> None:
+        def altered_fixture(fixture_path: str) -> bytes:
+            if fixture_path == APPROVED_FIXTURES["mvp-word-001"][1]:
+                return b"altered timed source"
+            return (REPO_ROOT / fixture_path).read_bytes()
+
+        errors = _raw_validate_record(
+            self.valid_record,
+            source_fixture_resolver=altered_fixture,
+        )
+        self.assertIn(
+            "run[0].source_fixture_path bytes must match approved manifest "
+            "SHA-256 "
+            "8d3f4c25af465eb03bb1b2a624d14de27b1f777a4ec2cd5674563335d2b58cf1",
+            errors,
+        )
+
+    def test_source_fixture_resolver_failures_are_controlled(self) -> None:
+        def missing_fixture(fixture_path: str) -> bytes:
+            raise KeyError(fixture_path)
+
+        errors = _raw_validate_record(
+            self.valid_record,
+            source_fixture_resolver=missing_fixture,
+        )
+        self.assertTrue(
+            any(
+                error.startswith(
+                    "run[0].source_fixture_path cannot be resolved:"
+                )
+                for error in errors
+            )
         )
 
     def test_run_target_format_is_bound_to_approved_manifest(self) -> None:
@@ -1417,6 +1484,28 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             errors,
         )
 
+    def test_run_and_assessor_seals_bind_the_study_id(self) -> None:
+        record = copy.deepcopy(self.valid_record)
+        replacement_study_id = (
+            "HR-7D83B6B0-95C5-4D9D-89D6-4C359D7938CE"
+        )
+        record["study_id"] = replacement_study_id
+        for run in record["runs"]:
+            run["study_id"] = replacement_study_id
+        _seal_study_evidence_envelope(record)
+
+        errors = _validate_record(record)
+        self.assertIn(
+            "run[0].sealed_evidence_envelope.run_claims_sha256 must match "
+            "the run",
+            errors,
+        )
+        self.assertIn(
+            "run[0].assessor_attestation_sha256 must match the "
+            "independently retained assessor attestation",
+            errors,
+        )
+
     def test_assessment_is_bound_to_retained_independent_assessor(self) -> None:
         retained_run_by_id = {
             run["sealed_artifact_record_id"]: _synthetic_sealed_evidence_bytes(
@@ -1480,7 +1569,23 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             "ended_at"
         ]
         self.assertIn(
-            "run[0].assessment_completed_at must follow ended_at",
+            "run[0].assessment_completed_at must follow both started_at "
+            "and ended_at",
+            _validate_record(record),
+        )
+
+        record = copy.deepcopy(self.valid_record)
+        run = record["runs"][0]
+        run["started_at"] = "2026-07-26T01:20:02Z"
+        run["ended_at"] = "2026-07-26T01:20:00Z"
+        run["assessment_completed_at"] = "2026-07-26T01:20:01Z"
+        run["excluded"] = True
+        run["exclusion_reason_code"] = "invalid_timing"
+        _seal_assessor_attestation(run)
+        _seal_evidence_envelope(run)
+        self.assertIn(
+            "run[0].assessment_completed_at must follow both started_at "
+            "and ended_at",
             _validate_record(record),
         )
 
@@ -1520,6 +1625,31 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                         )
                     )
                 )
+
+    def test_output_artifact_resolver_key_error_is_controlled(self) -> None:
+        def missing_artifact(run: dict[str, object]) -> bytes:
+            raise KeyError(run["sealed_artifact_path"])
+
+        errors = _raw_validate_record(
+            self.valid_record,
+            artifact_resolver=missing_artifact,
+            sealed_evidence_resolver=_synthetic_sealed_evidence_resolver(
+                self.valid_record
+            ),
+            study_evidence_resolver=_synthetic_study_evidence_resolver(
+                self.valid_record
+            ),
+            assessor_attestation_resolver=(
+                _synthetic_assessor_attestation_resolver(self.valid_record)
+            ),
+        )
+        self.assertTrue(
+            any(
+                "run[0].sealed_artifact_path cannot be resolved:"
+                in error
+                for error in errors
+            )
+        )
 
     def test_study_and_assessor_resolver_failures_are_controlled(self) -> None:
         def missing_record(record_id: str) -> bytes:
@@ -2596,6 +2726,17 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertEqual(
             1,
             len(scanned_case["expected_high_risk_targets"]),
+        )
+        self.assertEqual(
+            {
+                "condition_type": "blocked_ocr_boundary",
+                "status": "blocked",
+                "reason": "text_layer_unavailable",
+                "warning_code": "OCR_TEXT_LAYER_UNAVAILABLE",
+            },
+            scanned_case["expected_high_risk_targets"][0][
+                "expected_condition"
+            ],
         )
 
     def test_timed_task_package_is_immutable_and_arm_scoped(self) -> None:

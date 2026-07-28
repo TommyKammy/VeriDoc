@@ -65,7 +65,7 @@
       "const": "docs/mvp-human-review-practice-package.json"
     },
     "practice_package_sha256": {
-      "const": "936f47e58b073eb18d02a3858f6a8e298f87f2e4242f9949dc4fbc9117fd6a82"
+      "const": "acf761e11bc81db776b09f59fc6b146ff1c211f41c247024499f695b9d5b8ccf"
     },
     "case_ids": {
       "type": "array",
@@ -254,7 +254,7 @@
           "const": "practice-phase12-v1"
         },
         "manual_practice_package_sha256": {
-          "const": "936f47e58b073eb18d02a3858f6a8e298f87f2e4242f9949dc4fbc9117fd6a82"
+          "const": "acf761e11bc81db776b09f59fc6b146ff1c211f41c247024499f695b9d5b8ccf"
         },
         "veridoc_practice_completed": {
           "type": "boolean"
@@ -275,7 +275,7 @@
           "const": "practice-phase12-v1"
         },
         "veridoc_practice_package_sha256": {
-          "const": "936f47e58b073eb18d02a3858f6a8e298f87f2e4242f9949dc4fbc9117fd6a82"
+          "const": "acf761e11bc81db776b09f59fc6b146ff1c211f41c247024499f695b9d5b8ccf"
         },
         "arm_order": {
           "oneOf": [
@@ -485,6 +485,7 @@
         "sealed_artifact_path",
         "output_artifact_sha256",
         "sealed_evidence_envelope",
+        "study_id",
         "participant_id",
         "case_id",
         "source_fixture_id",
@@ -566,6 +567,10 @@
         "sealed_evidence_envelope": {
           "$ref": "#/$defs/sealedEvidenceEnvelope"
         },
+        "study_id": {
+          "type": "string",
+          "pattern": "^HR-[0-9A-F]{8}-[0-9A-F]{4}-4[0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}$"
+        },
         "participant_id": {
           "type": "string",
           "pattern": "^P-[0-9A-F]{8}-[0-9A-F]{4}-4[0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}$"
@@ -643,7 +648,7 @@
           "const": "datasets/mvp_human_review_gold_package_v1.json"
         },
         "gold_package_sha256": {
-          "const": "d4dd34836d38eecc721af3d512caa978eaf9fa40cdf988d48e72ef8f1db44716"
+          "const": "bae5f009632e2d095b4350df300b4e0d4364b00960b94a68c70860da431d6384"
         },
         "gold_case_sha256": {
           "type": "string",
