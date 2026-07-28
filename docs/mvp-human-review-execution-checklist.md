@@ -115,6 +115,12 @@ employee IDs, or free-text participant notes in the repository.
       result to that participant.
 - [ ] Record the independent-assessor and non-disclosure attestations,
       high-risk expected targets, high-risk misses, and over-detections.
+- [ ] For an `output_artifact`, retain the exact output beneath the configured
+      artifact root, record its relative path, and verify its SHA-256 before
+      accepting the evidence record.
+- [ ] For a `blocked_attempt_envelope`, leave the artifact path `null` and seal
+      the canonical digest of every non-recursive run claim, including all
+      safety counts.
 - [ ] For a blocked run, select a controlled blocker code.
 - [ ] For an excluded attempt, retain the attempt and select a controlled
       exclusion reason; otherwise record no exclusion reason.
@@ -136,6 +142,7 @@ employee IDs, or free-text participant notes in the repository.
 | `sealed_artifact_record_id` | unique `SAR-`-prefixed uppercase UUIDv4 |
 | `sealed_artifact_sha256` | non-zero lowercase SHA-256 of sealed bytes |
 | `sealed_artifact_kind` | `output_artifact` / `blocked_attempt_envelope` |
+| `sealed_artifact_path` | relative path below `artifact_root` for output / `null` for blocked envelope |
 | `participant_id` | `P-` plus an independently generated uppercase UUIDv4 |
 | participant `participation_status` | `completed` / `withdrawn` |
 | participant `withdrawn_at` | `null` when completed / controlled UTC RFC 3339 boundary when withdrawn |

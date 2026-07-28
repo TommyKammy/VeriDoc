@@ -31,8 +31,9 @@ from scripts.ci.validate_mvp_human_review_evidence import (
     PINNED_TASK_PACKAGE_PATH,
     PINNED_TASK_PACKAGE_SHA256,
     build_blocked_attempt_envelope,
-    summarize_record,
-    validate_record,
+    build_run_claims,
+    summarize_record as _raw_summarize_record,
+    validate_record as _raw_validate_record,
 )
 
 
@@ -208,7 +209,30 @@ def _opaque_record_id(prefix: str, value: str) -> str:
     )
 
 
+def _sealed_artifact_path(record_id: str) -> str:
+    return f"datasets/mvp_human_review_artifacts/{record_id}.txt"
+
+
+def _synthetic_output_artifact_bytes(run: dict[str, object]) -> bytes:
+    return f"{run['run_id']}\n".encode("utf-8")
+
+
+def _validate_record(record: object) -> list[str]:
+    return _raw_validate_record(
+        record,
+        artifact_resolver=_synthetic_output_artifact_bytes,
+    )
+
+
+def _summarize_record(record: dict[str, object]) -> dict[str, object]:
+    return _raw_summarize_record(
+        record,
+        artifact_resolver=_synthetic_output_artifact_bytes,
+    )
+
+
 def _seal_blocked_attempt_envelope(run: dict[str, object]) -> None:
+    run["sealed_artifact_path"] = None
     envelope = build_blocked_attempt_envelope(run)
     run["blocked_attempt_envelope"] = envelope
     run["sealed_artifact_sha256"] = hashlib.sha256(
@@ -252,16 +276,18 @@ def _completed_record(base_record: dict[str, object]) -> dict[str, object]:
                     f"RUN-{participant_id}-{case_id.upper()}-"
                     f"{arm.upper()}-1"
                 )
+                artifact_record_id = _opaque_record_id("SAR", run_id)
                 runs.append(
                     {
                         "run_id": run_id,
-                        "sealed_artifact_record_id": _opaque_record_id(
-                            "SAR", run_id
-                        ),
+                        "sealed_artifact_record_id": artifact_record_id,
                         "sealed_artifact_sha256": hashlib.sha256(
-                            run_id.encode("utf-8")
+                            f"{run_id}\n".encode("utf-8")
                         ).hexdigest(),
                         "sealed_artifact_kind": "output_artifact",
+                        "sealed_artifact_path": _sealed_artifact_path(
+                            artifact_record_id
+                        ),
                         "blocked_attempt_envelope": None,
                         "participant_id": participant_id,
                         "case_id": case_id,
@@ -345,8 +371,14 @@ def _add_excluded_veridoc_retry(record: dict[str, object]) -> None:
                 "SAR", "RUN-P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A-MVP-SCANNED-PDF-001-VERIDOC-2"
             ),
             "sealed_artifact_sha256": hashlib.sha256(
-                b"RUN-P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A-MVP-SCANNED-PDF-001-VERIDOC-2"
+                b"RUN-P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A-MVP-SCANNED-PDF-001-VERIDOC-2\n"
             ).hexdigest(),
+            "sealed_artifact_path": _sealed_artifact_path(
+                _opaque_record_id(
+                    "SAR",
+                    "RUN-P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A-MVP-SCANNED-PDF-001-VERIDOC-2",
+                )
+            ),
             "attempt_number": 2,
             "started_at": _utc_text(retry_start),
             "ended_at": _utc_text(retry_start + timedelta(minutes=1)),
@@ -403,8 +435,14 @@ def _add_withdrawn_participant(record: dict[str, object]) -> None:
                 "SAR", "RUN-P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C-MVP-WORD-001-MANUAL-1"
             ),
             "sealed_artifact_sha256": hashlib.sha256(
-                b"RUN-P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C-MVP-WORD-001-MANUAL-1"
+                b"RUN-P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C-MVP-WORD-001-MANUAL-1\n"
             ).hexdigest(),
+            "sealed_artifact_path": _sealed_artifact_path(
+                _opaque_record_id(
+                    "SAR",
+                    "RUN-P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C-MVP-WORD-001-MANUAL-1",
+                )
+            ),
             "participant_id": "P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C",
             "started_at": "2026-08-10T01:00:00Z",
             "ended_at": "2026-08-10T01:02:00Z",
@@ -564,6 +602,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             "sealed_artifact_record_id",
             "sealed_artifact_sha256",
             "sealed_artifact_kind",
+            "sealed_artifact_path",
             "blocked_attempt_envelope",
             "veridoc_build_provenance",
             "task_package_path",
@@ -640,22 +679,15 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertEqual(
             {
                 "schema_version",
-                "sealed_artifact_record_id",
-                "run_id",
-                "participant_id",
-                "case_id",
-                "arm",
-                "attempt_number",
-                "started_at",
-                "ended_at",
-                "excluded_pause_seconds",
-                "outcome",
-                "blocker_code",
-                "checklist_complete",
-                "excluded",
-                "exclusion_reason_code",
+                "run_claims_sha256",
             },
             set(schema["$defs"]["blockedAttemptEnvelope"]["required"]),
+        )
+        self.assertEqual(
+            "veridoc-mvp-blocked-attempt-envelope/v2",
+            schema["$defs"]["blockedAttemptEnvelope"]["properties"][
+                "schema_version"
+            ]["const"],
         )
 
     def test_outcome_artifact_rules_match_schema_and_validator(self) -> None:
@@ -708,7 +740,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                         _seal_blocked_attempt_envelope(run)
                     artifact_errors = [
                         error
-                        for error in validate_record(record)
+                        for error in _validate_record(record)
                         if "sealed_artifact_kind" in error
                     ]
                     self.assertEqual(
@@ -717,8 +749,8 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                     )
 
     def test_synthetic_validation_example_is_valid_and_recomputable(self) -> None:
-        self.assertEqual([], validate_record(self.valid_record))
-        summary = summarize_record(self.valid_record)
+        self.assertEqual([], _validate_record(self.valid_record))
+        summary = _summarize_record(self.valid_record)
         self.assertEqual(6, summary["required_runs"])
         self.assertEqual(6, summary["recorded_runs"])
         self.assertEqual(2, summary["eligible_pair_count"])
@@ -791,7 +823,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             with self.subTest(example=example["id"]):
                 mutated = copy.deepcopy(self.valid_record)
                 _replace_json_pointer(mutated, example["path"], example["value"])
-                errors = validate_record(mutated)
+                errors = _validate_record(mutated)
                 self.assertIn(example["expected_error"], errors)
 
     def test_completed_record_requires_all_five_manifest_cases(self) -> None:
@@ -799,15 +831,15 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         record["study_status"] = "completed"
         self.assertIn(
             "completed study must declare all five Phase 12 case_ids",
-            validate_record(record),
+            _validate_record(record),
         )
 
     def test_unapproved_structured_targets_keep_efficiency_fail_closed(
         self,
     ) -> None:
         record = _completed_record(self.valid_record)
-        self.assertEqual([], validate_record(record))
-        summary = summarize_record(record)
+        self.assertEqual([], _validate_record(record))
+        summary = _summarize_record(record)
         self.assertEqual(0, summary["eligible_pair_count"])
         self.assertEqual(15, summary["ineligible_pair_count"])
         self.assertIsNone(summary["paired_median_reduction_percent"])
@@ -869,7 +901,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertIn(
             "run[0].high_risk_expected_count must match pinned gold package "
             "count 1 for mvp-scanned-pdf-001",
-            validate_record(record),
+            _validate_record(record),
         )
 
     def test_run_fixture_identity_is_bound_to_approved_source(self) -> None:
@@ -878,14 +910,14 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertIn(
             "run[0].source_fixture_sha256 must match approved manifest value "
             "'8d3f4c25af465eb03bb1b2a624d14de27b1f777a4ec2cd5674563335d2b58cf1'",
-            validate_record(record),
+            _validate_record(record),
         )
 
     def test_run_target_format_is_bound_to_approved_manifest(self) -> None:
         record = copy.deepcopy(self.valid_record)
         record["runs"][0]["conversion_mode"] = "pdf_to_word"
         record["runs"][0]["target_artifact_type"] = "docx"
-        errors = validate_record(record)
+        errors = _validate_record(record)
         self.assertIn(
             "run[0].conversion_mode must match approved manifest value "
             "'word_to_excel'",
@@ -901,7 +933,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         record = copy.deepcopy(self.valid_record)
         record["runs"][0]["gold_package_sha256"] = "0" * 64
         record["runs"][0]["gold_case_sha256"] = "f" * 64
-        errors = validate_record(record)
+        errors = _validate_record(record)
         self.assertIn(
             "run[0].gold_package_sha256 must match pinned gold package value "
             f"'{PINNED_GOLD_PACKAGE_SHA256}'",
@@ -921,7 +953,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         record["runs"][0]["task_arm_sha256"] = PINNED_TASK_ARM_SHA256[
             "veridoc"
         ]
-        errors = validate_record(record)
+        errors = _validate_record(record)
         self.assertIn(
             "run[0].task_package_sha256 must match pinned timed-task "
             f"package value '{PINNED_TASK_PACKAGE_SHA256}'",
@@ -943,7 +975,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         record = copy.deepcopy(self.valid_record)
         record["runs"][0]["checklist_package_sha256"] = "0" * 64
         record["runs"][0]["checklist_case_sha256"] = "f" * 64
-        errors = validate_record(record)
+        errors = _validate_record(record)
         self.assertIn(
             "run[0].checklist_package_sha256 must match pinned "
             "completion-checklist package value "
@@ -960,7 +992,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
     def test_run_id_must_be_generated_from_pseudonymous_fields(self) -> None:
         record = copy.deepcopy(self.valid_record)
         record["runs"][0]["run_id"] = "RUN-ALICE-EMPLOYEE-123"
-        errors = validate_record(record)
+        errors = _validate_record(record)
         self.assertIn("run[0].run_id is invalid", errors)
 
     def test_study_id_must_be_an_opaque_uuid(self) -> None:
@@ -968,7 +1000,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         record["study_id"] = "HR-ALICE-EMPLOYEE-123"
         self.assertIn(
             "study_id must be an opaque HR-prefixed UUIDv4",
-            validate_record(record),
+            _validate_record(record),
         )
 
     def test_approval_versions_must_be_privacy_safe_opaque_references(
@@ -984,7 +1016,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         record["quality_approval"]["external_record_version"] = (
             "ALICE-EMPLOYEE-123"
         )
-        errors = validate_record(record)
+        errors = _validate_record(record)
         self.assertIn(
             "consent_approval.consent_form_version must be an opaque "
             "CF-prefixed UUIDv4",
@@ -1013,7 +1045,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                     original,
                     direct_identifier,
                 )
-        errors = validate_record(record)
+        errors = _validate_record(record)
         self.assertIn(
             "participant[0].participant_id must be an opaque P-prefixed UUIDv4",
             errors,
@@ -1031,7 +1063,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                 record["runs"][0]["started_at"] = value
                 self.assertIn(
                     "run[0].started_at must be a UTC RFC 3339 timestamp",
-                    validate_record(record),
+                    _validate_record(record),
                 )
 
     def test_rfc3339_nanosecond_precision_is_preserved(self) -> None:
@@ -1044,7 +1076,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                 record["runs"][0]["ended_at"] = (
                     f"2026-07-26T01:00:00.000000002{suffix}"
                 )
-                self.assertEqual([], validate_record(record))
+                self.assertEqual([], _validate_record(record))
 
     def test_every_included_run_requires_completed_checklist(self) -> None:
         blocked = next(
@@ -1061,7 +1093,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         blocked["checklist_complete"] = False
         self.assertIn(
             "checklist_complete must be true for every included outcome",
-            "; ".join(validate_record(record)),
+            "; ".join(_validate_record(record)),
         )
 
     def test_assessor_counts_are_bound_to_unique_sealed_artifacts(self) -> None:
@@ -1069,7 +1101,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         record["runs"][0]["sealed_artifact_sha256"] = "0" * 64
         self.assertIn(
             "run[0].sealed_artifact_sha256 must be lowercase SHA-256",
-            validate_record(record),
+            _validate_record(record),
         )
 
         record = copy.deepcopy(self.valid_record)
@@ -1079,7 +1111,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertIn(
             "duplicate sealed_artifact_record_id: "
             + record["runs"][0]["sealed_artifact_record_id"],
-            validate_record(record),
+            _validate_record(record),
         )
 
         record = copy.deepcopy(self.valid_record)
@@ -1089,7 +1121,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertIn(
             "run[0].sealed_artifact_kind must be output_artifact "
             "for approved outcome",
-            validate_record(record),
+            _validate_record(record),
         )
 
     def test_blocked_attempt_envelope_is_canonical_and_run_bound(self) -> None:
@@ -1103,23 +1135,47 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             build_blocked_attempt_envelope(blocked),
             blocked["blocked_attempt_envelope"],
         )
+        self.assertEqual(
+            set(blocked) - {"blocked_attempt_envelope", "sealed_artifact_sha256"},
+            set(build_run_claims(blocked)),
+        )
+        self.assertTrue(
+            {
+                "high_risk_expected_count",
+                "high_risk_miss_count",
+                "over_detection_count",
+                "task_package_sha256",
+                "gold_package_sha256",
+                "checklist_package_sha256",
+            }.issubset(build_run_claims(blocked))
+        )
 
         for field, replacement in (
-            ("schema_version", "veridoc-mvp-blocked-attempt-envelope/v2"),
             ("blocker_code", "other_controlled"),
             ("started_at", "2026-07-26T02:59:59Z"),
             ("run_id", self.valid_record["runs"][0]["run_id"]),
+            ("high_risk_expected_count", 1),
+            ("high_risk_miss_count", 1),
+            ("over_detection_count", 1),
         ):
             with self.subTest(field=field):
                 record = copy.deepcopy(self.valid_record)
-                record["runs"][blocked_index]["blocked_attempt_envelope"][
-                    field
-                ] = replacement
+                record["runs"][blocked_index][field] = replacement
                 self.assertIn(
-                    f"run[{blocked_index}].blocked_attempt_envelope.{field} "
-                    "must match the run",
-                    validate_record(record),
+                    f"run[{blocked_index}].blocked_attempt_envelope."
+                    "run_claims_sha256 must match the run",
+                    _validate_record(record),
                 )
+
+        record = copy.deepcopy(self.valid_record)
+        record["runs"][blocked_index]["blocked_attempt_envelope"][
+            "schema_version"
+        ] = "veridoc-mvp-blocked-attempt-envelope/v1"
+        self.assertIn(
+            f"run[{blocked_index}].blocked_attempt_envelope.schema_version "
+            "must match the run",
+            _validate_record(record),
+        )
 
         record = copy.deepcopy(self.valid_record)
         record["runs"][blocked_index]["blocked_attempt_envelope"][
@@ -1128,7 +1184,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertIn(
             f"unknown run[{blocked_index}].blocked_attempt_envelope field: "
             "uncontrolled_note",
-            validate_record(record),
+            _validate_record(record),
         )
 
         record = copy.deepcopy(self.valid_record)
@@ -1136,7 +1192,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertIn(
             f"run[{blocked_index}].sealed_artifact_sha256 must match the "
             "canonical blocked_attempt_envelope",
-            validate_record(record),
+            _validate_record(record),
         )
 
         record = copy.deepcopy(self.valid_record)
@@ -1145,7 +1201,60 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         )
         self.assertIn(
             "run[0].blocked_attempt_envelope must be null for output_artifact",
-            validate_record(record),
+            _validate_record(record),
+        )
+
+    def test_output_artifacts_are_resolved_and_hashed(self) -> None:
+        self.assertEqual([], _raw_validate_record(self.valid_record))
+
+        record = copy.deepcopy(self.valid_record)
+        record["runs"][0]["sealed_artifact_sha256"] = "1" * 64
+        self.assertIn(
+            "run[0].sealed_artifact_sha256 must match the resolved "
+            "output_artifact bytes",
+            _raw_validate_record(record),
+        )
+
+        record = copy.deepcopy(self.valid_record)
+        record["runs"][0]["sealed_artifact_path"] = record["runs"][1][
+            "sealed_artifact_path"
+        ]
+        self.assertIn(
+            "run[0].sealed_artifact_sha256 must match the resolved "
+            "output_artifact bytes",
+            _raw_validate_record(record),
+        )
+
+        record = copy.deepcopy(self.valid_record)
+        record["runs"][0]["sealed_artifact_path"] = (
+            "datasets/mvp_human_review_artifacts/missing.txt"
+        )
+        self.assertIn(
+            "run[0].sealed_artifact_path cannot be resolved within "
+            "artifact_root",
+            _raw_validate_record(record),
+        )
+
+        record = copy.deepcopy(self.valid_record)
+        record["runs"][0]["sealed_artifact_path"] = "../outside.txt"
+        self.assertIn(
+            "run[0].sealed_artifact_path must remain within artifact_root",
+            _raw_validate_record(record),
+        )
+
+        record = copy.deepcopy(self.valid_record)
+        blocked_index = next(
+            index
+            for index, run in enumerate(record["runs"])
+            if run["sealed_artifact_kind"] == "blocked_attempt_envelope"
+        )
+        record["runs"][blocked_index]["sealed_artifact_path"] = (
+            "datasets/mvp_human_review_artifacts/unexpected.txt"
+        )
+        self.assertIn(
+            f"run[{blocked_index}].sealed_artifact_path must be null for "
+            "blocked_attempt_envelope",
+            _validate_record(record),
         )
 
     def test_veridoc_runs_require_approved_build_provenance(self) -> None:
@@ -1159,7 +1268,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertIn(
             "run[1].veridoc_build_provenance.product_commit must be "
             f"'{APPROVED_PRODUCT_COMMIT}'",
-            validate_record(record),
+            _validate_record(record),
         )
 
         record = copy.deepcopy(self.valid_record)
@@ -1168,7 +1277,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         )
         self.assertIn(
             "run[0].veridoc_build_provenance must be null for manual arm",
-            validate_record(record),
+            _validate_record(record),
         )
 
         record = copy.deepcopy(self.valid_record)
@@ -1178,7 +1287,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         veridoc["veridoc_build_provenance"] = None
         self.assertIn(
             "run[1].veridoc_build_provenance must be an object",
-            validate_record(record),
+            _validate_record(record),
         )
 
         record = copy.deepcopy(self.valid_record)
@@ -1208,7 +1317,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                 sort_keys=True,
             ).encode("utf-8")
         ).hexdigest()
-        errors = validate_record(record)
+        errors = _validate_record(record)
         self.assertTrue(
             any(
                 "source_tree_listing_sha256 must match the reproducibly "
@@ -1237,7 +1346,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             any(
                 "attestation_sha256 must bind the canonical provenance record"
                 in error
-                for error in validate_record(record)
+                for error in _validate_record(record)
             )
         )
 
@@ -1251,7 +1360,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertIn(
             "run[1].veridoc_build_provenance.execution_attestation_status "
             "must be 'unverified_validation_only'",
-            validate_record(record),
+            _validate_record(record),
         )
 
     def test_attempt_numbers_must_be_contiguous_from_one(self) -> None:
@@ -1260,7 +1369,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertIn(
             "P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A/mvp-word-001/manual attempt_number values "
             "must be contiguous from 1",
-            validate_record(record),
+            _validate_record(record),
         )
 
     def test_attempt_contiguity_check_is_proportional_to_observed_attempts(
@@ -1271,7 +1380,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertIn(
             "P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A/mvp-word-001/manual attempt_number values "
             "must be contiguous from 1",
-            validate_record(record),
+            _validate_record(record),
         )
 
     def test_attempt_timestamps_must_follow_attempt_number_order(self) -> None:
@@ -1301,7 +1410,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertIn(
             "P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A/mvp-scanned-pdf-001/veridoc attempt timestamps "
             "must follow attempt_number order",
-            validate_record(record),
+            _validate_record(record),
         )
 
     def test_invalid_timing_exclusions_are_retained_but_not_compared(
@@ -1325,8 +1434,8 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                 retry["ended_at"] = ended_at
                 retry["excluded_pause_seconds"] = 60
                 retry["exclusion_reason_code"] = "invalid_timing"
-                self.assertEqual([], validate_record(record))
-                summary = summarize_record(record)
+                self.assertEqual([], _validate_record(record))
+                summary = _summarize_record(record)
                 self.assertEqual(1, summary["excluded_runs"])
                 self.assertEqual(15, len(summary["pair_results"]))
 
@@ -1353,7 +1462,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
 
         self.assertIn(
             f"{participant_id} timed runs do not follow declared arm_order",
-            validate_record(record),
+            _validate_record(record),
         )
 
     def test_invalid_timing_attempts_remain_in_activity_timeline(
@@ -1367,7 +1476,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         retry["excluded_pause_seconds"] = 60
         retry["exclusion_reason_code"] = "invalid_timing"
 
-        errors = validate_record(record)
+        errors = _validate_record(record)
         participant_id = "P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A"
         self.assertIn(
             f"{participant_id}.consented_at must precede every timed run",
@@ -1396,7 +1505,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertIn(
             "run[30] must start before "
             "P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C withdrawal",
-            validate_record(record),
+            _validate_record(record),
         )
 
     def test_invalid_timing_exception_is_narrowly_scoped(self) -> None:
@@ -1404,7 +1513,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         included["runs"][0]["ended_at"] = included["runs"][0]["started_at"]
         self.assertIn(
             "ended_at must be after started_at",
-            validate_record(included),
+            _validate_record(included),
         )
 
         other_exclusion = _completed_record(self.valid_record)
@@ -1414,7 +1523,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertEqual("technical_failure", retry["exclusion_reason_code"])
         self.assertIn(
             "ended_at must be after started_at",
-            validate_record(other_exclusion),
+            _validate_record(other_exclusion),
         )
 
     def test_unknown_declared_case_is_rejected_without_crashing(self) -> None:
@@ -1422,7 +1531,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         record["case_ids"] = ["unknown-case"]
         for run in record["runs"]:
             run["case_id"] = "unknown-case"
-        self.assertIn("unknown case_ids: unknown-case", validate_record(record))
+        self.assertIn("unknown case_ids: unknown-case", _validate_record(record))
 
     def test_gold_answer_must_be_attested_hidden_until_timing_ends(self) -> None:
         record = copy.deepcopy(self.valid_record)
@@ -1430,20 +1539,20 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertIn(
             "run[0].gold_answer_hidden_until_ended_at may be false only for "
             "an excluded protocol_deviation",
-            validate_record(record),
+            _validate_record(record),
         )
 
         excluded = _completed_record(self.valid_record)
         _add_excluded_veridoc_retry(excluded)
         excluded["runs"][-1]["gold_answer_hidden_until_ended_at"] = False
         excluded["runs"][-1]["exclusion_reason_code"] = "protocol_deviation"
-        self.assertEqual([], validate_record(excluded))
+        self.assertEqual([], _validate_record(excluded))
 
         excluded["runs"][-1]["exclusion_reason_code"] = "technical_failure"
         self.assertIn(
             "run[30].gold_answer_hidden_until_ended_at may be false only for "
             "an excluded protocol_deviation",
-            validate_record(excluded),
+            _validate_record(excluded),
         )
 
     def test_gold_comparison_is_independent_and_withheld_from_participant(
@@ -1454,7 +1563,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         record["runs"][0][
             "gold_answer_comparison_withheld_from_participant"
         ] = False
-        errors = validate_record(record)
+        errors = _validate_record(record)
         self.assertIn(
             "run[0].gold_answer_compared_by_role must be independent_assessor",
             errors,
@@ -1470,14 +1579,14 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         del missing["runs"][0]["checklist_revision"]
         self.assertIn(
             "missing run[0] field: checklist_revision",
-            validate_record(missing),
+            _validate_record(missing),
         )
 
         record = copy.deepcopy(self.valid_record)
         record["runs"][0]["task_revision"] = "unapproved-task-v2"
         record["runs"][0]["gold_answer_revision"] = "unapproved-gold-v2"
         record["runs"][0]["checklist_revision"] = "unapproved-checklist-v2"
-        errors = validate_record(record)
+        errors = _validate_record(record)
         self.assertIn(
             "run[0].task_revision must match approved protocol revision "
             f"{APPROVED_TASK_REVISION}",
@@ -1503,7 +1612,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                 run["task_revision"] = "different-task-v2"
         self.assertIn(
             "all retained runs for mvp-word-001 must use the same task_revision",
-            validate_record(record),
+            _validate_record(record),
         )
 
         completed = _completed_record(self.valid_record)
@@ -1512,7 +1621,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertIn(
             "all retained runs for mvp-scanned-pdf-001 must use the same "
             "gold_answer_revision",
-            validate_record(completed),
+            _validate_record(completed),
         )
 
         checklist_drift = copy.deepcopy(self.valid_record)
@@ -1522,11 +1631,11 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertIn(
             "all retained runs for mvp-word-001 must use the same "
             "checklist_revision",
-            validate_record(checklist_drift),
+            _validate_record(checklist_drift),
         )
         self.assertIn(
             "paired runs must use the same checklist_revision",
-            validate_record(checklist_drift),
+            _validate_record(checklist_drift),
         )
 
     def test_approval_must_strictly_precede_every_run(self) -> None:
@@ -1534,13 +1643,13 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         record["consent_approval"]["approved_at"] = record["runs"][0]["started_at"]
         self.assertIn(
             "consent approval must precede every timed run",
-            validate_record(record),
+            _validate_record(record),
         )
         record = copy.deepcopy(self.valid_record)
         record["quality_approval"]["approved_at"] = record["runs"][0]["started_at"]
         self.assertIn(
             "quality approval must precede every timed run",
-            validate_record(record),
+            _validate_record(record),
         )
 
     def test_quality_approval_is_separate_and_required(self) -> None:
@@ -1548,12 +1657,12 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         del record["quality_approval"]
         self.assertIn(
             "missing record field: quality_approval",
-            validate_record(record),
+            _validate_record(record),
         )
         record = copy.deepcopy(self.valid_record)
         record["quality_approval"]["approved_by_role"] = "study_owner"
         record["quality_approval"]["external_record_version"] = ""
-        errors = validate_record(record)
+        errors = _validate_record(record)
         self.assertIn(
             "quality_approval.approved_by_role must be quality_approver",
             errors,
@@ -1568,7 +1677,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         record = copy.deepcopy(self.valid_record)
         record["runs"][1]["started_at"] = record["runs"][0]["started_at"]
         record["runs"][1]["ended_at"] = record["runs"][0]["ended_at"]
-        errors = validate_record(record)
+        errors = _validate_record(record)
         self.assertTrue(
             any(error.startswith("P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A timed runs overlap:") for error in errors)
         )
@@ -1578,8 +1687,8 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
     ) -> None:
         record = _completed_record(self.valid_record)
         _add_excluded_veridoc_retry(record)
-        self.assertEqual([], validate_record(record))
-        summary = summarize_record(record)
+        self.assertEqual([], _validate_record(record))
+        summary = _summarize_record(record)
         self.assertEqual(1, summary["retry_runs"])
         self.assertEqual(1, summary["excluded_runs"])
         self.assertEqual(1, summary["arm_metrics"]["veridoc"]["retry_runs"])
@@ -1600,8 +1709,8 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
     ) -> None:
         record = _completed_record(self.valid_record)
         _add_withdrawn_participant(record)
-        self.assertEqual([], validate_record(record))
-        summary = summarize_record(record)
+        self.assertEqual([], _validate_record(record))
+        summary = _summarize_record(record)
         self.assertEqual(30, summary["required_runs"])
         self.assertEqual(31, summary["recorded_runs"])
         self.assertEqual(0, summary["eligible_pair_count"])
@@ -1682,10 +1791,10 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                     attempt["excluded"] = False
                     attempt["exclusion_reason_code"] = None
 
-                self.assertEqual([], validate_record(record))
+                self.assertEqual([], _validate_record(record))
                 pair = next(
                     pair
-                    for pair in summarize_record(record)["pair_results"]
+                    for pair in _summarize_record(record)["pair_results"]
                     if pair["participant_id"]
                     == "P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C"
                     and pair["case_id"] == "mvp-word-001"
@@ -1708,7 +1817,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         participant["veridoc_practice_completed"] = False
         participant["veridoc_practice_completed_at"] = None
 
-        errors = validate_record(record)
+        errors = _validate_record(record)
         for arm in ("manual", "veridoc"):
             self.assertIn(
                 f"{participant['participant_id']}.{arm}_practice_completed "
@@ -1727,7 +1836,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertIn(
             f"{participant['participant_id']}.arm_order is required before "
             "timed activity",
-            validate_record(record),
+            _validate_record(record),
         )
 
     def test_withdrawn_participant_cannot_begin_with_second_arm(
@@ -1741,7 +1850,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertIn(
             f"{participant['participant_id']} timed runs do not follow "
             "declared arm_order",
-            validate_record(record),
+            _validate_record(record),
         )
 
     def test_withdrawal_boundary_rejects_an_attempt_that_ends_after_it(
@@ -1752,7 +1861,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         record["participants"][-1]["withdrawn_at"] = "2026-08-10T01:01:00Z"
         self.assertIn(
             "run[30] must not start at or end after P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C withdrawal",
-            validate_record(record),
+            _validate_record(record),
         )
 
     def test_participant_withdrew_marker_establishes_withdrawal_boundary(
@@ -1775,8 +1884,11 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                     "SAR", resumed_run_id
                 ),
                 "sealed_artifact_sha256": hashlib.sha256(
-                    resumed_run_id.encode("utf-8")
+                    f"{resumed_run_id}\n".encode("utf-8")
                 ).hexdigest(),
+                "sealed_artifact_path": _sealed_artifact_path(
+                    _opaque_record_id("SAR", resumed_run_id)
+                ),
                 "attempt_number": 2,
                 "started_at": "2026-08-10T01:03:00Z",
                 "ended_at": "2026-08-10T01:04:00Z",
@@ -1789,7 +1901,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertIn(
             f"run[30].ended_at must equal {participant_id} withdrawn_at "
             "for participant_withdrew exclusion",
-            validate_record(record),
+            _validate_record(record),
         )
 
     def test_withdrawn_participant_may_retain_incomplete_practice(self) -> None:
@@ -1818,7 +1930,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                 "arm_order": None,
             }
         )
-        self.assertEqual([], validate_record(record))
+        self.assertEqual([], _validate_record(record))
 
         record["participants"][-1]["manual_practice_completed_at"] = (
             "2026-07-26T00:10:00Z"
@@ -1826,7 +1938,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertIn(
             "participant[3].manual_practice_completed_at must be null when "
             "manual_practice_completed is false",
-            validate_record(record),
+            _validate_record(record),
         )
 
         completed = _completed_record(self.valid_record)
@@ -1834,7 +1946,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         completed["participants"][0]["manual_practice_completed_at"] = None
         self.assertIn(
             "participant[0].manual_practice_completed must be true",
-            validate_record(completed),
+            _validate_record(completed),
         )
 
     def test_withdrawn_participant_practice_must_not_cross_withdrawal(
@@ -1846,7 +1958,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertIn(
             "P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C."
             "veridoc_practice_completed_at must not occur after withdrawal",
-            validate_record(record),
+            _validate_record(record),
         )
 
     def test_withdrawn_participant_recorded_pair_is_reported_ineligible(
@@ -1876,8 +1988,11 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                         "SAR", run_id
                     ),
                     "sealed_artifact_sha256": hashlib.sha256(
-                        run_id.encode("utf-8")
+                        f"{run_id}\n".encode("utf-8")
                     ).hexdigest(),
+                    "sealed_artifact_path": _sealed_artifact_path(
+                        _opaque_record_id("SAR", run_id)
+                    ),
                     "participant_id": "P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C",
                     "started_at": _utc_text(start),
                     "ended_at": _utc_text(start + timedelta(minutes=2)),
@@ -1885,8 +2000,8 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             )
             record["runs"].append(run)
 
-        self.assertEqual([], validate_record(record))
-        summary = summarize_record(record)
+        self.assertEqual([], _validate_record(record))
+        summary = _summarize_record(record)
         self.assertEqual(20, len(summary["pair_results"]))
         self.assertEqual(0, summary["eligible_pair_count"])
         self.assertEqual(20, summary["ineligible_pair_count"])
@@ -1925,8 +2040,14 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                     "SAR", "RUN-P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C-MVP-WORD-001-MANUAL-2"
                 ),
                 "sealed_artifact_sha256": hashlib.sha256(
-                    b"RUN-P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C-MVP-WORD-001-MANUAL-2"
+                    b"RUN-P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C-MVP-WORD-001-MANUAL-2\n"
                 ).hexdigest(),
+                "sealed_artifact_path": _sealed_artifact_path(
+                    _opaque_record_id(
+                        "SAR",
+                        "RUN-P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C-MVP-WORD-001-MANUAL-2",
+                    )
+                ),
                 "attempt_number": 2,
                 "started_at": "2026-08-10T01:06:00Z",
                 "ended_at": "2026-08-10T01:08:00Z",
@@ -1936,11 +2057,11 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertIn(
             "P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C/mvp-word-001/manual must have at most one non-excluded "
             "run after withdrawal",
-            validate_record(record),
+            _validate_record(record),
         )
         self.assertIn(
             "run[32] must not start at or end after P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C withdrawal",
-            validate_record(record),
+            _validate_record(record),
         )
 
     def test_completed_cohort_still_requires_three_reviewers(self) -> None:
@@ -1949,7 +2070,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         record["participants"][2]["withdrawn_at"] = "2026-07-28T00:00:00Z"
         self.assertIn(
             "completed participant cohort must contain at least three reviewers",
-            validate_record(record),
+            _validate_record(record),
         )
 
     def test_controlled_blocker_is_accounted_but_excluded_from_median(self) -> None:
@@ -1974,8 +2095,8 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                 blocked["blocked_attempt_envelope"] = None
                 if artifact_kind == "blocked_attempt_envelope":
                     _seal_blocked_attempt_envelope(blocked)
-                self.assertEqual([], validate_record(record))
-                summary = summarize_record(record)
+                self.assertEqual([], _validate_record(record))
+                summary = _summarize_record(record)
                 self.assertTrue(summary["all_required_runs_accounted"])
                 self.assertEqual(0, summary["eligible_pair_count"])
                 self.assertEqual(15, summary["ineligible_pair_count"])
@@ -1988,7 +2109,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
     def test_practice_revision_is_required_and_controlled(self) -> None:
         record = copy.deepcopy(self.valid_record)
         del record["practice_revision"]
-        errors = validate_record(record)
+        errors = _validate_record(record)
         self.assertIn("missing record field: practice_revision", errors)
         self.assertIn(
             "practice_revision must be 'practice-phase12-v1'",
@@ -2022,7 +2143,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             "practice-phase12-v2"
         )
         record["participants"][0]["veridoc_practice_package_sha256"] = "0" * 64
-        errors = validate_record(record)
+        errors = _validate_record(record)
         self.assertIn(
             "participant[0].manual_practice_revision must be "
             "practice-phase12-v1",
@@ -2109,7 +2230,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         ][0]["started_at"]
         self.assertIn(
             "P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A.manual_practice_completed_at must precede every timed run",
-            validate_record(record),
+            _validate_record(record),
         )
 
     def test_each_participant_consent_is_versioned_and_precedes_activity(
@@ -2123,7 +2244,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         record["participants"][0]["consented_at"] = record["participants"][0][
             "manual_practice_completed_at"
         ]
-        errors = validate_record(record)
+        errors = _validate_record(record)
         self.assertIn(
             "participant[0].consent_status must be consented",
             errors,
@@ -2143,7 +2264,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertIn(
             "P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A.consented_at must "
             "follow consent approval",
-            validate_record(record),
+            _validate_record(record),
         )
 
     def test_validator_fails_closed_on_wrong_json_types(self) -> None:
@@ -2197,7 +2318,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             with self.subTest(path=path):
                 mutated = copy.deepcopy(self.valid_record)
                 _replace_json_pointer(mutated, path, value)
-                self.assertIn(expected_error, validate_record(mutated))
+                self.assertIn(expected_error, _validate_record(mutated))
 
     def test_every_leaf_type_mutation_fails_closed_without_crashing(
         self,
@@ -2229,7 +2350,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                     target = target[key]
                 target[path[-1]] = replacement
                 self.assertTrue(
-                    validate_record(mutated),
+                    _validate_record(mutated),
                     msg=(
                         "wrong JSON type was accepted at "
                         f"{'/'.join(map(str, path))}: {replacement!r}"

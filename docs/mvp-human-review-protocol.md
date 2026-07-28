@@ -202,18 +202,26 @@ external sealed record is retained under that ID so the independent assessor's
 miss and over-detection counts can be audited against the exact bytes assessed.
 Artifact record IDs are unique across attempts.
 
-For `sealed_artifact_kind: blocked_attempt_envelope`, the run also records a
-closed `blocked_attempt_envelope` object with
-`schema_version: veridoc-mvp-blocked-attempt-envelope/v1` and exact copies of
-`sealed_artifact_record_id`, `run_id`, `participant_id`, `case_id`, `arm`,
-`attempt_number`, `started_at`, `ended_at`, `excluded_pause_seconds`, `outcome`,
-`blocker_code`, `checklist_complete`, `excluded`, and
-`exclusion_reason_code`. Its canonical bytes are UTF-8 JSON with object keys
-sorted lexicographically, no insignificant whitespace, and JSON separators
-`,` and `:`. `sealed_artifact_sha256` must equal the SHA-256 of those canonical
-bytes. For `sealed_artifact_kind: output_artifact`,
-`blocked_attempt_envelope` is `null` and the digest continues to identify the
-externally retained output bytes.
+For `sealed_artifact_kind: output_artifact`, `sealed_artifact_path` is a
+non-empty relative path beneath the validator's configured `artifact_root`.
+The path must resolve to a readable regular file without leaving that root, and
+`sealed_artifact_sha256` must equal the SHA-256 of the resolved bytes. The
+privacy-safe repository example uses synthetic detached files; an actual study
+points the validator at its access-controlled artifact bundle instead of
+placing participant output in the repository.
+
+For `sealed_artifact_kind: blocked_attempt_envelope`,
+`sealed_artifact_path` is `null` and the run records a closed
+`blocked_attempt_envelope` object with
+`schema_version: veridoc-mvp-blocked-attempt-envelope/v2` and
+`run_claims_sha256`. Run claims are every member of the run except the recursive
+`blocked_attempt_envelope` and its `sealed_artifact_sha256`. This automatically
+binds identity, provenance, task/gold/checklist revisions and digests, timing,
+outcome, blocker, all safety counts, and exclusion state without maintaining a
+second field allowlist. Run claims and envelope bytes both use UTF-8 JSON with
+object keys sorted lexicographically, no insignificant whitespace, and JSON
+separators `,` and `:`. `run_claims_sha256` is the SHA-256 of the canonical run
+claims, and `sealed_artifact_sha256` is the SHA-256 of the canonical envelope.
 
 For every approved case, every participant and every retained attempt uses the
 protocol-pinned `task_revision: task-phase12-v1` and

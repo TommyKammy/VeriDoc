@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -72,7 +72,7 @@ APPROVED_PRACTICE_PACKAGE_PATH = (
     "docs/mvp-human-review-practice-package.json"
 )
 APPROVED_PRACTICE_PACKAGE_SHA256 = (
-    "dc78391cf9ffa1916e6723ed31e37c70ee4aa84e3ee2873e003af0d1887eab88"
+    "2cbb028380287ec45642cbf9fc9a5d87d07f5c14ead246e20c18150bb455ca2f"
 )
 APPROVED_PRACTICE_TRAINING_DOCUMENTS = {
     "protocol": "docs/mvp-human-review-protocol.md",
@@ -94,24 +94,15 @@ ALLOWED_SEALED_ARTIFACT_KINDS = frozenset(
     for artifact_kind in artifact_kinds
 )
 BLOCKED_ATTEMPT_ENVELOPE_SCHEMA_VERSION = (
-    "veridoc-mvp-blocked-attempt-envelope/v1"
+    "veridoc-mvp-blocked-attempt-envelope/v2"
 )
-BLOCKED_ATTEMPT_ENVELOPE_RUN_FIELDS = (
-    "sealed_artifact_record_id",
-    "run_id",
-    "participant_id",
-    "case_id",
-    "arm",
-    "attempt_number",
-    "started_at",
-    "ended_at",
-    "excluded_pause_seconds",
-    "outcome",
-    "blocker_code",
-    "checklist_complete",
-    "excluded",
-    "exclusion_reason_code",
+RUN_CLAIMS_EXCLUDED_FIELDS = frozenset(
+    {
+        "blocked_attempt_envelope",
+        "sealed_artifact_sha256",
+    }
 )
+ArtifactResolver = Callable[[dict[str, Any]], bytes]
 UUID4_TOKEN_RE = (
     r"[0-9A-F]{8}-[0-9A-F]{4}-4[0-9A-F]{3}-"
     r"[89AB][0-9A-F]{3}-[0-9A-F]{12}"
@@ -125,6 +116,7 @@ RUN_ID_RE = re.compile(
     r"(?:MANUAL|VERIDOC)-[1-9][0-9]*$"
 )
 SEALED_ARTIFACT_RECORD_ID_RE = re.compile(rf"^SAR-{UUID4_TOKEN_RE}$")
+SEALED_ARTIFACT_PATH_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 BUILD_PROVENANCE_RECORD_ID_RE = re.compile(rf"^BLD-{UUID4_TOKEN_RE}$")
 REVISION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -297,16 +289,81 @@ def _canonical_json_sha256(value: Any) -> str:
     ).hexdigest()
 
 
+def build_run_claims(run: dict[str, Any]) -> dict[str, Any]:
+    """Return every non-recursive run field covered by the audit seal."""
+
+    return {
+        field: run[field]
+        for field in sorted(run)
+        if field not in RUN_CLAIMS_EXCLUDED_FIELDS
+    }
+
+
 def build_blocked_attempt_envelope(run: dict[str, Any]) -> dict[str, Any]:
     """Build the canonical audit envelope for a blocked attempt."""
 
     return {
         "schema_version": BLOCKED_ATTEMPT_ENVELOPE_SCHEMA_VERSION,
-        **{
-            field: run.get(field)
-            for field in BLOCKED_ATTEMPT_ENVELOPE_RUN_FIELDS
-        },
+        "run_claims_sha256": _canonical_json_sha256(build_run_claims(run)),
     }
+
+
+def _sealed_artifact_relative_path(
+    run: dict[str, Any],
+    label: str,
+    errors: list[str],
+) -> Path | None:
+    artifact_path = run.get("sealed_artifact_path")
+    if not isinstance(artifact_path, str) or not artifact_path:
+        errors.append(
+            f"{label}.sealed_artifact_path must be a non-empty relative path "
+            "for output_artifact"
+        )
+        return None
+
+    path_parts = artifact_path.split("/")
+    relative_path = Path(artifact_path)
+    if (
+        relative_path.is_absolute()
+        or any(
+            part in {"", ".", ".."}
+            or SEALED_ARTIFACT_PATH_SEGMENT_RE.fullmatch(part) is None
+            for part in path_parts
+        )
+    ):
+        errors.append(
+            f"{label}.sealed_artifact_path must remain within artifact_root"
+        )
+        return None
+    return relative_path
+
+
+def _read_sealed_artifact(
+    relative_path: Path,
+    artifact_root: Path,
+    label: str,
+    errors: list[str],
+) -> bytes | None:
+
+    try:
+        resolved_path = (artifact_root / relative_path).resolve(strict=True)
+        resolved_path.relative_to(artifact_root)
+    except (OSError, ValueError):
+        errors.append(
+            f"{label}.sealed_artifact_path cannot be resolved within "
+            "artifact_root"
+        )
+        return None
+
+    if not resolved_path.is_file():
+        errors.append(f"{label}.sealed_artifact_path must resolve to a file")
+        return None
+
+    try:
+        return resolved_path.read_bytes()
+    except OSError:
+        errors.append(f"{label}.sealed_artifact_path cannot be read")
+        return None
 
 
 def _approved_product_tree() -> str:
@@ -1070,11 +1127,17 @@ def _validate_constant(
         errors.append(f"{field} must be {expected!r}")
 
 
-def validate_record(record: Any) -> list[str]:
+def validate_record(
+    record: Any,
+    *,
+    artifact_root: Path = REPO_ROOT,
+    artifact_resolver: ArtifactResolver | None = None,
+) -> list[str]:
     """Return deterministic human-readable validation errors."""
 
     errors: list[str] = []
     schema = _load_schema()
+    artifact_root = artifact_root.resolve()
     if not isinstance(record, dict):
         return ["record must be an object"]
 
@@ -2072,7 +2135,50 @@ def validate_record(record: Any) -> list[str]:
                     f"{label}.blocked_attempt_envelope must be null for "
                     "output_artifact"
                 )
+            relative_artifact_path = _sealed_artifact_relative_path(
+                run,
+                label,
+                errors,
+            )
+            artifact_bytes: bytes | None = None
+            if relative_artifact_path is not None:
+                if artifact_resolver is None:
+                    artifact_bytes = _read_sealed_artifact(
+                        relative_artifact_path,
+                        artifact_root,
+                        label,
+                        errors,
+                    )
+                else:
+                    try:
+                        artifact_bytes = artifact_resolver(run)
+                    except (OSError, ValueError) as exc:
+                        errors.append(
+                            f"{label}.sealed_artifact_path cannot be resolved: "
+                            f"{exc}"
+                        )
+                    if not isinstance(artifact_bytes, bytes):
+                        errors.append(
+                            f"{label}.sealed artifact resolver must return bytes"
+                        )
+                        artifact_bytes = None
+            if (
+                artifact_bytes is not None
+                and isinstance(sealed_artifact_sha256, str)
+                and SHA256_RE.fullmatch(sealed_artifact_sha256) is not None
+                and hashlib.sha256(artifact_bytes).hexdigest()
+                != sealed_artifact_sha256
+            ):
+                errors.append(
+                    f"{label}.sealed_artifact_sha256 must match the resolved "
+                    "output_artifact bytes"
+                )
         elif sealed_artifact_kind == "blocked_attempt_envelope":
+            if run.get("sealed_artifact_path") is not None:
+                errors.append(
+                    f"{label}.sealed_artifact_path must be null for "
+                    "blocked_attempt_envelope"
+                )
             envelope_schema = schema["$defs"]["blockedAttemptEnvelope"]
             _unknown_fields(
                 blocked_attempt_envelope,
@@ -2421,10 +2527,19 @@ def validate_record(record: Any) -> list[str]:
     return sorted(set(errors))
 
 
-def summarize_record(record: dict[str, Any]) -> dict[str, Any]:
+def summarize_record(
+    record: dict[str, Any],
+    *,
+    artifact_root: Path = REPO_ROOT,
+    artifact_resolver: ArtifactResolver | None = None,
+) -> dict[str, Any]:
     """Compute protocol-defined metrics after validation."""
 
-    errors = validate_record(record)
+    errors = validate_record(
+        record,
+        artifact_root=artifact_root,
+        artifact_resolver=artifact_resolver,
+    )
     if errors:
         raise ValueError("record is invalid: " + "; ".join(errors))
     _, structured_high_risk_targets_ready = (
@@ -2668,6 +2783,15 @@ def main(argv: list[str] | None = None) -> int:
         description="Validate and summarize P12G-13 human-review evidence."
     )
     parser.add_argument("record", type=Path, help="human-review evidence JSON")
+    parser.add_argument(
+        "--artifact-root",
+        type=Path,
+        default=REPO_ROOT,
+        help=(
+            "root directory used to resolve output_artifact paths "
+            f"(default: {REPO_ROOT})"
+        ),
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -2680,14 +2804,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Unable to read evidence: {exc}", file=sys.stderr)
         return 2
 
-    errors = validate_record(record)
+    errors = validate_record(record, artifact_root=args.artifact_root)
     if errors:
         print("Human-review evidence validation failed:", file=sys.stderr)
         for error in errors:
             print(f"- {error}", file=sys.stderr)
         return 1
 
-    print(json.dumps(summarize_record(record), indent=2, sort_keys=True))
+    print(
+        json.dumps(
+            summarize_record(record, artifact_root=args.artifact_root),
+            indent=2,
+            sort_keys=True,
+        )
+    )
     return 0
 
 
