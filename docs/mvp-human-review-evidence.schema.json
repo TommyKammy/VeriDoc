@@ -1,0 +1,918 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://veridoc.local/schemas/mvp-human-review-evidence-v1.schema.json",
+  "title": "VeriDoc MVP human-review evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "protocol_version",
+    "decision_revision",
+    "manifest_revision",
+    "target_product_commit",
+    "manifest_git_blob",
+    "manifest_contract_sha256",
+    "study_id",
+    "study_status",
+    "practice_revision",
+    "practice_package_path",
+    "practice_package_sha256",
+    "case_ids",
+    "consent_approval",
+    "quality_approval",
+    "participants",
+    "study_evidence_record_id",
+    "study_evidence_sha256",
+    "study_evidence_envelope",
+    "runs"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "veridoc-mvp-human-review-evidence/v1"
+    },
+    "protocol_version": {
+      "const": "p12g-13-human-review-v1"
+    },
+    "decision_revision": {
+      "const": "p12g-02-v1"
+    },
+    "manifest_revision": {
+      "const": "phase12-mvp-v1"
+    },
+    "target_product_commit": {
+      "const": "584ef2db12a6676abb65f75de1ec38145e06b487"
+    },
+    "manifest_git_blob": {
+      "const": "13450762d323198b1b6e87315be173c784fc4880"
+    },
+    "manifest_contract_sha256": {
+      "const": "5d91a67915d79c649954c5c8af02e74d08d94d0b97e7e673a7db690df61ebfff"
+    },
+    "study_id": {
+      "type": "string",
+      "pattern": "^HR-[0-9A-F]{8}-[0-9A-F]{4}-4[0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}$"
+    },
+    "study_status": {
+      "enum": [
+        "validation_example",
+        "completed"
+      ]
+    },
+    "practice_revision": {
+      "const": "practice-phase12-v1"
+    },
+    "practice_package_path": {
+      "const": "docs/mvp-human-review-practice-package.json"
+    },
+    "practice_package_sha256": {
+      "const": "acf761e11bc81db776b09f59fc6b146ff1c211f41c247024499f695b9d5b8ccf"
+    },
+    "case_ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "mvp-word-001",
+          "mvp-excel-001",
+          "mvp-text-pdf-001",
+          "mvp-scanned-pdf-001",
+          "mvp-record-pdf-001"
+        ]
+      }
+    },
+    "consent_approval": {
+      "$ref": "#/$defs/consentApproval"
+    },
+    "quality_approval": {
+      "$ref": "#/$defs/qualityApproval"
+    },
+    "participants": {
+      "type": "array",
+      "minItems": 3,
+      "items": {
+        "$ref": "#/$defs/participant"
+      }
+    },
+    "study_evidence_record_id": {
+      "type": "string",
+      "pattern": "^HSR-[0-9A-F]{8}-[0-9A-F]{4}-4[0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}$",
+      "description": "Opaque ID resolving an independently retained envelope at study_records/{study_evidence_record_id}.json"
+    },
+    "study_evidence_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "not": {
+        "const": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    "study_evidence_envelope": {
+      "$ref": "#/$defs/studyEvidenceEnvelope"
+    },
+    "runs": {
+      "type": "array",
+      "minItems": 6,
+      "items": {
+        "$ref": "#/$defs/run"
+      }
+    }
+  },
+  "$defs": {
+    "consentApproval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "approval_status",
+        "approved_at",
+        "approved_by_role",
+        "consent_form_version",
+        "direct_identifiers_stored"
+      ],
+      "properties": {
+        "approval_status": {
+          "const": "approved"
+        },
+        "approved_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?(Z|\\+00:00)$"
+        },
+        "approved_by_role": {
+          "const": "study_owner"
+        },
+        "consent_form_version": {
+          "type": "string",
+          "pattern": "^CF-[0-9A-F]{8}-[0-9A-F]{4}-4[0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}$"
+        },
+        "direct_identifiers_stored": {
+          "const": false
+        }
+      }
+    },
+    "qualityApproval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "approval_status",
+        "approved_at",
+        "approved_by_role",
+        "external_record_version"
+      ],
+      "properties": {
+        "approval_status": {
+          "const": "approved"
+        },
+        "approved_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?(Z|\\+00:00)$"
+        },
+        "approved_by_role": {
+          "const": "quality_approver"
+        },
+        "external_record_version": {
+          "type": "string",
+          "pattern": "^QAR-[0-9A-F]{8}-[0-9A-F]{4}-4[0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}$"
+        }
+      }
+    },
+    "participant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "participant_id",
+        "participation_status",
+        "withdrawn_at",
+        "consent_status",
+        "consented_at",
+        "consent_form_version",
+        "relevant_experience_attested",
+        "manual_practice_completed",
+        "manual_practice_completed_at",
+        "manual_practice_revision",
+        "manual_practice_package_sha256",
+        "veridoc_practice_completed",
+        "veridoc_practice_completed_at",
+        "veridoc_practice_revision",
+        "veridoc_practice_package_sha256",
+        "arm_order"
+      ],
+      "properties": {
+        "participant_id": {
+          "type": "string",
+          "pattern": "^P-[0-9A-F]{8}-[0-9A-F]{4}-4[0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}$"
+        },
+        "participation_status": {
+          "enum": [
+            "completed",
+            "withdrawn"
+          ]
+        },
+        "withdrawn_at": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?(Z|\\+00:00)$"
+            }
+          ]
+        },
+        "consent_status": {
+          "const": "consented"
+        },
+        "consented_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?(Z|\\+00:00)$"
+        },
+        "consent_form_version": {
+          "type": "string",
+          "pattern": "^CF-[0-9A-F]{8}-[0-9A-F]{4}-4[0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}$"
+        },
+        "relevant_experience_attested": {
+          "const": true
+        },
+        "manual_practice_completed": {
+          "type": "boolean"
+        },
+        "manual_practice_completed_at": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?(Z|\\+00:00)$"
+            }
+          ]
+        },
+        "manual_practice_revision": {
+          "const": "practice-phase12-v1"
+        },
+        "manual_practice_package_sha256": {
+          "const": "acf761e11bc81db776b09f59fc6b146ff1c211f41c247024499f695b9d5b8ccf"
+        },
+        "veridoc_practice_completed": {
+          "type": "boolean"
+        },
+        "veridoc_practice_completed_at": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?(Z|\\+00:00)$"
+            }
+          ]
+        },
+        "veridoc_practice_revision": {
+          "const": "practice-phase12-v1"
+        },
+        "veridoc_practice_package_sha256": {
+          "const": "acf761e11bc81db776b09f59fc6b146ff1c211f41c247024499f695b9d5b8ccf"
+        },
+        "arm_order": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "const": [
+                "manual",
+                "veridoc"
+              ]
+            },
+            {
+              "const": [
+                "veridoc",
+                "manual"
+              ]
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "participation_status": {
+                "const": "completed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "manual_practice_completed": {
+                "const": true
+              },
+              "veridoc_practice_completed": {
+                "const": true
+              },
+              "withdrawn_at": {
+                "type": "null"
+              },
+              "arm_order": {
+                "not": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "participation_status": {
+                "const": "withdrawn"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "withdrawn_at": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "manual_practice_completed": {
+                "const": false
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "manual_practice_completed_at": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "manual_practice_completed_at": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "veridoc_practice_completed": {
+                "const": false
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "veridoc_practice_completed_at": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "veridoc_practice_completed_at": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "veridocBuildProvenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record_id",
+        "product_commit",
+        "product_tree",
+        "checkout_state",
+        "derivation_status",
+        "source_tree_listing_sha256",
+        "execution_attestation_status",
+        "attestation_sha256"
+      ],
+      "properties": {
+        "record_id": {
+          "type": "string",
+          "pattern": "^BLD-[0-9A-F]{8}-[0-9A-F]{4}-4[0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}$"
+        },
+        "product_commit": {
+          "const": "584ef2db12a6676abb65f75de1ec38145e06b487"
+        },
+        "product_tree": {
+          "const": "d7b1714ab9e7f42c5299a4e4b5197e4669a035b9"
+        },
+        "checkout_state": {
+          "const": "clean"
+        },
+        "derivation_status": {
+          "const": "approved_source_tree_verified_execution_unattested"
+        },
+        "source_tree_listing_sha256": {
+          "const": "0bec46f7d8240796a137a163c20c4ee5f98f867f5730d78fe56b571eeffd6b3c"
+        },
+        "execution_attestation_status": {
+          "const": "unverified_validation_only"
+        },
+        "attestation_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "not": {
+            "const": "0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        }
+      }
+    },
+    "sealedEvidenceEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "run_claims_sha256"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "veridoc-mvp-sealed-evidence-envelope/v1"
+        },
+        "run_claims_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "not": {
+            "const": "0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        }
+      }
+    },
+    "studyEvidenceEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "study_claims_sha256"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "veridoc-mvp-study-evidence-envelope/v1"
+        },
+        "study_claims_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "not": {
+            "const": "0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        }
+      }
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run_id",
+        "sealed_artifact_record_id",
+        "sealed_artifact_sha256",
+        "sealed_artifact_kind",
+        "sealed_artifact_path",
+        "output_artifact_sha256",
+        "sealed_evidence_envelope",
+        "study_id",
+        "participant_id",
+        "case_id",
+        "source_fixture_id",
+        "source_fixture_path",
+        "source_fixture_sha256",
+        "conversion_mode",
+        "target_artifact_type",
+        "arm",
+        "veridoc_build_provenance",
+        "attempt_number",
+        "task_revision",
+        "task_package_path",
+        "task_package_sha256",
+        "task_case_sha256",
+        "task_arm_sha256",
+        "gold_answer_revision",
+        "gold_package_path",
+        "gold_package_sha256",
+        "gold_case_sha256",
+        "checklist_revision",
+        "checklist_package_path",
+        "checklist_package_sha256",
+        "checklist_case_sha256",
+        "gold_answer_hidden_until_ended_at",
+        "gold_answer_compared_by_role",
+        "independent_assessor_id",
+        "assessor_attestation_record_id",
+        "assessor_attestation_sha256",
+        "assessment_completed_at",
+        "gold_answer_comparison_withheld_from_participant",
+        "started_at",
+        "ended_at",
+        "excluded_pause_seconds",
+        "outcome",
+        "checklist_complete",
+        "blocker_code",
+        "high_risk_expected_count",
+        "high_risk_miss_count",
+        "over_detection_count",
+        "excluded",
+        "exclusion_reason_code"
+      ],
+      "properties": {
+        "run_id": {
+          "type": "string",
+          "pattern": "^RUN-P-[0-9A-F]{8}-[0-9A-F]{4}-4[0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}-MVP-[A-Z0-9-]+-(MANUAL|VERIDOC)-[1-9][0-9]*$"
+        },
+        "sealed_artifact_record_id": {
+          "type": "string",
+          "pattern": "^SAR-[0-9A-F]{8}-[0-9A-F]{4}-4[0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}$",
+          "description": "Opaque ID resolving an independently retained envelope at sealed_records/{sealed_artifact_record_id}.json"
+        },
+        "sealed_artifact_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "Canonical SHA-256 of the independently retained sealed evidence envelope",
+          "not": {
+            "const": "0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        },
+        "sealed_artifact_kind": {
+          "enum": [
+            "output_artifact",
+            "blocked_attempt_envelope"
+          ]
+        },
+        "sealed_artifact_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "output_artifact_sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sealed_evidence_envelope": {
+          "$ref": "#/$defs/sealedEvidenceEnvelope"
+        },
+        "study_id": {
+          "type": "string",
+          "pattern": "^HR-[0-9A-F]{8}-[0-9A-F]{4}-4[0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}$"
+        },
+        "participant_id": {
+          "type": "string",
+          "pattern": "^P-[0-9A-F]{8}-[0-9A-F]{4}-4[0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}$"
+        },
+        "case_id": {
+          "type": "string"
+        },
+        "source_fixture_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{2,127}$"
+        },
+        "source_fixture_path": {
+          "type": "string",
+          "pattern": "^datasets/fixtures/[A-Za-z0-9._/-]+$"
+        },
+        "source_fixture_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "conversion_mode": {
+          "enum": [
+            "word_to_excel",
+            "excel_to_word",
+            "pdf_to_excel",
+            "pdf_to_word"
+          ]
+        },
+        "target_artifact_type": {
+          "enum": [
+            "xlsx",
+            "docx"
+          ]
+        },
+        "arm": {
+          "enum": [
+            "manual",
+            "veridoc"
+          ]
+        },
+        "veridoc_build_provenance": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/veridocBuildProvenance"
+            }
+          ]
+        },
+        "attempt_number": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "task_revision": {
+          "const": "task-phase12-v1"
+        },
+        "task_package_path": {
+          "const": "docs/mvp-human-review-timed-task-package.json"
+        },
+        "task_package_sha256": {
+          "const": "55c15447c23b46cfee458a0bd13c3eac9916454b446a459dd2588412708aba47"
+        },
+        "task_case_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "task_arm_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "gold_answer_revision": {
+          "const": "gold-phase12-v1"
+        },
+        "gold_package_path": {
+          "const": "datasets/mvp_human_review_gold_package_v1.json"
+        },
+        "gold_package_sha256": {
+          "const": "bae5f009632e2d095b4350df300b4e0d4364b00960b94a68c70860da431d6384"
+        },
+        "gold_case_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "checklist_revision": {
+          "const": "checklist-phase12-v1"
+        },
+        "checklist_package_path": {
+          "const": "docs/mvp-human-review-completion-checklist-package.json"
+        },
+        "checklist_package_sha256": {
+          "const": "15c40eebd279600abb8d0f0eaef8c6ecd595f77bf0b81cc0bbe5a7de01fc1b64"
+        },
+        "checklist_case_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "gold_answer_hidden_until_ended_at": {
+          "type": "boolean"
+        },
+        "gold_answer_compared_by_role": {
+          "const": "independent_assessor"
+        },
+        "independent_assessor_id": {
+          "type": "string",
+          "pattern": "^A-[0-9A-F]{8}-[0-9A-F]{4}-4[0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}$"
+        },
+        "assessor_attestation_record_id": {
+          "type": "string",
+          "pattern": "^AAR-[0-9A-F]{8}-[0-9A-F]{4}-4[0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}$",
+          "description": "Opaque ID resolving an independently retained identity-and-separation attestation at assessor_records/{assessor_attestation_record_id}.json"
+        },
+        "assessor_attestation_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "not": {
+            "const": "0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        },
+        "assessment_completed_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?(Z|\\+00:00)$"
+        },
+        "gold_answer_comparison_withheld_from_participant": {
+          "const": true
+        },
+        "started_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?(Z|\\+00:00)$"
+        },
+        "ended_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?(Z|\\+00:00)$"
+        },
+        "excluded_pause_seconds": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "outcome": {
+          "enum": [
+            "approved",
+            "blocked"
+          ]
+        },
+        "checklist_complete": {
+          "type": "boolean"
+        },
+        "blocker_code": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            null,
+            "source_unreadable",
+            "tool_unavailable",
+            "required_information_missing",
+            "approval_unavailable",
+            "other_controlled"
+          ]
+        },
+        "high_risk_expected_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "high_risk_miss_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "over_detection_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "excluded": {
+          "type": "boolean"
+        },
+        "exclusion_reason_code": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            null,
+            "technical_failure",
+            "protocol_deviation",
+            "participant_withdrew",
+            "invalid_timing"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "arm": {
+                "const": "manual"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "veridoc_build_provenance": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "sealed_artifact_kind": {
+                "const": "output_artifact"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "sealed_artifact_path": {
+                "type": "string",
+                "pattern": "^sealed_artifacts/SAR-[0-9A-F]{8}-[0-9A-F]{4}-4[0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}\\.bin$"
+              },
+              "output_artifact_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$",
+                "not": {
+                  "const": "0000000000000000000000000000000000000000000000000000000000000000"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "sealed_artifact_kind": {
+                "const": "blocked_attempt_envelope"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "sealed_artifact_path": {
+                "type": "null"
+              },
+              "output_artifact_sha256": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "arm": {
+                "const": "veridoc"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "veridoc_build_provenance": {
+                "$ref": "#/$defs/veridocBuildProvenance"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "outcome": {
+                "const": "approved"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "sealed_artifact_kind": {
+                "const": "output_artifact"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "outcome": {
+                "const": "blocked"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "sealed_artifact_kind": {
+                "enum": [
+                  "output_artifact",
+                  "blocked_attempt_envelope"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "excluded": {
+                "const": false
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "checklist_complete": {
+                "const": true
+              },
+              "gold_answer_hidden_until_ended_at": {
+                "const": true
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "gold_answer_hidden_until_ended_at": {
+                "const": false
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "excluded": {
+                "const": true
+              },
+              "exclusion_reason_code": {
+                "const": "protocol_deviation"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

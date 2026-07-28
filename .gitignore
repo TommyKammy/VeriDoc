@@ -116,6 +116,7 @@ models/
 *.pth
 *.ckpt
 *.bin
+!datasets/sealed_artifacts/*.bin
 *.mlmodel
 *.mlpackage/
 

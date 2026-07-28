@@ -1,0 +1,90 @@
+{
+  "schema_version": "veridoc-mvp-human-review-invalid-examples/v1",
+  "base_record": "datasets/mvp_human_review_evidence_valid.json",
+  "examples": [
+    {
+      "id": "direct-participant-identity",
+      "path": "/participants/0/participant_name",
+      "value": "Direct Identity Must Not Be Stored",
+      "expected_error": "unknown participant field: participant_name"
+    },
+    {
+      "id": "output-artifact-digest-mismatch",
+      "path": "/runs/0/output_artifact_sha256",
+      "value": "1111111111111111111111111111111111111111111111111111111111111111",
+      "expected_error": "run[0].output_artifact_sha256 must match the resolved output_artifact bytes"
+    },
+    {
+      "id": "blocked-run-claims-unsealed",
+      "path": "/runs/2/over_detection_count",
+      "value": 1,
+      "expected_error": "run[2].sealed_evidence_envelope.run_claims_sha256 must match the run"
+    },
+    {
+      "id": "output-assessment-counts-unsealed",
+      "path": "/runs/0/high_risk_miss_count",
+      "value": 1,
+      "expected_error": "run[0].sealed_evidence_envelope.run_claims_sha256 must match the run"
+    },
+    {
+      "id": "cross-arm-task-drift",
+      "path": "/runs/1/task_revision",
+      "value": "different-task-v2",
+      "expected_error": "paired runs must use the same task_revision"
+    },
+    {
+      "id": "timed-task-arm-contract-drift",
+      "path": "/runs/0/task_arm_sha256",
+      "value": "204ae4a4f884e48e0360e6f506f9ef57a7e6e98a50f519e2f06e9c9041daaf06",
+      "expected_error": "run[0].task_arm_sha256 must bind pinned manual assistance contract as f8c40d44bd0d29ff8b93455e196acd1adb495f71e13696c207739c478bae5440"
+    },
+    {
+      "id": "completion-checklist-contract-drift",
+      "path": "/runs/0/checklist_case_sha256",
+      "value": "0000000000000000000000000000000000000000000000000000000000000000",
+      "expected_error": "run[0].checklist_case_sha256 must bind pinned completion checklist for mvp-word-001 as c4d31dabdc42f6241e41b8f64697bef4bafe567e1cb99e6cc37ce61229cc776f"
+    },
+    {
+      "id": "target-format-drift",
+      "path": "/runs/0/conversion_mode",
+      "value": "pdf_to_word",
+      "expected_error": "run[0].conversion_mode must match approved manifest value 'word_to_excel'"
+    },
+    {
+      "id": "gold-case-digest-drift",
+      "path": "/runs/0/gold_case_sha256",
+      "value": "0000000000000000000000000000000000000000000000000000000000000000",
+      "expected_error": "run[0].gold_case_sha256 must bind pinned gold case mvp-word-001 as 1f3337f012629121a802df23adbe80a887d005a8b45fb3dc0231518ce34b812f"
+    },
+    {
+      "id": "pause-exceeds-elapsed-time",
+      "path": "/runs/0/excluded_pause_seconds",
+      "value": 1201,
+      "expected_error": "excluded_pause_seconds must be less than elapsed time"
+    },
+    {
+      "id": "participant-consent-missing",
+      "path": "/participants/0/consent_status",
+      "value": "not_consented",
+      "expected_error": "participant[0].consent_status must be consented"
+    },
+    {
+      "id": "personalized-quality-approval-version",
+      "path": "/quality_approval/external_record_version",
+      "value": "ALICE-EMPLOYEE-123",
+      "expected_error": "quality_approval.external_record_version must be an opaque QAR-prefixed UUIDv4"
+    },
+    {
+      "id": "participant-practice-package-drift",
+      "path": "/participants/0/manual_practice_package_sha256",
+      "value": "0000000000000000000000000000000000000000000000000000000000000000",
+      "expected_error": "participant[0].manual_practice_package_sha256 must match approved practice package"
+    },
+    {
+      "id": "included-hidden-gold-violation",
+      "path": "/runs/0/gold_answer_hidden_until_ended_at",
+      "value": false,
+      "expected_error": "run[0].gold_answer_hidden_until_ended_at may be false only for an excluded protocol_deviation"
+    }
+  ]
+}

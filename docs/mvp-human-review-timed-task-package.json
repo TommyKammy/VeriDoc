@@ -1,0 +1,113 @@
+{
+  "schema_version": "veridoc-mvp-human-review-timed-task-package/v1",
+  "task_revision": "task-phase12-v1",
+  "decision_revision": "p12g-02-v1",
+  "approved_efficiency_scope_sha256": "3d9d05671895ec8d6e8b14f44b6a8dd7f99aa17b7b65871b78fb56a49966b6fb",
+  "manifest_contract_sha256": "5d91a67915d79c649954c5c8af02e74d08d94d0b97e7e673a7db690df61ebfff",
+  "contract_status": "protocol_pinned",
+  "common_instructions": {
+    "objective": "Produce the expected editable target artifact from the supplied source, verify and correct it against the shared completion checklist, and record either an approved artifact or a controlled blocked outcome.",
+    "start_condition": "Start timing only after the source fixture, target format, shared checklist, and assigned arm tools are available.",
+    "stop_condition": "Stop timing only after an approved artifact or controlled blocked outcome is recorded and the shared checklist is complete.",
+    "prohibited_assistance": [
+      "gold answers or gold comparison results before timing stops",
+      "help from another person during a timed attempt",
+      "unapproved document-conversion, OCR, generative-AI, or automation tools"
+    ]
+  },
+  "arm_contracts": {
+    "manual": {
+      "allowed_tools": [
+        "approved office application used to create, review, and correct the target artifact"
+      ],
+      "prohibited_tools": [
+        "VeriDoc",
+        "any document-conversion, OCR, generative-AI, or automation tool"
+      ]
+    },
+    "veridoc": {
+      "allowed_tools": [
+        "VeriDoc at approved product commit 584ef2db12a6676abb65f75de1ec38145e06b487",
+        "approved office application used only to review and correct the VeriDoc output"
+      ],
+      "prohibited_tools": [
+        "any document-conversion, OCR, generative-AI, or automation tool other than the approved VeriDoc build"
+      ]
+    }
+  },
+  "cases": [
+    {
+      "case_id": "mvp-word-001",
+      "fixture_id": "word-to-excel-application",
+      "conversion_mode": "word_to_excel",
+      "target_artifact_type": "xlsx",
+      "expectations": [
+        "application table values remain editable",
+        "numeric and date values preserve their intended types",
+        "merged-cell handling is surfaced for review"
+      ],
+      "review_focus": [
+        "confirm the merged application-summary cell",
+        "confirm blank optional cells remain blank"
+      ]
+    },
+    {
+      "case_id": "mvp-excel-001",
+      "fixture_id": "excel-to-word-representative",
+      "conversion_mode": "excel_to_word",
+      "target_artifact_type": "docx",
+      "expectations": [
+        "all representative worksheets are emitted in source order",
+        "typed values are rendered without dropping leading zeros",
+        "worksheet names remain visible as headings"
+      ],
+      "review_focus": [
+        "confirm worksheet ordering and headings",
+        "confirm dates, decimals, booleans, and leading-zero identifiers"
+      ]
+    },
+    {
+      "case_id": "mvp-text-pdf-001",
+      "fixture_id": "pdf-to-excel-table-report",
+      "conversion_mode": "pdf_to_excel",
+      "target_artifact_type": "xlsx",
+      "expectations": [
+        "the ruled table is emitted as editable cells",
+        "numeric values remain numeric",
+        "source-page and bounding-box evidence remains attached"
+      ],
+      "review_focus": [
+        "confirm table boundaries and blank-cell preservation",
+        "confirm source evidence for the extracted table"
+      ]
+    },
+    {
+      "case_id": "mvp-scanned-pdf-001",
+      "fixture_id": "scanned-pdf-representative",
+      "conversion_mode": "pdf_to_word",
+      "target_artifact_type": "docx",
+      "expectations": [
+        "the image-only page is represented without inventing extracted text",
+        "the empty-page placeholder remains explicitly review-required"
+      ],
+      "review_focus": [
+        "confirm unsupported OCR is not treated as successful text extraction",
+        "route the scan through a separate trusted OCR workflow before accepting text"
+      ]
+    },
+    {
+      "case_id": "mvp-record-pdf-001",
+      "fixture_id": "record-pdf-neutral-representative",
+      "conversion_mode": "pdf_to_word",
+      "target_artifact_type": "docx",
+      "expectations": [
+        "record text remains editable",
+        "record sections remain complete and in source order"
+      ],
+      "review_focus": [
+        "confirm the converted record text is complete",
+        "confirm section ordering against the source pages"
+      ]
+    }
+  ]
+}
