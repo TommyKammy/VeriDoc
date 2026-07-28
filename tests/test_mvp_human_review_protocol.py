@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Callable
 
 from scripts.ci.validate_mvp_human_review_evidence import (
     ALLOWED_SEALED_ARTIFACT_KINDS_BY_OUTCOME,
@@ -30,6 +31,7 @@ from scripts.ci.validate_mvp_human_review_evidence import (
     PINNED_GOLD_PACKAGE_SHA256,
     PINNED_TASK_PACKAGE_PATH,
     PINNED_TASK_PACKAGE_SHA256,
+    _loads_json_strict,
     build_sealed_evidence_envelope,
     build_run_claims,
     summarize_record as _raw_summarize_record,
@@ -217,10 +219,37 @@ def _synthetic_output_artifact_bytes(run: dict[str, object]) -> bytes:
     return f"{run['run_id']}\n".encode("utf-8")
 
 
+def _synthetic_sealed_evidence_bytes(run: dict[str, object]) -> bytes:
+    return json.dumps(
+        run["sealed_evidence_envelope"],
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+
+
+def _synthetic_sealed_evidence_resolver(
+    record: object,
+) -> Callable[[str], bytes]:
+    retained_by_id: dict[str, bytes] = {}
+    if isinstance(record, dict) and isinstance(record.get("runs"), list):
+        for run in record["runs"]:
+            if (
+                isinstance(run, dict)
+                and isinstance(run.get("sealed_artifact_record_id"), str)
+                and "sealed_evidence_envelope" in run
+            ):
+                retained_by_id[run["sealed_artifact_record_id"]] = (
+                    _synthetic_sealed_evidence_bytes(run)
+                )
+    return retained_by_id.__getitem__
+
+
 def _validate_record(record: object) -> list[str]:
     return _raw_validate_record(
         record,
         artifact_resolver=_synthetic_output_artifact_bytes,
+        sealed_evidence_resolver=_synthetic_sealed_evidence_resolver(record),
     )
 
 
@@ -228,6 +257,7 @@ def _summarize_record(record: dict[str, object]) -> dict[str, object]:
     return _raw_summarize_record(
         record,
         artifact_resolver=_synthetic_output_artifact_bytes,
+        sealed_evidence_resolver=_synthetic_sealed_evidence_resolver(record),
     )
 
 
@@ -1218,6 +1248,70 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                     "run[0].sealed_evidence_envelope.run_claims_sha256 "
                     "must match the run",
                     _validate_record(record),
+                )
+
+    def test_recomputed_embedded_seal_requires_retained_record_match(self) -> None:
+        retained_by_id = {
+            run["sealed_artifact_record_id"]: _synthetic_sealed_evidence_bytes(
+                run
+            )
+            for run in self.valid_record["runs"]
+        }
+        record = copy.deepcopy(self.valid_record)
+        record["runs"][0]["over_detection_count"] = 7
+        _seal_evidence_envelope(record["runs"][0])
+
+        errors = _raw_validate_record(
+            record,
+            artifact_resolver=_synthetic_output_artifact_bytes,
+            sealed_evidence_resolver=retained_by_id.__getitem__,
+        )
+        self.assertIn(
+            "run[0].sealed_evidence_envelope must match the independently "
+            "retained sealed evidence record",
+            errors,
+        )
+        self.assertIn(
+            "run[0].sealed_artifact_sha256 must match the independently "
+            "retained sealed evidence record",
+            errors,
+        )
+
+    def test_retained_sealed_evidence_resolver_failures_are_controlled(
+        self,
+    ) -> None:
+        def missing_record(record_id: str) -> bytes:
+            raise KeyError(record_id)
+
+        cases = (
+            (
+                "missing",
+                missing_record,
+                "cannot resolve an independently retained sealed evidence record",
+            ),
+            (
+                "wrong-type",
+                lambda _run: None,
+                "sealed evidence resolver must return bytes",
+            ),
+            (
+                "invalid-json",
+                lambda _run: b'{"run_claims_sha256":',
+                "independently retained sealed evidence record must be strict "
+                "UTF-8 JSON",
+            ),
+        )
+        for name, resolver, expected_error in cases:
+            with self.subTest(name=name):
+                self.assertTrue(
+                    any(
+                        expected_error in error
+                        for error in _raw_validate_record(
+                            self.valid_record,
+                            artifact_resolver=_synthetic_output_artifact_bytes,
+                            sealed_evidence_resolver=resolver,
+                        )
+                    )
                 )
 
     def test_output_artifacts_are_resolved_and_hashed(self) -> None:
@@ -2447,6 +2541,38 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertEqual(2, completed.returncode)
         self.assertIn("Unable to read evidence:", completed.stderr)
         self.assertNotIn("Traceback", completed.stderr)
+
+    def test_validator_cli_rejects_lone_surrogate_without_traceback(self) -> None:
+        invalid = VALID_EXAMPLE_PATH.read_text(encoding="utf-8").replace(
+            '"case_id": "mvp-word-001"',
+            '"case_id": "\\ud800"',
+            1,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            invalid_path = Path(directory) / "lone-surrogate.json"
+            invalid_path.write_text(invalid, encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(VALIDATOR_PATH),
+                    str(invalid_path),
+                    "--artifact-root",
+                    str(REPO_ROOT / "datasets"),
+                ],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        self.assertEqual(2, completed.returncode)
+        self.assertIn(
+            "JSON strings must contain only Unicode scalar values",
+            completed.stderr,
+        )
+        self.assertNotIn("Traceback", completed.stderr)
+
+    def test_strict_json_accepts_a_valid_surrogate_pair(self) -> None:
+        self.assertEqual("😀", _loads_json_strict('"\\ud83d\\ude00"'))
 
     def test_validator_cli_rejects_integer_limit_failure_without_traceback(
         self,

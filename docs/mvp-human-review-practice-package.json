@@ -4,9 +4,9 @@
   "decision_revision": "p12g-02-v1",
   "training_material": {
     "protocol_path": "docs/mvp-human-review-protocol.md",
-    "protocol_sha256": "e48fe910df078ffab71b63b1adba5616843d3199f615ce384059ea96624d7761",
+    "protocol_sha256": "02a4a9007287cb82744201ad39cd3c4fc089e1b9a418c90b4a9e91cdc7f39107",
     "execution_checklist_path": "docs/mvp-human-review-execution-checklist.md",
-    "execution_checklist_sha256": "f34ac243d19beabb271d86fb84c09cee89b510a1ccb37e894adc2855e4653e6e",
+    "execution_checklist_sha256": "4bc624ea97308176bcc0e2a3374cc2666ef841d61830dc7ff21ba017254e49fb",
     "instructions": [
       "Complete each fixed practice task before any timed run; practice is unscored.",
       "Begin only when the source, target format, and checklist are available, and finish after recording an artifact or controlled blocked outcome.",

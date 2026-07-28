@@ -209,9 +209,15 @@ Run claims and envelope bytes both use UTF-8 JSON with object keys sorted
 lexicographically, no insignificant whitespace, and JSON separators `,` and
 `:`. `run_claims_sha256` is the SHA-256 of the canonical run claims, and
 `sealed_artifact_sha256` is the non-zero lowercase SHA-256 of the canonical
-envelope. The external sealed record is retained under its opaque ID so the
-independent assessor's miss and over-detection counts can be audited against
-the same evidence those counts describe.
+envelope. Before accepting evidence, the validator must resolve
+`sealed_records/{sealed_artifact_record_id}.json` from an independently
+retained, write-once or access-controlled sealed-record store. The resolved
+strict UTF-8 JSON must equal the embedded envelope, and its canonical SHA-256
+must equal `sealed_artifact_sha256`. A caller may provide a trusted resolver for
+that store; the filesystem CLI resolves it beneath `artifact_root`. Deriving an
+envelope and digest only from the mutable evidence file is not sufficient.
+This external binding lets the independent assessor's miss and over-detection
+counts be audited against the same immutable evidence those counts describe.
 
 For `sealed_artifact_kind: output_artifact`, `sealed_artifact_path` must be
 exactly `sealed_artifacts/{sealed_artifact_record_id}.bin` beneath the

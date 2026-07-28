@@ -10,7 +10,7 @@
   "study_status": "validation_example",
   "practice_revision": "practice-phase12-v1",
   "practice_package_path": "docs/mvp-human-review-practice-package.json",
-  "practice_package_sha256": "e2e2b7a52b28940ea47277d7d73c43bbd3f91a45ce95ca48024821ef2a21cd23",
+  "practice_package_sha256": "a1e9cbea49e05372c93649df913fc31e05e476a236879e3729b8d5a8f3b65270",
   "case_ids": [
     "mvp-word-001"
   ],
@@ -39,11 +39,11 @@
       "manual_practice_completed": true,
       "manual_practice_completed_at": "2026-07-26T00:10:00Z",
       "manual_practice_revision": "practice-phase12-v1",
-      "manual_practice_package_sha256": "e2e2b7a52b28940ea47277d7d73c43bbd3f91a45ce95ca48024821ef2a21cd23",
+      "manual_practice_package_sha256": "a1e9cbea49e05372c93649df913fc31e05e476a236879e3729b8d5a8f3b65270",
       "veridoc_practice_completed": true,
       "veridoc_practice_completed_at": "2026-07-26T00:20:00Z",
       "veridoc_practice_revision": "practice-phase12-v1",
-      "veridoc_practice_package_sha256": "e2e2b7a52b28940ea47277d7d73c43bbd3f91a45ce95ca48024821ef2a21cd23",
+      "veridoc_practice_package_sha256": "a1e9cbea49e05372c93649df913fc31e05e476a236879e3729b8d5a8f3b65270",
       "arm_order": [
         "manual",
         "veridoc"
@@ -60,11 +60,11 @@
       "manual_practice_completed": true,
       "manual_practice_completed_at": "2026-07-26T00:10:00Z",
       "manual_practice_revision": "practice-phase12-v1",
-      "manual_practice_package_sha256": "e2e2b7a52b28940ea47277d7d73c43bbd3f91a45ce95ca48024821ef2a21cd23",
+      "manual_practice_package_sha256": "a1e9cbea49e05372c93649df913fc31e05e476a236879e3729b8d5a8f3b65270",
       "veridoc_practice_completed": true,
       "veridoc_practice_completed_at": "2026-07-26T00:20:00Z",
       "veridoc_practice_revision": "practice-phase12-v1",
-      "veridoc_practice_package_sha256": "e2e2b7a52b28940ea47277d7d73c43bbd3f91a45ce95ca48024821ef2a21cd23",
+      "veridoc_practice_package_sha256": "a1e9cbea49e05372c93649df913fc31e05e476a236879e3729b8d5a8f3b65270",
       "arm_order": [
         "veridoc",
         "manual"
@@ -81,11 +81,11 @@
       "manual_practice_completed": true,
       "manual_practice_completed_at": "2026-07-26T00:10:00Z",
       "manual_practice_revision": "practice-phase12-v1",
-      "manual_practice_package_sha256": "e2e2b7a52b28940ea47277d7d73c43bbd3f91a45ce95ca48024821ef2a21cd23",
+      "manual_practice_package_sha256": "a1e9cbea49e05372c93649df913fc31e05e476a236879e3729b8d5a8f3b65270",
       "veridoc_practice_completed": true,
       "veridoc_practice_completed_at": "2026-07-26T00:20:00Z",
       "veridoc_practice_revision": "practice-phase12-v1",
-      "veridoc_practice_package_sha256": "e2e2b7a52b28940ea47277d7d73c43bbd3f91a45ce95ca48024821ef2a21cd23",
+      "veridoc_practice_package_sha256": "a1e9cbea49e05372c93649df913fc31e05e476a236879e3729b8d5a8f3b65270",
       "arm_order": [
         "manual",
         "veridoc"

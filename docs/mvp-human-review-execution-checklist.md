@@ -112,6 +112,10 @@ employee IDs, or free-text participant notes in the repository.
 - [ ] Record the outcome-consistent artifact kind and bind every non-recursive
       run claim, including assessment counts, into the envelope before accepting
       evidence.
+- [ ] Retain the canonical envelope independently at
+      `sealed_records/{sealed_artifact_record_id}.json` in a write-once or
+      access-controlled store; verify both the resolved record and its canonical
+      SHA-256 instead of trusting hashes recomputed from the evidence file.
 - [ ] An independent assessor compares sealed artifacts with the gold outside
       the participant's view and does not disclose the gold or comparison
       result to that participant.
@@ -146,6 +150,7 @@ employee IDs, or free-text participant notes in the repository.
 | `sealed_artifact_path` | `sealed_artifacts/{sealed_artifact_record_id}.bin` for output / `null` for blocked envelope |
 | `output_artifact_sha256` | non-zero lowercase SHA-256 of resolved output bytes / `null` for blocked envelope |
 | `sealed_evidence_envelope` | common canonical envelope binding every non-recursive run claim |
+| retained sealed record | strict UTF-8 JSON at `sealed_records/{sealed_artifact_record_id}.json`, resolved independently of the evidence file |
 | `participant_id` | `P-` plus an independently generated uppercase UUIDv4 |
 | participant `participation_status` | `completed` / `withdrawn` |
 | participant `withdrawn_at` | `null` when completed / controlled UTC RFC 3339 boundary when withdrawn |

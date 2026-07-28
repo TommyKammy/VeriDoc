@@ -73,7 +73,7 @@ APPROVED_PRACTICE_PACKAGE_PATH = (
     "docs/mvp-human-review-practice-package.json"
 )
 APPROVED_PRACTICE_PACKAGE_SHA256 = (
-    "e2e2b7a52b28940ea47277d7d73c43bbd3f91a45ce95ca48024821ef2a21cd23"
+    "a1e9cbea49e05372c93649df913fc31e05e476a236879e3729b8d5a8f3b65270"
 )
 APPROVED_PRACTICE_TRAINING_DOCUMENTS = {
     "protocol": "docs/mvp-human-review-protocol.md",
@@ -104,6 +104,7 @@ RUN_CLAIMS_EXCLUDED_FIELDS = frozenset(
     }
 )
 ArtifactResolver = Callable[[dict[str, Any]], bytes]
+SealedEvidenceResolver = Callable[[str], bytes]
 UUID4_TOKEN_RE = (
     r"[0-9A-F]{8}-[0-9A-F]{4}-4[0-9A-F]{3}-"
     r"[89AB][0-9A-F]{3}-[0-9A-F]{12}"
@@ -235,14 +236,35 @@ def _parse_finite_json_float(value: str) -> float:
     return parsed
 
 
+def _require_unicode_scalars(value: Any) -> None:
+    if isinstance(value, str):
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise StrictJsonError(
+                "JSON strings must contain only Unicode scalar values"
+            ) from exc
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            _require_unicode_scalars(key)
+            _require_unicode_scalars(item)
+        return
+    if isinstance(value, list):
+        for item in value:
+            _require_unicode_scalars(item)
+
+
 def _loads_json_strict(text: str) -> Any:
     try:
-        return json.loads(
+        value = json.loads(
             text,
             object_pairs_hook=_reject_duplicate_object_keys,
             parse_constant=_reject_non_json_constant,
             parse_float=_parse_finite_json_float,
         )
+        _require_unicode_scalars(value)
+        return value
     except StrictJsonError:
         raise
     except (RecursionError, ValueError) as exc:
@@ -279,15 +301,17 @@ def _git_blob_oid(content: bytes) -> str:
     return hashlib.sha1(header + content).hexdigest()
 
 
+def _canonical_json_bytes(value: Any) -> bytes:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+
+
 def _canonical_json_sha256(value: Any) -> str:
-    return hashlib.sha256(
-        json.dumps(
-            value,
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8")
-    ).hexdigest()
+    return hashlib.sha256(_canonical_json_bytes(value)).hexdigest()
 
 
 def build_run_claims(run: dict[str, Any]) -> dict[str, Any]:
@@ -376,6 +400,44 @@ def _read_sealed_artifact(
         return resolved_path.read_bytes()
     except OSError:
         errors.append(f"{label}.sealed_artifact_path cannot be read")
+        return None
+
+
+def _read_sealed_evidence_record(
+    run: dict[str, Any],
+    artifact_root: Path,
+    label: str,
+    errors: list[str],
+) -> bytes | None:
+    artifact_record_id = run.get("sealed_artifact_record_id")
+    if (
+        not isinstance(artifact_record_id, str)
+        or SEALED_ARTIFACT_RECORD_ID_RE.fullmatch(artifact_record_id) is None
+    ):
+        return None
+    relative_path = Path("sealed_records") / f"{artifact_record_id}.json"
+    try:
+        resolved_path = (artifact_root / relative_path).resolve(strict=True)
+        resolved_path.relative_to(artifact_root)
+    except (OSError, ValueError):
+        errors.append(
+            f"{label}.sealed_artifact_record_id cannot resolve an independently "
+            "retained sealed evidence record within artifact_root"
+        )
+        return None
+    if not resolved_path.is_file():
+        errors.append(
+            f"{label}.sealed_artifact_record_id must resolve to a sealed "
+            "evidence record file"
+        )
+        return None
+    try:
+        return resolved_path.read_bytes()
+    except OSError:
+        errors.append(
+            f"{label}.sealed_artifact_record_id resolved sealed evidence "
+            "record cannot be read"
+        )
         return None
 
 
@@ -1145,14 +1207,25 @@ def validate_record(
     *,
     artifact_root: Path = DEFAULT_ARTIFACT_ROOT,
     artifact_resolver: ArtifactResolver | None = None,
+    sealed_evidence_resolver: SealedEvidenceResolver | None = None,
 ) -> list[str]:
-    """Return deterministic human-readable validation errors."""
+    """Return deterministic human-readable validation errors.
+
+    ``sealed_evidence_resolver`` is a trust boundary: it receives only the
+    opaque record ID and must read an independently retained immutable record.
+    """
 
     errors: list[str] = []
     schema = _load_schema()
     artifact_root = artifact_root.resolve()
     if not isinstance(record, dict):
         return ["record must be an object"]
+    try:
+        _require_unicode_scalars(record)
+    except StrictJsonError as exc:
+        return [str(exc)]
+    except RecursionError:
+        return ["record nesting exceeds validator limit"]
 
     top_allowed = set(schema["properties"])
     top_required = set(schema["required"])
@@ -2239,6 +2312,59 @@ def validate_record(
                     f"{label}.sealed_artifact_sha256 must match the "
                     "canonical sealed_evidence_envelope"
                 )
+        retained_evidence_bytes: bytes | None
+        if sealed_evidence_resolver is None:
+            retained_evidence_bytes = _read_sealed_evidence_record(
+                run,
+                artifact_root,
+                label,
+                errors,
+            )
+        else:
+            if not isinstance(sealed_artifact_record_id, str):
+                retained_evidence_bytes = None
+            else:
+                try:
+                    retained_evidence_bytes = sealed_evidence_resolver(
+                        sealed_artifact_record_id
+                    )
+                except (KeyError, OSError, ValueError) as exc:
+                    errors.append(
+                        f"{label}.sealed_artifact_record_id cannot resolve an "
+                        f"independently retained sealed evidence record: {exc}"
+                    )
+                    retained_evidence_bytes = None
+                else:
+                    if not isinstance(retained_evidence_bytes, bytes):
+                        errors.append(
+                            f"{label}.sealed evidence resolver must return bytes"
+                        )
+                        retained_evidence_bytes = None
+        if retained_evidence_bytes is not None:
+            try:
+                retained_evidence = _loads_json_strict(
+                    retained_evidence_bytes.decode("utf-8")
+                )
+            except (UnicodeDecodeError, StrictJsonError):
+                errors.append(
+                    f"{label}.independently retained sealed evidence record "
+                    "must be strict UTF-8 JSON"
+                )
+            else:
+                if retained_evidence != sealed_evidence_envelope:
+                    errors.append(
+                        f"{label}.sealed_evidence_envelope must match the "
+                        "independently retained sealed evidence record"
+                    )
+                if (
+                    isinstance(sealed_artifact_sha256, str)
+                    and _canonical_json_sha256(retained_evidence)
+                    != sealed_artifact_sha256
+                ):
+                    errors.append(
+                        f"{label}.sealed_artifact_sha256 must match the "
+                        "independently retained sealed evidence record"
+                    )
 
         if (
             gold_answer_hidden is False
@@ -2561,6 +2687,7 @@ def summarize_record(
     *,
     artifact_root: Path = DEFAULT_ARTIFACT_ROOT,
     artifact_resolver: ArtifactResolver | None = None,
+    sealed_evidence_resolver: SealedEvidenceResolver | None = None,
 ) -> dict[str, Any]:
     """Compute protocol-defined metrics after validation."""
 
@@ -2568,6 +2695,7 @@ def summarize_record(
         record,
         artifact_root=artifact_root,
         artifact_resolver=artifact_resolver,
+        sealed_evidence_resolver=sealed_evidence_resolver,
     )
     if errors:
         raise ValueError("record is invalid: " + "; ".join(errors))
@@ -2817,7 +2945,8 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         default=None,
         help=(
-            "root directory used to resolve output_artifact paths "
+            "root directory used to resolve output artifacts and independently "
+            "retained sealed evidence records "
             "(default: the evidence record directory)"
         ),
     )
