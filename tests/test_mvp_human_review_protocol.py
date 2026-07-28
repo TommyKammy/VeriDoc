@@ -32,6 +32,8 @@ from scripts.ci.validate_mvp_human_review_evidence import (
     PINNED_TASK_PACKAGE_PATH,
     PINNED_TASK_PACKAGE_SHA256,
     _loads_json_strict,
+    build_assessor_attestation,
+    build_study_evidence_envelope,
     build_sealed_evidence_envelope,
     build_run_claims,
     summarize_record as _raw_summarize_record,
@@ -228,6 +230,24 @@ def _synthetic_sealed_evidence_bytes(run: dict[str, object]) -> bytes:
     ).encode("utf-8")
 
 
+def _synthetic_study_evidence_bytes(record: dict[str, object]) -> bytes:
+    return json.dumps(
+        record["study_evidence_envelope"],
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+
+
+def _synthetic_assessor_attestation_bytes(run: dict[str, object]) -> bytes:
+    return json.dumps(
+        build_assessor_attestation(run),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+
+
 def _synthetic_sealed_evidence_resolver(
     record: object,
 ) -> Callable[[str], bytes]:
@@ -245,11 +265,46 @@ def _synthetic_sealed_evidence_resolver(
     return retained_by_id.__getitem__
 
 
+def _synthetic_study_evidence_resolver(
+    record: object,
+) -> Callable[[str], bytes]:
+    retained_by_id: dict[str, bytes] = {}
+    if (
+        isinstance(record, dict)
+        and isinstance(record.get("study_evidence_record_id"), str)
+        and "study_evidence_envelope" in record
+    ):
+        retained_by_id[record["study_evidence_record_id"]] = (
+            _synthetic_study_evidence_bytes(record)
+        )
+    return retained_by_id.__getitem__
+
+
+def _synthetic_assessor_attestation_resolver(
+    record: object,
+) -> Callable[[str], bytes]:
+    retained_by_id: dict[str, bytes] = {}
+    if isinstance(record, dict) and isinstance(record.get("runs"), list):
+        for run in record["runs"]:
+            if (
+                isinstance(run, dict)
+                and isinstance(run.get("assessor_attestation_record_id"), str)
+            ):
+                retained_by_id[run["assessor_attestation_record_id"]] = (
+                    _synthetic_assessor_attestation_bytes(run)
+                )
+    return retained_by_id.__getitem__
+
+
 def _validate_record(record: object) -> list[str]:
     return _raw_validate_record(
         record,
         artifact_resolver=_synthetic_output_artifact_bytes,
         sealed_evidence_resolver=_synthetic_sealed_evidence_resolver(record),
+        study_evidence_resolver=_synthetic_study_evidence_resolver(record),
+        assessor_attestation_resolver=(
+            _synthetic_assessor_attestation_resolver(record)
+        ),
     )
 
 
@@ -258,6 +313,10 @@ def _summarize_record(record: dict[str, object]) -> dict[str, object]:
         record,
         artifact_resolver=_synthetic_output_artifact_bytes,
         sealed_evidence_resolver=_synthetic_sealed_evidence_resolver(record),
+        study_evidence_resolver=_synthetic_study_evidence_resolver(record),
+        assessor_attestation_resolver=(
+            _synthetic_assessor_attestation_resolver(record)
+        ),
     )
 
 
@@ -271,6 +330,25 @@ def _seal_evidence_envelope(run: dict[str, object]) -> None:
             separators=(",", ":"),
             sort_keys=True,
         ).encode("utf-8")
+    ).hexdigest()
+
+
+def _seal_study_evidence_envelope(record: dict[str, object]) -> None:
+    envelope = build_study_evidence_envelope(record)
+    record["study_evidence_envelope"] = envelope
+    record["study_evidence_sha256"] = hashlib.sha256(
+        json.dumps(
+            envelope,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _seal_assessor_attestation(run: dict[str, object]) -> None:
+    run["assessor_attestation_sha256"] = hashlib.sha256(
+        _synthetic_assessor_attestation_bytes(run)
     ).hexdigest()
 
 
@@ -354,6 +432,16 @@ def _completed_record(base_record: dict[str, object]) -> dict[str, object]:
                         ),
                         "gold_answer_hidden_until_ended_at": True,
                         "gold_answer_compared_by_role": "independent_assessor",
+                        "independent_assessor_id": _opaque_record_id(
+                            "A", "independent-assessor"
+                        ),
+                        "assessor_attestation_record_id": _opaque_record_id(
+                            "AAR", run_id
+                        ),
+                        "assessor_attestation_sha256": "",
+                        "assessment_completed_at": _utc_text(
+                            ended_at + timedelta(seconds=1)
+                        ),
                         "gold_answer_comparison_withheld_from_participant": True,
                         "started_at": _utc_text(started_at),
                         "ended_at": _utc_text(ended_at),
@@ -370,10 +458,12 @@ def _completed_record(base_record: dict[str, object]) -> dict[str, object]:
                         "exclusion_reason_code": None,
                     }
                 )
+                _seal_assessor_attestation(runs[-1])
                 _seal_evidence_envelope(runs[-1])
                 cursor = ended_at + timedelta(minutes=1)
             cursor += timedelta(minutes=5)
     record["runs"] = runs
+    _seal_study_evidence_envelope(record)
     return record
 
 
@@ -413,11 +503,20 @@ def _add_excluded_veridoc_retry(record: dict[str, object]) -> None:
             "attempt_number": 2,
             "started_at": _utc_text(retry_start),
             "ended_at": _utc_text(retry_start + timedelta(minutes=1)),
+            "assessor_attestation_record_id": _opaque_record_id(
+                "AAR",
+                "RUN-P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A-"
+                "MVP-SCANNED-PDF-001-VERIDOC-2",
+            ),
+            "assessment_completed_at": _utc_text(
+                retry_start + timedelta(minutes=1, seconds=1)
+            ),
             "over_detection_count": 1,
             "excluded": True,
             "exclusion_reason_code": "technical_failure",
         }
     )
+    _seal_assessor_attestation(retry)
     _seal_evidence_envelope(retry)
     runs.append(retry)
 
@@ -478,12 +577,20 @@ def _add_withdrawn_participant(record: dict[str, object]) -> None:
             "participant_id": "P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C",
             "started_at": "2026-08-10T01:00:00Z",
             "ended_at": "2026-08-10T01:02:00Z",
+            "assessor_attestation_record_id": _opaque_record_id(
+                "AAR",
+                "RUN-P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C-"
+                "MVP-WORD-001-MANUAL-1",
+            ),
+            "assessment_completed_at": "2026-08-10T01:02:01Z",
             "excluded": True,
             "exclusion_reason_code": "participant_withdrew",
         }
     )
+    _seal_assessor_attestation(withdrawn_attempt)
     _seal_evidence_envelope(withdrawn_attempt)
     runs.append(withdrawn_attempt)
+    _seal_study_evidence_envelope(record)
 
 
 class MvpHumanReviewProtocolTest(unittest.TestCase):
@@ -553,10 +660,16 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertFalse(
             schema["$defs"]["sealedEvidenceEnvelope"]["additionalProperties"]
         )
+        self.assertFalse(
+            schema["$defs"]["studyEvidenceEnvelope"]["additionalProperties"]
+        )
         self.assertIn("practice_revision", schema["required"])
         self.assertIn("practice_package_path", schema["required"])
         self.assertIn("practice_package_sha256", schema["required"])
         self.assertIn("quality_approval", schema["required"])
+        self.assertIn("study_evidence_record_id", schema["required"])
+        self.assertIn("study_evidence_sha256", schema["required"])
+        self.assertIn("study_evidence_envelope", schema["required"])
         self.assertIn(
             "gold_answer_hidden_until_ended_at",
             schema["$defs"]["run"]["required"],
@@ -1277,6 +1390,100 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             errors,
         )
 
+    def test_recomputed_study_seal_requires_retained_record_match(self) -> None:
+        retained_study = _synthetic_study_evidence_bytes(self.valid_record)
+        record = copy.deepcopy(self.valid_record)
+        record["consent_approval"]["approved_at"] = "2026-07-26T00:04:00Z"
+        record["participants"][0]["consented_at"] = "2026-07-26T00:05:00Z"
+        _seal_study_evidence_envelope(record)
+
+        errors = _raw_validate_record(
+            record,
+            artifact_resolver=_synthetic_output_artifact_bytes,
+            sealed_evidence_resolver=_synthetic_sealed_evidence_resolver(record),
+            study_evidence_resolver=lambda _record_id: retained_study,
+            assessor_attestation_resolver=(
+                _synthetic_assessor_attestation_resolver(record)
+            ),
+        )
+        self.assertIn(
+            "study_evidence_envelope must match the independently retained "
+            "study evidence record",
+            errors,
+        )
+        self.assertIn(
+            "study_evidence_sha256 must match the independently retained "
+            "study evidence record",
+            errors,
+        )
+
+    def test_assessment_is_bound_to_retained_independent_assessor(self) -> None:
+        retained_run_by_id = {
+            run["sealed_artifact_record_id"]: _synthetic_sealed_evidence_bytes(
+                run
+            )
+            for run in self.valid_record["runs"]
+        }
+        retained_assessor_by_id = {
+            run[
+                "assessor_attestation_record_id"
+            ]: _synthetic_assessor_attestation_bytes(run)
+            for run in self.valid_record["runs"]
+        }
+        record = copy.deepcopy(self.valid_record)
+        run = record["runs"][0]
+        run["independent_assessor_id"] = (
+            "A-8F7D947A-1CE2-4B69-A31A-5A49BA1E94FC"
+        )
+        _seal_assessor_attestation(run)
+        _seal_evidence_envelope(run)
+
+        errors = _raw_validate_record(
+            record,
+            artifact_resolver=_synthetic_output_artifact_bytes,
+            sealed_evidence_resolver=retained_run_by_id.__getitem__,
+            study_evidence_resolver=_synthetic_study_evidence_resolver(record),
+            assessor_attestation_resolver=retained_assessor_by_id.__getitem__,
+        )
+        self.assertIn(
+            "run[0] assessment must match the independently retained "
+            "assessor attestation",
+            errors,
+        )
+        self.assertIn(
+            "run[0].sealed_evidence_envelope must match the independently "
+            "retained sealed evidence record",
+            errors,
+        )
+
+        record = copy.deepcopy(self.valid_record)
+        record["runs"][0]["independent_assessor_id"] = (
+            "A-" + record["runs"][0]["participant_id"][2:]
+        )
+        self.assertIn(
+            "run[0].independent_assessor_id must not identify the participant",
+            _validate_record(record),
+        )
+
+        record = copy.deepcopy(self.valid_record)
+        record["runs"][1]["assessor_attestation_record_id"] = record["runs"][0][
+            "assessor_attestation_record_id"
+        ]
+        self.assertIn(
+            "duplicate assessor_attestation_record_id: "
+            + record["runs"][0]["assessor_attestation_record_id"],
+            _validate_record(record),
+        )
+
+        record = copy.deepcopy(self.valid_record)
+        record["runs"][0]["assessment_completed_at"] = record["runs"][0][
+            "ended_at"
+        ]
+        self.assertIn(
+            "run[0].assessment_completed_at must follow ended_at",
+            _validate_record(record),
+        )
+
     def test_retained_sealed_evidence_resolver_failures_are_controlled(
         self,
     ) -> None:
@@ -1312,6 +1519,73 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                             sealed_evidence_resolver=resolver,
                         )
                     )
+                )
+
+    def test_study_and_assessor_resolver_failures_are_controlled(self) -> None:
+        def missing_record(record_id: str) -> bytes:
+            raise KeyError(record_id)
+
+        study_cases = (
+            (
+                missing_record,
+                "cannot resolve an independently retained study evidence record",
+            ),
+            (lambda _record_id: None, "study evidence resolver must return bytes"),
+            (
+                lambda _record_id: b'{"study_claims_sha256":',
+                "independently retained study evidence record must be strict "
+                "UTF-8 JSON",
+            ),
+        )
+        for resolver, expected_error in study_cases:
+            with self.subTest(kind="study", expected_error=expected_error):
+                errors = _raw_validate_record(
+                    self.valid_record,
+                    artifact_resolver=_synthetic_output_artifact_bytes,
+                    sealed_evidence_resolver=(
+                        _synthetic_sealed_evidence_resolver(self.valid_record)
+                    ),
+                    study_evidence_resolver=resolver,
+                    assessor_attestation_resolver=(
+                        _synthetic_assessor_attestation_resolver(
+                            self.valid_record
+                        )
+                    ),
+                )
+                self.assertTrue(
+                    any(expected_error in error for error in errors)
+                )
+
+        assessor_cases = (
+            (
+                missing_record,
+                "cannot resolve an independently retained assessor attestation",
+            ),
+            (
+                lambda _record_id: None,
+                "assessor attestation resolver must return bytes",
+            ),
+            (
+                lambda _record_id: b'{"assessor_id":',
+                "independently retained assessor attestation must be strict "
+                "UTF-8 JSON",
+            ),
+        )
+        for resolver, expected_error in assessor_cases:
+            with self.subTest(kind="assessor", expected_error=expected_error):
+                errors = _raw_validate_record(
+                    self.valid_record,
+                    artifact_resolver=_synthetic_output_artifact_bytes,
+                    sealed_evidence_resolver=(
+                        _synthetic_sealed_evidence_resolver(self.valid_record)
+                    ),
+                    study_evidence_resolver=(
+                        _synthetic_study_evidence_resolver(self.valid_record)
+                    ),
+                    assessor_attestation_resolver=resolver,
+                )
+                self.assertTrue(
+                    any(expected_error in error for error in errors)
                 )
 
     def test_output_artifacts_are_resolved_and_hashed(self) -> None:
@@ -1556,8 +1830,12 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                 retry = record["runs"][-1]
                 retry["started_at"] = started_at
                 retry["ended_at"] = ended_at
+                retry["assessment_completed_at"] = (
+                    "2026-07-28T00:00:00.000000003Z"
+                )
                 retry["excluded_pause_seconds"] = 60
                 retry["exclusion_reason_code"] = "invalid_timing"
+                _seal_assessor_attestation(retry)
                 _seal_evidence_envelope(retry)
                 self.assertEqual([], _validate_record(record))
                 summary = _summarize_record(record)
@@ -2059,6 +2337,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                 "arm_order": None,
             }
         )
+        _seal_study_evidence_envelope(record)
         self.assertEqual([], _validate_record(record))
 
         record["participants"][-1]["manual_practice_completed_at"] = (
@@ -2125,11 +2404,19 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                     "participant_id": "P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C",
                     "started_at": _utc_text(start),
                     "ended_at": _utc_text(start + timedelta(minutes=2)),
+                    "assessor_attestation_record_id": _opaque_record_id(
+                        "AAR", run_id
+                    ),
+                    "assessment_completed_at": _utc_text(
+                        start + timedelta(minutes=2, seconds=1)
+                    ),
                 }
             )
+            _seal_assessor_attestation(run)
             _seal_evidence_envelope(run)
             record["runs"].append(run)
 
+        _seal_study_evidence_envelope(record)
         self.assertEqual([], _validate_record(record))
         summary = _summarize_record(record)
         self.assertEqual(20, len(summary["pair_results"]))

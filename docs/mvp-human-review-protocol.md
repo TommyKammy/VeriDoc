@@ -57,10 +57,18 @@ early disclosure without admitting that attempt to the comparison.
 The participant never performs the gold comparison. An `independent_assessor`
 compares sealed artifacts with the gold outside the participant's view and
 withholds the result from that participant. Every run records
-`gold_answer_compared_by_role: independent_assessor` and
+an independently generated `A-`-prefixed assessor pseudonym,
+`gold_answer_compared_by_role: independent_assessor`, an `AAR-`-prefixed
+attestation record ID and digest, `assessment_completed_at`, and
 `gold_answer_comparison_withheld_from_participant: true`. This separation keeps
 the second paired run blinded even if assessment of the first artifact occurs
-before that second run.
+before that second run. Before accepting an assessment, resolve
+`assessor_records/{assessor_attestation_record_id}.json` from a write-once or
+access-controlled store. Its strict UTF-8 JSON must bind the run, participant,
+assessor pseudonym, role, completion timestamp, non-disclosure, and the explicit
+attestation that the assessor is not the participant; the canonical digest must
+match `assessor_attestation_sha256`. The assessor UUID token must not equal the
+participant UUID token.
 
 Retain at least three completed designated document reviewers with relevant
 experience. Generate `study_id` as an `HR-`-prefixed uppercase UUIDv4; do not
@@ -68,6 +76,15 @@ derive it from a participant, organizer, employer, or project name. Independentl
 generate each participant pseudonym as `P-` plus a cryptographically random
 uppercase UUIDv4 before associating it with a participant. Do not transform,
 truncate, hash, or prefix an employee number or other existing identifier.
+At study closeout, seal every final top-level field other than `runs`, the
+recursive envelope, and its digest into `study_evidence_envelope`. Its
+`study_claims_sha256` therefore binds consent and quality approvals plus every
+participant's consent, practice, arm order, completion/withdrawal status and
+withdrawal boundary. Resolve the opaque `HSR-` record at
+`study_records/{study_evidence_record_id}.json` from an independent write-once
+or access-controlled store and require both envelope equality and
+`study_evidence_sha256`; recomputing these values from the mutable evidence file
+alone is not evidence of the original preconditions.
 Keep the mapping from pseudonym to identity outside the repository and outside
 the evidence record. Do not retain direct participant identity: names, email
 addresses, employee IDs, free-text biographies, or other direct identifiers
@@ -203,7 +220,8 @@ closed `sealed_evidence_envelope` with
 `sealed_evidence_envelope` and its `sealed_artifact_sha256`. This automatically
 binds identity, provenance, task/gold/checklist revisions and digests, timing,
 outcome, blocker, output location and bytes digest, all safety assessment
-counts, and exclusion state without maintaining a second field allowlist.
+counts, assessor identity and retained-attestation digest, and exclusion state
+without maintaining a second field allowlist.
 
 Run claims and envelope bytes both use UTF-8 JSON with object keys sorted
 lexicographically, no insignificant whitespace, and JSON separators `,` and
@@ -331,7 +349,11 @@ For each retained run, including excluded attempts, record:
 - `gold_answer_compared_by_role` and
   `gold_answer_comparison_withheld_from_participant`: controlled attestations
   that an independent assessor performed the comparison without disclosing the
-  gold or result to the participant; and
+  gold or result to the participant;
+- `independent_assessor_id`, `assessor_attestation_record_id`,
+  `assessor_attestation_sha256`, and `assessment_completed_at`: the
+  pseudonymous assessor identity and independently retained separation
+  attestation, completed strictly after timing stopped; and
 - the timing fields used by the correction-time formula.
 
 For participant `p` and case `c`, form a pair only when both arms are

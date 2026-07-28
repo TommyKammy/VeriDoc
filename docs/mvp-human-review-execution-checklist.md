@@ -23,6 +23,8 @@ employee IDs, or free-text participant notes in the repository.
       employee number or other existing identifier.
 - [ ] `study_id` is generated as an `HR-`-prefixed uppercase UUIDv4 and is not
       derived from any participant, organizer, employer, or project name.
+- [ ] Reserve an independently generated `HSR-`-prefixed study-evidence record
+      ID for the final study precondition envelope.
 - [ ] The identity-to-pseudonym mapping is outside the repository.
 - [ ] The five `phase12-mvp-v1` cases, task revisions, gold revisions, target
       formats, and completion checklist are fixed for both arms.
@@ -119,8 +121,14 @@ employee IDs, or free-text participant notes in the repository.
 - [ ] An independent assessor compares sealed artifacts with the gold outside
       the participant's view and does not disclose the gold or comparison
       result to that participant.
-- [ ] Record the independent-assessor and non-disclosure attestations,
-      high-risk expected targets, high-risk misses, and over-detections.
+- [ ] Record an independently generated `A-`-prefixed assessor pseudonym whose
+      UUID token differs from the participant, a unique `AAR-` attestation
+      record ID, and an `assessment_completed_at` strictly after `ended_at`.
+- [ ] Retain the identity-and-separation attestation independently at
+      `assessor_records/{assessor_attestation_record_id}.json`; verify its exact
+      run, participant, assessor, role, completion time, non-disclosure,
+      explicit non-participant assertion, and canonical SHA-256.
+- [ ] Record high-risk expected targets, high-risk misses, and over-detections.
 - [ ] For an `output_artifact`, retain the exact output at
       `sealed_artifacts/{sealed_artifact_record_id}.bin` beneath the configured
       artifact root and verify its `output_artifact_sha256`.
@@ -187,6 +195,11 @@ employee IDs, or free-text participant notes in the repository.
 | `checklist_case_sha256` | canonical SHA-256 of the shared checklist plus matching case binding |
 | `gold_answer_hidden_until_ended_at` | `true` / `false` only for excluded `protocol_deviation` |
 | `gold_answer_compared_by_role` | `independent_assessor` |
+| `independent_assessor_id` | `A-` plus an independently generated uppercase UUIDv4 distinct from the participant token |
+| `assessor_attestation_record_id` | unique `AAR-`-prefixed uppercase UUIDv4 |
+| `assessor_attestation_sha256` | non-zero lowercase SHA-256 of the independently retained assessor attestation |
+| `assessment_completed_at` | UTC RFC 3339 timestamp strictly after `ended_at` |
+| retained assessor attestation | strict UTF-8 JSON at `assessor_records/{assessor_attestation_record_id}.json`, resolved independently of the evidence file |
 | `gold_answer_comparison_withheld_from_participant` | `true` attestation |
 | `started_at` | UTC RFC 3339 timestamp |
 | `ended_at` | UTC RFC 3339 timestamp |
@@ -218,12 +231,21 @@ employee IDs, or free-text participant notes in the repository.
       `arm_order` only when no timed attempt exists for that participant.
 - [ ] Every participant with a retained timed attempt completed both practices
       and received a controlled `arm_order` before the earliest timed activity.
+- [ ] Build `study_evidence_envelope` from every final top-level field except
+      `runs`, the recursive envelope, and its digest; retain it independently at
+      `study_records/{study_evidence_record_id}.json` and verify exact envelope
+      equality plus `study_evidence_sha256`.
+- [ ] The retained study envelope binds both approvals and every participant's
+      consent, practice, arm order, participation status, and withdrawal
+      boundary; do not accept a seal recomputed only from the evidence file.
 - [ ] All retries and exclusions remain in the evidence.
 - [ ] Retained attempts, usable timing intervals, and eligible paired
       measurements are reviewed as three separate sets; no exclusion is
       dropped merely because its interval is unusable.
 - [ ] Every attempt has a unique sealed-artifact record ID and non-zero digest;
       assessor counts refer to those exact sealed bytes.
+- [ ] Every assessment resolves a unique retained assessor attestation, and no
+      assessor UUID token equals the assessed participant's UUID token.
 - [ ] Every VeriDoc attempt retains approved commit/tree source provenance and
       explicit execution-attestation status; every manual attempt records
       `null`.

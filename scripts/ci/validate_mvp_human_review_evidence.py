@@ -73,7 +73,7 @@ APPROVED_PRACTICE_PACKAGE_PATH = (
     "docs/mvp-human-review-practice-package.json"
 )
 APPROVED_PRACTICE_PACKAGE_SHA256 = (
-    "a1e9cbea49e05372c93649df913fc31e05e476a236879e3729b8d5a8f3b65270"
+    "936f47e58b073eb18d02a3858f6a8e298f87f2e4242f9949dc4fbc9117fd6a82"
 )
 APPROVED_PRACTICE_TRAINING_DOCUMENTS = {
     "protocol": "docs/mvp-human-review-protocol.md",
@@ -97,14 +97,29 @@ ALLOWED_SEALED_ARTIFACT_KINDS = frozenset(
 SEALED_EVIDENCE_ENVELOPE_SCHEMA_VERSION = (
     "veridoc-mvp-sealed-evidence-envelope/v1"
 )
+STUDY_EVIDENCE_ENVELOPE_SCHEMA_VERSION = (
+    "veridoc-mvp-study-evidence-envelope/v1"
+)
+ASSESSOR_ATTESTATION_SCHEMA_VERSION = (
+    "veridoc-mvp-assessor-attestation/v1"
+)
 RUN_CLAIMS_EXCLUDED_FIELDS = frozenset(
     {
         "sealed_evidence_envelope",
         "sealed_artifact_sha256",
     }
 )
+STUDY_CLAIMS_EXCLUDED_FIELDS = frozenset(
+    {
+        "runs",
+        "study_evidence_sha256",
+        "study_evidence_envelope",
+    }
+)
 ArtifactResolver = Callable[[dict[str, Any]], bytes]
 SealedEvidenceResolver = Callable[[str], bytes]
+StudyEvidenceResolver = Callable[[str], bytes]
+AssessorAttestationResolver = Callable[[str], bytes]
 UUID4_TOKEN_RE = (
     r"[0-9A-F]{8}-[0-9A-F]{4}-4[0-9A-F]{3}-"
     r"[89AB][0-9A-F]{3}-[0-9A-F]{12}"
@@ -118,6 +133,9 @@ RUN_ID_RE = re.compile(
     r"(?:MANUAL|VERIDOC)-[1-9][0-9]*$"
 )
 SEALED_ARTIFACT_RECORD_ID_RE = re.compile(rf"^SAR-{UUID4_TOKEN_RE}$")
+STUDY_EVIDENCE_RECORD_ID_RE = re.compile(rf"^HSR-{UUID4_TOKEN_RE}$")
+ASSESSOR_ID_RE = re.compile(rf"^A-{UUID4_TOKEN_RE}$")
+ASSESSOR_ATTESTATION_RECORD_ID_RE = re.compile(rf"^AAR-{UUID4_TOKEN_RE}$")
 SEALED_ARTIFACT_PATH_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 BUILD_PROVENANCE_RECORD_ID_RE = re.compile(rf"^BLD-{UUID4_TOKEN_RE}$")
 REVISION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -333,6 +351,43 @@ def build_sealed_evidence_envelope(run: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def build_study_claims(record: dict[str, Any]) -> dict[str, Any]:
+    """Return final study and participant fields covered by the study seal."""
+
+    return {
+        field: record[field]
+        for field in sorted(record)
+        if field not in STUDY_CLAIMS_EXCLUDED_FIELDS
+    }
+
+
+def build_study_evidence_envelope(record: dict[str, Any]) -> dict[str, Any]:
+    """Build the canonical envelope for study-level precondition evidence."""
+
+    return {
+        "schema_version": STUDY_EVIDENCE_ENVELOPE_SCHEMA_VERSION,
+        "study_claims_sha256": _canonical_json_sha256(build_study_claims(record)),
+    }
+
+
+def build_assessor_attestation(run: dict[str, Any]) -> dict[str, Any]:
+    """Build the independently retained assessor identity attestation."""
+
+    return {
+        "schema_version": ASSESSOR_ATTESTATION_SCHEMA_VERSION,
+        "attestation_record_id": run.get("assessor_attestation_record_id"),
+        "run_id": run.get("run_id"),
+        "participant_id": run.get("participant_id"),
+        "assessor_id": run.get("independent_assessor_id"),
+        "assessor_role": run.get("gold_answer_compared_by_role"),
+        "assessor_is_participant": False,
+        "assessed_at": run.get("assessment_completed_at"),
+        "comparison_withheld_from_participant": run.get(
+            "gold_answer_comparison_withheld_from_participant"
+        ),
+    }
+
+
 def _sealed_artifact_relative_path(
     run: dict[str, Any],
     label: str,
@@ -403,42 +458,58 @@ def _read_sealed_artifact(
         return None
 
 
+def _read_retained_record(
+    record_id: Any,
+    *,
+    record_id_pattern: re.Pattern[str],
+    directory: str,
+    record_kind: str,
+    artifact_root: Path,
+    label: str,
+    errors: list[str],
+) -> bytes | None:
+    if (
+        not isinstance(record_id, str)
+        or record_id_pattern.fullmatch(record_id) is None
+    ):
+        return None
+    relative_path = Path(directory) / f"{record_id}.json"
+    try:
+        resolved_path = (artifact_root / relative_path).resolve(strict=True)
+        resolved_path.relative_to(artifact_root)
+    except (OSError, ValueError):
+        errors.append(
+            f"{label} cannot resolve an independently retained {record_kind} "
+            "within artifact_root"
+        )
+        return None
+    if not resolved_path.is_file():
+        errors.append(
+            f"{label} must resolve to an independently retained {record_kind} file"
+        )
+        return None
+    try:
+        return resolved_path.read_bytes()
+    except OSError:
+        errors.append(f"{label} resolved {record_kind} cannot be read")
+        return None
+
+
 def _read_sealed_evidence_record(
     run: dict[str, Any],
     artifact_root: Path,
     label: str,
     errors: list[str],
 ) -> bytes | None:
-    artifact_record_id = run.get("sealed_artifact_record_id")
-    if (
-        not isinstance(artifact_record_id, str)
-        or SEALED_ARTIFACT_RECORD_ID_RE.fullmatch(artifact_record_id) is None
-    ):
-        return None
-    relative_path = Path("sealed_records") / f"{artifact_record_id}.json"
-    try:
-        resolved_path = (artifact_root / relative_path).resolve(strict=True)
-        resolved_path.relative_to(artifact_root)
-    except (OSError, ValueError):
-        errors.append(
-            f"{label}.sealed_artifact_record_id cannot resolve an independently "
-            "retained sealed evidence record within artifact_root"
-        )
-        return None
-    if not resolved_path.is_file():
-        errors.append(
-            f"{label}.sealed_artifact_record_id must resolve to a sealed "
-            "evidence record file"
-        )
-        return None
-    try:
-        return resolved_path.read_bytes()
-    except OSError:
-        errors.append(
-            f"{label}.sealed_artifact_record_id resolved sealed evidence "
-            "record cannot be read"
-        )
-        return None
+    return _read_retained_record(
+        run.get("sealed_artifact_record_id"),
+        record_id_pattern=SEALED_ARTIFACT_RECORD_ID_RE,
+        directory="sealed_records",
+        record_kind="sealed evidence record",
+        artifact_root=artifact_root,
+        label=f"{label}.sealed_artifact_record_id",
+        errors=errors,
+    )
 
 
 def _approved_product_tree() -> str:
@@ -1208,10 +1279,12 @@ def validate_record(
     artifact_root: Path = DEFAULT_ARTIFACT_ROOT,
     artifact_resolver: ArtifactResolver | None = None,
     sealed_evidence_resolver: SealedEvidenceResolver | None = None,
+    study_evidence_resolver: StudyEvidenceResolver | None = None,
+    assessor_attestation_resolver: AssessorAttestationResolver | None = None,
 ) -> list[str]:
     """Return deterministic human-readable validation errors.
 
-    ``sealed_evidence_resolver`` is a trust boundary: it receives only the
+    Every retained-record resolver is a trust boundary: it receives only an
     opaque record ID and must read an independently retained immutable record.
     """
 
@@ -1755,6 +1828,7 @@ def validate_record(
             )
     run_ids: set[str] = set()
     sealed_artifact_record_ids: set[str] = set()
+    assessor_attestation_record_ids: set[str] = set()
     attempt_keys: set[tuple[Any, ...]] = set()
     attempt_numbers_by_group: dict[
         tuple[str, str, str], set[int]
@@ -2136,6 +2210,54 @@ def validate_record(
                 f"{label}.gold_answer_compared_by_role must be "
                 "independent_assessor"
             )
+        independent_assessor_id = run.get("independent_assessor_id")
+        if (
+            not isinstance(independent_assessor_id, str)
+            or ASSESSOR_ID_RE.fullmatch(independent_assessor_id) is None
+        ):
+            errors.append(
+                f"{label}.independent_assessor_id must be an opaque "
+                "A-prefixed UUIDv4"
+            )
+        elif (
+            isinstance(participant_id, str)
+            and participant_id.startswith("P-")
+            and independent_assessor_id[2:] == participant_id[2:]
+        ):
+            errors.append(
+                f"{label}.independent_assessor_id must not identify the participant"
+            )
+        assessor_attestation_record_id = run.get(
+            "assessor_attestation_record_id"
+        )
+        if (
+            not isinstance(assessor_attestation_record_id, str)
+            or ASSESSOR_ATTESTATION_RECORD_ID_RE.fullmatch(
+                assessor_attestation_record_id
+            )
+            is None
+        ):
+            errors.append(
+                f"{label}.assessor_attestation_record_id must be an opaque "
+                "AAR-prefixed UUIDv4"
+            )
+        elif assessor_attestation_record_id in assessor_attestation_record_ids:
+            errors.append(
+                "duplicate assessor_attestation_record_id: "
+                f"{assessor_attestation_record_id}"
+            )
+        else:
+            assessor_attestation_record_ids.add(assessor_attestation_record_id)
+        assessor_attestation_sha256 = run.get("assessor_attestation_sha256")
+        if (
+            not isinstance(assessor_attestation_sha256, str)
+            or SHA256_RE.fullmatch(assessor_attestation_sha256) is None
+            or assessor_attestation_sha256 == "0" * 64
+        ):
+            errors.append(
+                f"{label}.assessor_attestation_sha256 must be a non-zero "
+                "lowercase SHA-256"
+            )
         if (
             run.get("gold_answer_comparison_withheld_from_participant")
             is not True
@@ -2164,6 +2286,19 @@ def validate_record(
             errors.append(f"{label}.exclusion_reason_code must be null when included")
 
         timing = _validate_run_timing(run, label, errors)
+        assessment_completed_at = _parse_utc(
+            run.get("assessment_completed_at"),
+            f"{label}.assessment_completed_at",
+            errors,
+        )
+        if (
+            timing is not None
+            and assessment_completed_at is not None
+            and assessment_completed_at <= timing.ended_at
+        ):
+            errors.append(
+                f"{label}.assessment_completed_at must follow ended_at"
+            )
         if (
             timing is not None
             and participant_is_declared
@@ -2193,6 +2328,63 @@ def validate_record(
                     ][attempt_number] = (
                         timing.started_at,
                         timing.ended_at,
+                    )
+
+        retained_attestation_bytes: bytes | None
+        if assessor_attestation_resolver is None:
+            retained_attestation_bytes = _read_retained_record(
+                assessor_attestation_record_id,
+                record_id_pattern=ASSESSOR_ATTESTATION_RECORD_ID_RE,
+                directory="assessor_records",
+                record_kind="assessor attestation",
+                artifact_root=artifact_root,
+                label=f"{label}.assessor_attestation_record_id",
+                errors=errors,
+            )
+        elif not isinstance(assessor_attestation_record_id, str):
+            retained_attestation_bytes = None
+        else:
+            try:
+                retained_attestation_bytes = assessor_attestation_resolver(
+                    assessor_attestation_record_id
+                )
+            except (KeyError, OSError, ValueError) as exc:
+                errors.append(
+                    f"{label}.assessor_attestation_record_id cannot resolve "
+                    f"an independently retained assessor attestation: {exc}"
+                )
+                retained_attestation_bytes = None
+            else:
+                if not isinstance(retained_attestation_bytes, bytes):
+                    errors.append(
+                        f"{label}.assessor attestation resolver must return bytes"
+                    )
+                    retained_attestation_bytes = None
+        if retained_attestation_bytes is not None:
+            try:
+                retained_attestation = _loads_json_strict(
+                    retained_attestation_bytes.decode("utf-8")
+                )
+            except (UnicodeDecodeError, StrictJsonError):
+                errors.append(
+                    f"{label}.independently retained assessor attestation "
+                    "must be strict UTF-8 JSON"
+                )
+            else:
+                expected_attestation = build_assessor_attestation(run)
+                if retained_attestation != expected_attestation:
+                    errors.append(
+                        f"{label} assessment must match the independently "
+                        "retained assessor attestation"
+                    )
+                if (
+                    isinstance(assessor_attestation_sha256, str)
+                    and _canonical_json_sha256(retained_attestation)
+                    != assessor_attestation_sha256
+                ):
+                    errors.append(
+                        f"{label}.assessor_attestation_sha256 must match the "
+                        "independently retained assessor attestation"
                     )
 
         outcome = run.get("outcome")
@@ -2679,6 +2871,110 @@ def validate_record(
                     f"{participant_id} timed runs do not follow declared arm_order"
                 )
 
+    study_evidence_record_id = record.get("study_evidence_record_id")
+    if (
+        not isinstance(study_evidence_record_id, str)
+        or STUDY_EVIDENCE_RECORD_ID_RE.fullmatch(study_evidence_record_id)
+        is None
+    ):
+        errors.append(
+            "study_evidence_record_id must be an opaque HSR-prefixed UUIDv4"
+        )
+    study_evidence_sha256 = record.get("study_evidence_sha256")
+    if (
+        not isinstance(study_evidence_sha256, str)
+        or SHA256_RE.fullmatch(study_evidence_sha256) is None
+        or study_evidence_sha256 == "0" * 64
+    ):
+        errors.append(
+            "study_evidence_sha256 must be a non-zero lowercase SHA-256"
+        )
+    study_evidence_envelope = record.get("study_evidence_envelope")
+    study_envelope_schema = schema["$defs"]["studyEvidenceEnvelope"]
+    _unknown_fields(
+        study_evidence_envelope,
+        set(study_envelope_schema["properties"]),
+        "study_evidence_envelope",
+        errors,
+    )
+    _required_fields(
+        study_evidence_envelope,
+        set(study_envelope_schema["required"]),
+        "study_evidence_envelope",
+        errors,
+    )
+    if isinstance(study_evidence_envelope, dict):
+        expected_study_envelope = build_study_evidence_envelope(record)
+        for field, expected in expected_study_envelope.items():
+            if study_evidence_envelope.get(field) != expected:
+                errors.append(
+                    f"study_evidence_envelope.{field} must match the study"
+                )
+        if (
+            study_evidence_envelope == expected_study_envelope
+            and isinstance(study_evidence_sha256, str)
+            and study_evidence_sha256
+            != _canonical_json_sha256(study_evidence_envelope)
+        ):
+            errors.append(
+                "study_evidence_sha256 must match the canonical "
+                "study_evidence_envelope"
+            )
+
+    retained_study_bytes: bytes | None
+    if study_evidence_resolver is None:
+        retained_study_bytes = _read_retained_record(
+            study_evidence_record_id,
+            record_id_pattern=STUDY_EVIDENCE_RECORD_ID_RE,
+            directory="study_records",
+            record_kind="study evidence record",
+            artifact_root=artifact_root,
+            label="study_evidence_record_id",
+            errors=errors,
+        )
+    elif not isinstance(study_evidence_record_id, str):
+        retained_study_bytes = None
+    else:
+        try:
+            retained_study_bytes = study_evidence_resolver(
+                study_evidence_record_id
+            )
+        except (KeyError, OSError, ValueError) as exc:
+            errors.append(
+                "study_evidence_record_id cannot resolve an independently "
+                f"retained study evidence record: {exc}"
+            )
+            retained_study_bytes = None
+        else:
+            if not isinstance(retained_study_bytes, bytes):
+                errors.append("study evidence resolver must return bytes")
+                retained_study_bytes = None
+    if retained_study_bytes is not None:
+        try:
+            retained_study_evidence = _loads_json_strict(
+                retained_study_bytes.decode("utf-8")
+            )
+        except (UnicodeDecodeError, StrictJsonError):
+            errors.append(
+                "independently retained study evidence record must be strict "
+                "UTF-8 JSON"
+            )
+        else:
+            if retained_study_evidence != study_evidence_envelope:
+                errors.append(
+                    "study_evidence_envelope must match the independently "
+                    "retained study evidence record"
+                )
+            if (
+                isinstance(study_evidence_sha256, str)
+                and _canonical_json_sha256(retained_study_evidence)
+                != study_evidence_sha256
+            ):
+                errors.append(
+                    "study_evidence_sha256 must match the independently "
+                    "retained study evidence record"
+                )
+
     return sorted(set(errors))
 
 
@@ -2688,6 +2984,8 @@ def summarize_record(
     artifact_root: Path = DEFAULT_ARTIFACT_ROOT,
     artifact_resolver: ArtifactResolver | None = None,
     sealed_evidence_resolver: SealedEvidenceResolver | None = None,
+    study_evidence_resolver: StudyEvidenceResolver | None = None,
+    assessor_attestation_resolver: AssessorAttestationResolver | None = None,
 ) -> dict[str, Any]:
     """Compute protocol-defined metrics after validation."""
 
@@ -2696,6 +2994,8 @@ def summarize_record(
         artifact_root=artifact_root,
         artifact_resolver=artifact_resolver,
         sealed_evidence_resolver=sealed_evidence_resolver,
+        study_evidence_resolver=study_evidence_resolver,
+        assessor_attestation_resolver=assessor_attestation_resolver,
     )
     if errors:
         raise ValueError("record is invalid: " + "; ".join(errors))
@@ -2946,7 +3246,7 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help=(
             "root directory used to resolve output artifacts and independently "
-            "retained sealed evidence records "
+            "retained run, study, and assessor records "
             "(default: the evidence record directory)"
         ),
     )

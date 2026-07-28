@@ -10,7 +10,7 @@
   "study_status": "validation_example",
   "practice_revision": "practice-phase12-v1",
   "practice_package_path": "docs/mvp-human-review-practice-package.json",
-  "practice_package_sha256": "a1e9cbea49e05372c93649df913fc31e05e476a236879e3729b8d5a8f3b65270",
+  "practice_package_sha256": "936f47e58b073eb18d02a3858f6a8e298f87f2e4242f9949dc4fbc9117fd6a82",
   "case_ids": [
     "mvp-word-001"
   ],
@@ -39,11 +39,11 @@
       "manual_practice_completed": true,
       "manual_practice_completed_at": "2026-07-26T00:10:00Z",
       "manual_practice_revision": "practice-phase12-v1",
-      "manual_practice_package_sha256": "a1e9cbea49e05372c93649df913fc31e05e476a236879e3729b8d5a8f3b65270",
+      "manual_practice_package_sha256": "936f47e58b073eb18d02a3858f6a8e298f87f2e4242f9949dc4fbc9117fd6a82",
       "veridoc_practice_completed": true,
       "veridoc_practice_completed_at": "2026-07-26T00:20:00Z",
       "veridoc_practice_revision": "practice-phase12-v1",
-      "veridoc_practice_package_sha256": "a1e9cbea49e05372c93649df913fc31e05e476a236879e3729b8d5a8f3b65270",
+      "veridoc_practice_package_sha256": "936f47e58b073eb18d02a3858f6a8e298f87f2e4242f9949dc4fbc9117fd6a82",
       "arm_order": [
         "manual",
         "veridoc"
@@ -60,11 +60,11 @@
       "manual_practice_completed": true,
       "manual_practice_completed_at": "2026-07-26T00:10:00Z",
       "manual_practice_revision": "practice-phase12-v1",
-      "manual_practice_package_sha256": "a1e9cbea49e05372c93649df913fc31e05e476a236879e3729b8d5a8f3b65270",
+      "manual_practice_package_sha256": "936f47e58b073eb18d02a3858f6a8e298f87f2e4242f9949dc4fbc9117fd6a82",
       "veridoc_practice_completed": true,
       "veridoc_practice_completed_at": "2026-07-26T00:20:00Z",
       "veridoc_practice_revision": "practice-phase12-v1",
-      "veridoc_practice_package_sha256": "a1e9cbea49e05372c93649df913fc31e05e476a236879e3729b8d5a8f3b65270",
+      "veridoc_practice_package_sha256": "936f47e58b073eb18d02a3858f6a8e298f87f2e4242f9949dc4fbc9117fd6a82",
       "arm_order": [
         "veridoc",
         "manual"
@@ -81,28 +81,34 @@
       "manual_practice_completed": true,
       "manual_practice_completed_at": "2026-07-26T00:10:00Z",
       "manual_practice_revision": "practice-phase12-v1",
-      "manual_practice_package_sha256": "a1e9cbea49e05372c93649df913fc31e05e476a236879e3729b8d5a8f3b65270",
+      "manual_practice_package_sha256": "936f47e58b073eb18d02a3858f6a8e298f87f2e4242f9949dc4fbc9117fd6a82",
       "veridoc_practice_completed": true,
       "veridoc_practice_completed_at": "2026-07-26T00:20:00Z",
       "veridoc_practice_revision": "practice-phase12-v1",
-      "veridoc_practice_package_sha256": "a1e9cbea49e05372c93649df913fc31e05e476a236879e3729b8d5a8f3b65270",
+      "veridoc_practice_package_sha256": "936f47e58b073eb18d02a3858f6a8e298f87f2e4242f9949dc4fbc9117fd6a82",
       "arm_order": [
         "manual",
         "veridoc"
       ]
     }
   ],
+  "study_evidence_record_id": "HSR-550E8400-E29B-41D4-A716-446655440210",
+  "study_evidence_sha256": "ca7ba1a5387a2709113f8a5e7c46bc6a4cd1a5c2f21e9e738b8e7bf7ad389a58",
+  "study_evidence_envelope": {
+    "schema_version": "veridoc-mvp-study-evidence-envelope/v1",
+    "study_claims_sha256": "4c0181fabaa9d7f2b847202a89b88d16363271feba47e823b15cc184f85f7aa1"
+  },
   "runs": [
     {
       "run_id": "RUN-P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A-MVP-WORD-001-MANUAL-1",
       "sealed_artifact_record_id": "SAR-550E8400-E29B-41D4-A716-446655440101",
-      "sealed_artifact_sha256": "07b5b04b66e9f7715bc5a9e3012f09e33ca79e2b6492f83e94e739c2d523f04e",
+      "sealed_artifact_sha256": "db6466725f369ddf252981f0f91344402db545b06699655c4b13f1818bb7b76e",
       "sealed_artifact_kind": "output_artifact",
       "sealed_artifact_path": "sealed_artifacts/SAR-550E8400-E29B-41D4-A716-446655440101.bin",
       "output_artifact_sha256": "38afb442ffe3de2d9e8272d84554ad03ec9e1f746f4dd761da5a49ee11dcbfb3",
       "sealed_evidence_envelope": {
         "schema_version": "veridoc-mvp-sealed-evidence-envelope/v1",
-        "run_claims_sha256": "38eeca05f48b10087a4d253ffb5c0bde8b41e49712d9ba528c5e54e51fb0f18d"
+        "run_claims_sha256": "7c6887a548e972d35b437fa52062e196806300e4fe9ca70c9eb42bfdad86d11e"
       },
       "participant_id": "P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A",
       "case_id": "mvp-word-001",
@@ -129,6 +135,10 @@
       "checklist_case_sha256": "c4d31dabdc42f6241e41b8f64697bef4bafe567e1cb99e6cc37ce61229cc776f",
       "gold_answer_hidden_until_ended_at": true,
       "gold_answer_compared_by_role": "independent_assessor",
+      "independent_assessor_id": "A-550E8400-E29B-41D4-A716-446655440301",
+      "assessor_attestation_record_id": "AAR-550E8400-E29B-41D4-A716-446655440401",
+      "assessor_attestation_sha256": "552c73e9b4b6da31426afa43302d386527317fb3055ff383ba19d5d5de911a4e",
+      "assessment_completed_at": "2026-07-26T01:20:01Z",
       "gold_answer_comparison_withheld_from_participant": true,
       "started_at": "2026-07-26T01:00:00Z",
       "ended_at": "2026-07-26T01:20:00Z",
@@ -145,13 +155,13 @@
     {
       "run_id": "RUN-P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A-MVP-WORD-001-VERIDOC-1",
       "sealed_artifact_record_id": "SAR-550E8400-E29B-41D4-A716-446655440102",
-      "sealed_artifact_sha256": "5fa656f4a94413bb0d6c5ac813c4202ec034afefc4d3582aca2b7bf8473281a1",
+      "sealed_artifact_sha256": "69e4d65d3ed908621abdb32145551dde7f2f604b814493d16d4e0b865bf1a1ba",
       "sealed_artifact_kind": "output_artifact",
       "sealed_artifact_path": "sealed_artifacts/SAR-550E8400-E29B-41D4-A716-446655440102.bin",
       "output_artifact_sha256": "224bcdb4747cb437aaff952ed97c415ffe37595ba20f84dcdabd6c82785bff7c",
       "sealed_evidence_envelope": {
         "schema_version": "veridoc-mvp-sealed-evidence-envelope/v1",
-        "run_claims_sha256": "068931c6d414705d37032467031d46699ab81f0ee7c2736b034f2f970a6cbcfb"
+        "run_claims_sha256": "2f240d02fc53cfcda4c845ac445c886aba1963104db3b6d1cac091dfa62eb957"
       },
       "participant_id": "P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A",
       "case_id": "mvp-word-001",
@@ -187,6 +197,10 @@
       "checklist_case_sha256": "c4d31dabdc42f6241e41b8f64697bef4bafe567e1cb99e6cc37ce61229cc776f",
       "gold_answer_hidden_until_ended_at": true,
       "gold_answer_compared_by_role": "independent_assessor",
+      "independent_assessor_id": "A-550E8400-E29B-41D4-A716-446655440301",
+      "assessor_attestation_record_id": "AAR-550E8400-E29B-41D4-A716-446655440402",
+      "assessor_attestation_sha256": "899e011720fd322f659a1c79f2f6b2af72e51c1602696e3d6d552ec90eef40b4",
+      "assessment_completed_at": "2026-07-26T02:13:01Z",
       "gold_answer_comparison_withheld_from_participant": true,
       "started_at": "2026-07-26T02:00:00Z",
       "ended_at": "2026-07-26T02:13:00Z",
@@ -203,13 +217,13 @@
     {
       "run_id": "RUN-P-386BEEA7-81DC-408A-B045-D73A233C0DC5-MVP-WORD-001-VERIDOC-1",
       "sealed_artifact_record_id": "SAR-550E8400-E29B-41D4-A716-446655440103",
-      "sealed_artifact_sha256": "09af22f5f38cd261e8ecd61f0ce23d773beed7a19719981fffcc1c1c73c8dd7b",
+      "sealed_artifact_sha256": "935091c18b9ccb25fbc6b0ecf54d5d22cef58ae65946a27a0e4f4cd71b7f4d0e",
       "sealed_artifact_kind": "blocked_attempt_envelope",
       "sealed_artifact_path": null,
       "output_artifact_sha256": null,
       "sealed_evidence_envelope": {
         "schema_version": "veridoc-mvp-sealed-evidence-envelope/v1",
-        "run_claims_sha256": "f91bec4ea8084bafc475b19d4ac6544196c8f56ec97e98ec82ebbc6f63e8e370"
+        "run_claims_sha256": "272cf9e2de012b33e4d924bbc3da7f6623959c48c4fd4dae6068e86e63f316da"
       },
       "participant_id": "P-386BEEA7-81DC-408A-B045-D73A233C0DC5",
       "case_id": "mvp-word-001",
@@ -245,6 +259,10 @@
       "checklist_case_sha256": "c4d31dabdc42f6241e41b8f64697bef4bafe567e1cb99e6cc37ce61229cc776f",
       "gold_answer_hidden_until_ended_at": true,
       "gold_answer_compared_by_role": "independent_assessor",
+      "independent_assessor_id": "A-550E8400-E29B-41D4-A716-446655440301",
+      "assessor_attestation_record_id": "AAR-550E8400-E29B-41D4-A716-446655440403",
+      "assessor_attestation_sha256": "813e84aa4ff81545f3acf1ced9bc49b9ffc406594eff8c96cd61730f0b432478",
+      "assessment_completed_at": "2026-07-26T03:12:01Z",
       "gold_answer_comparison_withheld_from_participant": true,
       "started_at": "2026-07-26T03:00:00Z",
       "ended_at": "2026-07-26T03:12:00Z",
@@ -261,13 +279,13 @@
     {
       "run_id": "RUN-P-386BEEA7-81DC-408A-B045-D73A233C0DC5-MVP-WORD-001-MANUAL-1",
       "sealed_artifact_record_id": "SAR-550E8400-E29B-41D4-A716-446655440104",
-      "sealed_artifact_sha256": "cac8fefb403f3be81d6d8bedd829462e92c51f1c4a7df6778cd6346b8ca79da2",
+      "sealed_artifact_sha256": "eb8f56337ad7339b5072d4b90378ca78cc547af15391f1bacf0b39c8467c6037",
       "sealed_artifact_kind": "output_artifact",
       "sealed_artifact_path": "sealed_artifacts/SAR-550E8400-E29B-41D4-A716-446655440104.bin",
       "output_artifact_sha256": "70ec474db6504627d6402e74b04eba218a7c994832dff1d364c2159e6cbfcdbd",
       "sealed_evidence_envelope": {
         "schema_version": "veridoc-mvp-sealed-evidence-envelope/v1",
-        "run_claims_sha256": "0c066236d0b35de87d6337e37c9f0a36016301899343d9dd63f198ee70f3c36c"
+        "run_claims_sha256": "9c0a8adac7f58aefa777e447255e9bf97e3ce5a89588740578ff1e30384bb12a"
       },
       "participant_id": "P-386BEEA7-81DC-408A-B045-D73A233C0DC5",
       "case_id": "mvp-word-001",
@@ -294,6 +312,10 @@
       "checklist_case_sha256": "c4d31dabdc42f6241e41b8f64697bef4bafe567e1cb99e6cc37ce61229cc776f",
       "gold_answer_hidden_until_ended_at": true,
       "gold_answer_compared_by_role": "independent_assessor",
+      "independent_assessor_id": "A-550E8400-E29B-41D4-A716-446655440301",
+      "assessor_attestation_record_id": "AAR-550E8400-E29B-41D4-A716-446655440404",
+      "assessor_attestation_sha256": "d643c587d1ab4e68f78b867fe1a3dbacd4fdf754614d29dd2c112e0eb20036e3",
+      "assessment_completed_at": "2026-07-26T04:18:01Z",
       "gold_answer_comparison_withheld_from_participant": true,
       "started_at": "2026-07-26T04:00:00Z",
       "ended_at": "2026-07-26T04:18:00Z",
@@ -310,13 +332,13 @@
     {
       "run_id": "RUN-P-E136C88A-C95D-47D2-AB32-F5C3AD66F2F5-MVP-WORD-001-MANUAL-1",
       "sealed_artifact_record_id": "SAR-550E8400-E29B-41D4-A716-446655440105",
-      "sealed_artifact_sha256": "843955480d22df29552e3b73bf5fdeb9bee269f84f074fb30a6eea2dcb15562e",
+      "sealed_artifact_sha256": "76d9c638057b838c2fb8a70bc8a94c6b170a3d0961736eac198654d85e8dd30c",
       "sealed_artifact_kind": "output_artifact",
       "sealed_artifact_path": "sealed_artifacts/SAR-550E8400-E29B-41D4-A716-446655440105.bin",
       "output_artifact_sha256": "3675b08e1c52bb60a56ad764cc9a6b0abb35d4641516c15d1cbab657eb8eaebb",
       "sealed_evidence_envelope": {
         "schema_version": "veridoc-mvp-sealed-evidence-envelope/v1",
-        "run_claims_sha256": "c8828b1606c9f5fb81b9e6697b512ac221696114bcd97681aedd8b3c61e8904c"
+        "run_claims_sha256": "86b95e9c382f4ef3423dac5a9d7f434fcfee3a1167e022825885299851a23a6b"
       },
       "participant_id": "P-E136C88A-C95D-47D2-AB32-F5C3AD66F2F5",
       "case_id": "mvp-word-001",
@@ -343,6 +365,10 @@
       "checklist_case_sha256": "c4d31dabdc42f6241e41b8f64697bef4bafe567e1cb99e6cc37ce61229cc776f",
       "gold_answer_hidden_until_ended_at": true,
       "gold_answer_compared_by_role": "independent_assessor",
+      "independent_assessor_id": "A-550E8400-E29B-41D4-A716-446655440301",
+      "assessor_attestation_record_id": "AAR-550E8400-E29B-41D4-A716-446655440405",
+      "assessor_attestation_sha256": "48acc139c36ee88a965b754ffef5f9cb46f6247c193372f4526698f1ca700a9a",
+      "assessment_completed_at": "2026-07-26T05:22:01Z",
       "gold_answer_comparison_withheld_from_participant": true,
       "started_at": "2026-07-26T05:00:00Z",
       "ended_at": "2026-07-26T05:22:00Z",
@@ -359,13 +385,13 @@
     {
       "run_id": "RUN-P-E136C88A-C95D-47D2-AB32-F5C3AD66F2F5-MVP-WORD-001-VERIDOC-1",
       "sealed_artifact_record_id": "SAR-550E8400-E29B-41D4-A716-446655440106",
-      "sealed_artifact_sha256": "ad830a50cf40f17c576e16cae7243b80e36556e302143bed547cb8372919f5cd",
+      "sealed_artifact_sha256": "8f344d572f4cf895c6459ecc2cc451b88ba8e3e61880c1883360ec7d5a60848a",
       "sealed_artifact_kind": "output_artifact",
       "sealed_artifact_path": "sealed_artifacts/SAR-550E8400-E29B-41D4-A716-446655440106.bin",
       "output_artifact_sha256": "43a5c8679dbd15b66c14b093661bcb9751540bad4014affa31e721ad5a7cdeeb",
       "sealed_evidence_envelope": {
         "schema_version": "veridoc-mvp-sealed-evidence-envelope/v1",
-        "run_claims_sha256": "d49b1355312dc17d34a68beea4726678820d9912b83a2248dec64da0970a8580"
+        "run_claims_sha256": "675df1c039bc0aed1a1c8fa653f467526c4319a6a1ea768e5f7633323fee731c"
       },
       "participant_id": "P-E136C88A-C95D-47D2-AB32-F5C3AD66F2F5",
       "case_id": "mvp-word-001",
@@ -401,6 +427,10 @@
       "checklist_case_sha256": "c4d31dabdc42f6241e41b8f64697bef4bafe567e1cb99e6cc37ce61229cc776f",
       "gold_answer_hidden_until_ended_at": true,
       "gold_answer_compared_by_role": "independent_assessor",
+      "independent_assessor_id": "A-550E8400-E29B-41D4-A716-446655440301",
+      "assessor_attestation_record_id": "AAR-550E8400-E29B-41D4-A716-446655440406",
+      "assessor_attestation_sha256": "f0c2b26b198ffed3b3c01227ae81458ed4d4726da0672fbb43c28a222b9dee54",
+      "assessment_completed_at": "2026-07-26T06:14:01Z",
       "gold_answer_comparison_withheld_from_participant": true,
       "started_at": "2026-07-26T06:00:00Z",
       "ended_at": "2026-07-26T06:14:00Z",
