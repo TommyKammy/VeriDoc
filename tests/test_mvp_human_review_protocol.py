@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from scripts.ci.validate_mvp_human_review_evidence import (
+    ALLOWED_SEALED_ARTIFACT_KINDS_BY_OUTCOME,
     APPROVED_CHECKLIST_REVISION,
     APPROVED_GOLD_ANSWER_REVISION,
     APPROVED_MANIFEST_CONTRACT_SHA256,
@@ -617,6 +618,61 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                 "const"
             ],
         )
+
+    def test_outcome_artifact_rules_match_schema_and_validator(self) -> None:
+        schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+        schema_rules: dict[str, tuple[str, ...]] = {}
+        for conditional in schema["$defs"]["run"]["allOf"]:
+            outcome = (
+                conditional.get("if", {})
+                .get("properties", {})
+                .get("outcome", {})
+                .get("const")
+            )
+            artifact_rule = (
+                conditional.get("then", {})
+                .get("properties", {})
+                .get("sealed_artifact_kind")
+            )
+            if outcome is None or artifact_rule is None:
+                continue
+            schema_rules[outcome] = tuple(
+                artifact_rule.get("enum", [artifact_rule.get("const")])
+            )
+
+        self.assertEqual(
+            ALLOWED_SEALED_ARTIFACT_KINDS_BY_OUTCOME,
+            schema_rules,
+        )
+        all_artifact_kinds = {
+            artifact_kind
+            for allowed in ALLOWED_SEALED_ARTIFACT_KINDS_BY_OUTCOME.values()
+            for artifact_kind in allowed
+        }
+        for outcome, allowed in ALLOWED_SEALED_ARTIFACT_KINDS_BY_OUTCOME.items():
+            for artifact_kind in all_artifact_kinds:
+                with self.subTest(
+                    outcome=outcome,
+                    artifact_kind=artifact_kind,
+                ):
+                    record = copy.deepcopy(self.valid_record)
+                    run = record["runs"][0]
+                    run["outcome"] = outcome
+                    run["blocker_code"] = (
+                        None
+                        if outcome == "approved"
+                        else "approval_unavailable"
+                    )
+                    run["sealed_artifact_kind"] = artifact_kind
+                    artifact_errors = [
+                        error
+                        for error in validate_record(record)
+                        if "sealed_artifact_kind" in error
+                    ]
+                    self.assertEqual(
+                        artifact_kind in allowed,
+                        not artifact_errors,
+                    )
 
     def test_synthetic_validation_example_is_valid_and_recomputable(self) -> None:
         self.assertEqual([], validate_record(self.valid_record))
@@ -1451,11 +1507,97 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertEqual(30, summary["required_runs"])
         self.assertEqual(31, summary["recorded_runs"])
         self.assertEqual(0, summary["eligible_pair_count"])
-        self.assertEqual(15, summary["ineligible_pair_count"])
+        self.assertEqual(20, summary["ineligible_pair_count"])
+        self.assertEqual(20, len(summary["pair_results"]))
         self.assertFalse(summary["execution_attestation_ready"])
         self.assertEqual(1, summary["totals"]["excluded_runs"])
         self.assertEqual(31, summary["totals"]["approved_completions"])
         self.assertFalse(summary["efficiency_target_met"])
+        withdrawn_pairs = [
+            pair
+            for pair in summary["pair_results"]
+            if pair["participant_id"]
+            == "P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C"
+        ]
+        self.assertEqual(5, len(withdrawn_pairs))
+        partial_pair = next(
+            pair
+            for pair in withdrawn_pairs
+            if pair["case_id"] == "mvp-word-001"
+        )
+        self.assertEqual(["manual"], partial_pair["recorded_arms"])
+        self.assertEqual([], partial_pair["included_arms"])
+        self.assertEqual(["veridoc"], partial_pair["missing_arms"])
+        self.assertEqual("approved", partial_pair["manual_outcome"])
+        self.assertTrue(partial_pair["manual_excluded"])
+        self.assertEqual(
+            "participant_withdrew",
+            partial_pair["manual_exclusion_reason_code"],
+        )
+        missing_pair = next(
+            pair
+            for pair in withdrawn_pairs
+            if pair["case_id"] == "mvp-excel-001"
+        )
+        self.assertEqual([], missing_pair["recorded_arms"])
+        self.assertEqual(["manual", "veridoc"], missing_pair["missing_arms"])
+        self.assertIsNone(missing_pair["manual_outcome"])
+        self.assertIsNone(missing_pair["veridoc_outcome"])
+
+    def test_withdrawn_partial_pair_availability_matrix_is_reported(
+        self,
+    ) -> None:
+        scenarios = {
+            "no_attempt": (False, [], [], ["manual", "veridoc"], None),
+            "excluded_manual": (
+                True,
+                ["manual"],
+                [],
+                ["veridoc"],
+                True,
+            ),
+            "included_manual": (
+                True,
+                ["manual"],
+                ["manual"],
+                ["veridoc"],
+                False,
+            ),
+        }
+        for (
+            scenario,
+            (
+                retain_attempt,
+                expected_recorded,
+                expected_included,
+                expected_missing,
+                expected_excluded,
+            ),
+        ) in scenarios.items():
+            with self.subTest(scenario=scenario):
+                record = _completed_record(self.valid_record)
+                _add_withdrawn_participant(record)
+                attempt = record["runs"][-1]
+                if not retain_attempt:
+                    record["runs"].pop()
+                elif scenario == "included_manual":
+                    attempt["excluded"] = False
+                    attempt["exclusion_reason_code"] = None
+
+                self.assertEqual([], validate_record(record))
+                pair = next(
+                    pair
+                    for pair in summarize_record(record)["pair_results"]
+                    if pair["participant_id"]
+                    == "P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C"
+                    and pair["case_id"] == "mvp-word-001"
+                )
+                self.assertFalse(pair["calculable"])
+                self.assertFalse(pair["eligible"])
+                self.assertEqual(expected_recorded, pair["recorded_arms"])
+                self.assertEqual(expected_included, pair["included_arms"])
+                self.assertEqual(expected_missing, pair["missing_arms"])
+                self.assertEqual(expected_excluded, pair["manual_excluded"])
 
     def test_withdrawn_participant_attempt_requires_both_practices(
         self,
@@ -1610,16 +1752,26 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
 
         self.assertEqual([], validate_record(record))
         summary = summarize_record(record)
-        self.assertEqual(16, len(summary["pair_results"]))
+        self.assertEqual(20, len(summary["pair_results"]))
         self.assertEqual(0, summary["eligible_pair_count"])
-        self.assertEqual(16, summary["ineligible_pair_count"])
+        self.assertEqual(20, summary["ineligible_pair_count"])
         self.assertFalse(summary["execution_attestation_ready"])
         withdrawn_pair = next(
             pair
             for pair in summary["pair_results"]
             if pair["participant_id"] == "P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C"
+            and pair["case_id"] == "mvp-word-001"
         )
         self.assertFalse(withdrawn_pair["eligible"])
+        self.assertEqual(
+            ["manual", "veridoc"],
+            withdrawn_pair["recorded_arms"],
+        )
+        self.assertEqual(
+            ["manual", "veridoc"],
+            withdrawn_pair["included_arms"],
+        )
+        self.assertEqual([], withdrawn_pair["missing_arms"])
         self.assertEqual("approved", withdrawn_pair["manual_outcome"])
         self.assertEqual("approved", withdrawn_pair["veridoc_outcome"])
 

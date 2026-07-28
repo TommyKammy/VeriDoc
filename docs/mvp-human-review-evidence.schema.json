@@ -715,7 +715,10 @@
           "then": {
             "properties": {
               "sealed_artifact_kind": {
-                "const": "blocked_attempt_envelope"
+                "enum": [
+                  "output_artifact",
+                  "blocked_attempt_envelope"
+                ]
               }
             }
           }

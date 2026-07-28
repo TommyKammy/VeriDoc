@@ -83,6 +83,16 @@ APPROVED_RUN_REVISIONS = {
     "gold_answer_revision": APPROVED_GOLD_ANSWER_REVISION,
     "checklist_revision": APPROVED_CHECKLIST_REVISION,
 }
+ARMS = ("manual", "veridoc")
+ALLOWED_SEALED_ARTIFACT_KINDS_BY_OUTCOME = {
+    "approved": ("output_artifact",),
+    "blocked": ("output_artifact", "blocked_attempt_envelope"),
+}
+ALLOWED_SEALED_ARTIFACT_KINDS = frozenset(
+    artifact_kind
+    for artifact_kinds in ALLOWED_SEALED_ARTIFACT_KINDS_BY_OUTCOME.values()
+    for artifact_kind in artifact_kinds
+)
 UUID4_TOKEN_RE = (
     r"[0-9A-F]{8}-[0-9A-F]{4}-4[0-9A-F]{3}-"
     r"[89AB][0-9A-F]{3}-[0-9A-F]{12}"
@@ -1643,11 +1653,7 @@ def validate_record(record: Any) -> list[str]:
         sealed_artifact_kind = run.get("sealed_artifact_kind")
         if (
             not isinstance(sealed_artifact_kind, str)
-            or sealed_artifact_kind
-            not in {
-                "output_artifact",
-                "blocked_attempt_envelope",
-            }
+            or sealed_artifact_kind not in ALLOWED_SEALED_ARTIFACT_KINDS
         ):
             errors.append(f"{label}.sealed_artifact_kind is invalid")
 
@@ -2001,11 +2007,6 @@ def validate_record(record: Any) -> list[str]:
         if outcome == "approved":
             if blocker_code is not None:
                 errors.append(f"{label}.blocker_code must be null for approved outcome")
-            if sealed_artifact_kind != "output_artifact":
-                errors.append(
-                    f"{label}.sealed_artifact_kind must be output_artifact "
-                    "for approved outcome"
-                )
         elif outcome == "blocked":
             if not isinstance(blocker_code, str) or blocker_code not in {
                 "source_unreadable",
@@ -2015,21 +2016,21 @@ def validate_record(record: Any) -> list[str]:
                 "other_controlled",
             }:
                 errors.append(f"{label}.blocker_code is required for blocked outcome")
-            if (
-                not isinstance(sealed_artifact_kind, str)
-                or sealed_artifact_kind
-                not in {
-                    "output_artifact",
-                    "blocked_attempt_envelope",
-                }
-            ):
-                errors.append(
-                    f"{label}.sealed_artifact_kind must be "
-                    "output_artifact or blocked_attempt_envelope for "
-                    "blocked outcome"
-                )
         else:
             errors.append(f"{label}.outcome is invalid")
+        allowed_artifact_kinds = (
+            ALLOWED_SEALED_ARTIFACT_KINDS_BY_OUTCOME.get(outcome)
+            if isinstance(outcome, str)
+            else None
+        )
+        if (
+            allowed_artifact_kinds is not None
+            and sealed_artifact_kind not in allowed_artifact_kinds
+        ):
+            errors.append(
+                f"{label}.sealed_artifact_kind must be "
+                f"{' or '.join(allowed_artifact_kinds)} for {outcome} outcome"
+            )
 
         if (
             gold_answer_hidden is False
@@ -2357,11 +2358,18 @@ def summarize_record(record: dict[str, Any]) -> dict[str, Any]:
     # This protocol version intentionally has no trusted execution-attestation
     # path. Its only accepted status is unverified_validation_only.
     execution_attestation_ready = False
-    included = [run for run in record["runs"] if not run["excluded"]]
-    by_pair = {
+    included_runs = [run for run in record["runs"] if not run["excluded"]]
+    included_by_arm = {
         (run["participant_id"], run["case_id"], run["arm"]): run
-        for run in included
+        for run in included_runs
     }
+    recorded_by_arm: dict[tuple[str, str, str], list[dict[str, Any]]] = (
+        defaultdict(list)
+    )
+    for run in record["runs"]:
+        recorded_by_arm[
+            (run["participant_id"], run["case_id"], run["arm"])
+        ].append(run)
     pair_results: list[dict[str, Any]] = []
     eligible_pair_results: list[dict[str, Any]] = []
 
@@ -2376,12 +2384,36 @@ def summarize_record(record: dict[str, Any]) -> dict[str, Any]:
 
     for participant_id in sorted(participant_statuses):
         for case_id in sorted(record["case_ids"]):
-            manual = by_pair.get((participant_id, case_id, "manual"))
-            veridoc = by_pair.get((participant_id, case_id, "veridoc"))
-            if manual is None or veridoc is None:
-                continue
+            arm_keys = {
+                arm: (participant_id, case_id, arm)
+                for arm in ARMS
+            }
+            included = {
+                arm: included_by_arm.get(arm_keys[arm])
+                for arm in ARMS
+            }
+            recorded = {
+                arm: recorded_by_arm.get(arm_keys[arm], [])
+                for arm in ARMS
+            }
+            reporting = {
+                arm: included[arm]
+                or (
+                    max(
+                        recorded[arm],
+                        key=lambda run: run["attempt_number"],
+                    )
+                    if recorded[arm]
+                    else None
+                )
+                for arm in ARMS
+            }
+            manual = included["manual"]
+            veridoc = included["veridoc"]
             calculable = (
-                manual["outcome"] == "approved"
+                manual is not None
+                and veridoc is not None
+                and manual["outcome"] == "approved"
                 and veridoc["outcome"] == "approved"
                 and manual["checklist_complete"]
                 and veridoc["checklist_complete"]
@@ -2396,11 +2428,42 @@ def summarize_record(record: dict[str, Any]) -> dict[str, Any]:
                 "case_id": case_id,
                 "calculable": calculable,
                 "eligible": eligible,
-                "manual_outcome": manual["outcome"],
-                "manual_blocker_code": manual["blocker_code"],
-                "veridoc_outcome": veridoc["outcome"],
-                "veridoc_blocker_code": veridoc["blocker_code"],
+                "recorded_arms": [
+                    arm for arm in ARMS if recorded[arm]
+                ],
+                "included_arms": [
+                    arm for arm in ARMS if included[arm] is not None
+                ],
+                "missing_arms": [
+                    arm for arm in ARMS if not recorded[arm]
+                ],
             }
+            for arm in ARMS:
+                reporting_run = reporting[arm]
+                pair_result.update(
+                    {
+                        f"{arm}_outcome": (
+                            reporting_run["outcome"]
+                            if reporting_run is not None
+                            else None
+                        ),
+                        f"{arm}_blocker_code": (
+                            reporting_run["blocker_code"]
+                            if reporting_run is not None
+                            else None
+                        ),
+                        f"{arm}_excluded": (
+                            reporting_run["excluded"]
+                            if reporting_run is not None
+                            else None
+                        ),
+                        f"{arm}_exclusion_reason_code": (
+                            reporting_run["exclusion_reason_code"]
+                            if reporting_run is not None
+                            else None
+                        ),
+                    }
+                )
             if calculable:
                 manual_seconds = correction_seconds(manual)
                 veridoc_seconds = correction_seconds(veridoc)
