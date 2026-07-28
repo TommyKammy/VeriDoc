@@ -10,15 +10,21 @@
     },
     {
       "id": "output-artifact-digest-mismatch",
-      "path": "/runs/0/sealed_artifact_sha256",
+      "path": "/runs/0/output_artifact_sha256",
       "value": "1111111111111111111111111111111111111111111111111111111111111111",
-      "expected_error": "run[0].sealed_artifact_sha256 must match the resolved output_artifact bytes"
+      "expected_error": "run[0].output_artifact_sha256 must match the resolved output_artifact bytes"
     },
     {
       "id": "blocked-run-claims-unsealed",
       "path": "/runs/2/over_detection_count",
       "value": 1,
-      "expected_error": "run[2].blocked_attempt_envelope.run_claims_sha256 must match the run"
+      "expected_error": "run[2].sealed_evidence_envelope.run_claims_sha256 must match the run"
+    },
+    {
+      "id": "output-assessment-counts-unsealed",
+      "path": "/runs/0/high_risk_miss_count",
+      "value": 1,
+      "expected_error": "run[0].sealed_evidence_envelope.run_claims_sha256 must match the run"
     },
     {
       "id": "cross-arm-task-drift",

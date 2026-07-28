@@ -10,7 +10,7 @@
   "study_status": "validation_example",
   "practice_revision": "practice-phase12-v1",
   "practice_package_path": "docs/mvp-human-review-practice-package.json",
-  "practice_package_sha256": "2cbb028380287ec45642cbf9fc9a5d87d07f5c14ead246e20c18150bb455ca2f",
+  "practice_package_sha256": "e2e2b7a52b28940ea47277d7d73c43bbd3f91a45ce95ca48024821ef2a21cd23",
   "case_ids": [
     "mvp-word-001"
   ],
@@ -39,11 +39,11 @@
       "manual_practice_completed": true,
       "manual_practice_completed_at": "2026-07-26T00:10:00Z",
       "manual_practice_revision": "practice-phase12-v1",
-      "manual_practice_package_sha256": "2cbb028380287ec45642cbf9fc9a5d87d07f5c14ead246e20c18150bb455ca2f",
+      "manual_practice_package_sha256": "e2e2b7a52b28940ea47277d7d73c43bbd3f91a45ce95ca48024821ef2a21cd23",
       "veridoc_practice_completed": true,
       "veridoc_practice_completed_at": "2026-07-26T00:20:00Z",
       "veridoc_practice_revision": "practice-phase12-v1",
-      "veridoc_practice_package_sha256": "2cbb028380287ec45642cbf9fc9a5d87d07f5c14ead246e20c18150bb455ca2f",
+      "veridoc_practice_package_sha256": "e2e2b7a52b28940ea47277d7d73c43bbd3f91a45ce95ca48024821ef2a21cd23",
       "arm_order": [
         "manual",
         "veridoc"
@@ -60,11 +60,11 @@
       "manual_practice_completed": true,
       "manual_practice_completed_at": "2026-07-26T00:10:00Z",
       "manual_practice_revision": "practice-phase12-v1",
-      "manual_practice_package_sha256": "2cbb028380287ec45642cbf9fc9a5d87d07f5c14ead246e20c18150bb455ca2f",
+      "manual_practice_package_sha256": "e2e2b7a52b28940ea47277d7d73c43bbd3f91a45ce95ca48024821ef2a21cd23",
       "veridoc_practice_completed": true,
       "veridoc_practice_completed_at": "2026-07-26T00:20:00Z",
       "veridoc_practice_revision": "practice-phase12-v1",
-      "veridoc_practice_package_sha256": "2cbb028380287ec45642cbf9fc9a5d87d07f5c14ead246e20c18150bb455ca2f",
+      "veridoc_practice_package_sha256": "e2e2b7a52b28940ea47277d7d73c43bbd3f91a45ce95ca48024821ef2a21cd23",
       "arm_order": [
         "veridoc",
         "manual"
@@ -81,11 +81,11 @@
       "manual_practice_completed": true,
       "manual_practice_completed_at": "2026-07-26T00:10:00Z",
       "manual_practice_revision": "practice-phase12-v1",
-      "manual_practice_package_sha256": "2cbb028380287ec45642cbf9fc9a5d87d07f5c14ead246e20c18150bb455ca2f",
+      "manual_practice_package_sha256": "e2e2b7a52b28940ea47277d7d73c43bbd3f91a45ce95ca48024821ef2a21cd23",
       "veridoc_practice_completed": true,
       "veridoc_practice_completed_at": "2026-07-26T00:20:00Z",
       "veridoc_practice_revision": "practice-phase12-v1",
-      "veridoc_practice_package_sha256": "2cbb028380287ec45642cbf9fc9a5d87d07f5c14ead246e20c18150bb455ca2f",
+      "veridoc_practice_package_sha256": "e2e2b7a52b28940ea47277d7d73c43bbd3f91a45ce95ca48024821ef2a21cd23",
       "arm_order": [
         "manual",
         "veridoc"
@@ -96,10 +96,14 @@
     {
       "run_id": "RUN-P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A-MVP-WORD-001-MANUAL-1",
       "sealed_artifact_record_id": "SAR-550E8400-E29B-41D4-A716-446655440101",
-      "sealed_artifact_sha256": "38afb442ffe3de2d9e8272d84554ad03ec9e1f746f4dd761da5a49ee11dcbfb3",
+      "sealed_artifact_sha256": "07b5b04b66e9f7715bc5a9e3012f09e33ca79e2b6492f83e94e739c2d523f04e",
       "sealed_artifact_kind": "output_artifact",
-      "sealed_artifact_path": "datasets/mvp_human_review_artifacts/SAR-550E8400-E29B-41D4-A716-446655440101.txt",
-      "blocked_attempt_envelope": null,
+      "sealed_artifact_path": "sealed_artifacts/SAR-550E8400-E29B-41D4-A716-446655440101.bin",
+      "output_artifact_sha256": "38afb442ffe3de2d9e8272d84554ad03ec9e1f746f4dd761da5a49ee11dcbfb3",
+      "sealed_evidence_envelope": {
+        "schema_version": "veridoc-mvp-sealed-evidence-envelope/v1",
+        "run_claims_sha256": "38eeca05f48b10087a4d253ffb5c0bde8b41e49712d9ba528c5e54e51fb0f18d"
+      },
       "participant_id": "P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A",
       "case_id": "mvp-word-001",
       "source_fixture_id": "word-to-excel-application",
@@ -141,10 +145,14 @@
     {
       "run_id": "RUN-P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A-MVP-WORD-001-VERIDOC-1",
       "sealed_artifact_record_id": "SAR-550E8400-E29B-41D4-A716-446655440102",
-      "sealed_artifact_sha256": "224bcdb4747cb437aaff952ed97c415ffe37595ba20f84dcdabd6c82785bff7c",
+      "sealed_artifact_sha256": "5fa656f4a94413bb0d6c5ac813c4202ec034afefc4d3582aca2b7bf8473281a1",
       "sealed_artifact_kind": "output_artifact",
-      "sealed_artifact_path": "datasets/mvp_human_review_artifacts/SAR-550E8400-E29B-41D4-A716-446655440102.txt",
-      "blocked_attempt_envelope": null,
+      "sealed_artifact_path": "sealed_artifacts/SAR-550E8400-E29B-41D4-A716-446655440102.bin",
+      "output_artifact_sha256": "224bcdb4747cb437aaff952ed97c415ffe37595ba20f84dcdabd6c82785bff7c",
+      "sealed_evidence_envelope": {
+        "schema_version": "veridoc-mvp-sealed-evidence-envelope/v1",
+        "run_claims_sha256": "068931c6d414705d37032467031d46699ab81f0ee7c2736b034f2f970a6cbcfb"
+      },
       "participant_id": "P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A",
       "case_id": "mvp-word-001",
       "source_fixture_id": "word-to-excel-application",
@@ -195,12 +203,13 @@
     {
       "run_id": "RUN-P-386BEEA7-81DC-408A-B045-D73A233C0DC5-MVP-WORD-001-VERIDOC-1",
       "sealed_artifact_record_id": "SAR-550E8400-E29B-41D4-A716-446655440103",
-      "sealed_artifact_sha256": "457d038072b4c042e5b0df62e9c21ac59556716220c2cdb9354405b912c654b6",
+      "sealed_artifact_sha256": "09af22f5f38cd261e8ecd61f0ce23d773beed7a19719981fffcc1c1c73c8dd7b",
       "sealed_artifact_kind": "blocked_attempt_envelope",
       "sealed_artifact_path": null,
-      "blocked_attempt_envelope": {
-        "schema_version": "veridoc-mvp-blocked-attempt-envelope/v2",
-        "run_claims_sha256": "772907c9e71ced2b787468b174905227dbfcf20ec68457222f600b71004280f4"
+      "output_artifact_sha256": null,
+      "sealed_evidence_envelope": {
+        "schema_version": "veridoc-mvp-sealed-evidence-envelope/v1",
+        "run_claims_sha256": "f91bec4ea8084bafc475b19d4ac6544196c8f56ec97e98ec82ebbc6f63e8e370"
       },
       "participant_id": "P-386BEEA7-81DC-408A-B045-D73A233C0DC5",
       "case_id": "mvp-word-001",
@@ -252,10 +261,14 @@
     {
       "run_id": "RUN-P-386BEEA7-81DC-408A-B045-D73A233C0DC5-MVP-WORD-001-MANUAL-1",
       "sealed_artifact_record_id": "SAR-550E8400-E29B-41D4-A716-446655440104",
-      "sealed_artifact_sha256": "70ec474db6504627d6402e74b04eba218a7c994832dff1d364c2159e6cbfcdbd",
+      "sealed_artifact_sha256": "cac8fefb403f3be81d6d8bedd829462e92c51f1c4a7df6778cd6346b8ca79da2",
       "sealed_artifact_kind": "output_artifact",
-      "sealed_artifact_path": "datasets/mvp_human_review_artifacts/SAR-550E8400-E29B-41D4-A716-446655440104.txt",
-      "blocked_attempt_envelope": null,
+      "sealed_artifact_path": "sealed_artifacts/SAR-550E8400-E29B-41D4-A716-446655440104.bin",
+      "output_artifact_sha256": "70ec474db6504627d6402e74b04eba218a7c994832dff1d364c2159e6cbfcdbd",
+      "sealed_evidence_envelope": {
+        "schema_version": "veridoc-mvp-sealed-evidence-envelope/v1",
+        "run_claims_sha256": "0c066236d0b35de87d6337e37c9f0a36016301899343d9dd63f198ee70f3c36c"
+      },
       "participant_id": "P-386BEEA7-81DC-408A-B045-D73A233C0DC5",
       "case_id": "mvp-word-001",
       "source_fixture_id": "word-to-excel-application",
@@ -297,10 +310,14 @@
     {
       "run_id": "RUN-P-E136C88A-C95D-47D2-AB32-F5C3AD66F2F5-MVP-WORD-001-MANUAL-1",
       "sealed_artifact_record_id": "SAR-550E8400-E29B-41D4-A716-446655440105",
-      "sealed_artifact_sha256": "3675b08e1c52bb60a56ad764cc9a6b0abb35d4641516c15d1cbab657eb8eaebb",
+      "sealed_artifact_sha256": "843955480d22df29552e3b73bf5fdeb9bee269f84f074fb30a6eea2dcb15562e",
       "sealed_artifact_kind": "output_artifact",
-      "sealed_artifact_path": "datasets/mvp_human_review_artifacts/SAR-550E8400-E29B-41D4-A716-446655440105.txt",
-      "blocked_attempt_envelope": null,
+      "sealed_artifact_path": "sealed_artifacts/SAR-550E8400-E29B-41D4-A716-446655440105.bin",
+      "output_artifact_sha256": "3675b08e1c52bb60a56ad764cc9a6b0abb35d4641516c15d1cbab657eb8eaebb",
+      "sealed_evidence_envelope": {
+        "schema_version": "veridoc-mvp-sealed-evidence-envelope/v1",
+        "run_claims_sha256": "c8828b1606c9f5fb81b9e6697b512ac221696114bcd97681aedd8b3c61e8904c"
+      },
       "participant_id": "P-E136C88A-C95D-47D2-AB32-F5C3AD66F2F5",
       "case_id": "mvp-word-001",
       "source_fixture_id": "word-to-excel-application",
@@ -342,10 +359,14 @@
     {
       "run_id": "RUN-P-E136C88A-C95D-47D2-AB32-F5C3AD66F2F5-MVP-WORD-001-VERIDOC-1",
       "sealed_artifact_record_id": "SAR-550E8400-E29B-41D4-A716-446655440106",
-      "sealed_artifact_sha256": "43a5c8679dbd15b66c14b093661bcb9751540bad4014affa31e721ad5a7cdeeb",
+      "sealed_artifact_sha256": "ad830a50cf40f17c576e16cae7243b80e36556e302143bed547cb8372919f5cd",
       "sealed_artifact_kind": "output_artifact",
-      "sealed_artifact_path": "datasets/mvp_human_review_artifacts/SAR-550E8400-E29B-41D4-A716-446655440106.txt",
-      "blocked_attempt_envelope": null,
+      "sealed_artifact_path": "sealed_artifacts/SAR-550E8400-E29B-41D4-A716-446655440106.bin",
+      "output_artifact_sha256": "43a5c8679dbd15b66c14b093661bcb9751540bad4014affa31e721ad5a7cdeeb",
+      "sealed_evidence_envelope": {
+        "schema_version": "veridoc-mvp-sealed-evidence-envelope/v1",
+        "run_claims_sha256": "d49b1355312dc17d34a68beea4726678820d9912b83a2248dec64da0970a8580"
+      },
       "participant_id": "P-E136C88A-C95D-47D2-AB32-F5C3AD66F2F5",
       "case_id": "mvp-word-001",
       "source_fixture_id": "word-to-excel-application",

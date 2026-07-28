@@ -30,7 +30,7 @@ from scripts.ci.validate_mvp_human_review_evidence import (
     PINNED_GOLD_PACKAGE_SHA256,
     PINNED_TASK_PACKAGE_PATH,
     PINNED_TASK_PACKAGE_SHA256,
-    build_blocked_attempt_envelope,
+    build_sealed_evidence_envelope,
     build_run_claims,
     summarize_record as _raw_summarize_record,
     validate_record as _raw_validate_record,
@@ -210,7 +210,7 @@ def _opaque_record_id(prefix: str, value: str) -> str:
 
 
 def _sealed_artifact_path(record_id: str) -> str:
-    return f"datasets/mvp_human_review_artifacts/{record_id}.txt"
+    return f"sealed_artifacts/{record_id}.bin"
 
 
 def _synthetic_output_artifact_bytes(run: dict[str, object]) -> bytes:
@@ -231,10 +231,9 @@ def _summarize_record(record: dict[str, object]) -> dict[str, object]:
     )
 
 
-def _seal_blocked_attempt_envelope(run: dict[str, object]) -> None:
-    run["sealed_artifact_path"] = None
-    envelope = build_blocked_attempt_envelope(run)
-    run["blocked_attempt_envelope"] = envelope
+def _seal_evidence_envelope(run: dict[str, object]) -> None:
+    envelope = build_sealed_evidence_envelope(run)
+    run["sealed_evidence_envelope"] = envelope
     run["sealed_artifact_sha256"] = hashlib.sha256(
         json.dumps(
             envelope,
@@ -281,14 +280,15 @@ def _completed_record(base_record: dict[str, object]) -> dict[str, object]:
                     {
                         "run_id": run_id,
                         "sealed_artifact_record_id": artifact_record_id,
-                        "sealed_artifact_sha256": hashlib.sha256(
+                        "sealed_artifact_sha256": "",
+                        "output_artifact_sha256": hashlib.sha256(
                             f"{run_id}\n".encode("utf-8")
                         ).hexdigest(),
                         "sealed_artifact_kind": "output_artifact",
                         "sealed_artifact_path": _sealed_artifact_path(
                             artifact_record_id
                         ),
-                        "blocked_attempt_envelope": None,
+                        "sealed_evidence_envelope": {},
                         "participant_id": participant_id,
                         "case_id": case_id,
                         "source_fixture_id": fixture_id,
@@ -340,6 +340,7 @@ def _completed_record(base_record: dict[str, object]) -> dict[str, object]:
                         "exclusion_reason_code": None,
                     }
                 )
+                _seal_evidence_envelope(runs[-1])
                 cursor = ended_at + timedelta(minutes=1)
             cursor += timedelta(minutes=5)
     record["runs"] = runs
@@ -370,7 +371,7 @@ def _add_excluded_veridoc_retry(record: dict[str, object]) -> None:
             "sealed_artifact_record_id": _opaque_record_id(
                 "SAR", "RUN-P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A-MVP-SCANNED-PDF-001-VERIDOC-2"
             ),
-            "sealed_artifact_sha256": hashlib.sha256(
+            "output_artifact_sha256": hashlib.sha256(
                 b"RUN-P-4E7ECEFA-49B4-4F0E-BD08-0DF31E92503A-MVP-SCANNED-PDF-001-VERIDOC-2\n"
             ).hexdigest(),
             "sealed_artifact_path": _sealed_artifact_path(
@@ -387,6 +388,7 @@ def _add_excluded_veridoc_retry(record: dict[str, object]) -> None:
             "exclusion_reason_code": "technical_failure",
         }
     )
+    _seal_evidence_envelope(retry)
     runs.append(retry)
 
 
@@ -434,7 +436,7 @@ def _add_withdrawn_participant(record: dict[str, object]) -> None:
             "sealed_artifact_record_id": _opaque_record_id(
                 "SAR", "RUN-P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C-MVP-WORD-001-MANUAL-1"
             ),
-            "sealed_artifact_sha256": hashlib.sha256(
+            "output_artifact_sha256": hashlib.sha256(
                 b"RUN-P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C-MVP-WORD-001-MANUAL-1\n"
             ).hexdigest(),
             "sealed_artifact_path": _sealed_artifact_path(
@@ -450,6 +452,7 @@ def _add_withdrawn_participant(record: dict[str, object]) -> None:
             "exclusion_reason_code": "participant_withdrew",
         }
     )
+    _seal_evidence_envelope(withdrawn_attempt)
     runs.append(withdrawn_attempt)
 
 
@@ -518,7 +521,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         )
         self.assertFalse(schema["$defs"]["run"]["additionalProperties"])
         self.assertFalse(
-            schema["$defs"]["blockedAttemptEnvelope"]["additionalProperties"]
+            schema["$defs"]["sealedEvidenceEnvelope"]["additionalProperties"]
         )
         self.assertIn("practice_revision", schema["required"])
         self.assertIn("practice_package_path", schema["required"])
@@ -603,7 +606,8 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             "sealed_artifact_sha256",
             "sealed_artifact_kind",
             "sealed_artifact_path",
-            "blocked_attempt_envelope",
+            "output_artifact_sha256",
+            "sealed_evidence_envelope",
             "veridoc_build_provenance",
             "task_package_path",
             "task_package_sha256",
@@ -681,11 +685,11 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                 "schema_version",
                 "run_claims_sha256",
             },
-            set(schema["$defs"]["blockedAttemptEnvelope"]["required"]),
+            set(schema["$defs"]["sealedEvidenceEnvelope"]["required"]),
         )
         self.assertEqual(
-            "veridoc-mvp-blocked-attempt-envelope/v2",
-            schema["$defs"]["blockedAttemptEnvelope"]["properties"][
+            "veridoc-mvp-sealed-evidence-envelope/v1",
+            schema["$defs"]["sealedEvidenceEnvelope"]["properties"][
                 "schema_version"
             ]["const"],
         )
@@ -735,9 +739,10 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                         else "approval_unavailable"
                     )
                     run["sealed_artifact_kind"] = artifact_kind
-                    run["blocked_attempt_envelope"] = None
                     if artifact_kind == "blocked_attempt_envelope":
-                        _seal_blocked_attempt_envelope(run)
+                        run["sealed_artifact_path"] = None
+                        run["output_artifact_sha256"] = None
+                    _seal_evidence_envelope(run)
                     artifact_errors = [
                         error
                         for error in _validate_record(record)
@@ -1076,6 +1081,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                 record["runs"][0]["ended_at"] = (
                     f"2026-07-26T01:00:00.000000002{suffix}"
                 )
+                _seal_evidence_envelope(record["runs"][0])
                 self.assertEqual([], _validate_record(record))
 
     def test_every_included_run_requires_completed_checklist(self) -> None:
@@ -1124,7 +1130,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             _validate_record(record),
         )
 
-    def test_blocked_attempt_envelope_is_canonical_and_run_bound(self) -> None:
+    def test_sealed_evidence_envelope_is_canonical_and_run_bound(self) -> None:
         blocked_index = next(
             index
             for index, run in enumerate(self.valid_record["runs"])
@@ -1132,11 +1138,11 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         )
         blocked = self.valid_record["runs"][blocked_index]
         self.assertEqual(
-            build_blocked_attempt_envelope(blocked),
-            blocked["blocked_attempt_envelope"],
+            build_sealed_evidence_envelope(blocked),
+            blocked["sealed_evidence_envelope"],
         )
         self.assertEqual(
-            set(blocked) - {"blocked_attempt_envelope", "sealed_artifact_sha256"},
+            set(blocked) - {"sealed_evidence_envelope", "sealed_artifact_sha256"},
             set(build_run_claims(blocked)),
         )
         self.assertTrue(
@@ -1162,27 +1168,27 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                 record = copy.deepcopy(self.valid_record)
                 record["runs"][blocked_index][field] = replacement
                 self.assertIn(
-                    f"run[{blocked_index}].blocked_attempt_envelope."
+                    f"run[{blocked_index}].sealed_evidence_envelope."
                     "run_claims_sha256 must match the run",
                     _validate_record(record),
                 )
 
         record = copy.deepcopy(self.valid_record)
-        record["runs"][blocked_index]["blocked_attempt_envelope"][
+        record["runs"][blocked_index]["sealed_evidence_envelope"][
             "schema_version"
-        ] = "veridoc-mvp-blocked-attempt-envelope/v1"
+        ] = "veridoc-mvp-sealed-evidence-envelope/v0"
         self.assertIn(
-            f"run[{blocked_index}].blocked_attempt_envelope.schema_version "
+            f"run[{blocked_index}].sealed_evidence_envelope.schema_version "
             "must match the run",
             _validate_record(record),
         )
 
         record = copy.deepcopy(self.valid_record)
-        record["runs"][blocked_index]["blocked_attempt_envelope"][
+        record["runs"][blocked_index]["sealed_evidence_envelope"][
             "uncontrolled_note"
         ] = "mutable"
         self.assertIn(
-            f"unknown run[{blocked_index}].blocked_attempt_envelope field: "
+            f"unknown run[{blocked_index}].sealed_evidence_envelope field: "
             "uncontrolled_note",
             _validate_record(record),
         )
@@ -1191,26 +1197,36 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         record["runs"][blocked_index]["sealed_artifact_sha256"] = "1" * 64
         self.assertIn(
             f"run[{blocked_index}].sealed_artifact_sha256 must match the "
-            "canonical blocked_attempt_envelope",
+            "canonical sealed_evidence_envelope",
             _validate_record(record),
         )
 
-        record = copy.deepcopy(self.valid_record)
-        record["runs"][0]["blocked_attempt_envelope"] = copy.deepcopy(
-            blocked["blocked_attempt_envelope"]
+        output = self.valid_record["runs"][0]
+        self.assertEqual(
+            build_sealed_evidence_envelope(output),
+            output["sealed_evidence_envelope"],
         )
-        self.assertIn(
-            "run[0].blocked_attempt_envelope must be null for output_artifact",
-            _validate_record(record),
-        )
+        for field in (
+            "high_risk_expected_count",
+            "high_risk_miss_count",
+            "over_detection_count",
+        ):
+            with self.subTest(output_claim=field):
+                record = copy.deepcopy(self.valid_record)
+                record["runs"][0][field] += 1
+                self.assertIn(
+                    "run[0].sealed_evidence_envelope.run_claims_sha256 "
+                    "must match the run",
+                    _validate_record(record),
+                )
 
     def test_output_artifacts_are_resolved_and_hashed(self) -> None:
         self.assertEqual([], _raw_validate_record(self.valid_record))
 
         record = copy.deepcopy(self.valid_record)
-        record["runs"][0]["sealed_artifact_sha256"] = "1" * 64
+        record["runs"][0]["output_artifact_sha256"] = "1" * 64
         self.assertIn(
-            "run[0].sealed_artifact_sha256 must match the resolved "
+            "run[0].output_artifact_sha256 must match the resolved "
             "output_artifact bytes",
             _raw_validate_record(record),
         )
@@ -1220,15 +1236,28 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             "sealed_artifact_path"
         ]
         self.assertIn(
-            "run[0].sealed_artifact_sha256 must match the resolved "
-            "output_artifact bytes",
+            "run[0].sealed_artifact_path must be derived from "
+            "sealed_artifact_record_id",
             _raw_validate_record(record),
         )
 
         record = copy.deepcopy(self.valid_record)
         record["runs"][0]["sealed_artifact_path"] = (
-            "datasets/mvp_human_review_artifacts/missing.txt"
+            "sealed_artifacts/Alice-Employee-123.bin"
         )
+        self.assertIn(
+            "run[0].sealed_artifact_path must be derived from "
+            "sealed_artifact_record_id",
+            _raw_validate_record(record),
+        )
+
+        record = copy.deepcopy(self.valid_record)
+        missing_record_id = _opaque_record_id("SAR", "missing-output-artifact")
+        record["runs"][0]["sealed_artifact_record_id"] = missing_record_id
+        record["runs"][0]["sealed_artifact_path"] = _sealed_artifact_path(
+            missing_record_id
+        )
+        _seal_evidence_envelope(record["runs"][0])
         self.assertIn(
             "run[0].sealed_artifact_path cannot be resolved within "
             "artifact_root",
@@ -1238,7 +1267,8 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         record = copy.deepcopy(self.valid_record)
         record["runs"][0]["sealed_artifact_path"] = "../outside.txt"
         self.assertIn(
-            "run[0].sealed_artifact_path must remain within artifact_root",
+            "run[0].sealed_artifact_path must be derived from "
+            "sealed_artifact_record_id",
             _raw_validate_record(record),
         )
 
@@ -1249,7 +1279,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             if run["sealed_artifact_kind"] == "blocked_attempt_envelope"
         )
         record["runs"][blocked_index]["sealed_artifact_path"] = (
-            "datasets/mvp_human_review_artifacts/unexpected.txt"
+            "sealed_artifacts/unexpected.bin"
         )
         self.assertIn(
             f"run[{blocked_index}].sealed_artifact_path must be null for "
@@ -1434,6 +1464,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                 retry["ended_at"] = ended_at
                 retry["excluded_pause_seconds"] = 60
                 retry["exclusion_reason_code"] = "invalid_timing"
+                _seal_evidence_envelope(retry)
                 self.assertEqual([], _validate_record(record))
                 summary = _summarize_record(record)
                 self.assertEqual(1, summary["excluded_runs"])
@@ -1546,9 +1577,11 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         _add_excluded_veridoc_retry(excluded)
         excluded["runs"][-1]["gold_answer_hidden_until_ended_at"] = False
         excluded["runs"][-1]["exclusion_reason_code"] = "protocol_deviation"
+        _seal_evidence_envelope(excluded["runs"][-1])
         self.assertEqual([], _validate_record(excluded))
 
         excluded["runs"][-1]["exclusion_reason_code"] = "technical_failure"
+        _seal_evidence_envelope(excluded["runs"][-1])
         self.assertIn(
             "run[30].gold_answer_hidden_until_ended_at may be false only for "
             "an excluded protocol_deviation",
@@ -1790,6 +1823,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                 elif scenario == "included_manual":
                     attempt["excluded"] = False
                     attempt["exclusion_reason_code"] = None
+                    _seal_evidence_envelope(attempt)
 
                 self.assertEqual([], _validate_record(record))
                 pair = next(
@@ -1883,7 +1917,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                 "sealed_artifact_record_id": _opaque_record_id(
                     "SAR", resumed_run_id
                 ),
-                "sealed_artifact_sha256": hashlib.sha256(
+                "output_artifact_sha256": hashlib.sha256(
                     f"{resumed_run_id}\n".encode("utf-8")
                 ).hexdigest(),
                 "sealed_artifact_path": _sealed_artifact_path(
@@ -1896,6 +1930,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                 "exclusion_reason_code": None,
             }
         )
+        _seal_evidence_envelope(resumed)
         record["runs"].append(resumed)
 
         self.assertIn(
@@ -1987,7 +2022,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                     "sealed_artifact_record_id": _opaque_record_id(
                         "SAR", run_id
                     ),
-                    "sealed_artifact_sha256": hashlib.sha256(
+                    "output_artifact_sha256": hashlib.sha256(
                         f"{run_id}\n".encode("utf-8")
                     ).hexdigest(),
                     "sealed_artifact_path": _sealed_artifact_path(
@@ -1998,6 +2033,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                     "ended_at": _utc_text(start + timedelta(minutes=2)),
                 }
             )
+            _seal_evidence_envelope(run)
             record["runs"].append(run)
 
         self.assertEqual([], _validate_record(record))
@@ -2039,7 +2075,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                 "sealed_artifact_record_id": _opaque_record_id(
                     "SAR", "RUN-P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C-MVP-WORD-001-MANUAL-2"
                 ),
-                "sealed_artifact_sha256": hashlib.sha256(
+                "output_artifact_sha256": hashlib.sha256(
                     b"RUN-P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C-MVP-WORD-001-MANUAL-2\n"
                 ).hexdigest(),
                 "sealed_artifact_path": _sealed_artifact_path(
@@ -2053,6 +2089,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                 "ended_at": "2026-08-10T01:08:00Z",
             }
         )
+        _seal_evidence_envelope(duplicate)
         record["runs"].append(duplicate)
         self.assertIn(
             "P-D3EB1620-02C3-4DA9-8B2C-ECB3D72FEC1C/mvp-word-001/manual must have at most one non-excluded "
@@ -2092,9 +2129,10 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                 blocked["blocker_code"] = "approval_unavailable"
                 blocked["checklist_complete"] = True
                 blocked["sealed_artifact_kind"] = artifact_kind
-                blocked["blocked_attempt_envelope"] = None
                 if artifact_kind == "blocked_attempt_envelope":
-                    _seal_blocked_attempt_envelope(blocked)
+                    blocked["sealed_artifact_path"] = None
+                    blocked["output_artifact_sha256"] = None
+                _seal_evidence_envelope(blocked)
                 self.assertEqual([], _validate_record(record))
                 summary = _summarize_record(record)
                 self.assertTrue(summary["all_required_runs_accounted"])

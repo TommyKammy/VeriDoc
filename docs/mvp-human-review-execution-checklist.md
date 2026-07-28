@@ -106,21 +106,22 @@ employee IDs, or free-text participant notes in the repository.
 - [ ] Use strict UTC RFC 3339 timestamps with full seconds and `Z` or
       `+00:00`; do not use alternate separators or reduced precision. If a
       one-to-nine-digit fractional second is recorded, preserve every digit.
-- [ ] Seal the stopped output artifact, or a canonical blocked-attempt envelope
-      when no output exists, without exposing the gold answer to the participant.
-- [ ] Record the unique opaque sealed-record ID, artifact/envelope SHA-256, and
-      outcome-consistent artifact kind before assessment.
+- [ ] Assign the stopped attempt a unique opaque sealed-record ID and create its
+      canonical sealed-evidence envelope without exposing the gold answer to the
+      participant.
+- [ ] Record the outcome-consistent artifact kind and bind every non-recursive
+      run claim, including assessment counts, into the envelope before accepting
+      evidence.
 - [ ] An independent assessor compares sealed artifacts with the gold outside
       the participant's view and does not disclose the gold or comparison
       result to that participant.
 - [ ] Record the independent-assessor and non-disclosure attestations,
       high-risk expected targets, high-risk misses, and over-detections.
-- [ ] For an `output_artifact`, retain the exact output beneath the configured
-      artifact root, record its relative path, and verify its SHA-256 before
-      accepting the evidence record.
-- [ ] For a `blocked_attempt_envelope`, leave the artifact path `null` and seal
-      the canonical digest of every non-recursive run claim, including all
-      safety counts.
+- [ ] For an `output_artifact`, retain the exact output at
+      `sealed_artifacts/{sealed_artifact_record_id}.bin` beneath the configured
+      artifact root and verify its `output_artifact_sha256`.
+- [ ] For a `blocked_attempt_envelope`, leave both the artifact path and output
+      bytes digest `null`; use the same common sealed-evidence envelope.
 - [ ] For a blocked run, select a controlled blocker code.
 - [ ] For an excluded attempt, retain the attempt and select a controlled
       exclusion reason; otherwise record no exclusion reason.
@@ -140,9 +141,11 @@ employee IDs, or free-text participant notes in the repository.
 | --- | --- |
 | `run_id` | `RUN-{participant_id}-{uppercase case_id}-{uppercase arm}-{attempt_number}` |
 | `sealed_artifact_record_id` | unique `SAR-`-prefixed uppercase UUIDv4 |
-| `sealed_artifact_sha256` | non-zero lowercase SHA-256 of sealed bytes |
+| `sealed_artifact_sha256` | non-zero lowercase SHA-256 of canonical `sealed_evidence_envelope` |
 | `sealed_artifact_kind` | `output_artifact` / `blocked_attempt_envelope` |
-| `sealed_artifact_path` | relative path below `artifact_root` for output / `null` for blocked envelope |
+| `sealed_artifact_path` | `sealed_artifacts/{sealed_artifact_record_id}.bin` for output / `null` for blocked envelope |
+| `output_artifact_sha256` | non-zero lowercase SHA-256 of resolved output bytes / `null` for blocked envelope |
+| `sealed_evidence_envelope` | common canonical envelope binding every non-recursive run claim |
 | `participant_id` | `P-` plus an independently generated uppercase UUIDv4 |
 | participant `participation_status` | `completed` / `withdrawn` |
 | participant `withdrawn_at` | `null` when completed / controlled UTC RFC 3339 boundary when withdrawn |

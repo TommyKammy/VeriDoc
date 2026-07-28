@@ -21,6 +21,7 @@ from typing import Any, Callable
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_ARTIFACT_ROOT = REPO_ROOT / "datasets"
 SCHEMA_PATH = REPO_ROOT / "docs" / "mvp-human-review-evidence.schema.json"
 APPROVED_PRODUCT_COMMIT = "584ef2db12a6676abb65f75de1ec38145e06b487"
 APPROVED_PRODUCT_TREE = "d7b1714ab9e7f42c5299a4e4b5197e4669a035b9"
@@ -72,7 +73,7 @@ APPROVED_PRACTICE_PACKAGE_PATH = (
     "docs/mvp-human-review-practice-package.json"
 )
 APPROVED_PRACTICE_PACKAGE_SHA256 = (
-    "2cbb028380287ec45642cbf9fc9a5d87d07f5c14ead246e20c18150bb455ca2f"
+    "e2e2b7a52b28940ea47277d7d73c43bbd3f91a45ce95ca48024821ef2a21cd23"
 )
 APPROVED_PRACTICE_TRAINING_DOCUMENTS = {
     "protocol": "docs/mvp-human-review-protocol.md",
@@ -93,12 +94,12 @@ ALLOWED_SEALED_ARTIFACT_KINDS = frozenset(
     for artifact_kinds in ALLOWED_SEALED_ARTIFACT_KINDS_BY_OUTCOME.values()
     for artifact_kind in artifact_kinds
 )
-BLOCKED_ATTEMPT_ENVELOPE_SCHEMA_VERSION = (
-    "veridoc-mvp-blocked-attempt-envelope/v2"
+SEALED_EVIDENCE_ENVELOPE_SCHEMA_VERSION = (
+    "veridoc-mvp-sealed-evidence-envelope/v1"
 )
 RUN_CLAIMS_EXCLUDED_FIELDS = frozenset(
     {
-        "blocked_attempt_envelope",
+        "sealed_evidence_envelope",
         "sealed_artifact_sha256",
     }
 )
@@ -299,11 +300,11 @@ def build_run_claims(run: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def build_blocked_attempt_envelope(run: dict[str, Any]) -> dict[str, Any]:
-    """Build the canonical audit envelope for a blocked attempt."""
+def build_sealed_evidence_envelope(run: dict[str, Any]) -> dict[str, Any]:
+    """Build the canonical audit envelope shared by every run."""
 
     return {
-        "schema_version": BLOCKED_ATTEMPT_ENVELOPE_SCHEMA_VERSION,
+        "schema_version": SEALED_EVIDENCE_ENVELOPE_SCHEMA_VERSION,
         "run_claims_sha256": _canonical_json_sha256(build_run_claims(run)),
     }
 
@@ -314,10 +315,22 @@ def _sealed_artifact_relative_path(
     errors: list[str],
 ) -> Path | None:
     artifact_path = run.get("sealed_artifact_path")
+    artifact_record_id = run.get("sealed_artifact_record_id")
+    expected_artifact_path = (
+        f"sealed_artifacts/{artifact_record_id}.bin"
+        if isinstance(artifact_record_id, str)
+        else None
+    )
     if not isinstance(artifact_path, str) or not artifact_path:
         errors.append(
             f"{label}.sealed_artifact_path must be a non-empty relative path "
             "for output_artifact"
+        )
+        return None
+    if artifact_path != expected_artifact_path:
+        errors.append(
+            f"{label}.sealed_artifact_path must be derived from "
+            "sealed_artifact_record_id"
         )
         return None
 
@@ -1130,7 +1143,7 @@ def _validate_constant(
 def validate_record(
     record: Any,
     *,
-    artifact_root: Path = REPO_ROOT,
+    artifact_root: Path = DEFAULT_ARTIFACT_ROOT,
     artifact_resolver: ArtifactResolver | None = None,
 ) -> list[str]:
     """Return deterministic human-readable validation errors."""
@@ -1747,6 +1760,16 @@ def validate_record(
             errors.append(
                 f"{label}.sealed_artifact_sha256 must be lowercase SHA-256"
             )
+        output_artifact_sha256 = run.get("output_artifact_sha256")
+        if output_artifact_sha256 is not None and (
+            not isinstance(output_artifact_sha256, str)
+            or SHA256_RE.fullmatch(output_artifact_sha256) is None
+            or output_artifact_sha256 == "0" * 64
+        ):
+            errors.append(
+                f"{label}.output_artifact_sha256 must be null or lowercase "
+                "SHA-256"
+            )
         sealed_artifact_kind = run.get("sealed_artifact_kind")
         if (
             not isinstance(sealed_artifact_kind, str)
@@ -2128,12 +2151,11 @@ def validate_record(
                 f"{label}.sealed_artifact_kind must be "
                 f"{' or '.join(allowed_artifact_kinds)} for {outcome} outcome"
             )
-        blocked_attempt_envelope = run.get("blocked_attempt_envelope")
         if sealed_artifact_kind == "output_artifact":
-            if blocked_attempt_envelope is not None:
+            if not isinstance(output_artifact_sha256, str):
                 errors.append(
-                    f"{label}.blocked_attempt_envelope must be null for "
-                    "output_artifact"
+                    f"{label}.output_artifact_sha256 must be lowercase "
+                    "SHA-256 for output_artifact"
                 )
             relative_artifact_path = _sealed_artifact_relative_path(
                 run,
@@ -2164,13 +2186,13 @@ def validate_record(
                         artifact_bytes = None
             if (
                 artifact_bytes is not None
-                and isinstance(sealed_artifact_sha256, str)
-                and SHA256_RE.fullmatch(sealed_artifact_sha256) is not None
+                and isinstance(output_artifact_sha256, str)
+                and SHA256_RE.fullmatch(output_artifact_sha256) is not None
                 and hashlib.sha256(artifact_bytes).hexdigest()
-                != sealed_artifact_sha256
+                != output_artifact_sha256
             ):
                 errors.append(
-                    f"{label}.sealed_artifact_sha256 must match the resolved "
+                    f"{label}.output_artifact_sha256 must match the resolved "
                     "output_artifact bytes"
                 )
         elif sealed_artifact_kind == "blocked_attempt_envelope":
@@ -2179,37 +2201,44 @@ def validate_record(
                     f"{label}.sealed_artifact_path must be null for "
                     "blocked_attempt_envelope"
                 )
-            envelope_schema = schema["$defs"]["blockedAttemptEnvelope"]
-            _unknown_fields(
-                blocked_attempt_envelope,
-                set(envelope_schema["properties"]),
-                f"{label}.blocked_attempt_envelope",
-                errors,
-            )
-            _required_fields(
-                blocked_attempt_envelope,
-                set(envelope_schema["required"]),
-                f"{label}.blocked_attempt_envelope",
-                errors,
-            )
-            if isinstance(blocked_attempt_envelope, dict):
-                expected_envelope = build_blocked_attempt_envelope(run)
-                for field, expected in expected_envelope.items():
-                    if blocked_attempt_envelope.get(field) != expected:
-                        errors.append(
-                            f"{label}.blocked_attempt_envelope.{field} "
-                            "must match the run"
-                        )
-                if (
-                    blocked_attempt_envelope == expected_envelope
-                    and isinstance(sealed_artifact_sha256, str)
-                    and sealed_artifact_sha256
-                    != _canonical_json_sha256(blocked_attempt_envelope)
-                ):
+            if output_artifact_sha256 is not None:
+                errors.append(
+                    f"{label}.output_artifact_sha256 must be null for "
+                    "blocked_attempt_envelope"
+                )
+
+        sealed_evidence_envelope = run.get("sealed_evidence_envelope")
+        envelope_schema = schema["$defs"]["sealedEvidenceEnvelope"]
+        _unknown_fields(
+            sealed_evidence_envelope,
+            set(envelope_schema["properties"]),
+            f"{label}.sealed_evidence_envelope",
+            errors,
+        )
+        _required_fields(
+            sealed_evidence_envelope,
+            set(envelope_schema["required"]),
+            f"{label}.sealed_evidence_envelope",
+            errors,
+        )
+        if isinstance(sealed_evidence_envelope, dict):
+            expected_envelope = build_sealed_evidence_envelope(run)
+            for field, expected in expected_envelope.items():
+                if sealed_evidence_envelope.get(field) != expected:
                     errors.append(
-                        f"{label}.sealed_artifact_sha256 must match the "
-                        "canonical blocked_attempt_envelope"
+                        f"{label}.sealed_evidence_envelope.{field} "
+                        "must match the run"
                     )
+            if (
+                sealed_evidence_envelope == expected_envelope
+                and isinstance(sealed_artifact_sha256, str)
+                and sealed_artifact_sha256
+                != _canonical_json_sha256(sealed_evidence_envelope)
+            ):
+                errors.append(
+                    f"{label}.sealed_artifact_sha256 must match the "
+                    "canonical sealed_evidence_envelope"
+                )
 
         if (
             gold_answer_hidden is False
@@ -2530,7 +2559,7 @@ def validate_record(
 def summarize_record(
     record: dict[str, Any],
     *,
-    artifact_root: Path = REPO_ROOT,
+    artifact_root: Path = DEFAULT_ARTIFACT_ROOT,
     artifact_resolver: ArtifactResolver | None = None,
 ) -> dict[str, Any]:
     """Compute protocol-defined metrics after validation."""
@@ -2786,10 +2815,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--artifact-root",
         type=Path,
-        default=REPO_ROOT,
+        default=None,
         help=(
             "root directory used to resolve output_artifact paths "
-            f"(default: {REPO_ROOT})"
+            "(default: the evidence record directory)"
         ),
     )
     args = parser.parse_args(argv)
@@ -2804,7 +2833,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Unable to read evidence: {exc}", file=sys.stderr)
         return 2
 
-    errors = validate_record(record, artifact_root=args.artifact_root)
+    artifact_root = args.artifact_root or args.record.parent
+    errors = validate_record(record, artifact_root=artifact_root)
     if errors:
         print("Human-review evidence validation failed:", file=sys.stderr)
         for error in errors:
@@ -2813,7 +2843,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print(
         json.dumps(
-            summarize_record(record, artifact_root=args.artifact_root),
+            summarize_record(record, artifact_root=artifact_root),
             indent=2,
             sort_keys=True,
         )
