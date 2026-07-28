@@ -1490,6 +1490,20 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             validate_record(record),
         )
 
+    def test_withdrawn_participant_cannot_begin_with_second_arm(
+        self,
+    ) -> None:
+        record = _completed_record(self.valid_record)
+        _add_withdrawn_participant(record)
+        participant = record["participants"][-1]
+        participant["arm_order"] = ["veridoc", "manual"]
+
+        self.assertIn(
+            f"{participant['participant_id']} timed runs do not follow "
+            "declared arm_order",
+            validate_record(record),
+        )
+
     def test_withdrawal_boundary_rejects_an_attempt_that_ends_after_it(
         self,
     ) -> None:
@@ -1652,26 +1666,34 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         )
 
     def test_controlled_blocker_is_accounted_but_excluded_from_median(self) -> None:
-        record = _completed_record(self.valid_record)
-        blocked = next(
-            run
-            for run in record["runs"]
-            if run["participant_id"] == "P-386BEEA7-81DC-408A-B045-D73A233C0DC5"
-            and run["case_id"] == "mvp-word-001"
-            and run["arm"] == "veridoc"
-        )
-        blocked["outcome"] = "blocked"
-        blocked["blocker_code"] = "approval_unavailable"
-        blocked["checklist_complete"] = True
-        blocked["sealed_artifact_kind"] = "blocked_attempt_envelope"
-        self.assertEqual([], validate_record(record))
-        summary = summarize_record(record)
-        self.assertTrue(summary["all_required_runs_accounted"])
-        self.assertEqual(0, summary["eligible_pair_count"])
-        self.assertEqual(15, summary["ineligible_pair_count"])
-        self.assertIsNone(summary["paired_median_reduction_percent"])
-        self.assertFalse(summary["execution_attestation_ready"])
-        self.assertFalse(summary["efficiency_target_met"])
+        for artifact_kind in (
+            "output_artifact",
+            "blocked_attempt_envelope",
+        ):
+            with self.subTest(artifact_kind=artifact_kind):
+                record = _completed_record(self.valid_record)
+                blocked = next(
+                    run
+                    for run in record["runs"]
+                    if run["participant_id"]
+                    == "P-386BEEA7-81DC-408A-B045-D73A233C0DC5"
+                    and run["case_id"] == "mvp-word-001"
+                    and run["arm"] == "veridoc"
+                )
+                blocked["outcome"] = "blocked"
+                blocked["blocker_code"] = "approval_unavailable"
+                blocked["checklist_complete"] = True
+                blocked["sealed_artifact_kind"] = artifact_kind
+                self.assertEqual([], validate_record(record))
+                summary = summarize_record(record)
+                self.assertTrue(summary["all_required_runs_accounted"])
+                self.assertEqual(0, summary["eligible_pair_count"])
+                self.assertEqual(15, summary["ineligible_pair_count"])
+                self.assertIsNone(
+                    summary["paired_median_reduction_percent"]
+                )
+                self.assertFalse(summary["execution_attestation_ready"])
+                self.assertFalse(summary["efficiency_target_met"])
 
     def test_practice_revision_is_required_and_controlled(self) -> None:
         record = copy.deepcopy(self.valid_record)

@@ -2015,10 +2015,18 @@ def validate_record(record: Any) -> list[str]:
                 "other_controlled",
             }:
                 errors.append(f"{label}.blocker_code is required for blocked outcome")
-            if sealed_artifact_kind != "blocked_attempt_envelope":
+            if (
+                not isinstance(sealed_artifact_kind, str)
+                or sealed_artifact_kind
+                not in {
+                    "output_artifact",
+                    "blocked_attempt_envelope",
+                }
+            ):
                 errors.append(
                     f"{label}.sealed_artifact_kind must be "
-                    "blocked_attempt_envelope for blocked outcome"
+                    "output_artifact or blocked_attempt_envelope for "
+                    "blocked outcome"
                 )
         else:
             errors.append(f"{label}.outcome is invalid")
@@ -2269,26 +2277,34 @@ def validate_record(record: Any) -> list[str]:
                             f"{participant_id}/{case_id}/{arm} must have at "
                             "most one non-excluded run after withdrawal"
                         )
-            continue
-        for case_id in sorted(declared_cases):
-            for arm in ("manual", "veridoc"):
-                included = included_by_pair[(participant_id, case_id, arm)]
-                if len(included) != 1:
-                    errors.append(
-                        f"{participant_id}/{case_id}/{arm} must have exactly "
-                        "one non-excluded run"
-                    )
+        else:
+            for case_id in sorted(declared_cases):
+                for arm in ("manual", "veridoc"):
+                    included = included_by_pair[
+                        (participant_id, case_id, arm)
+                    ]
+                    if len(included) != 1:
+                        errors.append(
+                            f"{participant_id}/{case_id}/{arm} must have "
+                            "exactly one non-excluded run"
+                        )
 
-            manual = included_by_pair[(participant_id, case_id, "manual")]
-            veridoc = included_by_pair[(participant_id, case_id, "veridoc")]
-            if len(manual) == 1 and len(veridoc) == 1:
-                for field in (
-                    "task_revision",
-                    "gold_answer_revision",
-                    "checklist_revision",
-                ):
-                    if manual[0].get(field) != veridoc[0].get(field):
-                        errors.append(f"paired runs must use the same {field}")
+                manual = included_by_pair[
+                    (participant_id, case_id, "manual")
+                ]
+                veridoc = included_by_pair[
+                    (participant_id, case_id, "veridoc")
+                ]
+                if len(manual) == 1 and len(veridoc) == 1:
+                    for field in (
+                        "task_revision",
+                        "gold_answer_revision",
+                        "checklist_revision",
+                    ):
+                        if manual[0].get(field) != veridoc[0].get(field):
+                            errors.append(
+                                f"paired runs must use the same {field}"
+                            )
 
         order = participant_orders.get(participant_id)
         if order is not None:
@@ -2306,9 +2322,11 @@ def validate_record(record: Any) -> list[str]:
                 *(ended_at for _, ended_at in first_intervals),
             ]
             if (
-                first_activity_boundaries
-                and second_starts
-                and max(first_activity_boundaries) > min(second_starts)
+                second_starts
+                and (
+                    not first_activity_boundaries
+                    or max(first_activity_boundaries) > min(second_starts)
+                )
             ):
                 errors.append(
                     f"{participant_id} timed runs do not follow declared arm_order"
