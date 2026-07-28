@@ -4,7 +4,7 @@
   "decision_revision": "p12g-02-v1",
   "training_material": {
     "protocol_path": "docs/mvp-human-review-protocol.md",
-    "protocol_sha256": "539e881253909e9e2aee979d2a881581197c136422e135a9691b8de8d6bce976",
+    "protocol_sha256": "f230bd93595352bce217e8c660a5c76cc4b60b59a72b3a3495cc5d9e87544ca5",
     "execution_checklist_path": "docs/mvp-human-review-execution-checklist.md",
     "execution_checklist_sha256": "a0abcab4e12cd0df4e98b48f27a4bd0131db144b3239893f743aac1a4dd40d4c",
     "instructions": [

@@ -202,6 +202,19 @@ external sealed record is retained under that ID so the independent assessor's
 miss and over-detection counts can be audited against the exact bytes assessed.
 Artifact record IDs are unique across attempts.
 
+For `sealed_artifact_kind: blocked_attempt_envelope`, the run also records a
+closed `blocked_attempt_envelope` object with
+`schema_version: veridoc-mvp-blocked-attempt-envelope/v1` and exact copies of
+`sealed_artifact_record_id`, `run_id`, `participant_id`, `case_id`, `arm`,
+`attempt_number`, `started_at`, `ended_at`, `excluded_pause_seconds`, `outcome`,
+`blocker_code`, `checklist_complete`, `excluded`, and
+`exclusion_reason_code`. Its canonical bytes are UTF-8 JSON with object keys
+sorted lexicographically, no insignificant whitespace, and JSON separators
+`,` and `:`. `sealed_artifact_sha256` must equal the SHA-256 of those canonical
+bytes. For `sealed_artifact_kind: output_artifact`,
+`blocked_attempt_envelope` is `null` and the digest continues to identify the
+externally retained output bytes.
+
 For every approved case, every participant and every retained attempt uses the
 protocol-pinned `task_revision: task-phase12-v1` and
 `gold_answer_revision: gold-phase12-v1`. Cohort-wide agreement on any other

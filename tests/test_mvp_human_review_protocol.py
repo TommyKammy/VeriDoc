@@ -30,6 +30,7 @@ from scripts.ci.validate_mvp_human_review_evidence import (
     PINNED_GOLD_PACKAGE_SHA256,
     PINNED_TASK_PACKAGE_PATH,
     PINNED_TASK_PACKAGE_SHA256,
+    build_blocked_attempt_envelope,
     summarize_record,
     validate_record,
 )
@@ -207,6 +208,19 @@ def _opaque_record_id(prefix: str, value: str) -> str:
     )
 
 
+def _seal_blocked_attempt_envelope(run: dict[str, object]) -> None:
+    envelope = build_blocked_attempt_envelope(run)
+    run["blocked_attempt_envelope"] = envelope
+    run["sealed_artifact_sha256"] = hashlib.sha256(
+        json.dumps(
+            envelope,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
 def _completed_record(base_record: dict[str, object]) -> dict[str, object]:
     record = copy.deepcopy(base_record)
     record["study_status"] = "completed"
@@ -248,6 +262,7 @@ def _completed_record(base_record: dict[str, object]) -> dict[str, object]:
                             run_id.encode("utf-8")
                         ).hexdigest(),
                         "sealed_artifact_kind": "output_artifact",
+                        "blocked_attempt_envelope": None,
                         "participant_id": participant_id,
                         "case_id": case_id,
                         "source_fixture_id": fixture_id,
@@ -464,6 +479,9 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             ]
         )
         self.assertFalse(schema["$defs"]["run"]["additionalProperties"])
+        self.assertFalse(
+            schema["$defs"]["blockedAttemptEnvelope"]["additionalProperties"]
+        )
         self.assertIn("practice_revision", schema["required"])
         self.assertIn("practice_package_path", schema["required"])
         self.assertIn("practice_package_sha256", schema["required"])
@@ -546,6 +564,7 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             "sealed_artifact_record_id",
             "sealed_artifact_sha256",
             "sealed_artifact_kind",
+            "blocked_attempt_envelope",
             "veridoc_build_provenance",
             "task_package_path",
             "task_package_sha256",
@@ -618,6 +637,26 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                 "const"
             ],
         )
+        self.assertEqual(
+            {
+                "schema_version",
+                "sealed_artifact_record_id",
+                "run_id",
+                "participant_id",
+                "case_id",
+                "arm",
+                "attempt_number",
+                "started_at",
+                "ended_at",
+                "excluded_pause_seconds",
+                "outcome",
+                "blocker_code",
+                "checklist_complete",
+                "excluded",
+                "exclusion_reason_code",
+            },
+            set(schema["$defs"]["blockedAttemptEnvelope"]["required"]),
+        )
 
     def test_outcome_artifact_rules_match_schema_and_validator(self) -> None:
         schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
@@ -664,6 +703,9 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                         else "approval_unavailable"
                     )
                     run["sealed_artifact_kind"] = artifact_kind
+                    run["blocked_attempt_envelope"] = None
+                    if artifact_kind == "blocked_attempt_envelope":
+                        _seal_blocked_attempt_envelope(run)
                     artifact_errors = [
                         error
                         for error in validate_record(record)
@@ -1047,6 +1089,62 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
         self.assertIn(
             "run[0].sealed_artifact_kind must be output_artifact "
             "for approved outcome",
+            validate_record(record),
+        )
+
+    def test_blocked_attempt_envelope_is_canonical_and_run_bound(self) -> None:
+        blocked_index = next(
+            index
+            for index, run in enumerate(self.valid_record["runs"])
+            if run["sealed_artifact_kind"] == "blocked_attempt_envelope"
+        )
+        blocked = self.valid_record["runs"][blocked_index]
+        self.assertEqual(
+            build_blocked_attempt_envelope(blocked),
+            blocked["blocked_attempt_envelope"],
+        )
+
+        for field, replacement in (
+            ("schema_version", "veridoc-mvp-blocked-attempt-envelope/v2"),
+            ("blocker_code", "other_controlled"),
+            ("started_at", "2026-07-26T02:59:59Z"),
+            ("run_id", self.valid_record["runs"][0]["run_id"]),
+        ):
+            with self.subTest(field=field):
+                record = copy.deepcopy(self.valid_record)
+                record["runs"][blocked_index]["blocked_attempt_envelope"][
+                    field
+                ] = replacement
+                self.assertIn(
+                    f"run[{blocked_index}].blocked_attempt_envelope.{field} "
+                    "must match the run",
+                    validate_record(record),
+                )
+
+        record = copy.deepcopy(self.valid_record)
+        record["runs"][blocked_index]["blocked_attempt_envelope"][
+            "uncontrolled_note"
+        ] = "mutable"
+        self.assertIn(
+            f"unknown run[{blocked_index}].blocked_attempt_envelope field: "
+            "uncontrolled_note",
+            validate_record(record),
+        )
+
+        record = copy.deepcopy(self.valid_record)
+        record["runs"][blocked_index]["sealed_artifact_sha256"] = "1" * 64
+        self.assertIn(
+            f"run[{blocked_index}].sealed_artifact_sha256 must match the "
+            "canonical blocked_attempt_envelope",
+            validate_record(record),
+        )
+
+        record = copy.deepcopy(self.valid_record)
+        record["runs"][0]["blocked_attempt_envelope"] = copy.deepcopy(
+            blocked["blocked_attempt_envelope"]
+        )
+        self.assertIn(
+            "run[0].blocked_attempt_envelope must be null for output_artifact",
             validate_record(record),
         )
 
@@ -1657,6 +1755,43 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
             validate_record(record),
         )
 
+    def test_participant_withdrew_marker_establishes_withdrawal_boundary(
+        self,
+    ) -> None:
+        record = _completed_record(self.valid_record)
+        _add_withdrawn_participant(record)
+        participant = record["participants"][-1]
+        participant_id = participant["participant_id"]
+        participant["withdrawn_at"] = "2026-08-10T01:05:00Z"
+        marker = record["runs"][-1]
+        resumed = copy.deepcopy(marker)
+        resumed_run_id = (
+            f"RUN-{participant_id}-MVP-WORD-001-MANUAL-2"
+        )
+        resumed.update(
+            {
+                "run_id": resumed_run_id,
+                "sealed_artifact_record_id": _opaque_record_id(
+                    "SAR", resumed_run_id
+                ),
+                "sealed_artifact_sha256": hashlib.sha256(
+                    resumed_run_id.encode("utf-8")
+                ).hexdigest(),
+                "attempt_number": 2,
+                "started_at": "2026-08-10T01:03:00Z",
+                "ended_at": "2026-08-10T01:04:00Z",
+                "excluded": False,
+                "exclusion_reason_code": None,
+            }
+        )
+        record["runs"].append(resumed)
+
+        self.assertIn(
+            f"run[30].ended_at must equal {participant_id} withdrawn_at "
+            "for participant_withdrew exclusion",
+            validate_record(record),
+        )
+
     def test_withdrawn_participant_may_retain_incomplete_practice(self) -> None:
         record = _completed_record(self.valid_record)
         record["participants"].append(
@@ -1836,6 +1971,9 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                 blocked["blocker_code"] = "approval_unavailable"
                 blocked["checklist_complete"] = True
                 blocked["sealed_artifact_kind"] = artifact_kind
+                blocked["blocked_attempt_envelope"] = None
+                if artifact_kind == "blocked_attempt_envelope":
+                    _seal_blocked_attempt_envelope(blocked)
                 self.assertEqual([], validate_record(record))
                 summary = summarize_record(record)
                 self.assertTrue(summary["all_required_runs_accounted"])

@@ -72,7 +72,7 @@ APPROVED_PRACTICE_PACKAGE_PATH = (
     "docs/mvp-human-review-practice-package.json"
 )
 APPROVED_PRACTICE_PACKAGE_SHA256 = (
-    "418977956e4a01096a6d7398f78fa3e19af6b7874a95785cbdb68a25f9afdb92"
+    "dc78391cf9ffa1916e6723ed31e37c70ee4aa84e3ee2873e003af0d1887eab88"
 )
 APPROVED_PRACTICE_TRAINING_DOCUMENTS = {
     "protocol": "docs/mvp-human-review-protocol.md",
@@ -92,6 +92,25 @@ ALLOWED_SEALED_ARTIFACT_KINDS = frozenset(
     artifact_kind
     for artifact_kinds in ALLOWED_SEALED_ARTIFACT_KINDS_BY_OUTCOME.values()
     for artifact_kind in artifact_kinds
+)
+BLOCKED_ATTEMPT_ENVELOPE_SCHEMA_VERSION = (
+    "veridoc-mvp-blocked-attempt-envelope/v1"
+)
+BLOCKED_ATTEMPT_ENVELOPE_RUN_FIELDS = (
+    "sealed_artifact_record_id",
+    "run_id",
+    "participant_id",
+    "case_id",
+    "arm",
+    "attempt_number",
+    "started_at",
+    "ended_at",
+    "excluded_pause_seconds",
+    "outcome",
+    "blocker_code",
+    "checklist_complete",
+    "excluded",
+    "exclusion_reason_code",
 )
 UUID4_TOKEN_RE = (
     r"[0-9A-F]{8}-[0-9A-F]{4}-4[0-9A-F]{3}-"
@@ -276,6 +295,18 @@ def _canonical_json_sha256(value: Any) -> str:
             sort_keys=True,
         ).encode("utf-8")
     ).hexdigest()
+
+
+def build_blocked_attempt_envelope(run: dict[str, Any]) -> dict[str, Any]:
+    """Build the canonical audit envelope for a blocked attempt."""
+
+    return {
+        "schema_version": BLOCKED_ATTEMPT_ENVELOPE_SCHEMA_VERSION,
+        **{
+            field: run.get(field)
+            for field in BLOCKED_ATTEMPT_ENVELOPE_RUN_FIELDS
+        },
+    }
 
 
 def _approved_product_tree() -> str:
@@ -1602,7 +1633,10 @@ def validate_record(record: Any) -> list[str]:
     activity_starts_by_participant: dict[
         str, list[tuple[ExactUtcTimestamp, str]]
     ] = defaultdict(list)
-    withdrawal_markers: set[str] = set()
+    withdrawal_marker_ends: dict[
+        str, list[tuple[ExactUtcTimestamp, str]]
+    ] = defaultdict(list)
+    withdrawal_marker_participants: set[str] = set()
 
     for index, run in enumerate(runs):
         label = f"run[{index}]"
@@ -2031,6 +2065,45 @@ def validate_record(record: Any) -> list[str]:
                 f"{label}.sealed_artifact_kind must be "
                 f"{' or '.join(allowed_artifact_kinds)} for {outcome} outcome"
             )
+        blocked_attempt_envelope = run.get("blocked_attempt_envelope")
+        if sealed_artifact_kind == "output_artifact":
+            if blocked_attempt_envelope is not None:
+                errors.append(
+                    f"{label}.blocked_attempt_envelope must be null for "
+                    "output_artifact"
+                )
+        elif sealed_artifact_kind == "blocked_attempt_envelope":
+            envelope_schema = schema["$defs"]["blockedAttemptEnvelope"]
+            _unknown_fields(
+                blocked_attempt_envelope,
+                set(envelope_schema["properties"]),
+                f"{label}.blocked_attempt_envelope",
+                errors,
+            )
+            _required_fields(
+                blocked_attempt_envelope,
+                set(envelope_schema["required"]),
+                f"{label}.blocked_attempt_envelope",
+                errors,
+            )
+            if isinstance(blocked_attempt_envelope, dict):
+                expected_envelope = build_blocked_attempt_envelope(run)
+                for field, expected in expected_envelope.items():
+                    if blocked_attempt_envelope.get(field) != expected:
+                        errors.append(
+                            f"{label}.blocked_attempt_envelope.{field} "
+                            "must match the run"
+                        )
+                if (
+                    blocked_attempt_envelope == expected_envelope
+                    and isinstance(sealed_artifact_sha256, str)
+                    and sealed_artifact_sha256
+                    != _canonical_json_sha256(blocked_attempt_envelope)
+                ):
+                    errors.append(
+                        f"{label}.sealed_artifact_sha256 must match the "
+                        "canonical blocked_attempt_envelope"
+                    )
 
         if (
             gold_answer_hidden is False
@@ -2053,7 +2126,11 @@ def validate_record(record: Any) -> list[str]:
             and exclusion_reason == "participant_withdrew"
             and participant_is_declared
         ):
-            withdrawal_markers.add(participant_id)
+            withdrawal_marker_participants.add(participant_id)
+            if timing is not None:
+                withdrawal_marker_ends[participant_id].append(
+                    (timing.ended_at, label)
+                )
 
         checklist_complete = run.get("checklist_complete")
         if not isinstance(checklist_complete, bool):
@@ -2193,6 +2270,14 @@ def validate_record(record: Any) -> list[str]:
                     f"{participant_id}.{field} must not occur after "
                     "withdrawal"
                 )
+        for marker_ended_at, run_label in withdrawal_marker_ends[
+            participant_id
+        ]:
+            if marker_ended_at != withdrawn_at:
+                errors.append(
+                    f"{run_label}.ended_at must equal {participant_id} "
+                    "withdrawn_at for participant_withdrew exclusion"
+                )
         usable_interval_labels = {
             run_label
             for _, _, run_label in times_by_participant[participant_id]
@@ -2261,7 +2346,7 @@ def validate_record(record: Any) -> list[str]:
         participation_status = participant_statuses.get(participant_id)
         if (
             participation_status == "completed"
-            and participant_id in withdrawal_markers
+            and participant_id in withdrawal_marker_participants
         ):
             errors.append(
                 f"{participant_id} completed participant cannot have a "
