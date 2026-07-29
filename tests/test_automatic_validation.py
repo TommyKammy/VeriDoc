@@ -5,6 +5,7 @@ import math
 from core.validate.automatic import (
     GMP_REVIEW_REQUIRED_CATEGORIES,
     ValidationStatus,
+    _validate_table_cell,
     validate_extracted_item,
     validate_table_consistency,
 )
@@ -1259,6 +1260,49 @@ def test_table_consistency_rejects_missing_cells_and_wrong_text() -> None:
     assert "table_consistency" in decision.failed_rules
     assert "provenance" in decision.failed_rules
     assert decision.requires_review is True
+
+
+def test_table_cell_helper_preserves_rule_and_warning_order() -> None:
+    failed_rules: list[str] = []
+    warnings: list[str] = []
+
+    requires_review = _validate_table_cell(
+        expected_table={},
+        actual_table={},
+        expected_cell={
+            "source": _evidence(),
+        },
+        actual_cell={
+            "source": {"source_page": 1},
+            "auto_confirmed": "yes",
+            "requires_review": None,
+            "risk_level": 1,
+            "gmp_review_category": "unknown",
+            "confidence": 0.42,
+        },
+        table_explicit_review_required=False,
+        table_high_risk=False,
+        table_category_requires_review=False,
+        table_confidence_requires_review=False,
+        failed_rules=failed_rules,
+        warnings=warnings,
+    )
+
+    assert requires_review is True
+    assert failed_rules == [
+        "provenance",
+        "risk_gate",
+        "risk_gate",
+        "risk_gate",
+        "risk_gate",
+        "risk_gate",
+        "risk_gate",
+    ]
+    assert warnings == [
+        "table cell confidence requires human review",
+        "table cell item source requires human review",
+        "table cell requires human review",
+    ]
 
 
 def test_table_cells_enforce_provenance_and_review_gates() -> None:

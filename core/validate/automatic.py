@@ -212,6 +212,92 @@ def validate_extracted_item(
     return _decision(failed_rules, warnings, requires_review)
 
 
+def _validate_table_cell(
+    *,
+    expected_table: Mapping[str, Any],
+    actual_table: Mapping[str, Any],
+    expected_cell: Mapping[str, Any],
+    actual_cell: Mapping[str, Any],
+    table_explicit_review_required: bool,
+    table_high_risk: bool,
+    table_category_requires_review: bool,
+    table_confidence_requires_review: bool,
+    failed_rules: list[str],
+    warnings: list[str],
+) -> bool:
+    expected_source = _record_source_anchor(expected_cell)
+    actual_source = _record_source_anchor(actual_cell)
+    if not _evidence_matches(expected_source, actual_source):
+        failed_rules.append("provenance")
+
+    auto_confirmed = actual_cell.get("auto_confirmed", False)
+    if not isinstance(auto_confirmed, bool):
+        failed_rules.append("risk_gate")
+        auto_confirmed = True
+    if _has_malformed_review_flag(expected_cell) or _has_malformed_review_flag(
+        actual_cell
+    ):
+        failed_rules.append("risk_gate")
+    if _has_malformed_risk_level(expected_cell) or _has_malformed_risk_level(
+        actual_cell
+    ):
+        failed_rules.append("risk_gate")
+    if _has_malformed_explicit_gmp_category(
+        expected_cell
+    ) or _has_malformed_explicit_gmp_category(actual_cell):
+        failed_rules.append("risk_gate")
+    if not _has_review_flag(expected_cell):
+        failed_rules.append("risk_gate")
+    confidence_requires_review = "confidence" in actual_cell and (
+        _confidence_requires_review(actual_cell.get("confidence"))
+    )
+    if confidence_requires_review:
+        warnings.append("table cell confidence requires human review")
+    explicit_review_required = (
+        table_explicit_review_required
+        or table_confidence_requires_review
+        or _requires_review(expected_cell)
+        or _requires_review(actual_cell)
+    )
+    high_risk = (
+        table_high_risk
+        or _is_high_risk(expected_cell)
+        or _is_high_risk(actual_cell)
+    )
+    category_requires_review = (
+        table_category_requires_review
+        or _gmp_category_requires_review(expected_cell)
+        or _gmp_category_requires_review(actual_cell)
+    )
+    expected_condition_record = _with_inherited_condition_metadata(
+        expected_table, expected_cell
+    )
+    actual_condition_record = _with_inherited_condition_metadata(
+        actual_table, actual_cell
+    )
+    condition_warnings = _gmp_condition_review_warnings(
+        expected_condition_record,
+        actual_condition_record,
+        important_item=high_risk
+        or category_requires_review
+        or explicit_review_required,
+    )
+    warnings.extend(f"table cell {warning}" for warning in condition_warnings)
+    cell_requires_review = (
+        explicit_review_required
+        or high_risk
+        or category_requires_review
+        or confidence_requires_review
+        or bool(condition_warnings)
+    )
+    if cell_requires_review:
+        warnings.append("table cell requires human review")
+        if auto_confirmed:
+            failed_rules.append("risk_gate")
+
+    return cell_requires_review
+
+
 def validate_table_consistency(
     expected_table: Mapping[str, Any], actual_table: Mapping[str, Any]
 ) -> ValidationDecision:
@@ -280,78 +366,20 @@ def validate_table_consistency(
         if missing_or_extra or changed_text:
             failed_rules.append("table_consistency")
         for cell_id in matching_cell_ids:
-            expected_cell = expected_cells[cell_id]
-            actual_cell = actual_cells[cell_id]
-            expected_source = _record_source_anchor(expected_cell)
-            actual_source = _record_source_anchor(actual_cell)
-            if not _evidence_matches(expected_source, actual_source):
-                failed_rules.append("provenance")
-
-            auto_confirmed = actual_cell.get("auto_confirmed", False)
-            if not isinstance(auto_confirmed, bool):
-                failed_rules.append("risk_gate")
-                auto_confirmed = True
-            if _has_malformed_review_flag(expected_cell) or _has_malformed_review_flag(
-                actual_cell
-            ):
-                failed_rules.append("risk_gate")
-            if _has_malformed_risk_level(expected_cell) or _has_malformed_risk_level(
-                actual_cell
-            ):
-                failed_rules.append("risk_gate")
-            if _has_malformed_explicit_gmp_category(
-                expected_cell
-            ) or _has_malformed_explicit_gmp_category(actual_cell):
-                failed_rules.append("risk_gate")
-            if not _has_review_flag(expected_cell):
-                failed_rules.append("risk_gate")
-            confidence_requires_review = "confidence" in actual_cell and (
-                _confidence_requires_review(actual_cell.get("confidence"))
-            )
-            if confidence_requires_review:
-                warnings.append("table cell confidence requires human review")
-            explicit_review_required = (
-                table_explicit_review_required
-                or table_confidence_requires_review
-                or _requires_review(expected_cell)
-                or _requires_review(actual_cell)
-            )
-            high_risk = (
-                table_high_risk
-                or _is_high_risk(expected_cell)
-                or _is_high_risk(actual_cell)
-            )
-            category_requires_review = (
-                table_category_requires_review
-                or _gmp_category_requires_review(expected_cell)
-                or _gmp_category_requires_review(actual_cell)
-            )
-            expected_condition_record = _with_inherited_condition_metadata(
-                expected_table, expected_cell
-            )
-            actual_condition_record = _with_inherited_condition_metadata(
-                actual_table, actual_cell
-            )
-            condition_warnings = _gmp_condition_review_warnings(
-                expected_condition_record,
-                actual_condition_record,
-                important_item=high_risk
-                or category_requires_review
-                or explicit_review_required,
-            )
-            warnings.extend(f"table cell {warning}" for warning in condition_warnings)
-            cell_requires_review = (
-                explicit_review_required
-                or high_risk
-                or category_requires_review
-                or confidence_requires_review
-                or bool(condition_warnings)
+            cell_requires_review = _validate_table_cell(
+                expected_table=expected_table,
+                actual_table=actual_table,
+                expected_cell=expected_cells[cell_id],
+                actual_cell=actual_cells[cell_id],
+                table_explicit_review_required=table_explicit_review_required,
+                table_high_risk=table_high_risk,
+                table_category_requires_review=table_category_requires_review,
+                table_confidence_requires_review=table_confidence_requires_review,
+                failed_rules=failed_rules,
+                warnings=warnings,
             )
             if cell_requires_review:
                 table_requires_review = True
-                warnings.append("table cell requires human review")
-                if auto_confirmed:
-                    failed_rules.append("risk_gate")
 
     if table_requires_review and table_auto_confirmed:
         failed_rules.append("risk_gate")
