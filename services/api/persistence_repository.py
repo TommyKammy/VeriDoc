@@ -295,20 +295,10 @@ class SQLitePersistenceRepository:
         )
         with self._connection_scope(immediate=True) as connection:
             self._verify_job_event_history(connection, job_id)
-            job = connection.execute(
-                """
-                SELECT jobs.job_id, jobs.document_id, jobs.idempotency_key,
-                       jobs.mode, jobs.status, jobs.attempts,
-                       source_documents.original_filename,
-                       source_documents.content_hash AS source_content_hash,
-                       source_documents.uploaded_by
-                FROM jobs
-                JOIN source_documents
-                  ON source_documents.document_id = jobs.document_id
-                WHERE jobs.job_id = ?
-                """,
-                (job_id,),
-            ).fetchone()
+            job = self._get_job_with_source_document(
+                connection,
+                job_id=job_id,
+            )
             if job is None:
                 raise ValueError("job_id must reference an existing job")
             sequence = self._next_job_event_sequence(connection, job_id)
@@ -883,6 +873,30 @@ class SQLitePersistenceRepository:
         connection.execute("PRAGMA foreign_keys = ON")
         return connection
 
+    def _get_job_with_source_document(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        job_id: str,
+        document_id: str | None = None,
+    ) -> sqlite3.Row | None:
+        query = """
+            SELECT jobs.job_id, jobs.document_id, jobs.idempotency_key,
+                   jobs.mode, jobs.status, jobs.attempts,
+                   source_documents.original_filename,
+                   source_documents.content_hash AS source_content_hash,
+                   source_documents.uploaded_by
+            FROM jobs
+            JOIN source_documents
+              ON source_documents.document_id = jobs.document_id
+            WHERE jobs.job_id = ?
+        """
+        params: tuple[str, ...] = (job_id,)
+        if document_id is not None:
+            query += " AND jobs.document_id = ?"
+            params = (job_id, document_id)
+        return connection.execute(query, params).fetchone()
+
     def _require_job_document(
         self,
         connection: sqlite3.Connection,
@@ -1018,20 +1032,10 @@ class SQLitePersistenceRepository:
         payload: Mapping[str, Any],
         effective_action: str,
     ) -> None:
-        job = connection.execute(
-            """
-            SELECT jobs.job_id, jobs.document_id, jobs.idempotency_key,
-                   jobs.mode, jobs.status, jobs.attempts,
-                   source_documents.original_filename,
-                   source_documents.content_hash AS source_content_hash,
-                   source_documents.uploaded_by
-            FROM jobs
-            JOIN source_documents
-              ON source_documents.document_id = jobs.document_id
-            WHERE jobs.job_id = ?
-            """,
-            (row["job_id"],),
-        ).fetchone()
+        job = self._get_job_with_source_document(
+            connection,
+            job_id=row["job_id"],
+        )
         if job is None:
             raise ValueError("job event must reference an existing job and source document")
         contract = _require_audit_action_contract(effective_action)
@@ -1131,20 +1135,10 @@ class SQLitePersistenceRepository:
             ).fetchone()
             expected = {"document_id": document_id}
         elif scope_type in {"job", "conversion_job"}:
-            row = connection.execute(
-                """
-                SELECT jobs.job_id, jobs.document_id, jobs.idempotency_key,
-                       jobs.mode, jobs.status, jobs.attempts,
-                       source_documents.original_filename,
-                       source_documents.content_hash AS source_content_hash,
-                       source_documents.uploaded_by
-                FROM jobs
-                JOIN source_documents
-                  ON source_documents.document_id = jobs.document_id
-                WHERE jobs.job_id = ?
-                """,
-                (scope_id,),
-            ).fetchone()
+            row = self._get_job_with_source_document(
+                connection,
+                job_id=scope_id,
+            )
             expected = {"job_id": job_id, "document_id": document_id}
         elif scope_type == "job_event":
             row = connection.execute(
@@ -1226,20 +1220,11 @@ class SQLitePersistenceRepository:
             scope_type == "document"
             and contract.name in {"desktop_upload", "desktop_result_download"}
         ):
-            desktop_job_row = connection.execute(
-                """
-                SELECT jobs.job_id, jobs.document_id, jobs.idempotency_key,
-                       jobs.mode, jobs.status, jobs.attempts,
-                       source_documents.original_filename,
-                       source_documents.content_hash AS source_content_hash,
-                       source_documents.uploaded_by
-                FROM jobs
-                JOIN source_documents
-                  ON source_documents.document_id = jobs.document_id
-                WHERE jobs.job_id = ? AND jobs.document_id = ?
-                """,
-                (job_id, document_id),
-            ).fetchone()
+            desktop_job_row = self._get_job_with_source_document(
+                connection,
+                job_id=job_id,
+                document_id=document_id,
+            )
             if desktop_job_row is None:
                 raise ValueError("desktop audit must reference an existing document job")
         if contract.evidence_type == "download_artifact":
