@@ -31,6 +31,48 @@ from tests.persistence_support import (
     _create_job,
     _create_result,
 )
+
+
+def test_job_source_lookup_preserves_projection_and_scope_filters(tmp_path) -> None:
+    repository = SQLitePersistenceRepository(tmp_path / "veridoc.sqlite3")
+    repository.initialize()
+    document = _create_document(repository, "doc-lookup")
+    job = _create_job(repository, document, "job-lookup")
+
+    with repository._connect() as connection:
+        job_row = repository._get_job_with_source_document(
+            connection,
+            job_id=job.job_id,
+        )
+        scoped_job_row = repository._get_job_with_source_document(
+            connection,
+            job_id=job.job_id,
+            document_id=document.document_id,
+        )
+        mismatched_job_row = repository._get_job_with_source_document(
+            connection,
+            job_id=job.job_id,
+            document_id="other-document",
+        )
+
+    expected = {
+        "job_id": job.job_id,
+        "document_id": document.document_id,
+        "idempotency_key": job.idempotency_key,
+        "mode": job.mode,
+        "status": job.status,
+        "attempts": job.attempts,
+        "original_filename": document.original_filename,
+        "source_content_hash": document.content_hash,
+        "uploaded_by": document.uploaded_by,
+    }
+    assert job_row is not None
+    assert dict(job_row) == expected
+    assert scoped_job_row is not None
+    assert dict(scoped_job_row) == expected
+    assert mismatched_job_row is None
+
+
 def test_persistence_repository_rejects_conflicting_job_event_payload_fields(tmp_path) -> None:
     repository = SQLitePersistenceRepository(tmp_path / "veridoc.sqlite3")
     repository.initialize()
