@@ -77,6 +77,23 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def test_relationships_xml_builder_preserves_entry_bytes() -> None:
+    from core.render.ooxml import _relationships_xml
+
+    entries = (
+        '  <Relationship Id="rId1" Type="type-a" Target="target-a"/>\n'
+        '  <Relationship Id="rId2" Type="type-b" Target="target-b"/>\n'
+    )
+
+    assert _relationships_xml(entries) == (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        '<Relationships '
+        'xmlns="http://schemas.openxmlformats.org/package/2006/relationships">\n'
+        f"{entries}"
+        "</Relationships>\n"
+    )
+
+
 def test_pdf_ir_v1_reconstructs_editable_docx_with_reviewable_provenance(
     tmp_path: Path,
 ) -> None:
@@ -209,6 +226,12 @@ def test_same_ir_renders_deterministic_docx_and_xlsx_with_typed_cells(tmp_path: 
     assert first_xlsx.read_bytes() == second_xlsx.read_bytes()
     assert _sha256(first_docx) == _sha256(second_docx)
     assert _sha256(first_xlsx) == _sha256(second_xlsx)
+    assert _sha256(first_docx) == (
+        "c7070e2e10e0d23a1d56d8fd128243f461ecbfa55311827725b93960ddc8f4b2"
+    )
+    assert _sha256(first_xlsx) == (
+        "b4fb1a3586da01424a3e65c7bf2bd717c9d972c8d4452d347e9ae0dd167f1e1c"
+    )
 
     docx = extract_docx_structure(first_docx)
     assert [(block.kind, block.text) for block in docx.blocks] == [

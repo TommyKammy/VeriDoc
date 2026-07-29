@@ -87,21 +87,23 @@ def render_docx_from_ir(
         ),
         (
             "_rels/.rels",
-            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
-</Relationships>
-""",
+            _relationships_xml(
+                '  <Relationship Id="rId1" '
+                'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+                'Target="word/document.xml"/>\n'
+            ),
         ),
         (
             "word/_rels/document.xml.rels",
-            f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>
-  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
-{comment_relationship.rstrip()}
-</Relationships>
-""",
+            _relationships_xml(
+                '  <Relationship Id="rId1" '
+                'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" '
+                'Target="numbering.xml"/>\n'
+                '  <Relationship Id="rId2" '
+                'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" '
+                'Target="styles.xml"/>\n'
+                f"{comment_relationship.rstrip()}\n"
+            ),
         ),
         (
             "word/styles.xml",
@@ -209,22 +211,28 @@ def render_editable_docx_from_pdf_ir(
         ),
         (
             "_rels/.rels",
-            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
-</Relationships>
-""",
+            _relationships_xml(
+                '  <Relationship Id="rId1" '
+                'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+                'Target="word/document.xml"/>\n'
+            ),
         ),
         (
             "word/_rels/document.xml.rels",
-            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>
-  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
-  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="comments.xml"/>
-  <Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes" Target="footnotes.xml"/>
-</Relationships>
-""",
+            _relationships_xml(
+                '  <Relationship Id="rId1" '
+                'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" '
+                'Target="numbering.xml"/>\n'
+                '  <Relationship Id="rId2" '
+                'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" '
+                'Target="styles.xml"/>\n'
+                '  <Relationship Id="rId3" '
+                'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" '
+                'Target="comments.xml"/>\n'
+                '  <Relationship Id="rId4" '
+                'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes" '
+                'Target="footnotes.xml"/>\n'
+            ),
         ),
         ("word/styles.xml", _docx_styles_xml()),
         ("word/numbering.xml", _docx_numbering_xml()),
@@ -361,12 +369,14 @@ def render_xlsx_from_ir(
         )
         sheet_relationships = (
             "xl/worksheets/_rels/sheet1.xml.rels",
-            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="../comments1.xml"/>
-  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing" Target="../drawings/vmlDrawing1.vml"/>
-</Relationships>
-""",
+            _relationships_xml(
+                '  <Relationship Id="rId1" '
+                'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" '
+                'Target="../comments1.xml"/>\n'
+                '  <Relationship Id="rId2" '
+                'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing" '
+                'Target="../drawings/vmlDrawing1.vml"/>\n'
+            ),
         )
         xlsx_comment_parts.append(
             (
@@ -390,11 +400,11 @@ def render_xlsx_from_ir(
         ),
         (
             "_rels/.rels",
-            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
-</Relationships>
-""",
+            _relationships_xml(
+                '  <Relationship Id="rId1" '
+                'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+                'Target="xl/workbook.xml"/>\n'
+            ),
         ),
         (
             "xl/workbook.xml",
@@ -409,11 +419,11 @@ def render_xlsx_from_ir(
         ),
         (
             "xl/_rels/workbook.xml.rels",
-            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
-</Relationships>
-""",
+            _relationships_xml(
+                '  <Relationship Id="rId1" '
+                'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
+                'Target="worksheets/sheet1.xml"/>\n'
+            ),
         ),
         (
             "xl/worksheets/sheet1.xml",
@@ -948,6 +958,16 @@ def _xlsx_merge_cells_xml(ranges: Sequence[str]) -> str:
         return ""
     merge_cells = "".join(f'    <mergeCell ref="{_xml_escape(merge_range)}"/>' for merge_range in ranges)
     return f'  <mergeCells count="{len(ranges)}">{merge_cells}</mergeCells>'
+
+
+def _relationships_xml(entries: str) -> str:
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        '<Relationships '
+        'xmlns="http://schemas.openxmlformats.org/package/2006/relationships">\n'
+        f"{entries}"
+        "</Relationships>\n"
+    )
 
 
 def _docx_styles_xml() -> str:
