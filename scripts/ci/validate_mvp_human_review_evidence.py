@@ -1358,6 +1358,325 @@ def _validate_constant(
         errors.append(f"{field} must be {expected!r}")
 
 
+@dataclass(frozen=True)
+class _ParticipantValidation:
+    errors: list[str]
+    approved_at: ExactUtcTimestamp | None
+    quality_approved_at: ExactUtcTimestamp | None
+    participant_ids: set[str]
+    participant_statuses: dict[str, str]
+    participant_orders: dict[str, tuple[str, str]]
+    participant_withdrawn_at: dict[str, ExactUtcTimestamp]
+    participant_consented_at: dict[str, ExactUtcTimestamp]
+    practice_completed_by_participant: dict[str, set[str]]
+    practice_completed_at_by_participant: dict[
+        str, dict[str, ExactUtcTimestamp]
+    ]
+    completed_participant_ids: set[str]
+
+
+def _validate_participant_evidence(
+    record: dict[str, Any],
+    schema: dict[str, Any],
+) -> _ParticipantValidation:
+    """Validate participant/cohort and approval evidence without side effects."""
+
+    errors: list[str] = []
+    consent = record.get("consent_approval")
+    approved_at: ExactUtcTimestamp | None = None
+    approved_consent_form_version: str | None = None
+    consent_schema = schema["$defs"]["consentApproval"]
+    _unknown_fields(
+        consent,
+        set(consent_schema["properties"]),
+        "consent_approval",
+        errors,
+    )
+    _required_fields(
+        consent,
+        set(consent_schema["required"]),
+        "consent_approval",
+        errors,
+    )
+    if isinstance(consent, dict):
+        if consent.get("approval_status") != "approved":
+            errors.append("consent_approval.approval_status must be approved")
+        approved_at = _parse_utc(
+            consent.get("approved_at"),
+            "consent_approval.approved_at",
+            errors,
+        )
+        if consent.get("approved_by_role") != "study_owner":
+            errors.append(
+                "consent_approval.approved_by_role must be study_owner"
+            )
+        consent_version = consent.get("consent_form_version")
+        if (
+            not isinstance(consent_version, str)
+            or CONSENT_FORM_VERSION_RE.fullmatch(consent_version) is None
+        ):
+            errors.append(
+                "consent_approval.consent_form_version must be an opaque "
+                "CF-prefixed UUIDv4"
+            )
+        else:
+            approved_consent_form_version = consent_version
+        if consent.get("direct_identifiers_stored") is not False:
+            errors.append(
+                "consent_approval.direct_identifiers_stored must be false"
+            )
+
+    quality_approval = record.get("quality_approval")
+    quality_approved_at: ExactUtcTimestamp | None = None
+    quality_schema = schema["$defs"]["qualityApproval"]
+    _unknown_fields(
+        quality_approval,
+        set(quality_schema["properties"]),
+        "quality_approval",
+        errors,
+    )
+    _required_fields(
+        quality_approval,
+        set(quality_schema["required"]),
+        "quality_approval",
+        errors,
+    )
+    if isinstance(quality_approval, dict):
+        if quality_approval.get("approval_status") != "approved":
+            errors.append("quality_approval.approval_status must be approved")
+        quality_approved_at = _parse_utc(
+            quality_approval.get("approved_at"),
+            "quality_approval.approved_at",
+            errors,
+        )
+        if quality_approval.get("approved_by_role") != "quality_approver":
+            errors.append(
+                "quality_approval.approved_by_role must be quality_approver"
+            )
+        external_record_version = quality_approval.get(
+            "external_record_version"
+        )
+        if (
+            not isinstance(external_record_version, str)
+            or QUALITY_APPROVAL_RECORD_VERSION_RE.fullmatch(
+                external_record_version
+            )
+            is None
+        ):
+            errors.append(
+                "quality_approval.external_record_version must be an opaque "
+                "QAR-prefixed UUIDv4"
+            )
+
+    participants = record.get("participants")
+    participant_ids: set[str] = set()
+    participant_statuses: dict[str, str] = {}
+    participant_orders: dict[str, tuple[str, str]] = {}
+    participant_withdrawn_at: dict[str, ExactUtcTimestamp] = {}
+    participant_consented_at: dict[str, ExactUtcTimestamp] = {}
+    practice_completed_by_participant: dict[str, set[str]] = defaultdict(set)
+    practice_completed_at_by_participant: dict[
+        str, dict[str, ExactUtcTimestamp]
+    ] = defaultdict(dict)
+    if not isinstance(participants, list):
+        errors.append("participants must be an array")
+        participants = []
+    elif len(participants) < 3:
+        errors.append("participants must contain at least three reviewers")
+
+    participant_schema = schema["$defs"]["participant"]
+    for index, participant in enumerate(participants):
+        label = f"participant[{index}]"
+        _unknown_fields(
+            participant,
+            set(participant_schema["properties"]),
+            "participant",
+            errors,
+        )
+        _required_fields(
+            participant,
+            set(participant_schema["required"]),
+            label,
+            errors,
+        )
+        if not isinstance(participant, dict):
+            continue
+        participant_id = participant.get("participant_id")
+        if (
+            not isinstance(participant_id, str)
+            or PARTICIPANT_ID_RE.fullmatch(participant_id) is None
+        ):
+            errors.append(
+                f"{label}.participant_id must be an opaque P-prefixed UUIDv4"
+            )
+        elif participant_id in participant_ids:
+            errors.append(f"duplicate participant_id: {participant_id}")
+        else:
+            participant_ids.add(participant_id)
+        participation_status = participant.get("participation_status")
+        if (
+            not isinstance(participation_status, str)
+            or participation_status not in {"completed", "withdrawn"}
+        ):
+            errors.append(f"{label}.participation_status is invalid")
+        elif isinstance(participant_id, str):
+            participant_statuses[participant_id] = participation_status
+        withdrawn_at_value = participant.get("withdrawn_at")
+        if participation_status == "completed":
+            if withdrawn_at_value is not None:
+                errors.append(
+                    f"{label}.withdrawn_at must be null when completed"
+                )
+        elif participation_status == "withdrawn":
+            withdrawn_at = _parse_utc(
+                withdrawn_at_value,
+                f"{label}.withdrawn_at",
+                errors,
+            )
+            if withdrawn_at is not None and isinstance(participant_id, str):
+                participant_withdrawn_at[participant_id] = withdrawn_at
+        if participant.get("consent_status") != "consented":
+            errors.append(f"{label}.consent_status must be consented")
+        consented_at = _parse_utc(
+            participant.get("consented_at"),
+            f"{label}.consented_at",
+            errors,
+        )
+        if consented_at is not None and isinstance(participant_id, str):
+            participant_consented_at[participant_id] = consented_at
+        participant_consent_version = participant.get("consent_form_version")
+        if (
+            not isinstance(participant_consent_version, str)
+            or CONSENT_FORM_VERSION_RE.fullmatch(
+                participant_consent_version
+            )
+            is None
+        ):
+            errors.append(
+                f"{label}.consent_form_version must be an opaque "
+                "CF-prefixed UUIDv4"
+            )
+        elif (
+            approved_consent_form_version is not None
+            and participant_consent_version != approved_consent_form_version
+        ):
+            errors.append(
+                f"{label}.consent_form_version must match consent_approval"
+            )
+        if participant.get("relevant_experience_attested") is not True:
+            errors.append(
+                f"{label}.relevant_experience_attested must be true"
+            )
+        for arm in ("manual", "veridoc"):
+            completed_field = f"{arm}_practice_completed"
+            completed_at_field = f"{arm}_practice_completed_at"
+            revision_field = f"{arm}_practice_revision"
+            package_sha256_field = f"{arm}_practice_package_sha256"
+            completed = participant.get(completed_field)
+            completed_at_value = participant.get(completed_at_field)
+            if participant.get(revision_field) != APPROVED_PRACTICE_REVISION:
+                errors.append(
+                    f"{label}.{revision_field} must be "
+                    f"{APPROVED_PRACTICE_REVISION}"
+                )
+            if (
+                participant.get(package_sha256_field)
+                != APPROVED_PRACTICE_PACKAGE_SHA256
+            ):
+                errors.append(
+                    f"{label}.{package_sha256_field} must match approved "
+                    "practice package"
+                )
+            if participation_status == "completed":
+                if completed is not True:
+                    errors.append(f"{label}.{completed_field} must be true")
+            elif not isinstance(completed, bool):
+                errors.append(f"{label}.{completed_field} must be boolean")
+            if completed is True:
+                if isinstance(participant_id, str):
+                    practice_completed_by_participant[participant_id].add(
+                        completed_field
+                    )
+                completed_at = _parse_utc(
+                    completed_at_value,
+                    f"{label}.{completed_at_field}",
+                    errors,
+                )
+                if completed_at is not None and isinstance(
+                    participant_id,
+                    str,
+                ):
+                    practice_completed_at_by_participant[participant_id][
+                        completed_at_field
+                    ] = completed_at
+            elif completed is False and completed_at_value is not None:
+                errors.append(
+                    f"{label}.{completed_at_field} must be null when "
+                    f"{completed_field} is false"
+                )
+        arm_order = participant.get("arm_order")
+        arm_order_is_valid = arm_order in (
+            ["manual", "veridoc"],
+            ["veridoc", "manual"],
+        )
+        if participation_status == "completed" and not arm_order_is_valid:
+            errors.append(f"{label}.arm_order is invalid")
+        elif (
+            participation_status == "withdrawn"
+            and arm_order is not None
+            and not arm_order_is_valid
+        ):
+            errors.append(
+                f"{label}.arm_order must be null or a controlled arm order"
+            )
+        elif arm_order_is_valid and isinstance(participant_id, str):
+            participant_orders[participant_id] = (
+                arm_order[0],
+                arm_order[1],
+            )
+
+    completed_participant_ids = {
+        participant_id
+        for participant_id, status in participant_statuses.items()
+        if status == "completed" and participant_id in participant_ids
+    }
+    if len(completed_participant_ids) < 3:
+        errors.append(
+            "completed participant cohort must contain at least three reviewers"
+        )
+    completed_orders = {
+        participant_id: participant_orders[participant_id]
+        for participant_id in completed_participant_ids
+        if participant_id in participant_orders
+    }
+    order_counts = Counter(completed_orders.values())
+    if completed_participant_ids:
+        manual_first = order_counts[("manual", "veridoc")]
+        veridoc_first = order_counts[("veridoc", "manual")]
+        if manual_first == 0 or veridoc_first == 0:
+            errors.append("both arm orders must be represented")
+        if abs(manual_first - veridoc_first) > 1:
+            errors.append(
+                "arm-order participant counts may differ by at most one"
+            )
+
+    return _ParticipantValidation(
+        errors=errors,
+        approved_at=approved_at,
+        quality_approved_at=quality_approved_at,
+        participant_ids=participant_ids,
+        participant_statuses=participant_statuses,
+        participant_orders=participant_orders,
+        participant_withdrawn_at=participant_withdrawn_at,
+        participant_consented_at=participant_consented_at,
+        practice_completed_by_participant=practice_completed_by_participant,
+        practice_completed_at_by_participant=(
+            practice_completed_at_by_participant
+        ),
+        completed_participant_ids=completed_participant_ids,
+    )
+
+
 def validate_record(
     record: Any,
     *,
@@ -1566,269 +1885,22 @@ def validate_record(
         if study_status == "completed" and declared_cases != EXPECTED_CASE_IDS:
             errors.append("completed study must declare all five Phase 12 case_ids")
 
-    consent = record.get("consent_approval")
-    approved_at: ExactUtcTimestamp | None = None
-    approved_consent_form_version: str | None = None
-    consent_schema = schema["$defs"]["consentApproval"]
-    _unknown_fields(
-        consent,
-        set(consent_schema["properties"]),
-        "consent_approval",
-        errors,
+    participant_result = _validate_participant_evidence(record, schema)
+    errors.extend(participant_result.errors)
+    approved_at = participant_result.approved_at
+    quality_approved_at = participant_result.quality_approved_at
+    participant_ids = participant_result.participant_ids
+    participant_statuses = participant_result.participant_statuses
+    participant_orders = participant_result.participant_orders
+    participant_withdrawn_at = participant_result.participant_withdrawn_at
+    participant_consented_at = participant_result.participant_consented_at
+    practice_completed_by_participant = (
+        participant_result.practice_completed_by_participant
     )
-    _required_fields(
-        consent,
-        set(consent_schema["required"]),
-        "consent_approval",
-        errors,
+    practice_completed_at_by_participant = (
+        participant_result.practice_completed_at_by_participant
     )
-    if isinstance(consent, dict):
-        if consent.get("approval_status") != "approved":
-            errors.append("consent_approval.approval_status must be approved")
-        approved_at = _parse_utc(
-            consent.get("approved_at"),
-            "consent_approval.approved_at",
-            errors,
-        )
-        if consent.get("approved_by_role") != "study_owner":
-            errors.append(
-                "consent_approval.approved_by_role must be study_owner"
-            )
-        consent_version = consent.get("consent_form_version")
-        if (
-            not isinstance(consent_version, str)
-            or CONSENT_FORM_VERSION_RE.fullmatch(consent_version) is None
-        ):
-            errors.append(
-                "consent_approval.consent_form_version must be an opaque "
-                "CF-prefixed UUIDv4"
-            )
-        else:
-            approved_consent_form_version = consent_version
-        if consent.get("direct_identifiers_stored") is not False:
-            errors.append("consent_approval.direct_identifiers_stored must be false")
-
-    quality_approval = record.get("quality_approval")
-    quality_approved_at: ExactUtcTimestamp | None = None
-    quality_schema = schema["$defs"]["qualityApproval"]
-    _unknown_fields(
-        quality_approval,
-        set(quality_schema["properties"]),
-        "quality_approval",
-        errors,
-    )
-    _required_fields(
-        quality_approval,
-        set(quality_schema["required"]),
-        "quality_approval",
-        errors,
-    )
-    if isinstance(quality_approval, dict):
-        if quality_approval.get("approval_status") != "approved":
-            errors.append("quality_approval.approval_status must be approved")
-        quality_approved_at = _parse_utc(
-            quality_approval.get("approved_at"),
-            "quality_approval.approved_at",
-            errors,
-        )
-        if quality_approval.get("approved_by_role") != "quality_approver":
-            errors.append(
-                "quality_approval.approved_by_role must be quality_approver"
-            )
-        external_record_version = quality_approval.get(
-            "external_record_version"
-        )
-        if (
-            not isinstance(external_record_version, str)
-            or QUALITY_APPROVAL_RECORD_VERSION_RE.fullmatch(
-                external_record_version
-            )
-            is None
-        ):
-            errors.append(
-                "quality_approval.external_record_version must be an opaque "
-                "QAR-prefixed UUIDv4"
-            )
-
-    participants = record.get("participants")
-    participant_ids: set[str] = set()
-    participant_statuses: dict[str, str] = {}
-    participant_orders: dict[str, tuple[str, str]] = {}
-    participant_withdrawn_at: dict[str, ExactUtcTimestamp] = {}
-    participant_consented_at: dict[str, ExactUtcTimestamp] = {}
-    practice_completed_by_participant: dict[str, set[str]] = defaultdict(set)
-    practice_completed_at_by_participant: dict[
-        str, dict[str, ExactUtcTimestamp]
-    ] = defaultdict(dict)
-    if not isinstance(participants, list):
-        errors.append("participants must be an array")
-        participants = []
-    elif len(participants) < 3:
-        errors.append("participants must contain at least three reviewers")
-
-    participant_schema = schema["$defs"]["participant"]
-    for index, participant in enumerate(participants):
-        label = f"participant[{index}]"
-        _unknown_fields(
-            participant,
-            set(participant_schema["properties"]),
-            "participant",
-            errors,
-        )
-        _required_fields(
-            participant,
-            set(participant_schema["required"]),
-            label,
-            errors,
-        )
-        if not isinstance(participant, dict):
-            continue
-        participant_id = participant.get("participant_id")
-        if (
-            not isinstance(participant_id, str)
-            or PARTICIPANT_ID_RE.fullmatch(participant_id) is None
-        ):
-            errors.append(
-                f"{label}.participant_id must be an opaque P-prefixed UUIDv4"
-            )
-        elif participant_id in participant_ids:
-            errors.append(f"duplicate participant_id: {participant_id}")
-        else:
-            participant_ids.add(participant_id)
-        participation_status = participant.get("participation_status")
-        if (
-            not isinstance(participation_status, str)
-            or participation_status not in {"completed", "withdrawn"}
-        ):
-            errors.append(f"{label}.participation_status is invalid")
-        elif isinstance(participant_id, str):
-            participant_statuses[participant_id] = participation_status
-        withdrawn_at_value = participant.get("withdrawn_at")
-        if participation_status == "completed":
-            if withdrawn_at_value is not None:
-                errors.append(f"{label}.withdrawn_at must be null when completed")
-        elif participation_status == "withdrawn":
-            withdrawn_at = _parse_utc(
-                withdrawn_at_value,
-                f"{label}.withdrawn_at",
-                errors,
-            )
-            if withdrawn_at is not None and isinstance(participant_id, str):
-                participant_withdrawn_at[participant_id] = withdrawn_at
-        if participant.get("consent_status") != "consented":
-            errors.append(f"{label}.consent_status must be consented")
-        consented_at = _parse_utc(
-            participant.get("consented_at"),
-            f"{label}.consented_at",
-            errors,
-        )
-        if consented_at is not None and isinstance(participant_id, str):
-            participant_consented_at[participant_id] = consented_at
-        participant_consent_version = participant.get("consent_form_version")
-        if (
-            not isinstance(participant_consent_version, str)
-            or CONSENT_FORM_VERSION_RE.fullmatch(
-                participant_consent_version
-            )
-            is None
-        ):
-            errors.append(
-                f"{label}.consent_form_version must be an opaque "
-                "CF-prefixed UUIDv4"
-            )
-        elif (
-            approved_consent_form_version is not None
-            and participant_consent_version != approved_consent_form_version
-        ):
-            errors.append(
-                f"{label}.consent_form_version must match consent_approval"
-            )
-        if participant.get("relevant_experience_attested") is not True:
-            errors.append(f"{label}.relevant_experience_attested must be true")
-        for arm in ("manual", "veridoc"):
-            completed_field = f"{arm}_practice_completed"
-            completed_at_field = f"{arm}_practice_completed_at"
-            revision_field = f"{arm}_practice_revision"
-            package_sha256_field = f"{arm}_practice_package_sha256"
-            completed = participant.get(completed_field)
-            completed_at_value = participant.get(completed_at_field)
-            if participant.get(revision_field) != APPROVED_PRACTICE_REVISION:
-                errors.append(
-                    f"{label}.{revision_field} must be "
-                    f"{APPROVED_PRACTICE_REVISION}"
-                )
-            if (
-                participant.get(package_sha256_field)
-                != APPROVED_PRACTICE_PACKAGE_SHA256
-            ):
-                errors.append(
-                    f"{label}.{package_sha256_field} must match approved "
-                    "practice package"
-                )
-            if participation_status == "completed":
-                if completed is not True:
-                    errors.append(f"{label}.{completed_field} must be true")
-            elif not isinstance(completed, bool):
-                errors.append(f"{label}.{completed_field} must be boolean")
-            if completed is True:
-                if isinstance(participant_id, str):
-                    practice_completed_by_participant[participant_id].add(
-                        completed_field
-                    )
-                completed_at = _parse_utc(
-                    completed_at_value,
-                    f"{label}.{completed_at_field}",
-                    errors,
-                )
-                if completed_at is not None and isinstance(participant_id, str):
-                    practice_completed_at_by_participant[participant_id][
-                        completed_at_field
-                    ] = completed_at
-            elif completed is False and completed_at_value is not None:
-                errors.append(
-                    f"{label}.{completed_at_field} must be null when "
-                    f"{completed_field} is false"
-                )
-        arm_order = participant.get("arm_order")
-        arm_order_is_valid = arm_order in (
-            ["manual", "veridoc"],
-            ["veridoc", "manual"],
-        )
-        if participation_status == "completed" and not arm_order_is_valid:
-            errors.append(f"{label}.arm_order is invalid")
-        elif (
-            participation_status == "withdrawn"
-            and arm_order is not None
-            and not arm_order_is_valid
-        ):
-            errors.append(
-                f"{label}.arm_order must be null or a controlled arm order"
-            )
-        elif arm_order_is_valid and isinstance(participant_id, str):
-            participant_orders[participant_id] = (arm_order[0], arm_order[1])
-
-    completed_participant_ids = {
-        participant_id
-        for participant_id, status in participant_statuses.items()
-        if status == "completed" and participant_id in participant_ids
-    }
-    if len(completed_participant_ids) < 3:
-        errors.append(
-            "completed participant cohort must contain at least three reviewers"
-        )
-    completed_orders = {
-        participant_id: participant_orders[participant_id]
-        for participant_id in completed_participant_ids
-        if participant_id in participant_orders
-    }
-    order_counts = Counter(completed_orders.values())
-    if completed_participant_ids:
-        manual_first = order_counts[("manual", "veridoc")]
-        veridoc_first = order_counts[("veridoc", "manual")]
-        if manual_first == 0 or veridoc_first == 0:
-            errors.append("both arm orders must be represented")
-        if abs(manual_first - veridoc_first) > 1:
-            errors.append("arm-order participant counts may differ by at most one")
+    completed_participant_ids = participant_result.completed_participant_ids
 
     runs = record.get("runs")
     if not isinstance(runs, list):

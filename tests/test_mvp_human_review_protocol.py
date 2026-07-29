@@ -32,6 +32,7 @@ from scripts.ci.validate_mvp_human_review_evidence import (
     PINNED_TASK_PACKAGE_PATH,
     PINNED_TASK_PACKAGE_SHA256,
     _loads_json_strict,
+    _validate_participant_evidence,
     build_assessor_attestation,
     build_study_evidence_envelope,
     build_sealed_evidence_envelope,
@@ -975,6 +976,92 @@ class MvpHumanReviewProtocolTest(unittest.TestCase):
                 _replace_json_pointer(mutated, example["path"], example["value"])
                 errors = _validate_record(mutated)
                 self.assertIn(example["expected_error"], errors)
+
+    def test_participant_validator_preserves_invalid_fixture_error_parity(
+        self,
+    ) -> None:
+        vectors = json.loads(INVALID_EXAMPLES_PATH.read_text(encoding="utf-8"))
+        participant_errors = {
+            "direct-participant-identity": [
+                "unknown participant field: participant_name",
+            ],
+            "participant-consent-missing": [
+                "participant[0].consent_status must be consented",
+            ],
+            "personalized-quality-approval-version": [
+                "quality_approval.external_record_version must be an opaque "
+                "QAR-prefixed UUIDv4",
+            ],
+            "participant-practice-package-drift": [
+                "participant[0].manual_practice_package_sha256 must match "
+                "approved practice package",
+            ],
+        }
+        full_errors = {
+            "direct-participant-identity": [
+                "study_evidence_envelope.study_claims_sha256 must match "
+                "the study",
+                "unknown participant field: participant_name",
+            ],
+            "participant-consent-missing": [
+                "participant[0].consent_status must be consented",
+                "study_evidence_envelope.study_claims_sha256 must match "
+                "the study",
+            ],
+            "personalized-quality-approval-version": [
+                "quality_approval.external_record_version must be an opaque "
+                "QAR-prefixed UUIDv4",
+                "study_evidence_envelope.study_claims_sha256 must match "
+                "the study",
+            ],
+            "participant-practice-package-drift": [
+                "participant[0].manual_practice_package_sha256 must match "
+                "approved practice package",
+                "study_evidence_envelope.study_claims_sha256 must match "
+                "the study",
+            ],
+        }
+        schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+        participant_examples = {
+            example["id"]: example
+            for example in vectors["examples"]
+            if example["path"].startswith(
+                ("/participants/", "/consent_approval/", "/quality_approval/")
+            )
+        }
+
+        self.assertEqual([], _validate_record(self.valid_record))
+        self.assertEqual(set(participant_errors), set(participant_examples))
+        valid_original = copy.deepcopy(self.valid_record)
+        self.assertEqual(
+            [],
+            _validate_participant_evidence(self.valid_record, schema).errors,
+        )
+        self.assertEqual(valid_original, self.valid_record)
+        for example_id, example in participant_examples.items():
+            with self.subTest(example=example_id):
+                mutated = copy.deepcopy(self.valid_record)
+                _replace_json_pointer(
+                    mutated,
+                    example["path"],
+                    example["value"],
+                )
+                original = copy.deepcopy(mutated)
+
+                participant_result = _validate_participant_evidence(
+                    mutated,
+                    schema,
+                )
+
+                self.assertEqual(
+                    participant_errors[example_id],
+                    participant_result.errors,
+                )
+                self.assertEqual(original, mutated)
+                self.assertEqual(
+                    full_errors[example_id],
+                    _validate_record(mutated),
+                )
 
     def test_completed_record_requires_all_five_manifest_cases(self) -> None:
         record = copy.deepcopy(self.valid_record)
