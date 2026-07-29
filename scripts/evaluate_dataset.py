@@ -6253,6 +6253,66 @@ def mvp_case_metrics(
     }
 
 
+def _mvp_snapshot_integrity(
+    snapshot_metadata: Mapping[str, object],
+) -> dict[str, object]:
+    snapshot_failures: list[str] = []
+    snapshot_unknown: list[str] = []
+    worktree_clean = snapshot_metadata.get("worktree_clean")
+    if worktree_clean is False:
+        snapshot_failures.append(
+            "worktree is dirty; HEAD does not fully identify the evaluated source"
+        )
+    elif worktree_clean is not True:
+        snapshot_unknown.append("worktree cleanliness is missing or unknown")
+    commit = snapshot_metadata.get("commit")
+    commit_is_valid = (
+        isinstance(commit, str) and re.fullmatch(r"[0-9a-f]{40}", commit) is not None
+    )
+    if not commit_is_valid:
+        snapshot_unknown.append("commit is missing or malformed")
+    evaluator_commit_is_clean = snapshot_metadata.get("evaluator_commit_is_clean")
+    if evaluator_commit_is_clean is False:
+        snapshot_failures.append(
+            "evaluator worktree is dirty; evaluator HEAD does not fully "
+            "identify the executed source"
+        )
+    elif evaluator_commit_is_clean is not True:
+        snapshot_unknown.append(
+            "evaluator worktree cleanliness is missing or unknown"
+        )
+    evaluator_commit = snapshot_metadata.get("evaluator_commit")
+    evaluator_commit_is_valid = (
+        isinstance(evaluator_commit, str)
+        and re.fullmatch(r"[0-9a-f]{40}", evaluator_commit) is not None
+    )
+    if not evaluator_commit_is_valid:
+        snapshot_unknown.append("evaluator commit is missing or malformed")
+    return {
+        "status": (
+            "fail"
+            if snapshot_failures
+            else "unknown"
+            if snapshot_unknown
+            else "pass"
+        ),
+        "commit": commit,
+        "worktree_clean": worktree_clean,
+        "evaluator_commit": evaluator_commit,
+        "evaluator_commit_is_clean": evaluator_commit_is_clean,
+        "numerator": (
+            int(worktree_clean is True)
+            + int(commit_is_valid)
+            + int(evaluator_commit_is_clean is True)
+            + int(evaluator_commit_is_valid)
+        ),
+        "denominator": 4,
+        "exclusions": [],
+        "unknown": snapshot_unknown,
+        "failure_reasons": [*snapshot_failures, *snapshot_unknown],
+    }
+
+
 def mvp_metrics_rollup(
     harness_payload: Mapping[str, object],
     *,
@@ -6725,67 +6785,9 @@ def mvp_metrics_rollup(
         "performance": performance,
     }
     if snapshot_metadata is not None:
-        snapshot_failures: list[str] = []
-        snapshot_unknown: list[str] = []
-        worktree_clean = snapshot_metadata.get("worktree_clean")
-        if worktree_clean is False:
-            snapshot_failures.append(
-                "worktree is dirty; HEAD does not fully identify the evaluated source"
-            )
-        elif worktree_clean is not True:
-            snapshot_unknown.append("worktree cleanliness is missing or unknown")
-        commit = snapshot_metadata.get("commit")
-        commit_is_valid = (
-            isinstance(commit, str)
-            and re.fullmatch(r"[0-9a-f]{40}", commit) is not None
+        dimensions["snapshot_integrity"] = _mvp_snapshot_integrity(
+            snapshot_metadata
         )
-        if not commit_is_valid:
-            snapshot_unknown.append("commit is missing or malformed")
-        evaluator_commit_is_clean = snapshot_metadata.get(
-            "evaluator_commit_is_clean"
-        )
-        if evaluator_commit_is_clean is False:
-            snapshot_failures.append(
-                "evaluator worktree is dirty; evaluator HEAD does not fully "
-                "identify the executed source"
-            )
-        elif evaluator_commit_is_clean is not True:
-            snapshot_unknown.append(
-                "evaluator worktree cleanliness is missing or unknown"
-            )
-        evaluator_commit = snapshot_metadata.get("evaluator_commit")
-        evaluator_commit_is_valid = (
-            isinstance(evaluator_commit, str)
-            and re.fullmatch(r"[0-9a-f]{40}", evaluator_commit) is not None
-        )
-        if not evaluator_commit_is_valid:
-            snapshot_unknown.append(
-                "evaluator commit is missing or malformed"
-            )
-        snapshot_integrity = {
-            "status": (
-                "fail"
-                if snapshot_failures
-                else "unknown"
-                if snapshot_unknown
-                else "pass"
-            ),
-            "commit": commit,
-            "worktree_clean": worktree_clean,
-            "evaluator_commit": evaluator_commit,
-            "evaluator_commit_is_clean": evaluator_commit_is_clean,
-            "numerator": (
-                int(worktree_clean is True)
-                + int(commit_is_valid)
-                + int(evaluator_commit_is_clean is True)
-                + int(evaluator_commit_is_valid)
-            ),
-            "denominator": 4,
-            "exclusions": [],
-            "unknown": snapshot_unknown,
-            "failure_reasons": [*snapshot_failures, *snapshot_unknown],
-        }
-        dimensions["snapshot_integrity"] = snapshot_integrity
     rollup_status = mvp_acceptance_status(
         str(dimension["status"]) for dimension in dimensions.values()
     )
