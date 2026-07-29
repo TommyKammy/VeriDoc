@@ -1883,6 +1883,111 @@ class EvaluateDatasetTest(unittest.TestCase):
                         ]["status"],
                     )
 
+    def test_mvp_snapshot_integrity_preserves_existing_mapping(self) -> None:
+        clean_commit = "a" * 40
+        evaluator_commit = "b" * 40
+        cases = (
+            (
+                "clean",
+                {
+                    "commit": clean_commit,
+                    "worktree_clean": True,
+                    "evaluator_commit": evaluator_commit,
+                    "evaluator_commit_is_clean": True,
+                },
+                {
+                    "status": "pass",
+                    "commit": clean_commit,
+                    "worktree_clean": True,
+                    "evaluator_commit": evaluator_commit,
+                    "evaluator_commit_is_clean": True,
+                    "numerator": 4,
+                    "denominator": 4,
+                    "exclusions": [],
+                    "unknown": [],
+                    "failure_reasons": [],
+                },
+            ),
+            (
+                "dirty",
+                {
+                    "commit": clean_commit,
+                    "worktree_clean": False,
+                    "evaluator_commit": evaluator_commit,
+                    "evaluator_commit_is_clean": True,
+                },
+                {
+                    "status": "fail",
+                    "commit": clean_commit,
+                    "worktree_clean": False,
+                    "evaluator_commit": evaluator_commit,
+                    "evaluator_commit_is_clean": True,
+                    "numerator": 3,
+                    "denominator": 4,
+                    "exclusions": [],
+                    "unknown": [],
+                    "failure_reasons": [
+                        "worktree is dirty; HEAD does not fully identify "
+                        "the evaluated source"
+                    ],
+                },
+            ),
+            (
+                "invalid commit",
+                {
+                    "commit": "invalid",
+                    "worktree_clean": True,
+                    "evaluator_commit": evaluator_commit,
+                    "evaluator_commit_is_clean": True,
+                },
+                {
+                    "status": "unknown",
+                    "commit": "invalid",
+                    "worktree_clean": True,
+                    "evaluator_commit": evaluator_commit,
+                    "evaluator_commit_is_clean": True,
+                    "numerator": 3,
+                    "denominator": 4,
+                    "exclusions": [],
+                    "unknown": ["commit is missing or malformed"],
+                    "failure_reasons": ["commit is missing or malformed"],
+                },
+            ),
+            (
+                "missing metadata",
+                {},
+                {
+                    "status": "unknown",
+                    "commit": None,
+                    "worktree_clean": None,
+                    "evaluator_commit": None,
+                    "evaluator_commit_is_clean": None,
+                    "numerator": 0,
+                    "denominator": 4,
+                    "exclusions": [],
+                    "unknown": [
+                        "worktree cleanliness is missing or unknown",
+                        "commit is missing or malformed",
+                        "evaluator worktree cleanliness is missing or unknown",
+                        "evaluator commit is missing or malformed",
+                    ],
+                    "failure_reasons": [
+                        "worktree cleanliness is missing or unknown",
+                        "commit is missing or malformed",
+                        "evaluator worktree cleanliness is missing or unknown",
+                        "evaluator commit is missing or malformed",
+                    ],
+                },
+            ),
+        )
+
+        for name, snapshot_metadata, expected in cases:
+            with self.subTest(name=name):
+                self.assertEqual(
+                    expected,
+                    evaluate_dataset._mvp_snapshot_integrity(snapshot_metadata),
+                )
+
     def test_mvp_metrics_rollup_rejects_inconsistent_case_ratio_status(
         self,
     ) -> None:
