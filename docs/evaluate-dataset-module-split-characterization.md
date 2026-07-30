@@ -233,16 +233,37 @@ python3 -m py_compile scripts/evaluate_dataset.py tests/test_evaluate_dataset.py
 python3 -m unittest tests.test_evaluate_dataset
 python3 -m unittest discover -q
 python3 scripts/evaluate_dataset.py --poc-acceptance-report
+python3 scripts/evaluate_dataset.py --mvp-acceptance-report
 git diff --check origin/main...HEAD
 python3 scripts/ci/repo_hygiene.py
 ```
 
 For migration PRs, capture baseline and candidate
-`--poc-acceptance-report` JSON from clean commits. Before normalization, assert
-all preconditions in the normalization table above. Apply exactly those
-normalizations, serialize with sorted keys, and compare SHA-256 hashes in
-addition to checking exit status. Do not compare raw stdout hashes or normalize
-repository-state and checkout-root fields without validating them first.
+`--poc-acceptance-report` and `--mvp-acceptance-report` JSON from clean commits.
+Before normalizing the PoC report, assert all preconditions in the normalization
+table above. Apply exactly those normalizations, serialize with sorted keys, and
+compare SHA-256 hashes in addition to checking exit status. Do not compare raw
+stdout hashes or normalize repository-state and checkout-root fields without
+validating them first.
+
+The MVP report contains additional live conversion IDs, review timestamps, and
+timings, so the first migration wave compares the production-path projection
+that actually invokes the moved symbol instead of normalizing the whole report.
+For each captured MVP report:
+
+1. Assert `evidence_snapshot.metadata.{commit,evaluator_commit}` equal that
+   checkout's HEAD and both cleanliness fields are `true`.
+2. Extract
+   `evidence_snapshot.metrics_rollup.dimensions.snapshot_integrity` and assert
+   its four revision/cleanliness leaves exactly match the validated metadata.
+3. Replace only its `commit` and `evaluator_commit` values with fixed
+   revision sentinels, serialize the complete projection with sorted keys, and
+   compare its SHA-256 across baseline and candidate.
+
+Do not remove, normalize, or compare separately the projection's `status`,
+`numerator`, `denominator`, `exclusions`, `unknown`, or `failure_reasons`.
+Together with the direct malformed/dirty/missing-metadata cases, this protects
+the real `MVPAcceptanceReport.as_dict()` call path against extraction drift.
 
 ## First migration wave
 
@@ -263,11 +284,13 @@ The first implementation issue must move one responsibility in one PR:
 
 ### Validation and rollback
 
-- Run the six required commands above.
+- Run the seven required commands above.
 - Compare normalized `--poc-acceptance-report` SHA-256 before and after the
   move, excluding only the documented timestamp, 14 measured processing-time
   rows and their mirrors, separately validated revision-bound values, and
   separately validated checkout roots.
+- Compare the validated, revision-normalized MVP snapshot-integrity projection
+  SHA-256 before and after the move as specified above.
 - Confirm the facade signature remains
   `(snapshot_metadata: 'Mapping[str, object]') -> 'dict[str, object]'`.
 - Confirm `test_mvp_snapshot_integrity_preserves_existing_mapping` and the
