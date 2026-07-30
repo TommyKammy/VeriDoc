@@ -1878,7 +1878,7 @@ class EvaluateDatasetTest(unittest.TestCase):
                     )
                     self.assertEqual("fail", effective_item["decision"])
                     self.assertEqual(
-                    dimension_status,
+                        dimension_status,
                         effective_item["evidence"][
                             "metrics_rollup_validation"
                         ]["status"],
@@ -1895,6 +1895,10 @@ class EvaluateDatasetTest(unittest.TestCase):
             "_mvp_ratio_metric": (
                 "(*, numerator: 'object', denominator: 'object', "
                 "threshold: 'float', label: 'str') -> 'dict[str, object]'"
+            ),
+            "_mvp_snapshot_integrity": (
+                "(snapshot_metadata: 'Mapping[str, object]') "
+                "-> 'dict[str, object]'"
             ),
         }
         for symbol, expected_signature in expected_signatures.items():

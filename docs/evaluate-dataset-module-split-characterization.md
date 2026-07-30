@@ -182,12 +182,30 @@ status.
   and evidence-ref order remain deterministic.
 
 The complete stdout is not byte-for-byte deterministic across live runs.
-Two consecutive baseline `--poc-acceptance-report` runs differed at exactly 29
-leaves: the top-level `generated_at`, 14
+Two consecutive same-commit baseline `--poc-acceptance-report` runs differed at
+exactly 29 leaves: the top-level `generated_at`, 14
 `p9_harness.results[*].processing_time_ms` values, and the same 14 timings
 repeated under `p9_harness_results[*]`. Migration comparisons must either mock
 the wall/performance clocks or normalize only those documented volatile paths.
-After that normalization, every remaining JSON path and value must match.
+Across two clean commits, the four SHA-valued
+`tested_environment.{commit,evaluator_commit}` and
+`matrix_evidence.reproducibility.{commit,evaluator_commit}` leaves also differ.
+The `acceptance_matrix` reproducibility evidence embeds the commit again.
+Comparisons made from different worktree roots also produce two different
+absolute Phase8 input-source paths. The corresponding four cleanliness leaves
+are revision-bound guards, not ordinary volatility.
+
+Apply only this normalization after the stated validation:
+
+| Paths | Validate before normalization | Normalize |
+| --- | --- | --- |
+| `generated_at`; every `processing_time_ms` | values have the documented string/number types | fixed volatile sentinels |
+| four commit and four cleanliness leaves under `tested_environment` and `matrix_evidence.reproducibility` | both commits equal the checkout HEAD; both cleanliness values are `true`; both sections agree | fixed repository-state sentinels |
+| `acceptance_matrix` row whose `criterion_id` is `reproducibility` | status is `pass`; evidence contains that checkout's exact HEAD and `worktree clean: True` | replace only the validated HEAD substring |
+| `p9_harness.phase8_comparison.{llm_stability_source,poc_comparison_source}` | resolved paths equal the expected files below the checkout root | repo-relative POSIX paths |
+
+After time, validated repository-state, and validated checkout-root
+normalization, every remaining JSON path and value must match.
 
 ## Characterization tests
 
@@ -210,15 +228,16 @@ python3 -m py_compile scripts/evaluate_dataset.py tests/test_evaluate_dataset.py
 python3 -m unittest tests.test_evaluate_dataset
 python3 -m unittest discover -q
 python3 scripts/evaluate_dataset.py --poc-acceptance-report
-git diff --check
+git diff --check origin/main...HEAD
 python3 scripts/ci/repo_hygiene.py
 ```
 
 For migration PRs, capture baseline and candidate
-`--poc-acceptance-report` JSON, replace `generated_at` and every
-`processing_time_ms` value with fixed sentinels, serialize with sorted keys, and
-compare SHA-256 hashes in addition to checking exit status. Do not compare the
-raw stdout hashes.
+`--poc-acceptance-report` JSON from clean commits. Before normalization, assert
+all preconditions in the normalization table above. Apply exactly those
+normalizations, serialize with sorted keys, and compare SHA-256 hashes in
+addition to checking exit status. Do not compare raw stdout hashes or normalize
+repository-state and checkout-root fields without validating them first.
 
 ## First migration wave
 
@@ -241,7 +260,8 @@ The first implementation issue must move one responsibility in one PR:
 
 - Run the six required commands above.
 - Compare normalized `--poc-acceptance-report` SHA-256 before and after the
-  move, excluding only the documented timestamp and processing-time paths.
+  move, excluding only the documented timestamp, processing-time, separately
+  validated revision-bound values, and separately validated checkout roots.
 - Confirm the facade signature remains
   `(snapshot_metadata: 'Mapping[str, object]') -> 'dict[str, object]'`.
 - Confirm `test_mvp_snapshot_integrity_preserves_existing_mapping` and the
