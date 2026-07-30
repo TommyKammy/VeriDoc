@@ -199,13 +199,17 @@ Apply only this normalization after the stated validation:
 
 | Paths | Validate before normalization | Normalize |
 | --- | --- | --- |
-| `generated_at`; every `processing_time_ms` | values have the documented string/number types | fixed volatile sentinels |
+| `generated_at` | parses as timezone-aware ISO-8601 UTC and uses the existing `Z` suffix | fixed volatile-time sentinel |
+| `p9_harness.results[0:14].processing_time_ms` and mirrored `p9_harness_results[0:14].processing_time_ms` | both arrays contain the same 14 measured rows in the same order; each value is a positive number | fixed volatile-duration sentinels |
 | four commit and four cleanliness leaves under `tested_environment` and `matrix_evidence.reproducibility` | both commits equal the checkout HEAD; both cleanliness values are `true`; both sections agree | fixed repository-state sentinels |
 | `acceptance_matrix` row whose `criterion_id` is `reproducibility` | status is `pass`; evidence contains that checkout's exact HEAD and `worktree clean: True` | replace only the validated HEAD substring |
-| `p9_harness.phase8_comparison.{llm_stability_source,poc_comparison_source}` | resolved paths equal the expected files below the checkout root | repo-relative POSIX paths |
+| `p9_harness.phase8_comparison.{llm_stability_source,poc_comparison_source}` | each raw value is an absolute path and resolves to the expected file below the checkout root | repo-relative POSIX paths |
 
 After time, validated repository-state, and validated checkout-root
 normalization, every remaining JSON path and value must match.
+In particular, do not normalize `processing_time_ms` for index 14 or later:
+the unavailable-fixture rows currently carry deterministic `0.0` values that
+remain part of the ordinary JSON comparison.
 
 ## Characterization tests
 
@@ -260,8 +264,9 @@ The first implementation issue must move one responsibility in one PR:
 
 - Run the six required commands above.
 - Compare normalized `--poc-acceptance-report` SHA-256 before and after the
-  move, excluding only the documented timestamp, processing-time, separately
-  validated revision-bound values, and separately validated checkout roots.
+  move, excluding only the documented timestamp, 14 measured processing-time
+  rows and their mirrors, separately validated revision-bound values, and
+  separately validated checkout roots.
 - Confirm the facade signature remains
   `(snapshot_metadata: 'Mapping[str, object]') -> 'dict[str, object]'`.
 - Confirm `test_mvp_snapshot_integrity_preserves_existing_mapping` and the
