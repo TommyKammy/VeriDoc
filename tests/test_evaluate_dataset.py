@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import importlib.util
+import inspect
 from io import BytesIO
 import json
 import os
@@ -1877,11 +1878,148 @@ class EvaluateDatasetTest(unittest.TestCase):
                     )
                     self.assertEqual("fail", effective_item["decision"])
                     self.assertEqual(
-                        dimension_status,
+                    dimension_status,
                         effective_item["evidence"][
                             "metrics_rollup_validation"
                         ]["status"],
                     )
+
+    def test_module_split_characterization_preserves_representative_contracts(
+        self,
+    ) -> None:
+        expected_signatures = {
+            "poc_auth_session_coverage_evidence_refs": "() -> 'tuple[str, ...]'",
+            "p9_external_ai_api_guard_observation": (
+                "(audit: 'dict[str, Any] | None') -> 'bool | None'"
+            ),
+            "_mvp_ratio_metric": (
+                "(*, numerator: 'object', denominator: 'object', "
+                "threshold: 'float', label: 'str') -> 'dict[str, object]'"
+            ),
+        }
+        for symbol, expected_signature in expected_signatures.items():
+            with self.subTest(symbol=symbol):
+                self.assertTrue(hasattr(evaluate_dataset, symbol))
+                self.assertEqual(
+                    expected_signature,
+                    str(inspect.signature(getattr(evaluate_dataset, symbol))),
+                )
+
+        self.assertEqual(
+            (
+                "README.md Local PoC API authentication",
+                "tests/test_poc_web_api.py::"
+                "test_poc_http_api_reads_local_auth_tokens_from_env_for_review_success",
+                "tests/test_poc_web_api.py::"
+                "test_poc_http_api_filters_review_action_audit_events_by_action",
+                "tests/test_poc_web_api.py::"
+                "test_poc_http_api_allows_approval_with_revised_text_target",
+                "tests/test_poc_web_api.py::"
+                "test_poc_http_api_requires_admin_role_for_retry_job_event",
+                "tests/test_poc_web_api.py::"
+                "test_poc_http_api_authenticates_review_events_before_parsing_payload",
+                "tests/test_poc_web_api.py::"
+                "test_poc_http_api_rejects_read_only_review_role_"
+                "before_parsing_payload",
+                "tests/test_poc_web_api.py::"
+                "test_poc_http_api_requires_configured_local_auth_token_"
+                "for_review_events",
+                "tests/test_poc_web_api.py::"
+                "test_poc_http_api_authenticates_job_events_before_parsing_payload",
+            ),
+            evaluate_dataset.poc_auth_session_coverage_evidence_refs(),
+        )
+
+        p9_guard_cases = (
+            ("missing audit", None, None),
+            ("missing llm audit", {}, None),
+            ("LLM disabled", {"llm": {"enabled": False}}, False),
+            ("missing base URL type", {"llm": {"enabled": True}}, None),
+            (
+                "local endpoint",
+                {"llm": {"enabled": True, "base_url_type": "local"}},
+                False,
+            ),
+            (
+                "external endpoint",
+                {"llm": {"enabled": True, "base_url_type": "remote"}},
+                True,
+            ),
+        )
+        for name, audit, expected in p9_guard_cases:
+            with self.subTest(area="phase9", name=name):
+                self.assertIs(
+                    expected,
+                    evaluate_dataset.p9_external_ai_api_guard_observation(audit),
+                )
+
+        mvp_metric_cases = (
+            (
+                "threshold met",
+                8,
+                10,
+                {
+                    "status": "pass",
+                    "numerator": 8,
+                    "denominator": 10,
+                    "rate": 0.8,
+                    "threshold": 0.8,
+                    "operator": ">=",
+                    "exclusions": [],
+                    "unknown": [],
+                    "failure_reasons": [],
+                },
+            ),
+            (
+                "threshold missed",
+                7,
+                10,
+                {
+                    "status": "fail",
+                    "numerator": 7,
+                    "denominator": 10,
+                    "rate": 0.7,
+                    "threshold": 0.8,
+                    "operator": ">=",
+                    "exclusions": [],
+                    "unknown": [],
+                    "failure_reasons": [
+                        "agreement 0.700000 is below the 0.800000 threshold"
+                    ],
+                },
+            ),
+            (
+                "invalid boolean count",
+                True,
+                10,
+                {
+                    "status": "unknown",
+                    "numerator": True,
+                    "denominator": 10,
+                    "rate": None,
+                    "threshold": 0.8,
+                    "operator": ">=",
+                    "exclusions": [],
+                    "unknown": [
+                        "agreement numerator or denominator is missing or invalid"
+                    ],
+                    "failure_reasons": [
+                        "agreement numerator or denominator is missing or invalid"
+                    ],
+                },
+            ),
+        )
+        for name, numerator, denominator, expected in mvp_metric_cases:
+            with self.subTest(area="mvp_metrics", name=name):
+                self.assertEqual(
+                    expected,
+                    evaluate_dataset._mvp_ratio_metric(
+                        numerator=numerator,
+                        denominator=denominator,
+                        threshold=0.8,
+                        label="agreement",
+                    ),
+                )
 
     def test_mvp_snapshot_integrity_preserves_existing_mapping(self) -> None:
         clean_commit = "a" * 40
