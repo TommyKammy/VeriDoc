@@ -34,13 +34,13 @@ boundaries by themselves.
 
 | Responsibility | Current symbols and range | Count / ownership |
 | --- | --- | --- |
-| Module setup and constants | lines 1-319 | 89 assigned names: PoC auth 20, Phase9 13, MVP 20, GMP 8, shared defaults/types/schemas 28 |
+| Module setup and constants | lines 1-319 | 82 assigned names: PoC auth 20, Phase9 13, MVP 14, GMP 8, shared defaults/types/schemas 27; the remaining seven assignments are inventoried in their actual ranges below |
 | PoC authentication evidence analyzer | lines 320-3252, from `poc_auth_session_coverage_evidence_refs` through `poc_auth_session_coverage_is_present` | 138 functions and 10 private analysis data classes; parses README and Python AST and fails closed when evidence is ambiguous |
-| Result and error types | lines 3253-4017, from `EvaluationMetrics` through `EvaluationCaseError` | 14 report/metric/error classes; `P9HarnessReport`, `MVPHarnessReport`, `MVPAcceptanceReport`, and `PoCAcceptanceReport` serialize domain results |
+| Result and error types | lines 3253-4017, from `EvaluationMetrics` through `EvaluationCaseError` | 14 report/metric/error classes plus `LLM_STABILITY_ACCEPTANCE_THRESHOLD` at line 3347; `P9HarnessReport`, `MVPHarnessReport`, `MVPAcceptanceReport`, and `PoCAcceptanceReport` serialize domain results |
 | Shared JSON, normalization, and fixture validation | lines 4020-4336, from `load_json` through `fixture_paths_from_manifest` | 23 functions; file loading plus otherwise mostly pure validation/indexing helpers |
-| Phase9 fixture selection and conversion evaluation | lines 4337-5770 plus `evaluate_p9_harness` | 29 `p9_*` functions plus the harness orchestrator; manifest selection, artifact validation, external-AI guard, conversion timing, and fail-closed results |
+| Phase9 fixture selection and conversion evaluation | lines 4337-5780 plus `evaluate_p9_harness` | 29 `p9_*` functions plus the harness orchestrator; manifest selection, artifact validation, external-AI guard, conversion timing, and fail-closed results |
 | MVP metrics and limits | lines 5783-7156 | `mvp_acceptance_status`, `mvp_acceptance_items_with_rollup`, `_mvp_ratio_metric`, `mvp_case_metrics`, `_mvp_snapshot_integrity`, `mvp_metrics_rollup`, manifest/limit helpers, and `MVPConversionTimeoutError` |
-| MVP conversion and harness | lines 7159-8825 | conversion I/O, audit/review evaluation, timeout handling, authoritative review recording, fixture approval hashing, and acceptance report assembly |
+| MVP conversion and harness | lines 7159-8825 | conversion I/O, audit/review evaluation, timeout handling, authoritative review recording, fixture approval hashing, acceptance report assembly, and `MVP_ACCEPTANCE_ITEM_IDS`, `MVP_ACCEPTANCE_SECTIONS`, `MVP_ACCEPTANCE_STATUS_SEPARATORS`, `MVP_MANIFEST_DECISION_CONTRACT_FIELDS`, `MVP_SCOPE_DECISION_APPROVED_CONTRACTS`, and `MVP_ACCEPTANCE_HARNESS_REFS` at lines 8153-8211 |
 | Repository state | lines 8899-9006 | git commit, tracking, worktree cleanliness, stdout path, and exclusion pathspec helpers |
 | PoC acceptance | lines 9007-9749 plus auth helpers above | report construction, evidence-path validation, status aggregation, scenario checks, known limitations, and follow-up candidates |
 | Phase0/8 evaluation | lines 9750-10857 and `evaluate_llm_stability_report` | case validation, deterministic metrics, LLM stability, manual correction time, and PoC mode comparison |
@@ -125,7 +125,8 @@ responsibility moves:
 | --- | --- |
 | JSON/text input | `load_json`, `_poc_auth_session_evidence_sources`, `mvp_role_permissions_from_source`, acceptance builders |
 | Fixture bytes and archives | `p9_conversion_result`, `mvp_conversion_result`, `mvp_fixture_approval_contract`, acceptance builders |
-| Converter APIs and temp files | `p9_conversion_result`, `mvp_convert_uploaded_document`, `mvp_conversion_result` |
+| Converter APIs | `p9_conversion_result`, `mvp_convert_uploaded_document`, `mvp_conversion_result` |
+| Direct temporary resources and persistence | `p9_validate_artifact_expectations` owns a written/flushed/unlinked `NamedTemporaryFile`; `mvp_record_authoritative_review_decisions` owns a `TemporaryDirectory` containing its SQLite repository |
 | Clock/timeout | `p9_conversion_result`, `mvp_conversion_result`, `evaluate_mvp_harness` |
 | Git subprocess/worktree | `current_git_commit`, `git_path_is_tracked`, `current_git_worktree_clean`, `poc_acceptance_tracked_repo_path` |
 | CLI stdout/stderr | `main` only |
