@@ -78,8 +78,8 @@ direct CLI execution and the current test loader.
 | `phase9.py` | `P9_*`, `p9_*`, Phase9 harness | shared validators, conversion APIs, report model, Phase0/8 report builder | manifests, fixture bytes, clock | calls both `mvp_scanned_pdf_boundary_evaluation` and `evaluate_llm_stability_report`; keep the harness in the facade until both dependencies are available |
 | `mvp_metrics.py` | pure MVP status/ratio/snapshot/rollup calculations plus `mvp_high_risk_target_key` and `mvp_review_item_is_high_risk` | shared types/constants; selected Phase9 observations today | none for the first wave | importing Phase9 from MVP would preserve the current cycle |
 | `mvp_harness.py` | conversion, timeout, review/audit, fixture approval | Phase9 artifact helpers, MVP metrics, converter APIs, repository snapshot helpers | fixture bytes, temp files, clock, process signals/timers, git, stdout fd | broad side effects and exception semantics |
-| `poc_acceptance.py` | PoC report builder and matrix/status helpers | PoC auth, Phase9, Phase0/8 evaluation, git helpers | manifests, repository paths, git, clock, stdout fd | high fan-in; move after leaf modules |
-| `phase0.py` | case metrics, LLM stability, PoC comparison, `validate_text_list_allow_empty`, `review_key_for_diff`, and `mode_diff_summary` | shared validators and result models | public JSON inputs | shared high-risk-label helpers also feed GMP |
+| `poc_acceptance.py` | PoC matrix/status/limitation/follow-up helpers first; later `PoCAcceptanceReport` and its builder together | PoC auth, Phase9, Phase0/8 evaluation, git helpers | manifests, repository paths, git, clock, stdout fd | `PoCAcceptanceReport.as_dict()` calls these helpers while the builder constructs that model; use the ordering below rather than moving both sides at once |
+| `phase0.py` | case metrics, LLM stability, PoC comparison, `validate_text_list_allow_empty`, `review_key_for_diff`, and `mode_diff_summary` | shared JSON/fixture validators and result models | public JSON inputs plus manifest, high-risk-label, evaluation-case, and referenced-fixture path reads | shared high-risk-label helpers also feed GMP; path resolution, existence, and fail-closed JSON errors must survive extraction |
 | `gmp.py` | GMP validators and evaluator | Phase0 comparison metrics, shared validators | repository evidence paths | command validation must remain fail closed |
 | `repository.py` | git/path/snapshot helpers | `Path`, `os`, `subprocess` | git process, worktree, and stdout fd inspection | exact path exclusions affect reproducibility |
 | `cli.py` | parser and mode dispatch | every report builder | stdout/stderr | last module to move; preserves all user-facing behavior |
@@ -98,9 +98,10 @@ evaluate_dataset.py facade / main
   |                  \\-> Phase0/8 report builder
   +-> GMP acceptance -> Phase0 comparison/shared validation
   +-> result models -> MVP metric functions
+                   \\-> PoC acceptance helpers
 ```
 
-Four cycles must be broken deliberately:
+Five cycles must be broken deliberately:
 
 1. Phase9 calls `mvp_scanned_pdf_boundary_evaluation`, while MVP functions call
    `p9_external_ai_api_guard_observation`, `p9_primary_artifact`, and
@@ -120,7 +121,13 @@ Four cycles must be broken deliberately:
    `EvaluationCaseError` is not part of that hold: move it to `shared.py` before
    any validator, re-export the same class object from the facade, and have leaf
    modules import it from `shared.py`.
-4. the PoC auth analyzer calls `poc_acceptance_tracked_repo_path`. Move that
+4. `PoCAcceptanceReport.as_dict()` calls the `poc_acceptance_*` matrix, status,
+   limitation, and follow-up helpers, while `build_poc_acceptance_report`
+   constructs `PoCAcceptanceReport`. First move only the leaf helpers so the
+   facade model can import them. Keep the builder in the facade until the model's
+   remaining dependencies point in one direction, then move the model and
+   builder together; do not make the leaf builder import the facade model.
+5. the PoC auth analyzer calls `poc_acceptance_tracked_repo_path`. Move that
    path-aware wrapper with PoC acceptance, or pass a tracking predicate into
    the analyzer; a leaf auth module must not import the facade.
 
@@ -135,7 +142,7 @@ responsibility moves:
 
 | Boundary | Current functions |
 | --- | --- |
-| JSON/text input | `load_json`, `_poc_auth_session_evidence_sources`, `mvp_role_permissions_from_source`, acceptance builders |
+| JSON/text input | `load_json`; Phase0's `evaluate_poc_mode_comparison` uses it for the manifest, high-risk labels, and evaluation cases, while `validate_high_risk_labels_against_fixtures` uses it for referenced fixtures; `_poc_auth_session_evidence_sources`, `mvp_role_permissions_from_source`, acceptance builders |
 | Fixture path resolution and existence | `fixture_paths_from_manifest` resolves the allowed root and each fixture path, rejects paths that escape after symlink-aware resolution, and requires each resolved target to satisfy `is_file()` |
 | Fixture bytes and archives | `p9_xlsx_comments_by_ref` and `p9_docx_source_linkage` directly open OOXML ZIPs and parse XML; `p9_conversion_result`, `mvp_conversion_result`, `mvp_fixture_approval_contract`, acceptance builders |
 | Converter APIs | `p9_conversion_result`, `mvp_convert_uploaded_document`, `mvp_conversion_result` |
@@ -150,6 +157,13 @@ The path checks in `fixture_paths_from_manifest` are observable filesystem I/O:
 preserve `Path.resolve()` before containment checking, the resulting symlink
 behavior, the `is_relative_to(allowed_root)` rejection, and the final
 `Path.is_file()` existence/type check.
+
+Phase0 is a consumer of both shared I/O boundaries:
+`evaluate_poc_mode_comparison` loads the manifest, high-risk-label, and
+evaluation-case JSON, obtains fixture paths through `fixture_paths_from_manifest`,
+and passes those paths to `validate_high_risk_labels_against_fixtures`, which
+loads each referenced fixture. Extraction must retain those shared loader/path
+dependencies and their fail-closed errors.
 
 For direct OOXML reads, preserve the existing asymmetric failure behavior.
 `p9_xlsx_comments_by_ref` lets malformed ZIPs and archive-read/XML parse errors
@@ -174,6 +188,13 @@ Every migration PR must preserve all of the following:
 - loading the path as module name `evaluate_dataset` continues to succeed.
 - every name currently accessed as `evaluate_dataset.<name>` by repository
   tests remains available from the facade with the same call signature.
+- facade globals patched by repository tests remain rebindable lookup seams.
+  For example, callers of `evaluate_p9_harness` patch `p9_conversion_result`
+  and `evaluate_llm_stability_report`, while callers of
+  `build_poc_acceptance_report` patch the harness and repository-state helpers.
+  A migrated caller must receive the facade's current collaborators through
+  dependency injection or a facade forwarding wrapper on every call; a static
+  alias to a leaf function does not preserve this behavior.
 - internal module paths are not public API in the first migration wave.
 
 ### CLI
@@ -262,6 +283,7 @@ Required verification for this characterization PR and every migration PR:
 python3 -m py_compile scripts/evaluate_dataset.py tests/test_evaluate_dataset.py
 python3 -m unittest tests.test_evaluate_dataset
 python3 -m unittest discover -q
+python3 -m pytest
 python3 scripts/evaluate_dataset.py --poc-acceptance-report
 python3 scripts/evaluate_dataset.py --mvp-acceptance-report
 git diff --check origin/main...HEAD
