@@ -34,9 +34,9 @@ boundaries by themselves.
 
 | Responsibility | Current symbols and range | Count / ownership |
 | --- | --- | --- |
-| Module setup and constants | lines 1-319 | 82 assigned names: PoC auth 20, Phase9 13, MVP 14, GMP 8, shared defaults/types/schemas 27; the remaining seven assignments are inventoried in their actual ranges below |
+| Module setup and constants | lines 1-319 | 82 assigned names: PoC auth 21 (including `AST_TRY_STATEMENT_TYPES`), Phase9 13, MVP 14, GMP 8, shared defaults/types/schemas 26; the remaining seven assignments are inventoried in their actual ranges below |
 | PoC authentication evidence analyzer | lines 320-3252, from `poc_auth_session_coverage_evidence_refs` through `poc_auth_session_coverage_is_present` | 138 functions and 10 private analysis data classes; parses README and Python AST and fails closed when evidence is ambiguous |
-| Result and error types | lines 3253-4017, from `EvaluationMetrics` through `EvaluationCaseError` | 14 report/metric/error classes plus `LLM_STABILITY_ACCEPTANCE_THRESHOLD` at line 3347; `P9HarnessReport`, `MVPHarnessReport`, `MVPAcceptanceReport`, and `PoCAcceptanceReport` serialize domain results |
+| Result models and shared error | lines 3253-4017, from `EvaluationMetrics` through `EvaluationCaseError` | 13 report/metric/evidence classes plus the shared `EvaluationCaseError` and `LLM_STABILITY_ACCEPTANCE_THRESHOLD` at line 3347; `P9HarnessReport`, `MVPHarnessReport`, `MVPAcceptanceReport`, and `PoCAcceptanceReport` serialize domain results |
 | Shared JSON, normalization, and fixture validation | lines 4020-4336, from `load_json` through `fixture_paths_from_manifest` | 23 functions; file loading plus otherwise mostly pure validation/indexing helpers |
 | Phase9 fixture selection and conversion evaluation | lines 4337-5780 plus `evaluate_p9_harness` | 29 `p9_*` functions plus the harness orchestrator; manifest selection, artifact validation, external-AI guard, conversion timing, and fail-closed results |
 | MVP metrics and limits | lines 5783-7156 plus pure high-risk classification helpers at lines 8085-8111 | `mvp_acceptance_status`, `mvp_acceptance_items_with_rollup`, `_mvp_ratio_metric`, `mvp_case_metrics`, `_mvp_snapshot_integrity`, `mvp_metrics_rollup`, `mvp_high_risk_target_key`, `mvp_review_item_is_high_risk`, manifest/limit helpers, and `MVPConversionTimeoutError` |
@@ -54,13 +54,13 @@ report types must not be duplicated.
 
 | Owner | Names / rule |
 | --- | --- |
-| PoC authentication | all 20 `POC_AUTH_SESSION_*` constants |
+| PoC authentication | all 20 `POC_AUTH_SESSION_*` constants plus `AST_TRY_STATEMENT_TYPES`, which `_ordered_function_statements` consumes |
 | Phase9 | `DEFAULT_P9_HARNESS_MANIFEST` and the 12 `P9_*` constants |
 | MVP | `DEFAULT_MVP_*` and the 17 `MVP_*` constants |
 | GMP | the 8 `GMP_*` / `REQUIRED_GMP_ACCEPTANCE_CRITERIA` constants |
 | Shared CLI/defaults | `REPO_ROOT`, `UTC`, `DEFAULT_EVALUATION_CASES`, `DEFAULT_LLM_STABILITY_RUNS`, `DEFAULT_POC_COMPARISON`, `DEFAULT_GMP_ACCEPTANCE` |
 | Shared schemas and validation | evaluation, fixture, high-risk-label, PoC comparison, and LLM stability schema constants; `HighRiskLabelKey`; `EvaluationCaseError` |
-| Result models | the 14 classes at lines 3253-4017; keep them in the compatibility facade until their `as_dict()` dependencies point in one direction |
+| Result models | the 13 report/metric/evidence classes at lines 3253-4013; keep them in the compatibility facade until their `as_dict()` dependencies point in one direction. This hold does not include `EvaluationCaseError` |
 
 ## Candidate modules and dependency map
 
@@ -73,8 +73,8 @@ direct CLI execution and the current test loader.
 
 | Candidate module | Owns | Direct dependencies | I/O boundary | Main risk |
 | --- | --- | --- | --- | --- |
-| `poc_auth.py` | `POC_AUTH_SESSION_*`, AST evidence analyzer | `ast`, `Path`, shared evidence types | reads README and `tests/test_poc_web_api.py` | `poc_auth_session_coverage_inputs_tracked_in_repo` currently calls a later PoC acceptance path helper |
-| `shared.py` | shared schemas, `EvaluationCaseError`, pure normalization/index helpers | standard library only | `load_json` is the sole file reader and may be separated | becoming a miscellaneous dumping ground |
+| `poc_auth.py` | `POC_AUTH_SESSION_*`, `AST_TRY_STATEMENT_TYPES`, AST evidence analyzer | `ast`, `Path`, shared evidence types | reads README and `tests/test_poc_web_api.py` | `poc_auth_session_coverage_inputs_tracked_in_repo` currently calls a later PoC acceptance path helper |
+| `shared.py` | shared schemas, `EvaluationCaseError`, normalization/index helpers | standard library only | `load_json` reads JSON; `fixture_paths_from_manifest` resolves and checks filesystem paths | path resolution, existence, and symlink containment semantics must remain fail closed; avoid becoming a miscellaneous dumping ground |
 | `phase9.py` | `P9_*`, `p9_*`, Phase9 harness | shared validators, conversion APIs, report model, Phase0/8 report builder | manifests, fixture bytes, clock | calls both `mvp_scanned_pdf_boundary_evaluation` and `evaluate_llm_stability_report`; keep the harness in the facade until both dependencies are available |
 | `mvp_metrics.py` | pure MVP status/ratio/snapshot/rollup calculations plus `mvp_high_risk_target_key` and `mvp_review_item_is_high_risk` | shared types/constants; selected Phase9 observations today | none for the first wave | importing Phase9 from MVP would preserve the current cycle |
 | `mvp_harness.py` | conversion, timeout, review/audit, fixture approval | Phase9 artifact helpers, MVP metrics, converter APIs, repository snapshot helpers | fixture bytes, temp files, clock, process signals/timers, git, stdout fd | broad side effects and exception semantics |
@@ -116,7 +116,10 @@ Four cycles must be broken deliberately:
    before moving the dependent calculators. Until then, keep all affected
    functions in the facade rather than creating metrics-to-harness imports.
 3. report classes call metric functions in `as_dict()`, while builders return
-   those report classes. Keep result models in the facade initially.
+   those report classes. Keep the 13 result models in the facade initially.
+   `EvaluationCaseError` is not part of that hold: move it to `shared.py` before
+   any validator, re-export the same class object from the facade, and have leaf
+   modules import it from `shared.py`.
 4. the PoC auth analyzer calls `poc_acceptance_tracked_repo_path`. Move that
    path-aware wrapper with PoC acceptance, or pass a tracking predicate into
    the analyzer; a leaf auth module must not import the facade.
@@ -133,7 +136,8 @@ responsibility moves:
 | Boundary | Current functions |
 | --- | --- |
 | JSON/text input | `load_json`, `_poc_auth_session_evidence_sources`, `mvp_role_permissions_from_source`, acceptance builders |
-| Fixture bytes and archives | `p9_conversion_result`, `mvp_conversion_result`, `mvp_fixture_approval_contract`, acceptance builders |
+| Fixture path resolution and existence | `fixture_paths_from_manifest` resolves the allowed root and each fixture path, rejects paths that escape after symlink-aware resolution, and requires each resolved target to satisfy `is_file()` |
+| Fixture bytes and archives | `p9_xlsx_comments_by_ref` and `p9_docx_source_linkage` directly open OOXML ZIPs and parse XML; `p9_conversion_result`, `mvp_conversion_result`, `mvp_fixture_approval_contract`, acceptance builders |
 | Converter APIs | `p9_conversion_result`, `mvp_convert_uploaded_document`, `mvp_conversion_result` |
 | Direct temporary resources and persistence | `p9_validate_artifact_expectations` owns a written/flushed/unlinked `NamedTemporaryFile`; `mvp_record_authoritative_review_decisions` owns a `TemporaryDirectory` containing its SQLite repository |
 | Wall/performance clock | `p9_conversion_result` and `mvp_conversion_result` measure elapsed time; `build_mvp_acceptance_report` emits an ISO-8601 `+00:00` timestamp, while `build_poc_acceptance_report` emits the UTC `Z` form |
@@ -141,6 +145,21 @@ responsibility moves:
 | Git subprocess/worktree | `current_git_commit`, `git_path_is_tracked`, `current_git_worktree_clean`, `poc_acceptance_tracked_repo_path` |
 | Redirected stdout path inspection | `current_stdout_path` reads `/proc/self/fd/1` or `/dev/fd/1`; `build_mvp_acceptance_report` and `build_poc_acceptance_report` use it to exclude an untracked redirected report from cleanliness checks |
 | CLI JSON stdout/stderr | `main` only |
+
+The path checks in `fixture_paths_from_manifest` are observable filesystem I/O:
+preserve `Path.resolve()` before containment checking, the resulting symlink
+behavior, the `is_relative_to(allowed_root)` rejection, and the final
+`Path.is_file()` existence/type check.
+
+For direct OOXML reads, preserve the existing asymmetric failure behavior.
+`p9_xlsx_comments_by_ref` lets malformed ZIPs and archive-read/XML parse errors
+propagate; an archive with no discovered comment parts yields an empty mapping.
+`p9_docx_source_linkage` also lets ZIP and
+`word/document.xml` read/parse failures propagate, but treats a missing or
+malformed relationships part as having no comments relationship and a missing
+or malformed linked comments part as having no source-linkage comments. Those
+fallbacks feed ordinary linkage validation and must not be broadened into
+silent recovery for the primary document or archive.
 
 No leaf calculator should gain filesystem, subprocess, clock, process-signal,
 stdout-fd, or environment access as part of a move.
