@@ -97,8 +97,7 @@ evaluate_dataset.py facade / main
   +-> Phase9 harness -> MVP scanned-PDF boundary helper
   |                  \\-> Phase0/8 report builder
   +-> GMP acceptance -> Phase0 comparison/shared validation
-  +-> result models -> MVP metric functions
-                   \\-> PoC acceptance helpers
+  +-> result models -> MVP metric functions / PoC acceptance helpers
 ```
 
 Five cycles must be broken deliberately:
@@ -187,8 +186,8 @@ Every migration PR must preserve all of the following:
 - `python3 scripts/evaluate_dataset.py` remains the executable entry point.
 - loading the path as module name `evaluate_dataset` continues to succeed.
 - every name currently accessed as `evaluate_dataset.<name>` by repository
-  tests remains available from the facade with the same call signature.
-- facade globals patched by repository tests remain rebindable lookup seams.
+  tests remains available from the facade with the same call signature, and
+  facade globals patched by those tests remain rebindable lookup seams.
   For example, callers of `evaluate_p9_harness` patch `p9_conversion_result`
   and `evaluate_llm_stability_report`, while callers of
   `build_poc_acceptance_report` patch the harness and repository-state helpers.
@@ -282,7 +281,7 @@ Required verification for this characterization PR and every migration PR:
 ```sh
 python3 -m py_compile scripts/evaluate_dataset.py tests/test_evaluate_dataset.py
 python3 -m unittest tests.test_evaluate_dataset
-python3 -m unittest discover -q
+python3 -m unittest discover -s tests -q
 python3 -m pytest
 python3 scripts/evaluate_dataset.py --poc-acceptance-report
 python3 scripts/evaluate_dataset.py --mvp-acceptance-report
